@@ -1,0 +1,17 @@
+{
+  "name": "codex-ab",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "codex-ab": "./dist/codex-ab"
+  },
+  "scripts": {
+    "build": "bun build ./cli.ts --compile --outfile ./dist/codex-ab",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2"
+  }
+}
