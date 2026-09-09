@@ -5,7 +5,7 @@ const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_TIMEOUT_MS = 8_000;
 const LONG_CONTEXT_TOKENS = 272_000;
 
-const USAGE_KEYS = [
+export const USAGE_KEYS = [
   "input_tokens",
   "cached_input_tokens",
   "cache_write_input_tokens",
@@ -78,7 +78,6 @@ interface UsageCandidate {
   ownerThreadId: string;
   model: string;
   usage: Usage;
-  order: number;
 }
 
 interface RequestUsage {
@@ -398,11 +397,10 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot)
 
   const knownThreads = new Set(files.map((file) => file.threadId));
   const candidates: UsageCandidate[] = [];
-  const fallbackByThread = new Map<string, UsageCandidate>();
+  const fallbackByThread = new Map<string, Pick<RequestUsage, "model" | "usage">>();
   const modelsSeenByThread = new Map<string, Set<string>>();
   const commandIds = new Set<string>();
   let commandSeconds = 0;
-  let order = 0;
 
   for (const file of files) {
     let currentModel = "unknown";
@@ -429,12 +427,12 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot)
           warnings.push(`${file.path}: token_usage_record has no usable response_id; cross-rollout deduplication is not guaranteed`);
           complete = false;
         }
-        candidates.push({ key, fileThreadId: file.threadId, ownerThreadId, model: currentModel, usage, order: order++ });
+        candidates.push({ key, fileThreadId: file.threadId, ownerThreadId, model: currentModel, usage });
       }
 
       if (event.type === "event_msg" && payload.type === "token_count" && isObject(payload.info)) {
         const usage = usageFrom(payload.info.total_token_usage, `${file.path}: token_count.total_token_usage`, warnings);
-        if (usage) fallbackByThread.set(file.threadId, { key: null, fileThreadId: file.threadId, ownerThreadId: file.threadId, model: currentModel, usage, order: order++ });
+        if (usage) fallbackByThread.set(file.threadId, { model: currentModel, usage });
         else complete = false;
       }
 

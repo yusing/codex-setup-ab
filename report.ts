@@ -1,11 +1,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { fetchPricing, meterRollouts, type MeteredRollouts, type PricingSnapshot, type Usage } from "./usage";
+import { fetchPricing, meterRollouts, USAGE_KEYS, type MeteredRollouts, type PricingSnapshot } from "./usage";
 import { readState, writeState } from "./state";
 import type { ArmName, ArmResult, JudgePass } from "./types";
 
 const ARMS = ["stock", "current"] as const;
-const USAGE_KEYS: Array<keyof Usage> = ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"];
 
 function sumMeters(meters: Array<{ home: string; usage: MeteredRollouts }>): MeteredRollouts {
   const totals: MeteredRollouts["totals"] = { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0, estimated_api_usd: 0, command_seconds: 0 };

@@ -11,6 +11,8 @@ const JUDGE_REASONING = "high" as const;
 const JUDGE_SERVICE_TIER_CONFIG = "fast" as const;
 const JUDGE_SERVICE_TIER_EFFECTIVE = "priority" as const;
 const CANDIDATES = ["candidate-1", "candidate-2"] as const;
+const SCORE_KEYS = ["correctness", "completeness", "maintainability", "test_quality"] as const;
+type ScoreKey = (typeof SCORE_KEYS)[number];
 type Candidate = (typeof CANDIDATES)[number];
 
 const OUTPUT_SCHEMA = {
@@ -22,8 +24,8 @@ const OUTPUT_SCHEMA = {
       type: "object", additionalProperties: false, required: [...CANDIDATES],
       properties: Object.fromEntries(CANDIDATES.map(id => [id, {
         type: "object", additionalProperties: false,
-        required: ["correctness", "completeness", "maintainability", "test_quality"],
-        properties: Object.fromEntries(["correctness", "completeness", "maintainability", "test_quality"].map(key => [key, { type: "number", minimum: 0, maximum: 5 }])),
+        required: [...SCORE_KEYS],
+        properties: Object.fromEntries(SCORE_KEYS.map(key => [key, { type: "number", minimum: 0, maximum: 5 }])),
       }])),
     },
     evidence: { type: "array", items: { type: "string", minLength: 1 } },
@@ -86,9 +88,9 @@ function validatePass(value: unknown, pass: 1 | 2, presentation: [ArmName, ArmNa
   const rawScores = exactObject(root.scores, CANDIDATES, `judge pass ${pass}.scores`);
   const scores = {} as JudgePass["scores"];
   for (const id of CANDIDATES) {
-    const source = exactObject(rawScores[id], ["correctness", "completeness", "maintainability", "test_quality"], `judge pass ${pass}.scores.${id}`);
-    const validated = {} as Record<"correctness" | "completeness" | "maintainability" | "test_quality", number>;
-    for (const key of ["correctness", "completeness", "maintainability", "test_quality"] as const) {
+    const source = exactObject(rawScores[id], SCORE_KEYS, `judge pass ${pass}.scores.${id}`);
+    const validated = {} as Record<ScoreKey, number>;
+    for (const key of SCORE_KEYS) {
       const score = source[key];
       if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 5) throw new Error(`judge pass ${pass}.scores.${id}.${key} must be a finite number from 0 to 5`);
       validated[key] = score;
@@ -120,9 +122,8 @@ function mappedWinner(pass: JudgePass): ArmName | "tie" | "none" {
 }
 
 function sanitizeTestText(text: string, runDir: string, arm: ArmName, id: Candidate): string {
-  const escapedRun = runDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return text
-    .replace(new RegExp(escapedRun, "g"), "<run>")
+    .replaceAll(runDir, "<run>")
     .replaceAll(`evaluator/${arm}`, `evaluator/${id}`)
     .replaceAll(`arms/${arm}`, `arms/${id}`)
     .replaceAll(`artifacts/${arm}`, `artifacts/${id}`);
