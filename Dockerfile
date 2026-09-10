@@ -53,7 +53,7 @@ RUN if getent group ubuntu >/dev/null; then \
     else \
         useradd --create-home --uid "$BENCH_UID" --gid "$BENCH_GID" --home-dir /home/ubuntu ubuntu; \
     fi \
-    && install -d -o ubuntu -g ubuntu /home/ubuntu /workspace
+    && install -d -o ubuntu -g ubuntu /home/ubuntu /home/ubuntu/.local /home/ubuntu/.local/share /home/ubuntu/.local/share/mise /home/ubuntu/.local/share/mise/installs /workspace
 WORKDIR /workspace
 USER ubuntu
 ENV HOME=/home/ubuntu CODEX_HOME=/home/ubuntu/.codex

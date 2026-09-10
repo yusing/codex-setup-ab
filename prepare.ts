@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { checked, exec } from "./process";
 import { sha256, writeState } from "./state";
-import type { RunState, BenchmarkProfile, ReasoningEffort } from "./types";
+import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from "./types";
 
 export interface PrepareOptions {
   profile?: BenchmarkProfile;
@@ -20,6 +20,8 @@ export interface PrepareOptions {
   cpus: string;
   memory: string;
   timeoutSeconds: number;
+  currentLauncher?: CodexLauncher;
+  hpatchBinary?: string;
   codexBinary?: string;
 }
 
@@ -94,13 +96,28 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   if (await sha256(join(runDir, state.runtime_tools.bun)) !== state.runtime_tools.bun_sha256) throw new Error("snapshotted Bun changed");
   const manifestPath = join(runDir, state.snapshot_manifest);
   if (await sha256(manifestPath) !== state.current_snapshot.manifest_sha256) throw new Error("snapshot manifest changed");
-  if (state.profile !== "godoxy-icons") {
-    const recorded = JSON.parse(await readFile(manifestPath, "utf8")) as { files: unknown };
-    if (JSON.stringify(await manifest(join(runDir, state.arms.current.home_template))) !== JSON.stringify(recorded.files)) throw new Error("current setup snapshot changed");
+  const recorded = JSON.parse(await readFile(manifestPath, "utf8")) as { files: unknown };
+  const currentTemplate = join(runDir, state.arms.current.home_template);
+  if (JSON.stringify(await manifest(currentTemplate)) !== JSON.stringify(recorded.files)) throw new Error("current setup snapshot changed");
+  if (await sha256(join(currentTemplate, ".local/bin/mise")) !== state.runtime_tools.current_setup_mise_sha256) {
+    throw new Error("snapshotted current setup runtime changed");
+  }
+  const setupInstalls = join(runDir, state.runtime_tools.current_setup_installs);
+  const setupFilesPath = join(runDir, state.runtime_tools.current_setup_files);
+  if (await sha256(setupFilesPath) !== state.runtime_tools.current_setup_files_sha256) {
+    throw new Error("snapshotted current setup file manifest changed");
+  }
+  const setupFiles = JSON.parse(await readFile(setupFilesPath, "utf8")) as { files: unknown };
+  if (JSON.stringify(await manifest(setupInstalls)) !== JSON.stringify(setupFiles.files)) {
+    throw new Error("snapshotted current setup installations changed");
+  }
+  if (state.execution.current_launcher === "hpatch") {
+    const hpatch = state.runtime_tools.hpatch_sha256;
+    if (!hpatch || await sha256(join(currentTemplate, ".local/bin/hpatch")) !== hpatch) throw new Error("snapshotted Hpatch changed");
   }
 }
 
-async function snapshotCurrent(home: string, destination: string): Promise<string> {
+async function snapshotCurrent(home: string, destination: string, hpatchBinary: string | undefined, miseBinary: string): Promise<string> {
   const repository = (await checked(["git", "-C", home, "rev-parse", "--show-toplevel"])).stdout.trim();
   if (await realpath(repository) !== await realpath(home)) throw new Error("--current-home must be the configuration repository root");
   await checked(["git", "clone", "--depth=1", "--no-local", "--no-hardlinks", pathToFileURL(repository).href, destination]);
@@ -125,14 +142,11 @@ async function snapshotCurrent(home: string, destination: string): Promise<strin
   }
   await copyRemoteSkillCache(home, destination);
   await copyRequired(join(home, ".cache/go-modern-guidelines/v0.1.1"), join(destination, ".cache/go-modern-guidelines/v0.1.1"));
-  const binarySources: Record<string, string> = {
-    "skills-mgr": join(home, ".local/share/mise/installs/go-github-com-yusing-skills-mgr/0.0.0-20260908072306-37a730da5ab5/bin/skills-mgr"),
-    "rtk": join(home, ".local/share/mise/installs/aqua-rtk-ai-rtk/0.48.0/rtk"),
-  };
-  for (const [name, source] of Object.entries(binarySources)) {
-    const target = join(destination, ".local/bin", name);
-    await copyRequired(source, target);
-    await chmod(target, 0o755);
+  await copyRequired(miseBinary, join(destination, ".local/bin/mise"));
+  await chmod(join(destination, ".local/bin/mise"), 0o755);
+  if (hpatchBinary) {
+    await copyRequired(hpatchBinary, join(destination, ".local/bin/hpatch"));
+    await chmod(join(destination, ".local/bin/hpatch"), 0o755);
   }
   const configPath = join(destination, ".codex/config.toml");
   let config = await readFile(configPath, "utf8");
@@ -145,7 +159,8 @@ async function snapshotCurrent(home: string, destination: string): Promise<strin
     "configuration repository shallow-cloned independently with its remote removed; current tracked working-tree changes overlaid",
     "project trust entries replaced with /workspace",
     "untracked home files excluded except explicit runtime supplements; no host auth, session history or Hpatch state copied",
-    "skills-mgr and rtk copied to /home/ubuntu/.local/bin",
+    "mise copied to /home/ubuntu/.local/bin; its complete installed tool store captured separately",
+    ...(hpatchBinary ? ["Hpatch launcher copied to /home/ubuntu/.local/bin without host Hpatch state"] : []),
     "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
     "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
   ], files: await manifest(destination) }, null, 2)}\n`);
@@ -246,8 +261,11 @@ export async function verifySubmodules(repository: string, submodules: NonNullab
 
 export async function prepare(options: PrepareOptions): Promise<string> {
   const profile = options.profile ?? "hpatch";
+  const currentLauncher = options.currentLauncher ?? "codex";
   const reasoningEffort = options.reasoningEffort ?? "medium";
   if (!["hpatch", "godoxy-icons"].includes(profile)) throw new Error("unknown benchmark profile");
+  if (!["codex", "hpatch"].includes(currentLauncher)) throw new Error("current launcher must be codex or hpatch");
+  if (options.hpatchBinary && currentLauncher !== "hpatch") throw new Error("--hpatch-bin requires --current-launcher hpatch");
   if (!["medium", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be medium or xhigh");
   if (profile === "godoxy-icons" && (!options.taskPath || !options.acceptancePath)) throw new Error("godoxy-icons requires explicit task and acceptance");
   if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
@@ -261,13 +279,23 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const acceptancePath = options.acceptancePath ? await realpath(options.acceptancePath) : undefined;
   const codexBinary = await realpath(options.codexBinary ?? join(options.currentHome, ".local/bin/codex"));
   const codexVersion = (await checked([codexBinary, "--version"])).stdout.trim();
-  if (codexVersion !== "codex-cli 0.153.4") throw new Error(`expected Codex 0.153.4, got ${codexVersion}`);
+  if (!/^codex-cli \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(codexVersion)) throw new Error(`unexpected Codex version: ${codexVersion}`);
   const codexSha256 = await sha256(codexBinary);
   const codeModeHost = await realpath(join(dirname(codexBinary), "codex-code-mode-host"));
   const codeModeHostStat = await stat(codeModeHost);
   if (!codeModeHostStat.isFile() || (codeModeHostStat.mode & 0o111) === 0) throw new Error(`Codex code-mode host is not executable: ${codeModeHost}`);
+  const miseBinary = await realpath(join(options.currentHome, ".local/bin/mise"));
+  const miseStat = await stat(miseBinary);
+  if (!miseStat.isFile() || (miseStat.mode & 0o111) === 0) throw new Error(`current setup manager is not executable: ${miseBinary}`);
+  const miseSha256 = await sha256(miseBinary);
+  const hpatchBinary = currentLauncher === "hpatch"
+    ? await realpath(options.hpatchBinary ?? join(options.currentHome, "go/bin/hpatch"))
+    : undefined;
+  const hpatchStat = hpatchBinary ? await stat(hpatchBinary) : undefined;
+  if (hpatchStat && (!hpatchStat.isFile() || (hpatchStat.mode & 0o111) === 0)) throw new Error(`Hpatch launcher is not executable: ${hpatchBinary}`);
+  const hpatchSha256 = hpatchBinary ? await sha256(hpatchBinary) : undefined;
   const codeModeHostSha256 = await sha256(codeModeHost);
-  const currentConfig = profile === "godoxy-icons" ? 'model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\nservice_tier = "default"' : await readFile(join(options.currentHome, ".codex/config.toml"), "utf8");
+  const currentConfig = await readFile(join(options.currentHome, ".codex/config.toml"), "utf8");
   const configured = (key: string): string | undefined => currentConfig.match(new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, "m"))?.[1];
   if (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium") {
     throw new Error("current setup must configure model gpt-6-astra with medium reasoning for this benchmark");
@@ -314,12 +342,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
 
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
-  const snapshotManifest = profile === "hpatch"
-    ? await snapshotCurrent(options.currentHome, currentTemplate)
-    : join(runDir, "snapshots/snapshot-manifest.json");
-  if (profile === "godoxy-icons") await writeFile(snapshotManifest, JSON.stringify({
-    created_at: new Date().toISOString(), profile, current_setup: "not captured; stock-only profile", files: [],
-  }));
+  const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate, hpatchBinary, miseBinary);
+  const currentSetupInstalls = join(runDir, "snapshots/current/mise/installs");
+  await copyRequired(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls);
+  const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json");
+  await writeFile(currentSetupFiles, `${JSON.stringify({ files: await manifest(currentSetupInstalls) }, null, 2)}\n`);
 
   const snapshotDocument = JSON.parse(await readFile(snapshotManifest, "utf8")) as { created_at?: unknown };
   if (typeof snapshotDocument.created_at !== "string") throw new Error("current snapshot manifest has no capture timestamp");
@@ -343,7 +370,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     task: { path: "control/task.md", sha256: await sha256(join(runDir, "control/task.md")) },
     acceptance: acceptancePath ? { path: "evaluator/acceptance_test.go", sha256: await sha256(join(runDir, "evaluator/acceptance_test.go")) } : undefined,
     image: options.image,
-    execution: { model: "gpt-6-astra", reasoning_effort: reasoningEffort, service_tier: serviceTier },
+    execution: { model: "gpt-6-astra", reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },
     resource_limits: { cpus: options.cpus, memory: options.memory },
     timeout_seconds: options.timeoutSeconds,
     snapshot_manifest: relative(runDir, snapshotManifest),
@@ -352,7 +379,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       bun: relative(runDir, bunTarget), bun_sha256: await sha256(bunTarget),
       codex_source: codexBinary, codex_version: codexVersion, codex_sha256: codexSha256,
       codex_code_mode_host_source: codeModeHost,
+      current_setup_installs: relative(runDir, currentSetupInstalls),
+      current_setup_files: relative(runDir, currentSetupFiles), current_setup_files_sha256: await sha256(currentSetupFiles),
+      current_setup_mise_sha256: miseSha256,
       codex_code_mode_host_sha256: codeModeHostSha256,
+      hpatch_source: hpatchBinary, hpatch_sha256: hpatchSha256,
       codex_code_mode_host_size: codeModeHostStat.size,
     },
     operator: { uid, gid },

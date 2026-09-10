@@ -23,7 +23,7 @@ Usage:
   codex-ab invalidate --run-dir DIR --reason TEXT
 
 Prepare options:
-  --profile NAME        hpatch (default) or godoxy-icons (stock only)
+  --profile NAME        hpatch (default) or godoxy-icons
   --reasoning-effort N   medium (default) or xhigh
   --source DIR          source Git repository (default /home/ubuntu/projects/hpatch)
   --base SHA            exact shallow base commit
@@ -32,7 +32,9 @@ Prepare options:
   --acceptance FILE     evaluator-only Go test (default ./acceptance_test.go)
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --current-home DIR    configuration Git repository root (default current home)
-  --codex-bin FILE      standalone Codex 0.153.4 used to build the image
+  --current-launcher N  codex (default) or hpatch for the current arm
+  --hpatch-bin FILE     Hpatch executable used by --current-launcher hpatch
+  --codex-bin FILE      standalone Codex executable used to build the image
   --image NAME          prebuilt bare-Codex image (default codex-ab:0.1.0)
   --timeout SECONDS     per agent and judge pass (default 1800)
   --cpus COUNT          identical per-container CPU limit (default 2)
@@ -48,7 +50,7 @@ Started or finished attempts are never resumed or restarted; prepare a new exper
 
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "current-launcher", "hpatch-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -92,6 +94,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       source: string(o, "source", "/home/ubuntu/projects/hpatch"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
       acceptancePath: string(o, "acceptance", resolve("acceptance_test.go")), outputParent: o["output-parent"] as string | undefined,
+      currentLauncher: string(o, "current-launcher", "codex") as import("./types").CodexLauncher,
+      hpatchBinary: o["hpatch-bin"] as string | undefined,
       currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),
       cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
       codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),

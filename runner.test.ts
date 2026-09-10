@@ -45,9 +45,18 @@ async function fixtureHome(): Promise<string> {
   await file(join(h, ".cache/go-modern-guidelines/v0.1.1/go-modern-guidelines"), "#!/bin/sh\necho guideline\n", 0o755);
   await file(join(h, ".local/share/mise/installs/go-github-com-yusing-skills-mgr/0.0.0-20260908072306-37a730da5ab5/bin/skills-mgr"), "fixture\n", 0o755);
   await file(join(h, ".local/share/mise/installs/aqua-rtk-ai-rtk/0.48.0/rtk"), "fixture\n", 0o755);
+  await file(join(h, ".local/share/mise/installs/fixture-runner/1/bin/project-runner"), "#!/bin/sh\nexit 0\n", 0o755);
+  await file(join(h, ".local/bin/mise"), `#!/bin/sh
+case "$*" in
+  *'ls --current --missing --no-header'*) exit 0 ;;
+  *'ls --current --json'*) printf '%s\\n' '{"fixture-runner":[{"version":"1","install_path":"/home/ubuntu/.local/share/mise/installs/fixture-runner/1","installed":true,"active":true}]}' ;;
+  'exec -- '*) exit 2 ;;
+esac
+`, 0o755);
   await file(join(h, ".local/share/mise/installs/bun/1.4.2/bin/bun"), "fixture\n", 0o755);
   const codex = join(h, ".local/bin/codex");
-  await file(codex, "#!/bin/sh\necho codex-cli 0.153.4\n", 0o755);
+  await file(join(h, "go/bin/hpatch"), "#!/bin/sh\nexec \"$@\"\n", 0o755);
+  await file(codex, "#!/bin/sh\necho codex-cli 0.154.0\n", 0o755);
   codexHash = (await checked(["sha256sum", codex])).stdout.split(/\s+/)[0]!;
   const codeModeHost = join(h, ".local/bin/codex-code-mode-host");
   await file(codeModeHost, "#!/bin/sh\nexit 0\n", 0o755);
@@ -88,9 +97,11 @@ beforeAll(async () => {
 
 afterAll(async () => { await rm(root, { recursive: true, force: true }); });
 
-async function prepared(timeoutSeconds = 30): Promise<string> {
+async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "hpatch" = "codex"): Promise<string> {
   return prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, acceptancePath: acceptance,
-    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds });
+    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds,
+    codexBinary: join(home, ".local/bin/codex"), currentLauncher,
+    hpatchBinary: currentLauncher === "hpatch" ? join(home, "go/bin/hpatch") : undefined });
 }
 
 test("prepare makes base-only independent clones and an audited secret-free snapshot", async () => {
@@ -114,13 +125,17 @@ test("prepare makes base-only independent clones and an audited secret-free snap
   expect(manifest).toContain(".cache/skills-mgr/remote-skills/content/current-modern/SKILL.md");
   expect(manifest).toContain(".cache/go-modern-guidelines/v0.1.1/go-modern-guidelines");
   expect(await readFile(join(run, "snapshots/current/home/ubuntu/new-guidance/committed.md"), "utf8")).toBe("automatically cloned guidance\n");
+  expect(state.runtime_tools.current_setup_mise_sha256).toMatch(/^[0-9a-f]{64}$/);
+  expect(state.runtime_tools.current_setup_files_sha256).toMatch(/^[0-9a-f]{64}$/);
+  expect(await Bun.file(join(run, state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner")).exists()).toBe(true);
   expect(await Bun.file(join(run, "evaluator/acceptance_test.go")).exists()).toBe(true);
   expect(await Bun.file(join(run, "arms/stock/repo/acceptance_test.go")).exists()).toBe(false);
 });
 
+
 test("prepare fails before creating a run when the Codex companion is missing", async () => {
   const bad = join(root, "missing-companion/bin/codex");
-  await file(bad, "#!/bin/sh\necho codex-cli 0.153.4\n", 0o755);
+  await file(bad, "#!/bin/sh\necho codex-cli 0.154.0\n", 0o755);
   expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, acceptancePath: acceptance,
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30, codexBinary: bad })).rejects.toThrow();
 });
@@ -154,7 +169,7 @@ test("prepare clones configuration and preserves tracked changes without a guida
 async function fakeDocker(sleepSeconds: number): Promise<{ path: string; log: string }> {
   const path = join(root, `fake-docker-${sleepSeconds}.sh`);
   const log = join(root, `fake-docker-${sleepSeconds}.log`);
-  await file(path, `#!/bin/sh\nset -eu\nprintf '%s %s\\n' \"$(date +%s%N)\" \"$*\" >> '${log}'\ncase \" $* \" in\n  *' image inspect '*) printf '%s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n  *' codex exec '*) trap 'exit 143' TERM INT; sleep ${sleepSeconds}; printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}' ;;\n  *'id -u'*) printf '%s\\n' '${process.getuid?.()}:${process.getgid?.()}' ;;\n  *' sha256sum /usr/local/bin/codex '*) printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' ;;\n  *' sh -lc '*) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.153.4' ;;\nesac\n`, 0o755);
+  await file(path, `#!/bin/sh\nset -eu\nprintf '%s %s\\n' \"$(date +%s%N)\" \"$*\" >> '${log}'\ncase \" $* \" in\n  *' image inspect '*) printf '%s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n  *' codex exec '*) trap 'exit 143' TERM INT; sleep ${sleepSeconds}; printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}' ;;\n  *'id -u'*) printf '%s\\n' '${process.getuid?.()}:${process.getgid?.()}' ;;\n  *' sha256sum /usr/local/bin/codex '*) printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' ;;\n  *' sh -lc '*) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.154.0' ;;\nesac\n`, 0o755);
   return { path, log };
 }
 
@@ -187,7 +202,7 @@ case "$operation" in
     test -f '${stateDir}/'$name || exit 3
     status=0
     case "$name" in
-      *-preflight-image) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.153.4' ;;
+      *-preflight-image) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.154.0' ;;
       *-preflight-identity) printf '%s\\n' '${process.getuid?.()}:${process.getgid?.()}' ;;
       *-preflight-hash) ${missingHost ? `printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex'; status=1` : `printf '%s  %s\\n%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' '${codeModeHostHash}' '/usr/local/bin/codex-code-mode-host'`} ;;
       *-preflight-toolhost) printf '%s\\n' 'CODEX_AB_TOOL_HOST_OK' ;;
@@ -238,6 +253,7 @@ test("non-paid preflight leaves a prepared run unstarted", async () => {
   await preflightRun(run, fake.path);
   expect((await readState(run)).status).toBe("prepared");
   const log = await readFile(fake.log, "utf8");
+  expect(log).toContain("mise ls --current --missing --no-header");
   expect(log).not.toContain("go generate");
   expect(log).toContain("bun build plugins/tools.ts --outfile ./internal/router/toolplugin/dist/tools.js");
 });
@@ -249,6 +265,13 @@ test("preflight rejects an image missing the recorded code-mode host", async () 
   expect((await readState(run)).status).toBe("prepared");
 });
 
+
+test("preflight rejects changes inside the snapshotted current setup tool store", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  await file(join(run, state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner"), "changed after preparation\n", 0o755);
+  await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("current setup installations changed");
+});
 test("Hpatch rejects changed controls and snapshot files before Docker is invoked", async () => {
   for (const path of ["control/task.md", "evaluator/acceptance_test.go", "snapshots/runtime/bin/bun", "snapshots/current/home/ubuntu/AGENTS.md", "snapshots/stock/home/ubuntu/AGENTS.md"]) {
     const run = await prepared();
@@ -282,6 +305,31 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   expect(state.results?.stock?.grade?.passed).toBe(true);
   expect(state.results?.current?.grade?.passed).toBe(true);
   const log = await readFile(fake.log, "utf8");
+  expect(log).toContain(" mise exec -- codex exec ");
+  expect(log).toContain("snapshots/current/mise/installs:/home/ubuntu/.local/share/mise/installs:ro");
+  const gradingCalls = log.split("\n").filter(line => /-grade(?:-prepare|-suite)? /.test(line));
+  expect(gradingCalls).toHaveLength(6);
+  expect(gradingCalls.every(line => line.includes(" --network none "))).toBe(true);
+  expect(gradingCalls.every(line => line.includes("/grader-bun-cache:/home/ubuntu/.bun/install/cache:ro"))).toBe(true);
+  const agentWarmCalls = log.split("\n").filter(line => /-agent-warm /.test(line));
+  expect(agentWarmCalls).toHaveLength(2);
+  expect(agentWarmCalls.every(line => line.includes("/go-pkg-cache:/home/ubuntu/go/pkg"))).toBe(true);
+  expect(agentWarmCalls.every(line => !line.includes("/go-pkg-cache:/home/ubuntu/go/pkg:ro"))).toBe(true);
+  expect(agentWarmCalls.every(line => line.includes("/repo:/workspace"))).toBe(true);
+  expect(agentWarmCalls.every(line => !line.includes("/acceptance_test.go:/acceptance.go"))).toBe(true);
+  expect(agentWarmCalls.every(line => !line.includes("/grader-go-"))).toBe(true);
+  const evaluatorWarmCalls = log.split("\n").filter(line => /-evaluator-warm /.test(line));
+  expect(evaluatorWarmCalls).toHaveLength(2);
+  expect(evaluatorWarmCalls.every(line => line.includes("/evaluator/acceptance_test.go:/acceptance.go:ro"))).toBe(true);
+  expect(evaluatorWarmCalls.every(line => line.includes("/repo:/baseline:ro"))).toBe(true);
+  expect(evaluatorWarmCalls.every(line => line.includes("/grader-go-cache:/home/ubuntu/.cache/go-build"))).toBe(true);
+  expect(evaluatorWarmCalls.every(line => line.includes("/grader-go-pkg-cache:/home/ubuntu/go/pkg"))).toBe(true);
+  expect(evaluatorWarmCalls.every(line => line.includes("cp -a /baseline /tmp/prewarm"))).toBe(true);
+  expect(evaluatorWarmCalls.every(line => line.includes("cp --remove-destination /acceptance.go internal/router/ab_acceptance_test.go"))).toBe(true);
+  const agentCalls = log.split("\n").filter(line => line.includes(" codex exec "));
+  expect(agentCalls.every(line => line.includes("/go-pkg-cache:/home/ubuntu/go/pkg"))).toBe(true);
+  expect(agentCalls.every(line => !line.includes("/grader-go-pkg-cache"))).toBe(true);
+  expect(gradingCalls.every(line => line.includes("/grader-go-pkg-cache:/home/ubuntu/go/pkg:ro"))).toBe(true);
   expect(log.match(/ codex exec /g)?.length).toBe(2);
   expect(log).toContain("go test -json ./internal/router -run ^TestABAcceptance -count=1");
   expect(log).not.toContain("-run ^TestABAcceptance$ -count=1");
@@ -321,6 +369,20 @@ test("current-only run never starts stock and cannot produce a paired winner", a
   const report = JSON.parse(await readFile(reportPaths.jsonPath, "utf8")) as { measurement_complete: boolean; winner: string };
   expect(report.measurement_complete).toBe(false);
   expect(report.winner).toBe("none");
+});
+
+test("current arm can launch through the snapshotted Hpatch wrapper", async () => {
+  const run = await prepared(30, "hpatch");
+  const stateBefore = await readState(run);
+  expect(stateBefore.execution.current_launcher).toBe("hpatch");
+  expect(stateBefore.runtime_tools.hpatch_sha256).toMatch(/^[0-9a-f]{64}$/);
+  expect(await Bun.file(join(run, "snapshots/current/home/ubuntu/.local/bin/hpatch")).exists()).toBe(true);
+  const auth = join(root, "hpatch-auth.json"); await file(auth, "{}\n", 0o600); await chmod(auth, 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path, arm: "current" });
+  expect(state.status).toBe("complete");
+  const log = await readFile(fake.log, "utf8");
+  expect(log).toContain(" mise exec -- hpatch codex exec ");
 });
 
 test("runner records timeouts and stops its exact session containers", async () => {

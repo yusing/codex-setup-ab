@@ -1,4 +1,5 @@
 export type BenchmarkProfile = "hpatch" | "godoxy-icons";
+export type CodexLauncher = "codex" | "hpatch";
 export type ReasoningEffort = "medium" | "xhigh";
 
 export type ArmName = "stock" | "current";
@@ -52,7 +53,7 @@ export interface RunState {
   acceptance?: { path: string; sha256: string };
   image: string;
   image_id?: string;
-  execution: { model: "gpt-6-astra"; reasoning_effort: ReasoningEffort; service_tier: string };
+  execution: { model: "gpt-6-astra"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;
   snapshot_manifest: string;
@@ -64,7 +65,13 @@ export interface RunState {
     codex_version: string;
     codex_sha256: string;
     codex_code_mode_host_source: string;
+    current_setup_installs: string;
+    current_setup_files: string;
+    current_setup_files_sha256: string;
+    current_setup_mise_sha256: string;
     codex_code_mode_host_sha256: string;
+    hpatch_source?: string;
+    hpatch_sha256?: string;
     codex_code_mode_host_size: number;
   };
   operator: { uid: number; gid: number };

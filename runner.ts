@@ -27,10 +27,23 @@ const prepareRouterAssets = [
 
 const iconsPackage = "./internal/homepage/icons/fetch";
 const iconsGoCheck = String.raw`go version && go env GOVERSION | awk -F. '{ sub(/^go/, "", $1); if ($1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $1 < 1 || ($1 == 1 && $2 < 27)) exit 1 }'`;
+const iconsCompile = `go test -count=1 -ldflags=-checklinkname=0 -run '^$' ${iconsPackage}`;
+
+function acceptanceTarget(state: RunState): string {
+  return state.profile === "godoxy-icons"
+    ? "internal/homepage/icons/fetch/ab_acceptance_test.go"
+    : "internal/router/ab_acceptance_test.go";
+}
+
 const iconsTest = `go test -count=1 -ldflags=-checklinkname=0 ${iconsPackage}`;
 
 function containerArgs(state: RunState): string[] {
   return ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory];
+}
+
+function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current"): string[] {
+  if (arm !== "current") return [];
+  return ["-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
 }
 
 function imageRef(state: RunState): string { return state.image_id ?? state.image; }
@@ -46,20 +59,25 @@ async function inspectCandidate(docker: string, runDir: string, state: RunState,
   if (result.exitCode !== 0 || result.timedOut || result.canceled) throw new Error(`candidate ${label} verification failed: ${result.stderr.trim()}`);
 }
 
-async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string): Promise<{ home: string; output: string; cache: string }> {
+async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string): Promise<{ home: string; output: string; cache: string; moduleCache: string }> {
   const armRoot = join(runDir, "arms", arm);
   const home = join(armRoot, "home/ubuntu");
   const output = join(runDir, "artifacts", arm);
+  const moduleCache = join(armRoot, "go-pkg-cache");
   const cache = join(armRoot, "go-cache");
   await cp(join(runDir, state.arms[arm].home_template), home, { recursive: true, force: false });
   await mkdir(join(home, ".codex"), { recursive: true, mode: 0o700 });
   await copyFile(authFile, join(home, ".codex/auth.json"));
   await chmod(home, 0o700);
   await chmod(join(home, ".codex"), 0o700);
+  await mkdir(join(home, "go/pkg"), { recursive: true });
+  await mkdir(join(home, ".local/share/mise/installs"), { recursive: true });
+  await mkdir(join(home, ".bun/install/cache"), { recursive: true });
   await chmod(join(home, ".codex/auth.json"), 0o600);
   await mkdir(output, { recursive: true });
+  await mkdir(moduleCache, { recursive: true });
   await mkdir(cache, { recursive: true });
-  return { home, output, cache };
+  return { home, output, cache, moduleCache };
 }
 
 async function preflightChecks(docker: string, state: RunState, runDir: string, signal: AbortSignal): Promise<string> {
@@ -90,20 +108,22 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   progress("exercising the local code-mode host protocol without model access");
   const toolHost = await runOwnedContainer({ docker, name: `${prefix}-toolhost`, signal, timeoutMs: 15_000, createArgs: ["--network", "none", image, "node", "-e", TOOLHOST_SMOKE_SCRIPT] });
   if (toolHost.exitCode !== 0 || toolHost.stdout.trim() !== "CODEX_AB_TOOL_HOST_OK") throw new Error(`code-mode tool host smoke failed: ${[toolHost.stdout.trim(), toolHost.stderr.trim()].filter(Boolean).join("; ")}`);
-  if (state.profile !== "godoxy-icons") {
   const currentHome = resolve(runDir, state.arms.current.home_template);
   const workspace = resolve(runDir, state.arms.current.repository);
-  progress("checking snapshotted skills and registered Go hook offline");
+  progress("checking the complete current setup and registered Go hook offline");
   const hookEvent = JSON.stringify({ hook_event_name: "PostToolUse", cwd: "/workspace", tool_input: { cmd: "skills-mgr get golang-best-practices" }, tool_response: { exit_code: 0 } });
-  const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none", "-v", `${currentHome}:/setup:ro`, "-v", `${workspace}:/workspace:ro`, image,
-    "sh", "-lc", `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && test \"$(skills-mgr get use-modern-go/scripts/VERSION)\" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test \"$(wc -c </tmp/use-modern-go)\" -gt 224 && grep -q 'Modern Go Guidelines CLI' /tmp/use-modern-go && printf '%s\\n' '${hookEvent}' | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q 'Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256='`] });
+  const hpatchCheck = state.execution.current_launcher === "hpatch" ? " && test -x /home/ubuntu/.local/bin/hpatch" : "";
+  const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none", "-e", `CODEX_AB_HOOK_EVENT=${hookEvent}`,
+    "-v", `${currentHome}:/setup:ro`, "-v", `${workspace}:/workspace:ro`, ...currentSetupMounts(runDir, state), image, "sh", "-lc",
+    `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && test -z "$(mise ls --current --missing --no-header)" && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go && printf "%s\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="'${hpatchCheck}`] });
   if (dependencies.exitCode !== 0) throw new Error(`current setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
-  progress("compiling the exact base with installed plugin dependencies in an ephemeral container");
-  const bun = resolve(runDir, state.runtime_tools.bun);
-  const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
-    "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, "-v", `${bun}:/usr/local/bin/bun:ro`, image, "sh", "-lc",
-    `git clone --no-hardlinks /seed /tmp/preflight >/dev/null && git -C /tmp/preflight checkout ${state.source.base_commit} >/dev/null && cd /tmp/preflight && ${prepareRouterAssets} && git diff --quiet HEAD -- && go test ./internal/router -run '^$'`] });
-  if (compile.exitCode !== 0) throw new Error(`base dependency/compile preflight failed: ${compile.stderr.trim()}`);
+  if (state.profile !== "godoxy-icons") {
+    progress("compiling the exact base with installed plugin dependencies in an ephemeral container");
+    const bun = resolve(runDir, state.runtime_tools.bun);
+    const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
+      "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, "-v", `${bun}:/usr/local/bin/bun:ro`, image, "sh", "-lc",
+      `git clone --no-hardlinks /seed /tmp/preflight >/dev/null && git -C /tmp/preflight checkout ${state.source.base_commit} >/dev/null && cd /tmp/preflight && ${prepareRouterAssets} && git diff --quiet HEAD -- && go test ./internal/router -run '^$'`] });
+    if (compile.exitCode !== 0) throw new Error(`base dependency/compile preflight failed: ${compile.stderr.trim()}`);
   } else {
     const repository = resolve(runDir, state.arms.stock.repository);
     const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000,
@@ -140,15 +160,56 @@ async function preflightRunUnlocked(runDirectory: string, dockerBin = process.en
   await writeState(runDir, state);
 }
 
-async function prewarm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, cache: string, signal: AbortSignal): Promise<void> {
-  const name = `codex-ab-${state.id}-${arm}-warm`;
+async function prewarm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, cache: string, moduleCache: string, signal: AbortSignal): Promise<void> {
+  const name = `codex-ab-${state.id}-${arm}-agent-warm`;
   const repo = resolve(runDir, state.arms[arm].repository);
   const bun = resolve(runDir, state.runtime_tools.bun);
-  const result = await runOwnedContainer({ docker, name, signal, createArgs: [...containerArgs(state), "-v", `${repo}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${bun}:/usr/local/bin/bun:ro`,
-    imageRef(state), "sh", "-lc", state.profile === "godoxy-icons" ? `${iconsGoCheck} && ${iconsTest}` : `${prepareRouterAssets} && go test ./internal/router -run '^$'`] });
+  const command = state.profile === "godoxy-icons"
+    ? `${iconsGoCheck} && ${iconsTest}`
+    : `${prepareRouterAssets} && go test ./internal/router -run '^$'`;
+  const result = await runOwnedContainer({ docker, name, signal, createArgs: [...containerArgs(state),
+    "-v", `${repo}:/workspace`, "-v", `${home}:/home/ubuntu`,
+    "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`,
+    "-v", `${bun}:/usr/local/bin/bun:ro`, imageRef(state), "sh", "-lc", command] });
   if (result.exitCode !== 0) throw new Error(`${arm} cache prewarm failed: ${result.stderr.trim()}`);
   await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true);
 }
+async function freezeGraderCaches(runDir: string, state: RunState, arm: ArmName,
+  home: string, cache: string, moduleCache: string): Promise<void> {
+  const armRoot = join(runDir, "arms", arm);
+  await Promise.all([
+    cp(cache, join(armRoot, "grader-go-cache"), { recursive: true, force: false }),
+    cp(moduleCache, join(armRoot, "grader-go-pkg-cache"), { recursive: true, force: false }),
+    ...(state.profile === "godoxy-icons"
+      ? []
+      : [cp(join(home, ".bun/install/cache"), join(armRoot, "grader-bun-cache"), { recursive: true, force: false })]),
+  ]);
+}
+
+async function prewarmEvaluatorCaches(docker: string, runDir: string, state: RunState, arm: ArmName,
+  signal: AbortSignal): Promise<void> {
+  const armRoot = join(runDir, "arms", arm);
+  const repo = resolve(runDir, state.arms[arm].repository);
+  const acceptance = resolve(runDir, state.acceptance!.path);
+  const bun = resolve(runDir, state.runtime_tools.bun);
+  const cache = join(armRoot, "grader-go-cache");
+  const moduleCache = join(armRoot, "grader-go-pkg-cache");
+  const bunCache = join(armRoot, "grader-bun-cache");
+  const injectAcceptance = `cp --remove-destination /acceptance.go ${acceptanceTarget(state)}`;
+  const prepareWorkspace = `cp -a /baseline /tmp/prewarm && cd /tmp/prewarm && ${injectAcceptance}`;
+  const command = state.profile === "godoxy-icons"
+    ? `${prepareWorkspace} && ${iconsGoCheck} && ${iconsCompile}`
+    : `${prepareWorkspace} && ${prepareRouterAssets} && go test ./internal/router -run '^$'`;
+  const dependencyCaches = ["-v", `${moduleCache}:/home/ubuntu/go/pkg`,
+    ...(state.profile === "godoxy-icons" ? [] : ["-v", `${bunCache}:/home/ubuntu/.bun/install/cache`])];
+  const result = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-evaluator-warm`, signal,
+    createArgs: [...containerArgs(state), "-v", `${repo}:/baseline:ro`,
+      "-v", `${acceptance}:/acceptance.go:ro`, "-v", `${cache}:/home/ubuntu/.cache/go-build`,
+      ...dependencyCaches, "-v", `${bun}:/usr/local/bin/bun:ro`,
+      imageRef(state), "sh", "-lc", command] });
+  if (result.exitCode !== 0) throw new Error(`${arm} evaluator cache prewarm failed: ${result.stderr.trim()}`);
+}
+
 
 function evidence(command: string, started: Date, result: Awaited<ReturnType<typeof exec>>): CommandEvidence {
   return { command, started_at: started.toISOString(), elapsed_ms: result.elapsedMs, exit_code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
@@ -165,20 +226,25 @@ async function gradeArm(docker: string, runDir: string, state: RunState, arm: Ar
   const patchStat = await Bun.file(patchPath).size;
   if (patchStat > 0) await checked(["git", "-C", evaluator, "apply", "--binary", patchPath]);
   await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
-  const acceptanceTarget = state.profile === "godoxy-icons" ? "internal/homepage/icons/fetch/ab_acceptance_test.go" : "internal/router/ab_acceptance_test.go";
-  const injectAcceptance = `cp --remove-destination /acceptance.go ${acceptanceTarget}`;
+  const evaluatorAcceptanceTarget = acceptanceTarget(state);
+  const injectAcceptance = `cp --remove-destination /acceptance.go ${evaluatorAcceptanceTarget}`;
   const gradeStarted = performance.now();
   const bun = resolve(runDir, state.runtime_tools.bun);
-  const cache = resolve(runDir, "arms", arm, "go-cache");
+  const bunCache = resolve(runDir, "arms", arm, "grader-bun-cache");
+  const moduleCache = resolve(runDir, "arms", arm, "grader-go-pkg-cache");
+  const cache = resolve(runDir, "arms", arm, "grader-go-cache");
   let started = new Date();
-  const preparationResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade-prepare`, signal, createArgs: [...containerArgs(state), "-v", `${resolve(evaluator)}:/workspace`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${bun}:/usr/local/bin/bun:ro`, "-v", `${resolve(runDir, state.acceptance.path)}:/acceptance.go:ro`, imageRef(state), "sh", "-lc", `${injectAcceptance} && ${state.profile === "godoxy-icons" ? iconsGoCheck : prepareRouterAssets}`] });
+  const dependencyCaches = ["-v", `${moduleCache}:/home/ubuntu/go/pkg:ro`,
+    ...(state.profile === "godoxy-icons" ? [] : ["-v", `${bunCache}:/home/ubuntu/.bun/install/cache:ro`])];
+  const preparationResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade-prepare`, signal, createArgs: [...containerArgs(state), "--network", "none", "-v", `${resolve(evaluator)}:/workspace`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, ...dependencyCaches,
+    "-v", `${bun}:/usr/local/bin/bun:ro`, "-v", `${resolve(runDir, state.acceptance.path)}:/acceptance.go:ro`, imageRef(state), "sh", "-lc", `${injectAcceptance} && ${state.profile === "godoxy-icons" ? iconsGoCheck : prepareRouterAssets}`] });
   await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
   const preparation = evidence(state.profile === "godoxy-icons" ? iconsGoCheck : "install locked plugins and build ignored tools.js embed", started, preparationResult);
   if (preparation.exit_code !== 0 || signal.aborted) {
     const skipped = { command: "not run", started_at: new Date().toISOString(), elapsed_ms: 0, exit_code: -1, stdout: "", stderr: signal.aborted ? "grading canceled" : "grading preparation failed" };
     return { preparation, acceptance: skipped, router_suite: skipped, elapsed_ms: Math.round(performance.now() - gradeStarted), passed: false };
   }
-  const base = [...containerArgs(state), "-v", `${resolve(evaluator)}:/workspace`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, imageRef(state)];
+  const base = [...containerArgs(state), "--network", "none", "-v", `${resolve(evaluator)}:/workspace`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, ...dependencyCaches, imageRef(state)];
   started = new Date();
   const acceptanceCommand = state.profile === "godoxy-icons" ? `go test -json -count=1 -ldflags=-checklinkname=0 -run '^TestABAcceptance' ${iconsPackage}` : "go test -json ./internal/router -run '^TestABAcceptance' -count=1";
   const acceptanceResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade`, signal, createArgs: state.profile === "godoxy-icons" ? [...base, "sh", "-lc", acceptanceCommand] : [...base, "go", "test", "-json", "./internal/router", "-run", "^TestABAcceptance", "-count=1"] });
@@ -199,7 +265,7 @@ async function gradeArm(docker: string, runDir: string, state: RunState, arm: Ar
   return { preparation, acceptance, router_suite: routerSuite, elapsed_ms: Math.round(performance.now() - gradeStarted), passed: preparation.exit_code === 0 && acceptance.exit_code === 0 && routerSuite.exit_code === 0 && !acceptance.validation_error && !routerSuite.validation_error };
 }
 
-async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, cache: string, task: string, signal: AbortSignal): Promise<ArmResult> {
+async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, cache: string, moduleCache: string, task: string, signal: AbortSignal): Promise<ArmResult> {
   const name = `codex-ab-${state.id}-${arm}`;
   const repository = resolve(runDir, state.arms[arm].repository);
   const stdoutPath = join(output, "codex.jsonl");
@@ -209,10 +275,12 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   progress(`${arm}: agent started`);
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
+  const codexLauncher = state.execution.current_launcher === "hpatch" ? ["hpatch", "codex"] : ["codex"];
+  const launcher = arm === "current" ? ["mise", "exec", "--", ...codexLauncher] : ["codex"];
   try {
     result = await runOwnedContainer({ docker, name, signal, stdin: task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "-i", "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin",
-      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`,
-      imageRef(state), "codex", "exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
+      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`, ...currentSetupMounts(runDir, state, arm),
+      imageRef(state), ...launcher, "exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
       "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"] });
   } catch (error) {
     lifecycleError = error instanceof Error ? error.message : String(error);
@@ -265,7 +333,6 @@ async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   const runDir = resolve(options.runDir);
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`run is ${state.status}; prepare a new run instead of resuming or restarting it`);
-  if (state.profile === "godoxy-icons" && options.arm !== "stock") throw new Error("godoxy-icons requires --arm stock");
   if (!state.acceptance) throw new Error("run has no evaluator acceptance test; prepare with --acceptance");
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
   state.image_id = await preflight(docker, state, runDir);
@@ -289,10 +356,18 @@ async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     state.selected_arms = selectedArms;
     await writeState(runDir, state);
     progress(options.arm ? `prewarming the selected ${options.arm} arm` : "prewarming identical Go targets for both arms");
-    const warmed = await Promise.allSettled(selectedArms.map(arm => prewarm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.cache, controller.signal)));
+    const warmed = await Promise.allSettled(selectedArms.map(arm => prewarm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.cache, setups[arm]!.moduleCache, controller.signal)));
     const warmFailure = warmed.find(result => result.status === "rejected");
     if (warmFailure?.status === "rejected") throw warmFailure.reason;
     if (controller.signal.aborted) throw new Error("canceled during dependency prewarm; no agent was launched");
+    progress("preparing evaluator-only dependency caches before inference");
+    await Promise.all(selectedArms.map(arm => freezeGraderCaches(runDir, state, arm,
+      setups[arm]!.home, setups[arm]!.cache, setups[arm]!.moduleCache)));
+    const evaluatorWarmed = await Promise.allSettled(selectedArms.map(arm =>
+      prewarmEvaluatorCaches(docker, runDir, state, arm, controller.signal)));
+    const evaluatorWarmFailure = evaluatorWarmed.find(result => result.status === "rejected");
+    if (evaluatorWarmFailure?.status === "rejected") throw evaluatorWarmFailure.reason;
+    if (controller.signal.aborted) throw new Error("canceled during evaluator dependency prewarm; no agent was launched");
     await verifyPreparedInputs(runDir, state);
     const task = await readFile(join(runDir, state.task.path), "utf8");
     if (controller.signal.aborted) throw new Error("canceled while reading the task; no agent was launched");
@@ -308,7 +383,7 @@ async function runPairUnlocked(options: RunOptions): Promise<RunState> {
       status: "started",
     }])) as RunState["arm_attempts"];
     await writeState(runDir, state);
-    const settled = await Promise.allSettled(selectedArms.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, setups[arm]!.cache, task, controller.signal)));
+    const settled = await Promise.allSettled(selectedArms.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, setups[arm]!.cache, setups[arm]!.moduleCache, task, controller.signal)));
     settled.forEach((item, index) => {
       const arm = selectedArms[index]!;
       const attempt = state.arm_attempts![arm]!;
