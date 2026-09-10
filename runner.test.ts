@@ -2,10 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepare } from "./prepare";
+import { prepare, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
+import { main } from "./cli";
 import { checked } from "./process";
 import { readState, writeState } from "./state";
-import { capturePatch, changedFiles, preflightRun, runPair } from "./runner";
+import { preflightRun, runPair } from "./runner";
 import { buildReport } from "./report";
 import { judgePrompt } from "./judge";
 import type { PricingSnapshot } from "./usage";
@@ -81,7 +82,7 @@ beforeAll(async () => {
   future = (await checked(["git", "-C", source, "rev-parse", "HEAD"])).stdout.trim();
   task = join(root, "task.md"); acceptance = join(root, "acceptance_test.go");
   await file(task, "Make the fixture better.\n");
-  await file(acceptance, "package router\n");
+  await file(acceptance, 'package router\nimport "testing"\nfunc TestABAcceptanceFixture(t *testing.T) {}\n');
   home = await fixtureHome();
 });
 
@@ -115,27 +116,6 @@ test("prepare makes base-only independent clones and an audited secret-free snap
   expect(await readFile(join(run, "snapshots/current/home/ubuntu/new-guidance/committed.md"), "utf8")).toBe("automatically cloned guidance\n");
   expect(await Bun.file(join(run, "evaluator/acceptance_test.go")).exists()).toBe(true);
   expect(await Bun.file(join(run, "arms/stock/repo/acceptance_test.go")).exists()).toBe(false);
-});
-
-test("capture preserves agent commits and untracked working files relative to immutable base", async () => {
-  const run = await prepared();
-  const state = await readState(run);
-  const repo = join(run, state.arms.stock.repository);
-  await checked(["git", "-C", repo, "config", "user.email", "agent@example.invalid"]);
-  await checked(["git", "-C", repo, "config", "user.name", "Agent"]);
-  await file(join(repo, "committed.txt"), "committed agent change\n");
-  await checked(["git", "-C", repo, "add", "committed.txt"]);
-  await checked(["git", "-C", repo, "commit", "-m", "agent commit"]);
-  await file(join(repo, "untracked.txt"), "untracked agent change\n");
-  expect(await changedFiles(repo, state.source.base_commit)).toEqual(["committed.txt", "untracked.txt"]);
-  const patch = join(run, "artifacts/committed-change.patch");
-  await capturePatch(repo, state.source.base_commit, patch);
-  const evaluator = join(run, "evaluator/committed-change");
-  await checked(["git", "clone", "--no-local", "--no-hardlinks", join(run, "seed.git"), evaluator]);
-  await checked(["git", "-C", evaluator, "checkout", state.source.base_commit]);
-  await checked(["git", "-C", evaluator, "apply", "--binary", patch]);
-  expect(await readFile(join(evaluator, "committed.txt"), "utf8")).toBe("committed agent change\n");
-  expect(await readFile(join(evaluator, "untracked.txt"), "utf8")).toBe("untracked agent change\n");
 });
 
 test("prepare fails before creating a run when the Codex companion is missing", async () => {
@@ -178,10 +158,11 @@ async function fakeDocker(sleepSeconds: number): Promise<{ path: string; log: st
   return { path, log };
 }
 
-async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false): Promise<{ path: string; log: string; stateDir: string }> {
-  const path = join(root, `fake-owned-docker-${sleepSeconds}-${failWarm}-${missingHost}.sh`);
+async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = ""): Promise<{ path: string; log: string; stateDir: string }> {
+  const path = join(root, `fake-owned-docker-${crypto.randomUUID()}.sh`);
   const log = `${path}.log`;
   const stateDir = `${path}.state`;
+  await file(`${path}.patch`, candidatePatch);
   await file(path, `#!/bin/sh
 set -u
 mkdir -p '${stateDir}'
@@ -192,6 +173,9 @@ case "$operation" in
     name=; previous=
     for argument in "$@"; do
       if [ "$previous" = --name ]; then name="$argument"; fi
+      case "$argument" in
+        *:/capture) printf '%s' "\${argument%:/capture}" >'${stateDir}/'$name.capture ;;
+      esac
       previous="$argument"
     done
     test -n "$name" || exit 2
@@ -208,6 +192,15 @@ case "$operation" in
       *-preflight-hash) ${missingHost ? `printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex'; status=1` : `printf '%s  %s\\n%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' '${codeModeHostHash}' '/usr/local/bin/codex-code-mode-host'`} ;;
       *-preflight-toolhost) printf '%s\\n' 'CODEX_AB_TOOL_HOST_OK' ;;
       *-warm) ${failWarm ? "echo prewarm-failed >&2; status=9" : ":"} ;;
+      *-capture)
+        capture=$(cat '${stateDir}/'$name.capture)
+        cp '${path}.patch' "$capture/changes.patch"
+        printf '%s' '{"changed_files":[],"head_after_agent":"${base}"}' >"$capture/result.json"
+        rm -f '${stateDir}/'$name.capture
+        ;;
+      *-grade|*-grade-suite)
+        printf '%s\\n' '{"Action":"run","Test":"TestABAcceptanceFixture"}' '{"Action":"pass","Test":"TestABAcceptanceFixture"}'
+        ;;
       *-stock|*-current)
         trap 'exit 143' TERM INT
         sleep ${sleepSeconds}
@@ -256,6 +249,30 @@ test("preflight rejects an image missing the recorded code-mode host", async () 
   expect((await readState(run)).status).toBe("prepared");
 });
 
+test("Hpatch rejects changed controls and snapshot files before Docker is invoked", async () => {
+  for (const path of ["control/task.md", "evaluator/acceptance_test.go", "snapshots/runtime/bin/bun", "snapshots/current/home/ubuntu/AGENTS.md", "snapshots/stock/home/ubuntu/AGENTS.md"]) {
+    const run = await prepared();
+    await file(join(run, path), "changed after preparation\n");
+    await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("changed");
+  }
+});
+
+test("candidate acceptance symlink cannot redirect evaluator injection to a host file", async () => {
+  const run = await prepared();
+  const victim = join(root, "injection-victim");
+  await file(victim, "untouched");
+  const target = "internal/router/ab_acceptance_test.go";
+  const patch = `diff --git a/${target} b/${target}\nnew file mode 120000\n--- /dev/null\n+++ b/${target}\n@@ -0,0 +1 @@\n+${victim}\n\\ No newline at end of file\n`;
+  const fake = await fakeOwnedDocker(0, false, false, patch);
+  const auth = join(root, "symlink-auth.json"); await file(auth, "{}\n", 0o600);
+  const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path, arm: "stock" });
+  expect(state.results?.stock?.grade?.passed).toBe(true);
+  expect(await readFile(victim, "utf8")).toBe("untouched");
+  const log = await readFile(fake.log, "utf8");
+  expect(log).toContain("cp --remove-destination /acceptance.go internal/router/ab_acceptance_test.go");
+  expect(log).not.toContain(":/output");
+});
+
 test("runner starts both arms concurrently, grades both, and refuses a rerun", async () => {
   const run = await prepared();
   const auth = join(root, "auth.json"); await file(auth, "{}\n", 0o600); await chmod(auth, 0o600);
@@ -266,7 +283,7 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   expect(state.results?.current?.grade?.passed).toBe(true);
   const log = await readFile(fake.log, "utf8");
   expect(log.match(/ codex exec /g)?.length).toBe(2);
-  expect(log).toContain("go test ./internal/router -run ^TestABAcceptance -count=1");
+  expect(log).toContain("go test -json ./internal/router -run ^TestABAcceptance -count=1");
   expect(log).not.toContain("-run ^TestABAcceptance$ -count=1");
   const calls = log.split("\n");
   const agentStarted = calls.filter(line => / start --attach --interactive codex-ab-.*-(stock|current)$/.test(line)).map(line => BigInt(line.split(" ")[0]!));
@@ -337,4 +354,87 @@ describe("blind judge prompt", () => {
     expect(prompt).not.toContain("stock arm");
     expect(prompt).not.toContain("current arm");
   });
+});
+
+test("submodule initialization preserves exact isolation and rejects setup changes", async () => {
+  const godoxy = join(root, "godoxy");
+  await checked(["git", "clone", "--no-local", source, godoxy]);
+  await checked(["git", "-C", godoxy, "config", "user.email", "fixture@example.invalid"]);
+  await checked(["git", "-C", godoxy, "config", "user.name", "Fixture"]);
+  await file(join(godoxy, "internal/homepage/icons/fetch/icons.go"), "package fetch\n");
+  const submodules: Array<{ path: string; sha: string; source: string }> = [];
+  for (const path of ["goutils", "internal/go-oidc", "internal/gopsutil"]) {
+    const sub = join(godoxy, path);
+    await mkdir(sub, { recursive: true });
+    await checked(["git", "init", sub]);
+    await checked(["git", "-C", sub, "config", "user.email", "fixture@example.invalid"]);
+    await checked(["git", "-C", sub, "config", "user.name", "Fixture"]);
+    await file(join(sub, "tracked.txt"), "baseline\n");
+    await checked(["git", "-C", sub, "add", "."]);
+    await checked(["git", "-C", sub, "commit", "-m", "submodule base"]);
+    const sha = (await checked(["git", "-C", sub, "rev-parse", "HEAD"])).stdout.trim();
+    submodules.push({ path, sha, source: sub });
+    await checked(["git", "-C", godoxy, "config", "-f", ".gitmodules", `submodule.${path}.path`, path]);
+    await checked(["git", "-C", godoxy, "config", "-f", ".gitmodules", `submodule.${path}.url`, `https://example.invalid/${path}`]);
+    await checked(["git", "-C", godoxy, "update-index", "--add", "--cacheinfo", `160000,${sha},${path}`]);
+  }
+  await checked(["git", "-C", godoxy, "config", "-f", ".gitmodules", "submodule.webui.path", "webui"]);
+  await checked(["git", "-C", godoxy, "config", "-f", ".gitmodules", "submodule.webui.url", "https://example.invalid/webui"]);
+  await checked(["git", "-C", godoxy, "update-index", "--add", "--cacheinfo", `160000,${submodules[0]!.sha},webui`]);
+  await checked(["git", "-C", godoxy, "add", "internal/homepage", ".gitmodules"]);
+  await checked(["git", "-C", godoxy, "commit", "-m", "gitlinks"]);
+  const repository = join(root, "submodule-clone");
+  await checked(["git", "clone", "--no-local", godoxy, repository]);
+  await checked(["git", "-C", repository, "remote", "remove", "origin"]);
+  await initializeSubmodules(repository, submodules);
+  await verifyRepositoryIsolation(repository);
+  await checked(["git", "-C", repository, "remote", "add", "unexpected", "https://example.invalid/root"]);
+  await expect(verifyRepositoryIsolation(repository)).rejects.toThrow("root repository retained a remote");
+  await checked(["git", "-C", repository, "remote", "remove", "unexpected"]);
+  await checked(["git", "-C", repository, "submodule", "init", "--", "webui"]);
+  await expect(verifyRepositoryIsolation(repository)).rejects.toThrow("webui must remain");
+  await checked(["git", "-C", repository, "config", "--remove-section", "submodule.webui"]);
+  await verifyRepositoryIsolation(repository);
+  const initialized = (await checked(["git", "-C", repository, "submodule", "status", "--", ...submodules.map(sub => sub.path)])).stdout.split("\n").filter(Boolean);
+  expect(initialized).toHaveLength(3);
+  expect(initialized.every(line => line.startsWith(" "))).toBe(true);
+  await checked(["git", "-C", repository, "config", "--remove-section", "submodule.goutils"]);
+  await expect(verifySubmodules(repository, submodules)).rejects.toThrow("not clean, exact");
+  await checked(["git", "-C", repository, "submodule", "init", "--", "goutils"]);
+  await file(join(repository, "goutils/tracked.txt"), "candidate change\n");
+  await expect(verifySubmodules(repository, submodules)).rejects.toThrow("not clean, exact");
+});
+
+test("godoxy profile rejects implicit controls and mismatched pinned identities before setup", async () => {
+  await expect(main(["prepare", "--profile", "godoxy-icons"])).rejects.toThrow("explicit --task and --acceptance");
+  await expect(main(["prepare", "--profile", "godoxy-icons", "--task", task])).rejects.toThrow("explicit --task and --acceptance");
+  await expect(main(["prepare", "--profile", "godoxy-icons", "--acceptance", acceptance])).rejects.toThrow("explicit --task and --acceptance");
+  const identity = { ...GODOXY_ICONS, path: "/source", source_timestamp: 1 };
+  const submodules = Object.entries(GODOXY_ICONS.submodules).map(([path, sha]) => ({ path, sha, source: `/source/${path}` }));
+  expect(() => verifyGodoxyIdentity(identity, submodules)).not.toThrow();
+  for (const key of ["base_commit", "base_tree", "forbidden_commit"] as const) {
+    expect(() => verifyGodoxyIdentity({ ...identity, [key]: "0".repeat(40) }, submodules)).toThrow("identity mismatch");
+  }
+  expect(() => verifyGodoxyIdentity(identity, [])).toThrow("identity mismatch");
+  expect(() => verifyGodoxyIdentity(identity, submodules.map(sub => ({ ...sub, sha: "0".repeat(40) })))).toThrow("identity mismatch");
+  expect(() => verifyGodoxyIdentity(identity, [submodules[0]!, submodules[0]!, submodules[0]!])).toThrow("identity mismatch");
+  const run = await prepared();
+  const state = await readState(run);
+  state.profile = "godoxy-icons";
+  await writeState(run, state);
+  const originalTask = await readFile(join(run, state.task.path), "utf8");
+  expect(originalTask).toBe(await readFile(task, "utf8"));
+  expect(await readFile(join(run, state.acceptance!.path), "utf8")).toBe(await readFile(acceptance, "utf8"));
+  await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("identity mismatch");
+});
+
+test("godoxy preflight rejects changes to the copied controls before container launch", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  state.profile = "godoxy-icons";
+  state.source = { ...state.source, base_commit: GODOXY_ICONS.base_commit, base_tree: GODOXY_ICONS.base_tree, forbidden_commit: GODOXY_ICONS.forbidden_commit };
+  state.submodules = Object.entries(GODOXY_ICONS.submodules).map(([path, sha]) => ({ path, sha, source: `/source/${path}` }));
+  await writeState(run, state);
+  await file(join(run, state.task.path), "changed control\n");
+  await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("copied benchmark control changed");
 });

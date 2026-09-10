@@ -1,6 +1,18 @@
-import { chmod, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, rmdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunState } from "./types";
+
+/** Serialize whole lifecycle operations, not just their final state writes. */
+export async function withRunLock<T>(runDir: string, operation: () => Promise<T>): Promise<T> {
+  const lock = join(runDir, ".operation-lock");
+  try { await mkdir(lock, { mode: 0o700 }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("run is locked by another operation; do not resume or start a second attempt");
+    throw error;
+  }
+  try { return await operation(); }
+  finally { await rmdir(lock); }
+}
 
 export async function readState(runDir: string): Promise<RunState> {
   const value = await Bun.file(join(runDir, "run.json")).json() as RunState;

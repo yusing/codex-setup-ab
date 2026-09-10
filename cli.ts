@@ -23,6 +23,8 @@ Usage:
   codex-ab invalidate --run-dir DIR --reason TEXT
 
 Prepare options:
+  --profile NAME        hpatch (default) or godoxy-icons (stock only)
+  --reasoning-effort N   medium (default) or xhigh
   --source DIR          source Git repository (default /home/ubuntu/projects/hpatch)
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
@@ -39,17 +41,28 @@ Prepare options:
 Run/judge options:
   --auth-file FILE      auth copied privately into isolated homes
   --docker-bin FILE     Docker-compatible fixture or executable
-  --arm current         run only the current-setup arm (run only; default is both)
+  --arm NAME            run only stock or current (run only; default is both)
 
 Started or finished attempts are never resumed or restarted; prepare a new experiment to rerun. Run and judge require the explicit model-execution confirmation flag.
 `;
 
-function options(args: string[]): Record<string, string | boolean> {
+function options(command: string, args: string[]): Record<string, string | boolean> {
+  const allowed: Record<string, string[]> = {
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "codex-bin", "image", "timeout", "cpus", "memory"],
+    preflight: ["run-dir", "docker-bin"],
+    run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
+    judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
+    report: ["run-dir"],
+    invalidate: ["run-dir", "reason"],
+  };
+  if (!Object.hasOwn(allowed, command)) throw new Error(`unknown command: ${command}`);
   const parsed: Record<string, string | boolean> = {};
   for (let i = 0; i < args.length; i++) {
     const item = args[i];
     if (!item.startsWith("--")) throw new Error(`unexpected argument: ${item}`);
     const key = item.slice(2);
+    if (!allowed[command].includes(key)) throw new Error(`unknown option for ${command}: ${item}`);
+    if (Object.hasOwn(parsed, key)) throw new Error(`duplicate option: ${item}`);
     if (key === "confirm-paid-inference") { parsed[key] = true; continue; }
     const value = args[++i];
     if (!value || value.startsWith("--")) throw new Error(`${item} requires a value`);
@@ -68,11 +81,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") { process.stdout.write(HELP); return 0; }
   if (argv[0] === "--version" || argv[0] === "-V") { process.stdout.write(`${VERSION}\n`); return 0; }
   const command = argv[0];
-  const o = options(argv.slice(1));
+  const o = options(command, argv.slice(1));
   if (command === "prepare") {
+    if (o.profile === "godoxy-icons" && (typeof o.task !== "string" || typeof o.acceptance !== "string")) throw new Error("godoxy-icons requires explicit --task and --acceptance");
     const timeout = Number(string(o, "timeout", "1800"));
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
     const runDir = await prepare({
+      profile: string(o, "profile", "hpatch") as import("./types").BenchmarkProfile,
+      reasoningEffort: string(o, "reasoning-effort", "medium") as import("./types").ReasoningEffort,
       source: string(o, "source", "/home/ubuntu/projects/hpatch"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
       acceptancePath: string(o, "acceptance", resolve("acceptance_test.go")), outputParent: o["output-parent"] as string | undefined,
@@ -89,7 +105,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const auth = string(o, "auth-file", join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"));
     if (command === "run") {
       const arm = o.arm;
-      if (arm !== undefined && arm !== "current") throw new Error("--arm currently supports only current");
+      if (arm !== undefined && arm !== "current" && arm !== "stock") throw new Error("--arm must be stock or current");
       await runPair({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined, arm });
     }
     else await judgeRun(runDir, auth, o["docker-bin"] as string | undefined);

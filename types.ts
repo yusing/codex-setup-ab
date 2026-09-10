@@ -1,6 +1,10 @@
+export type BenchmarkProfile = "hpatch" | "godoxy-icons";
+export type ReasoningEffort = "medium" | "xhigh";
+
 export type ArmName = "stock" | "current";
 
 export interface CommandEvidence {
+  validation_error?: string;
   command: string;
   started_at: string;
   elapsed_ms: number;
@@ -37,6 +41,8 @@ export interface ArmResult {
 
 export interface RunState {
   schema_version: 1;
+  profile?: BenchmarkProfile;
+  submodules?: Array<{ path: string; sha: string; source: string }>;
   id: string;
   created_at: string;
   status: "prepared" | "running" | "complete" | "partial";
@@ -46,7 +52,7 @@ export interface RunState {
   acceptance?: { path: string; sha256: string };
   image: string;
   image_id?: string;
-  execution: { model: "gpt-6-astra"; reasoning_effort: "medium"; service_tier: string };
+  execution: { model: "gpt-6-astra"; reasoning_effort: ReasoningEffort; service_tier: string };
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;
   snapshot_manifest: string;

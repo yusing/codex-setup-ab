@@ -1,12 +1,15 @@
-import { chmod, copyFile, cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { chmod, copyFile, cp, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
 import { OwnedContainerError, runOwnedContainer } from "./container";
+import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
+import { acceptanceExecutionError, acceptanceTestNames } from "./grading";
+import candidateSource from "./candidate-script.txt" with { type: "text" };
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
-import { readState, writeState } from "./state";
+import { readState, writeState, withRunLock } from "./state";
 import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
 
-export interface RunOptions { runDir: string; authFile: string; dockerBin?: string; arm?: "current" }
+export interface RunOptions { runDir: string; authFile: string; dockerBin?: string; arm?: ArmName }
 
 const arms: ArmName[] = ["stock", "current"];
 function progress(message: string): void { process.stderr.write(`[run] ${message}\n`); }
@@ -22,11 +25,26 @@ const prepareRouterAssets = [
   'test "$wasm_before" = "$(sha256sum internal/router/toolplugin/shared_core.wasm | cut -d\' \' -f1)"',
 ].join(" && ");
 
+const iconsPackage = "./internal/homepage/icons/fetch";
+const iconsGoCheck = String.raw`go version && go env GOVERSION | awk -F. '{ sub(/^go/, "", $1); if ($1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $1 < 1 || ($1 == 1 && $2 < 27)) exit 1 }'`;
+const iconsTest = `go test -count=1 -ldflags=-checklinkname=0 ${iconsPackage}`;
+
 function containerArgs(state: RunState): string[] {
   return ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory];
 }
 
 function imageRef(state: RunState): string { return state.image_id ?? state.image; }
+
+async function inspectCandidate(docker: string, runDir: string, state: RunState, repository: string, label: string,
+  signal: AbortSignal, baseline: boolean, clean: boolean, capture?: string): Promise<void> {
+  const spec = { mode: capture ? "capture" : "verify", baseline, clean, base: state.source.base_commit,
+    tree: state.source.base_tree, forbidden: state.source.forbidden_commit, icons: state.profile === "godoxy-icons", submodules: state.submodules ?? [] };
+  const result = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${label}`, signal, timeoutMs: 60_000,
+    createArgs: [...containerArgs(state), "--network", "none", "-e", "GIT_OPTIONAL_LOCKS=0", "-v", `${repository}:/workspace${capture ? "" : ":ro"}`,
+      "-v", `${resolve(runDir, state.runtime_tools.bun)}:/usr/local/bin/bun:ro`, ...(capture ? ["-v", `${capture}:/capture`] : []),
+      imageRef(state), "bun", "-e", candidateSource, JSON.stringify(spec)] });
+  if (result.exitCode !== 0 || result.timedOut || result.canceled) throw new Error(`candidate ${label} verification failed: ${result.stderr.trim()}`);
+}
 
 async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string): Promise<{ home: string; output: string; cache: string }> {
   const armRoot = join(runDir, "arms", arm);
@@ -45,7 +63,16 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
 }
 
 async function preflightChecks(docker: string, state: RunState, runDir: string, signal: AbortSignal): Promise<string> {
-  const image = imageRef(state);
+  await verifyPreparedInputs(runDir, state);
+  if (state.profile === "godoxy-icons") verifyGodoxyIdentity(state.source, state.submodules);
+  // Resolve the mutable tag before any checks, so every check and launch uses
+  // the same image even if another process retags the operator's image.
+  const inspected = await exec([docker, "image", "inspect", "--format", "{{.Id}}", imageRef(state)]);
+  const image = inspected.stdout.trim();
+  if (inspected.exitCode !== 0 || !/^sha256:[0-9a-f]{64}$/.test(image)) throw new Error("cannot resolve immutable image ID");
+  if (state.image_id && image !== state.image_id) throw new Error("prepared image changed");
+  state.image_id = image;
+  for (const arm of arms) await inspectCandidate(docker, runDir, state, resolve(runDir, state.arms[arm].repository), `preflight-${arm}-baseline`, signal, true, true);
   const prefix = `codex-ab-${state.id}-preflight`;
   progress(`checking bare Codex image ${image}`);
   const check = await runOwnedContainer({ docker, name: `${prefix}-image`, signal, createArgs: [image, "sh", "-lc", "printf 'codex_path=%s\\n' \"$(command -v codex || true)\"; if command -v hpatch >/dev/null; then printf 'hpatch_path=%s\\n' \"$(command -v hpatch)\"; exit 8; fi; codex --version"] });
@@ -63,6 +90,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   progress("exercising the local code-mode host protocol without model access");
   const toolHost = await runOwnedContainer({ docker, name: `${prefix}-toolhost`, signal, timeoutMs: 15_000, createArgs: ["--network", "none", image, "node", "-e", TOOLHOST_SMOKE_SCRIPT] });
   if (toolHost.exitCode !== 0 || toolHost.stdout.trim() !== "CODEX_AB_TOOL_HOST_OK") throw new Error(`code-mode tool host smoke failed: ${[toolHost.stdout.trim(), toolHost.stderr.trim()].filter(Boolean).join("; ")}`);
+  if (state.profile !== "godoxy-icons") {
   const currentHome = resolve(runDir, state.arms.current.home_template);
   const workspace = resolve(runDir, state.arms.current.repository);
   progress("checking snapshotted skills and registered Go hook offline");
@@ -76,12 +104,17 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, "-v", `${bun}:/usr/local/bin/bun:ro`, image, "sh", "-lc",
     `git clone --no-hardlinks /seed /tmp/preflight >/dev/null && git -C /tmp/preflight checkout ${state.source.base_commit} >/dev/null && cd /tmp/preflight && ${prepareRouterAssets} && git diff --quiet HEAD -- && go test ./internal/router -run '^$'`] });
   if (compile.exitCode !== 0) throw new Error(`base dependency/compile preflight failed: ${compile.stderr.trim()}`);
-  const inspected = await exec([docker, "image", "inspect", "--format", "{{.Id}}", image]);
-  const imageId = inspected.stdout.trim();
-  if (inspected.exitCode !== 0 || !/^sha256:[0-9a-f]{64}$/.test(imageId)) throw new Error(`cannot resolve immutable image ID for ${image}: ${inspected.stderr.trim()}`);
-  if (state.image_id && imageId !== state.image_id) throw new Error(`prepared image changed: expected ${state.image_id}, got ${imageId}`);
+  } else {
+    const repository = resolve(runDir, state.arms.stock.repository);
+    const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000,
+      createArgs: [...containerArgs(state), "-v", `${repository}:/baseline:ro`, image, "sh", "-lc",
+        `cp -a /baseline /tmp/preflight && cd /tmp/preflight && ${iconsGoCheck} && ${iconsTest} && git diff --exit-code HEAD -- && test "$(git rev-parse HEAD)" = ${state.source.base_commit} && test -z "$(git remote)" && ! git config --get submodule.webui.url && test "$(git submodule status -- webui | cut -c1)" = - && test -z "$(ls -A webui)" && ${state.submodules!.map(sub => `test -z "$(git -C ${sub.path} remote)" && test "$(git submodule status -- ${sub.path} | cut -c1)" = ' ' && test -z "$(git -C ${sub.path} status --porcelain --untracked-files=all)" && test "$(git -C ${sub.path} rev-parse HEAD)" = ${sub.sha}`).join(" && ")}`] });
+    await writeFile(join(runDir, "artifacts/preflight-icons.json"), JSON.stringify(compile, null, 2));
+    if (compile.exitCode !== 0) throw new Error(`icons preflight failed: ${compile.stdout.trim()} ${compile.stderr.trim()}`);
+  }
   progress("preflight passed without model inference");
-  return imageId;
+  return image;
+
 }
 
 async function preflight(docker: string, state: RunState, runDir: string): Promise<string> {
@@ -99,7 +132,7 @@ async function preflight(docker: string, state: RunState, runDir: string): Promi
   }
 }
 
-export async function preflightRun(runDirectory: string, dockerBin = process.env.CODEX_AB_DOCKER_BIN ?? "docker"): Promise<void> {
+async function preflightRunUnlocked(runDirectory: string, dockerBin = process.env.CODEX_AB_DOCKER_BIN ?? "docker"): Promise<void> {
   const runDir = resolve(runDirectory);
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`preflight requires a prepared run, got ${state.status}`);
@@ -112,24 +145,9 @@ async function prewarm(docker: string, runDir: string, state: RunState, arm: Arm
   const repo = resolve(runDir, state.arms[arm].repository);
   const bun = resolve(runDir, state.runtime_tools.bun);
   const result = await runOwnedContainer({ docker, name, signal, createArgs: [...containerArgs(state), "-v", `${repo}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${bun}:/usr/local/bin/bun:ro`,
-    imageRef(state), "sh", "-lc", `${prepareRouterAssets} && go test ./internal/router -run '^$'`] });
+    imageRef(state), "sh", "-lc", state.profile === "godoxy-icons" ? `${iconsGoCheck} && ${iconsTest}` : `${prepareRouterAssets} && go test ./internal/router -run '^$'`] });
   if (result.exitCode !== 0) throw new Error(`${arm} cache prewarm failed: ${result.stderr.trim()}`);
-  const dirty = await exec(["git", "-C", repo, "status", "--porcelain", "--untracked-files=normal"]);
-  if (dirty.exitCode !== 0 || dirty.stdout.trim()) throw new Error(`${arm} prewarm changed the immutable baseline: ${dirty.stdout.trim() || dirty.stderr.trim()}`);
-}
-
-export async function changedFiles(repository: string, baseCommit: string): Promise<string[]> {
-  const [tracked, untracked] = await Promise.all([
-    checked(["git", "-C", repository, "diff", "--name-only", baseCommit]),
-    checked(["git", "-C", repository, "ls-files", "--others", "--exclude-standard"]),
-  ]);
-  return [...new Set([...tracked.stdout.split("\n"), ...untracked.stdout.split("\n")].filter(Boolean))].sort();
-}
-
-export async function capturePatch(repository: string, baseCommit: string, target: string): Promise<void> {
-  await checked(["git", "-C", repository, "add", "--intent-to-add", "--all", "--", "."]);
-  const result = await exec(["git", "-C", repository, "diff", "--binary", baseCommit], { stdoutFile: target });
-  if (result.exitCode !== 0) throw new Error(`could not capture patch: ${result.stderr.trim()}`);
+  await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true);
 }
 
 function evidence(command: string, started: Date, result: Awaited<ReturnType<typeof exec>>): CommandEvidence {
@@ -141,31 +159,44 @@ async function gradeArm(docker: string, runDir: string, state: RunState, arm: Ar
   const evaluator = join(runDir, "evaluator", arm);
   await checked(["git", "clone", "--no-local", "--no-hardlinks", join(runDir, "seed.git"), evaluator]);
   await checked(["git", "-C", evaluator, "checkout", state.source.base_commit]);
+  await checked(["git", "-C", evaluator, "remote", "remove", "origin"]);
+  await initializeSubmodules(evaluator, state.submodules ?? []);
+  await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
   const patchStat = await Bun.file(patchPath).size;
   if (patchStat > 0) await checked(["git", "-C", evaluator, "apply", "--binary", patchPath]);
-  await copyFile(join(runDir, state.acceptance.path), join(evaluator, "internal/router/ab_acceptance_test.go"));
+  await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
+  const acceptanceTarget = state.profile === "godoxy-icons" ? "internal/homepage/icons/fetch/ab_acceptance_test.go" : "internal/router/ab_acceptance_test.go";
+  const injectAcceptance = `cp --remove-destination /acceptance.go ${acceptanceTarget}`;
   const gradeStarted = performance.now();
   const bun = resolve(runDir, state.runtime_tools.bun);
   const cache = resolve(runDir, "arms", arm, "go-cache");
   let started = new Date();
-  const preparationResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade-prepare`, signal, createArgs: [...containerArgs(state), "-v", `${resolve(evaluator)}:/workspace`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${bun}:/usr/local/bin/bun:ro`, imageRef(state), "sh", "-lc", prepareRouterAssets] });
-  const preparation = evidence("install locked plugins and build ignored tools.js embed", started, preparationResult);
+  const preparationResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade-prepare`, signal, createArgs: [...containerArgs(state), "-v", `${resolve(evaluator)}:/workspace`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${bun}:/usr/local/bin/bun:ro`, "-v", `${resolve(runDir, state.acceptance.path)}:/acceptance.go:ro`, imageRef(state), "sh", "-lc", `${injectAcceptance} && ${state.profile === "godoxy-icons" ? iconsGoCheck : prepareRouterAssets}`] });
+  await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
+  const preparation = evidence(state.profile === "godoxy-icons" ? iconsGoCheck : "install locked plugins and build ignored tools.js embed", started, preparationResult);
   if (preparation.exit_code !== 0 || signal.aborted) {
     const skipped = { command: "not run", started_at: new Date().toISOString(), elapsed_ms: 0, exit_code: -1, stdout: "", stderr: signal.aborted ? "grading canceled" : "grading preparation failed" };
     return { preparation, acceptance: skipped, router_suite: skipped, elapsed_ms: Math.round(performance.now() - gradeStarted), passed: false };
   }
   const base = [...containerArgs(state), "-v", `${resolve(evaluator)}:/workspace`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, imageRef(state)];
   started = new Date();
-  const acceptanceResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade`, signal, createArgs: [...base, "go", "test", "./internal/router", "-run", "^TestABAcceptance", "-count=1"] });
-  const acceptance = evidence("go test ./internal/router -run '^TestABAcceptance' -count=1", started, acceptanceResult);
+  const acceptanceCommand = state.profile === "godoxy-icons" ? `go test -json -count=1 -ldflags=-checklinkname=0 -run '^TestABAcceptance' ${iconsPackage}` : "go test -json ./internal/router -run '^TestABAcceptance' -count=1";
+  const acceptanceResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade`, signal, createArgs: state.profile === "godoxy-icons" ? [...base, "sh", "-lc", acceptanceCommand] : [...base, "go", "test", "-json", "./internal/router", "-run", "^TestABAcceptance", "-count=1"] });
+  await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
+  const expectedTests = acceptanceTestNames(await readFile(join(runDir, state.acceptance.path), "utf8"));
+  const acceptance = evidence(acceptanceCommand, started, acceptanceResult);
+  acceptance.validation_error = acceptanceExecutionError(acceptance.stdout, expectedTests);
   if (signal.aborted) {
     const skipped = { command: "not run", started_at: new Date().toISOString(), elapsed_ms: 0, exit_code: -1, stdout: "", stderr: "grading canceled" };
     return { preparation, acceptance, router_suite: skipped, elapsed_ms: Math.round(performance.now() - gradeStarted), passed: false };
   }
   started = new Date();
-  const suiteResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade-suite`, signal, createArgs: [...base, "go", "test", "./internal/router"] });
-  const routerSuite = evidence("go test ./internal/router", started, suiteResult);
-  return { preparation, acceptance, router_suite: routerSuite, elapsed_ms: Math.round(performance.now() - gradeStarted), passed: preparation.exit_code === 0 && acceptance.exit_code === 0 && routerSuite.exit_code === 0 };
+  const suiteCommand = state.profile === "godoxy-icons" ? iconsTest.replace("go test", "go test -json") : "go test -json ./internal/router -count=1";
+  const suiteResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade-suite`, signal, createArgs: state.profile === "godoxy-icons" ? [...base, "sh", "-lc", suiteCommand] : [...base, "go", "test", "-json", "./internal/router", "-count=1"] });
+  await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
+  const routerSuite = evidence(suiteCommand, started, suiteResult);
+  routerSuite.validation_error = acceptanceExecutionError(routerSuite.stdout, expectedTests);
+  return { preparation, acceptance, router_suite: routerSuite, elapsed_ms: Math.round(performance.now() - gradeStarted), passed: preparation.exit_code === 0 && acceptance.exit_code === 0 && routerSuite.exit_code === 0 && !acceptance.validation_error && !routerSuite.validation_error };
 }
 
 async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, cache: string, task: string, signal: AbortSignal): Promise<ArmResult> {
@@ -180,7 +211,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   let lifecycleError: string | undefined;
   try {
     result = await runOwnedContainer({ docker, name, signal, stdin: task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "-i", "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin",
-      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${output}:/output`, "-v", `${cache}:/home/ubuntu/.cache/go-build`,
+      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`,
       imageRef(state), "codex", "exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
       "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"] });
   } catch (error) {
@@ -208,24 +239,33 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   };
 }
 
-async function collectArm(runDir: string, state: RunState, arm: ArmName, result: ArmResult): Promise<void> {
+async function collectArm(docker: string, runDir: string, state: RunState, arm: ArmName, result: ArmResult): Promise<void> {
   const repository = resolve(runDir, state.arms[arm].repository);
   const patchPath = join(runDir, result.patch_path);
   try {
-    result.changed_files = await changedFiles(repository, state.source.base_commit);
-    await capturePatch(repository, state.source.base_commit, patchPath);
-    result.head_after_agent = (await checked(["git", "-C", repository, "rev-parse", "HEAD"])).stdout.trim();
+    // Cleanup has completed before collection. Use a fresh signal so canceled
+    // inference can still preserve its available patch without launching models.
+    await inspectCandidate(docker, runDir, state, repository, `${arm}-capture`, new AbortController().signal, false, false, dirname(patchPath));
+    for (const path of [patchPath, join(dirname(patchPath), "result.json")]) {
+      if (!(await lstat(path)).isFile()) throw new Error("capture artifact must be a regular file");
+    }
+    const metadata = JSON.parse(await readFile(join(dirname(patchPath), "result.json"), "utf8")) as { changed_files?: unknown; head_after_agent?: unknown };
+    if (!Array.isArray(metadata.changed_files) || metadata.changed_files.some(value => typeof value !== "string")
+      || typeof metadata.head_after_agent !== "string" || !/^[0-9a-f]{40}$/.test(metadata.head_after_agent)) throw new Error("invalid capture metadata");
+    result.changed_files = metadata.changed_files;
+    result.head_after_agent = metadata.head_after_agent;
   } catch (error) {
     result.collection_error = error instanceof Error ? error.message : String(error);
-    await writeFile(patchPath, "");
+    // Do not follow or overwrite a candidate-created capture symlink on failure.
     progress(`${arm}: inference evidence persisted but patch collection failed: ${result.collection_error}`);
   }
 }
 
-export async function runPair(options: RunOptions): Promise<RunState> {
+async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   const runDir = resolve(options.runDir);
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`run is ${state.status}; prepare a new run instead of resuming or restarting it`);
+  if (state.profile === "godoxy-icons" && options.arm !== "stock") throw new Error("godoxy-icons requires --arm stock");
   if (!state.acceptance) throw new Error("run has no evaluator acceptance test; prepare with --acceptance");
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
   state.image_id = await preflight(docker, state, runDir);
@@ -248,17 +288,17 @@ export async function runPair(options: RunOptions): Promise<RunState> {
     state.results = {};
     state.selected_arms = selectedArms;
     await writeState(runDir, state);
-    progress(options.arm ? "prewarming the selected current arm" : "prewarming identical Go targets for both arms");
+    progress(options.arm ? `prewarming the selected ${options.arm} arm` : "prewarming identical Go targets for both arms");
     const warmed = await Promise.allSettled(selectedArms.map(arm => prewarm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.cache, controller.signal)));
     const warmFailure = warmed.find(result => result.status === "rejected");
     if (warmFailure?.status === "rejected") throw warmFailure.reason;
     if (controller.signal.aborted) throw new Error("canceled during dependency prewarm; no agent was launched");
+    await verifyPreparedInputs(runDir, state);
     const task = await readFile(join(runDir, state.task.path), "utf8");
     if (controller.signal.aborted) throw new Error("canceled while reading the task; no agent was launched");
     for (const arm of selectedArms) {
       const repo = resolve(runDir, state.arms[arm].repository);
-      const dirty = await exec(["git", "-C", repo, "status", "--porcelain", "--untracked-files=normal"]);
-      if (dirty.exitCode !== 0 || dirty.stdout.trim()) throw new Error(`${arm} baseline changed before model launch: ${dirty.stdout.trim() || dirty.stderr.trim()}`);
+      await inspectCandidate(docker, runDir, state, repo, `${arm}-launch-verify`, controller.signal, true, true);
     }
     const launchTime = new Date().toISOString();
     state.arm_attempts = Object.fromEntries(selectedArms.map(arm => [arm, {
@@ -286,7 +326,7 @@ export async function runPair(options: RunOptions): Promise<RunState> {
     await writeState(runDir, state);
     const collected = await Promise.allSettled(selectedArms.map(async arm => {
       const result = state.results?.[arm];
-      if (result && !result.lifecycle_error) await collectArm(runDir, state, arm, result);
+      if (result && !result.lifecycle_error) await collectArm(docker, runDir, state, arm, result);
     }));
     const collectionFailure = collected.find(result => result.status === "rejected");
     if (collectionFailure?.status === "rejected") state.error = String(collectionFailure.reason);
@@ -316,4 +356,12 @@ export async function runPair(options: RunOptions): Promise<RunState> {
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
   }
+}
+
+export async function preflightRun(runDirectory: string, dockerBin = process.env.CODEX_AB_DOCKER_BIN ?? "docker"): Promise<void> {
+  return withRunLock(resolve(runDirectory), () => preflightRunUnlocked(runDirectory, dockerBin));
+}
+
+export async function runPair(options: RunOptions): Promise<RunState> {
+  return withRunLock(resolve(options.runDir), () => runPairUnlocked(options));
 }

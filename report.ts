@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fetchPricing, meterRollouts, USAGE_KEYS, type MeteredRollouts, type PricingSnapshot } from "./usage";
-import { readState, writeState } from "./state";
+import { readState, writeState, withRunLock } from "./state";
 import type { ArmName, ArmResult, JudgePass } from "./types";
 
 const ARMS = ["stock", "current"] as const;
@@ -55,7 +55,7 @@ function passMarkdown(pass: JudgePass): string {
   return `### Pass ${pass.pass}\n\nPresentation: candidate-1 = ${pass.presentation[0]}, candidate-2 = ${pass.presentation[1]}. Raw winner: **${pass.winner}**.\n\n| Candidate | correctness | completeness | maintainability | test quality | weighted total |\n| --- | ---: | ---: | ---: | ---: | ---: |\n${scoreRows.join("\n")}\n\nRationale: ${pass.rationale}\n\nEvidence:\n\n${evidence}\n\nIssues:\n\n${issues}`;
 }
 
-export async function invalidateRun(runDirectory: string, reasons: string[]): Promise<void> {
+async function invalidateRunUnlocked(runDirectory: string, reasons: string[]): Promise<void> {
   if (reasons.length === 0 || reasons.some(reason => typeof reason !== "string" || reason.trim().length === 0)) {
     throw new Error("invalidation requires at least one nonempty reason");
   }
@@ -66,7 +66,7 @@ export async function invalidateRun(runDirectory: string, reasons: string[]): Pr
   await writeState(runDir, state);
 }
 
-export async function buildReport(runDirectory: string): Promise<{ jsonPath: string; markdownPath: string }> {
+async function buildReportUnlocked(runDirectory: string): Promise<{ jsonPath: string; markdownPath: string }> {
   const runDir = resolve(runDirectory);
   const state = await readState(runDir);
   const pricing = (state.pricing ?? await fetchPricing()) as PricingSnapshot;
@@ -80,11 +80,12 @@ export async function buildReport(runDirectory: string): Promise<{ jsonPath: str
   const judgeAttempts = state.judge ? await Promise.all(state.judge.usage_homes.map(async home => ({ home, usage: await meterRollouts(join(runDir, home), pricing) }))) : [];
   const judgeUsage = state.judge ? sumMeters(judgeAttempts) : undefined;
 
+  const selectedArms = state.selected_arms ?? ARMS;
   const invalidityReasons = state.invalidity_reasons ?? [];
   const valid = invalidityReasons.length === 0;
-  const checksExecuted = state.status === "complete" && ARMS.every(arm => resultHasAllChecks(state.results?.[arm]));
+  const checksExecuted = state.status === "complete" && selectedArms.every(arm => resultHasAllChecks(state.results?.[arm]));
   const gatesComplete = valid && checksExecuted;
-  const armUsageComplete = ARMS.every(arm => usage[arm]?.complete === true);
+  const armUsageComplete = selectedArms.every(arm => usage[arm]?.complete === true);
   const judgeComplete = state.judge?.status === "complete"
     && typeof state.judge.finished_at === "string"
     && state.judge.passes.length === 2
@@ -113,7 +114,9 @@ export async function buildReport(runDirectory: string): Promise<{ jsonPath: str
   const report = {
     generated_at: new Date().toISOString(),
     run_id: state.id,
-    design: "single paired descriptive pilot; do not generalize causally from one pair",
+    design: selectedArms.length === 1 ? "single-arm descriptive run; no paired winner" : "single paired descriptive pilot; do not generalize causally from one pair",
+    selected_arms: selectedArms,
+    profile: state.profile ?? "hpatch",
     source: state.source,
     setup: { ...state.execution, resource_limits: state.resource_limits, snapshot_manifest: state.snapshot_manifest },
     status: state.status,
@@ -138,7 +141,7 @@ export async function buildReport(runDirectory: string): Promise<{ jsonPath: str
   const markdownPath = join(reports, "report.md");
   await writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
 
-  const armRows = ARMS.map(arm => {
+  const armRows = selectedArms.map(arm => {
     const result = state.results?.[arm];
     const totals = usage[arm]?.totals;
     return `| ${arm} | ${gradeLabel(result)} | ${number(result ? result.agent_elapsed_ms / 1000 : null, 3)} | ${number(graderSeconds(result), 3)} | ${number(totals?.input_tokens)} | ${number(totals?.cached_input_tokens)} | ${number(totals?.cache_write_input_tokens)} | ${number(totals?.output_tokens)} | ${number(totals?.reasoning_output_tokens)} | ${number(totals?.total_tokens)} | ${number(totals?.command_seconds, 3)} | ${number(totals?.estimated_api_usd, 6)} |`;
@@ -149,14 +152,22 @@ export async function buildReport(runDirectory: string): Promise<{ jsonPath: str
   });
   const warnings = [
     ...pricing.warnings.map(warning => `pricing: ${warning}`),
-    ...ARMS.flatMap(arm => (usage[arm]?.warnings ?? [state.results?.[arm] ? "usage was not measured" : "result and usage are missing"]).map(warning => `${arm}: ${warning}`)),
+    ...selectedArms.flatMap(arm => (usage[arm]?.warnings ?? [state.results?.[arm] ? "usage was not measured" : "result and usage are missing"]).map(warning => `${arm}: ${warning}`)),
     ...(state.judge ? (judgeUsage?.warnings ?? ["judge usage was not measured"]).map(warning => `judge: ${warning}`) : ["judge: not run"]),
   ];
   const judgeSummary = state.judge
     ? `Status: **${state.judge.status}**. ${state.judge.passes.length} of 2 passes produced valid results.${state.judge.error ? ` Error: ${state.judge.error}` : ""}\n\n${state.judge.status === "complete" ? `Two independent reversed-order passes ${state.judge.agreement ? "agreed" : "disagreed"}. Judge winner: **${state.judge.winner}**.${state.judge.disagreement ? ` ${state.judge.disagreement}` : ""}` : "No judge winner is eligible from an incomplete attempt."}\n\n${state.judge.passes.map(passMarkdown).join("\n\n")}\n\n### Judge usage by attempted pass\n\n| Pass | usage status | input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${judgeRows.join("\n") || "| - | missing | - | - | - | - | - | - | - | unknown |"}\n\nJudge aggregate estimated list-price API cost: ${number(judgeUsage?.totals.estimated_api_usd, 6)} USD; ${number(judgeUsage?.totals.total_tokens)} total tokens.`
     : "Not run.";
   const invalidityNotice = valid ? "" : `> **Infrastructure validity: INVALID**\n>\n${invalidityReasons.map(reason => `> - ${reason}`).join("\n")}\n>\n> Measurements are retained, but gates, completion, and winner are suppressed.\n\n`;
-  const md = `# Codex A/B report\n\n${invalidityNotice}> This is one paired descriptive pilot. It does not establish a causal or generalizable difference.\n\n- Run: \`${state.id}\`\n- Base: \`${state.source.base_commit}\` (tree \`${state.source.base_tree}\`, source timestamp ${state.source.source_timestamp})\n- Model: ${state.execution.model}, ${state.execution.reasoning_effort} reasoning, ${state.execution.service_tier} service tier\n- Infrastructure validity: **${valid ? "valid" : "invalid"}**\n- Required checks executed: **${checksExecuted ? "yes" : "no"}**\n- Gate result eligible: **${gatesComplete ? "yes" : "no"}**\n- Arm usage complete: **${armUsageComplete ? "yes" : "no"}**\n- Judge result and usage complete: **${judgeComplete && judgeUsageComplete ? "yes" : "no"}**\n- Overall winner: **${effectiveWinner}**\n\nA failed grade does not make measurement incomplete. It only makes that candidate ineligible to win. Missing checks, usage, or infrastructure validity make the overall result incomplete and suppress the winner.\n\n## Arms\n\n| Arm | preparation, acceptance, and router checks | agent seconds | grader seconds | input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${armRows.join("\n")}\n\n## Current minus stock\n\n${Object.entries(delta).map(([key, value]) => `- ${key}: ${value === null ? "not available" : `${value}%`}`).join("\n") || "No paired usage is available."}\n\n## Judge\n\n${judgeSummary}\n\n## Pricing provenance\n\nEstimated USD values apply public list-price API rates to recorded tokens. They are not a subscription charge or invoice, and any premium for the selected service tier is not modeled.\n\n- Source: ${pricing.source}\n- Fetched at: ${pricing.fetched_at}\n- Catalog: ${pricing.catalog_url}\n${pricing.assumptions.map(assumption => `- Assumption: ${assumption}`).join("\n") || "- No pricing assumptions recorded."}\n\n## Warnings\n\n${warnings.map(warning => `- ${warning}`).join("\n") || "- None."}\n\nSee \`report.json\` for per-agent usage records, complete grading evidence, all judge attempts and passes, and the pricing snapshot.\n`;
+  const md = `# Codex A/B report\n\n${invalidityNotice}> This is a descriptive benchmark. A singleton run has no paired winner; this does not establish a causal or generalizable difference.\n\n- Run: \`${state.id}\`\n- Base: \`${state.source.base_commit}\` (tree \`${state.source.base_tree}\`, source timestamp ${state.source.source_timestamp})\n- Model: ${state.execution.model}, ${state.execution.reasoning_effort} reasoning, ${state.execution.service_tier} service tier\n- Infrastructure validity: **${valid ? "valid" : "invalid"}**\n- Required checks executed: **${checksExecuted ? "yes" : "no"}**\n- Gate result eligible: **${gatesComplete ? "yes" : "no"}**\n- Arm usage complete: **${armUsageComplete ? "yes" : "no"}**\n- Judge result and usage complete: **${judgeComplete && judgeUsageComplete ? "yes" : "no"}**\n- Overall winner: **${effectiveWinner}**\n\nA failed grade does not make measurement incomplete. It only makes that candidate ineligible to win. Missing checks, usage, or infrastructure validity make the overall result incomplete and suppress the winner.\n\n## Arms\n\n| Arm | preparation, acceptance, and scoped package checks | agent seconds | grader seconds | input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${armRows.join("\n")}\n\n## Current minus stock\n\n${Object.entries(delta).map(([key, value]) => `- ${key}: ${value === null ? "not available" : `${value}%`}`).join("\n") || "No paired usage is available."}\n\n## Judge\n\n${judgeSummary}\n\n## Pricing provenance\n\nEstimated USD values apply public list-price API rates to recorded tokens. They are not a subscription charge or invoice, and any premium for the selected service tier is not modeled.\n\n- Source: ${pricing.source}\n- Fetched at: ${pricing.fetched_at}\n- Catalog: ${pricing.catalog_url}\n${pricing.assumptions.map(assumption => `- Assumption: ${assumption}`).join("\n") || "- No pricing assumptions recorded."}\n\n## Warnings\n\n${warnings.map(warning => `- ${warning}`).join("\n") || "- None."}\n\nSee \`report.json\` for per-agent usage records, complete grading evidence, all judge attempts and passes, and the pricing snapshot.\n`;
   await writeFile(markdownPath, md);
   return { jsonPath, markdownPath };
+}
+
+export async function buildReport(runDirectory: string): Promise<{ jsonPath: string; markdownPath: string }> {
+  return withRunLock(resolve(runDirectory), () => buildReportUnlocked(runDirectory));
+}
+
+export async function invalidateRun(runDirectory: string, reasons: string[]): Promise<void> {
+  return withRunLock(resolve(runDirectory), () => invalidateRunUnlocked(runDirectory, reasons));
 }

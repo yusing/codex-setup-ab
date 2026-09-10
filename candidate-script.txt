@@ -1,0 +1,65 @@
+// Embedded as source text in the compiled CLI and executed only inside Docker.
+// Never run Git on an agent-controlled checkout on the host: Git configuration
+// can execute fsmonitor hooks, filters and other arbitrary commands.
+import { lstat, readdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+interface CandidateSpec {
+  mode: "verify" | "capture";
+  baseline: boolean;
+  clean: boolean;
+  base: string;
+  tree: string;
+  forbidden: string;
+  icons: boolean;
+  submodules: Array<{ path: string; sha: string }>;
+}
+
+const spec = JSON.parse(process.argv[1]) as CandidateSpec;
+async function git(args: string[], repository = "/workspace", allowFailure = false): Promise<string> {
+  const child = Bun.spawn(["git", "-C", repository, ...args], { stdout: "pipe", stderr: "pipe" });
+  const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  if (code !== 0 && !allowFailure) throw new Error(`git ${args[0]} failed: ${stderr}`);
+  return code === 0 ? stdout : "";
+}
+
+async function exists(path: string): Promise<boolean> {
+  try { await lstat(path); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+}
+
+const head = (await git(["rev-parse", "HEAD"])).trim();
+if ((await git(["rev-parse", `${spec.base}^{tree}`])).trim() !== spec.tree
+  || (spec.baseline && head !== spec.base)) throw new Error("immutable baseline identity changed");
+if ((await git(["cat-file", "-t", spec.forbidden], "/workspace", true)).trim() === "commit") throw new Error("forbidden solution is present");
+if ((await git(["remote"])).trim()) throw new Error("root repository retained a remote");
+if (await exists("/workspace/.git/objects/info/alternates")) throw new Error("repository uses object alternates");
+if (((await git(["worktree", "list", "--porcelain"])).match(/^worktree /gm) ?? []).length !== 1) throw new Error("repository has linked worktrees");
+if (spec.clean && (await git(["status", "--porcelain", "--untracked-files=all"])).trim()) throw new Error("immutable baseline changed");
+if (spec.icons) {
+  const webui = await git(["submodule", "status", "--", "webui"]);
+  if (!webui.startsWith("-") || (await git(["config", "--get", "submodule.webui.url"], "/workspace", true)).trim()
+    || (await exists("/workspace/webui") && (await readdir("/workspace/webui")).length)) throw new Error("webui must remain uninitialized and empty");
+}
+for (const sub of spec.submodules) {
+  const repository = join("/workspace", sub.path);
+  const link = (await git(["ls-tree", "HEAD", "--", sub.path])).trim();
+  if ((await git(["rev-parse", "HEAD"], repository)).trim() !== sub.sha
+    || !link.startsWith(`160000 commit ${sub.sha}\t`)
+    || !(await git(["submodule", "status", "--", sub.path])).startsWith(` ${sub.sha} ${sub.path}`)
+    || (await git(["status", "--porcelain", "--untracked-files=all"], repository)).trim()
+    || (await git(["diff", "HEAD", "--", sub.path])).trim()
+    || (await git(["remote"], repository)).trim()
+    || await exists(join(repository, ".git/objects/info/alternates"))) throw new Error(`submodule ${sub.path} is not clean, exact, and remote-free`);
+}
+if (spec.mode === "capture") {
+  const tracked = await git(["diff", "--name-only", "-z", spec.base]);
+  const untracked = await git(["ls-files", "--others", "--exclude-standard", "-z"]);
+  const changedFiles = [...new Set([...tracked.split("\0"), ...untracked.split("\0")].filter(Boolean))].sort();
+  await git(["add", "--intent-to-add", "--all", "--", "."]);
+  // All file opens remain inside the container, including hostile symlink targets.
+  const patch = Bun.spawn(["git", "-C", "/workspace", "diff", "--binary", spec.base], { stdout: Bun.file("/capture/changes.patch"), stderr: "pipe" });
+  const [code, stderr] = await Promise.all([patch.exited, new Response(patch.stderr).text()]);
+  if (code !== 0) throw new Error(`patch capture failed: ${stderr}`);
+  await writeFile("/capture/result.json", JSON.stringify({ changed_files: changedFiles, head_after_agent: head }));
+}

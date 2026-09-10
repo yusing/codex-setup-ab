@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { checked, exec } from "./process";
 import { sha256, writeState } from "./state";
-import type { RunState } from "./types";
+import type { RunState, BenchmarkProfile, ReasoningEffort } from "./types";
 
 export interface PrepareOptions {
+  profile?: BenchmarkProfile;
+  reasoningEffort?: ReasoningEffort;
   source: string;
   baseCommit: string;
   forbiddenCommit: string;
@@ -70,6 +72,32 @@ async function manifest(root: string): Promise<Array<{ path: string; type: strin
   }
   await walk(root);
   return result;
+}
+
+function stockConfig(reasoningEffort: ReasoningEffort): string {
+  return [
+    'model = "gpt-6-astra"', `model_reasoning_effort = "${reasoningEffort}"`, 'service_tier = "default"',
+    'approval_policy = "never"', 'sandbox_mode = "danger-full-access"', 'network_access = "enabled"',
+    '', '[projects."/workspace"]', 'trust_level = "trusted"', '',
+  ].join("\n");
+}
+
+export async function verifyPreparedInputs(runDir: string, state: RunState): Promise<void> {
+  if (state.task.path !== "control/task.md" || (state.acceptance && state.acceptance.path !== "evaluator/acceptance_test.go")) throw new Error("copied benchmark control path changed");
+  const stock = join(runDir, state.arms.stock.home_template);
+  const stockFiles = await manifest(stock);
+  if (stockFiles.length !== 1 || stockFiles[0].path !== ".codex/config.toml" || stockFiles[0].type !== "file"
+    || await readFile(join(stock, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.reasoning_effort)) throw new Error("stock setup snapshot changed");
+  for (const control of [state.task, state.acceptance]) {
+    if (control && await sha256(join(runDir, control.path)) !== control.sha256) throw new Error("copied benchmark control changed");
+  }
+  if (await sha256(join(runDir, state.runtime_tools.bun)) !== state.runtime_tools.bun_sha256) throw new Error("snapshotted Bun changed");
+  const manifestPath = join(runDir, state.snapshot_manifest);
+  if (await sha256(manifestPath) !== state.current_snapshot.manifest_sha256) throw new Error("snapshot manifest changed");
+  if (state.profile !== "godoxy-icons") {
+    const recorded = JSON.parse(await readFile(manifestPath, "utf8")) as { files: unknown };
+    if (JSON.stringify(await manifest(join(runDir, state.arms.current.home_template))) !== JSON.stringify(recorded.files)) throw new Error("current setup snapshot changed");
+  }
 }
 
 async function snapshotCurrent(home: string, destination: string): Promise<string> {
@@ -153,7 +181,78 @@ async function verifyClone(seed: string, repository: string, base: string, tree:
   await collect(cloneObjects);
 }
 
+export const GODOXY_ICONS = {
+  base_commit: "c335ef2d83d9fb8a774cb70b9b628ade54c654a2",
+  base_tree: "56e1c3edff2087bbede0a6f2cc6628c937ea6cc2",
+  forbidden_commit: "c67dabf1a880c858979d852bdc7bac9239d061c1",
+  submodules: {
+    goutils: "b7df9d8ce9b7c46db4dc33db5be692834d13b72e",
+    "internal/go-oidc": "6080c3426efca50aca57fe85e6306cf0ce4e22ef",
+    "internal/gopsutil": "aef7076194a18442395d7f483fa7f54a1b39f061",
+  },
+} as const;
+
+export function verifyGodoxyIdentity(source: RunState["source"], submodules: RunState["submodules"]): void {
+  if (source.base_commit !== GODOXY_ICONS.base_commit || source.base_tree !== GODOXY_ICONS.base_tree
+    || source.forbidden_commit !== GODOXY_ICONS.forbidden_commit
+    || submodules?.length !== 3 || new Set(submodules.map(sub => sub.path)).size !== 3
+    || submodules.some(sub => GODOXY_ICONS.submodules[sub.path as keyof typeof GODOXY_ICONS.submodules] !== sub.sha)) {
+    throw new Error("godoxy-icons benchmark identity mismatch");
+  }
+}
+
+export async function verifyRepositoryIsolation(repository: string): Promise<void> {
+  if ((await checked(["git", "-C", repository, "remote"])).stdout.trim()) throw new Error("root repository retained a remote");
+  const webui = (await checked(["git", "-C", repository, "submodule", "status", "--", "webui"])).stdout;
+  const registered = await exec(["git", "-C", repository, "config", "--get", "submodule.webui.url"]);
+  if (registered.exitCode === 0 || !webui.startsWith("-") || await exists(join(repository, "webui/.git"))
+    || (await exists(join(repository, "webui")) && (await readdir(join(repository, "webui"))).length > 0)) {
+    throw new Error("webui must remain uninitialized and empty");
+  }
+}
+
+export async function initializeSubmodules(repository: string, submodules: NonNullable<RunState["submodules"]>): Promise<void> {
+  for (const sub of submodules) {
+    const seed = await mkdtemp(join(tmpdir(), "codex-ab-submodule-"));
+    try {
+      await checked(["git", "init", "--bare", seed]);
+      await checked(["git", "-C", seed, "fetch", "--depth=1", pathToFileURL(sub.source).href, `${sub.sha}:refs/heads/benchmark`]);
+      const target = join(repository, sub.path);
+      await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "benchmark", seed, target]);
+      await checked(["git", "-C", target, "remote", "remove", "origin"]);
+      await checked(["git", "-C", repository, "submodule", "init", "--", sub.path]);
+    } finally {
+      await rm(seed, { recursive: true, force: true });
+    }
+  }
+  await verifySubmodules(repository, submodules);
+}
+
+export async function verifySubmodules(repository: string, submodules: NonNullable<RunState["submodules"]>): Promise<void> {
+  for (const sub of submodules) {
+    const target = join(repository, sub.path);
+    const head = (await checked(["git", "-C", target, "rev-parse", "HEAD"])).stdout.trim();
+    const link = (await checked(["git", "-C", repository, "ls-tree", "HEAD", "--", sub.path])).stdout.trim();
+    const dirty = (await checked(["git", "-C", target, "status", "--porcelain", "--untracked-files=all"])).stdout.trim();
+    const rootDiff = (await checked(["git", "-C", repository, "diff", "HEAD", "--", sub.path])).stdout.trim();
+    const remotes = (await checked(["git", "-C", target, "remote"])).stdout.trim();
+    const initialized = (await checked(["git", "-C", repository, "submodule", "status", "--", sub.path])).stdout;
+    if (head !== sub.sha || !initialized.startsWith(` ${sub.sha} ${sub.path}`) || !link.startsWith(`160000 commit ${sub.sha}\t`) || dirty || remotes || rootDiff) {
+      throw new Error(`submodule ${sub.path} is not clean, exact, and remote-free`);
+    }
+    if (await exists(join(target, ".git/objects/info/alternates"))) throw new Error(`submodule ${sub.path} uses alternates`);
+  }
+}
+
 export async function prepare(options: PrepareOptions): Promise<string> {
+  const profile = options.profile ?? "hpatch";
+  const reasoningEffort = options.reasoningEffort ?? "medium";
+  if (!["hpatch", "godoxy-icons"].includes(profile)) throw new Error("unknown benchmark profile");
+  if (!["medium", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be medium or xhigh");
+  if (profile === "godoxy-icons" && (!options.taskPath || !options.acceptancePath)) throw new Error("godoxy-icons requires explicit task and acceptance");
+  if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
+    throw new Error("godoxy-icons benchmark identity mismatch");
+  }
   const uid = process.getuid?.();
   const gid = process.getgid?.();
   if (uid === undefined || gid === undefined || uid <= 0 || gid <= 0) throw new Error("prepare requires a non-root POSIX operator identity");
@@ -168,7 +267,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const codeModeHostStat = await stat(codeModeHost);
   if (!codeModeHostStat.isFile() || (codeModeHostStat.mode & 0o111) === 0) throw new Error(`Codex code-mode host is not executable: ${codeModeHost}`);
   const codeModeHostSha256 = await sha256(codeModeHost);
-  const currentConfig = await readFile(join(options.currentHome, ".codex/config.toml"), "utf8");
+  const currentConfig = profile === "godoxy-icons" ? 'model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\nservice_tier = "default"' : await readFile(join(options.currentHome, ".codex/config.toml"), "utf8");
   const configured = (key: string): string | undefined => currentConfig.match(new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, "m"))?.[1];
   if (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium") {
     throw new Error("current setup must configure model gpt-6-astra with medium reasoning for this benchmark");
@@ -190,27 +289,43 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (base !== options.baseCommit) throw new Error(`requested base resolved to ${base}`);
   const tree = (await checked(["git", "-C", seed, "rev-parse", `${base}^{tree}`])).stdout.trim();
   const sourceTimestamp = Number((await checked(["git", "-C", seed, "show", "-s", "--format=%ct", base])).stdout.trim());
+  const submodules: NonNullable<RunState["submodules"]> = [];
+  if (profile === "godoxy-icons") {
+    for (const path of ["goutils", "internal/go-oidc", "internal/gopsutil"]) {
+      const entry = (await checked(["git", "-C", seed, "ls-tree", base, "--", path])).stdout;
+      const sha = entry.match(/^160000 commit ([0-9a-f]{40})\t/)?.[1];
+      if (!sha) throw new Error(`missing gitlink: ${path}`);
+      submodules.push({ path, sha, source: await realpath(join(source, path)) });
+    }
+  }
+  if (profile === "godoxy-icons") verifyGodoxyIdentity({
+    path: source, base_commit: base, base_tree: tree, source_timestamp: sourceTimestamp, forbidden_commit: options.forbiddenCommit,
+  }, submodules);
   for (const arm of ["stock", "current"] as const) {
     const repo = join(runDir, "arms", arm, "repo");
     await mkdir(dirname(repo), { recursive: true });
     await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "benchmark", seed, repo]);
     await checked(["git", "-C", repo, "remote", "remove", "origin"]);
+    await initializeSubmodules(repo, submodules);
+    if (profile === "godoxy-icons") await verifyRepositoryIsolation(repo);
     await verifyClone(seed, repo, base, tree, options.forbiddenCommit);
   }
   progress("verified independent base-only clones");
 
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
-  const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate);
+  const snapshotManifest = profile === "hpatch"
+    ? await snapshotCurrent(options.currentHome, currentTemplate)
+    : join(runDir, "snapshots/snapshot-manifest.json");
+  if (profile === "godoxy-icons") await writeFile(snapshotManifest, JSON.stringify({
+    created_at: new Date().toISOString(), profile, current_setup: "not captured; stock-only profile", files: [],
+  }));
+
   const snapshotDocument = JSON.parse(await readFile(snapshotManifest, "utf8")) as { created_at?: unknown };
   if (typeof snapshotDocument.created_at !== "string") throw new Error("current snapshot manifest has no capture timestamp");
   const stockTemplate = join(runDir, "snapshots/stock/home/ubuntu");
   await mkdir(join(stockTemplate, ".codex"), { recursive: true });
-  await writeFile(join(stockTemplate, ".codex/config.toml"), [
-    'model = "gpt-6-astra"', 'model_reasoning_effort = "medium"', 'service_tier = "default"',
-    'approval_policy = "never"', 'sandbox_mode = "danger-full-access"', 'network_access = "enabled"',
-    '', '[projects."/workspace"]', 'trust_level = "trusted"', '',
-  ].join("\n"), { mode: 0o600 });
+  await writeFile(join(stockTemplate, ".codex/config.toml"), stockConfig(reasoningEffort), { mode: 0o600 });
   const bunSource = join(options.currentHome, ".local/share/mise/installs/bun/1.4.2/bin/bun");
   const bunTarget = join(runDir, "snapshots/runtime/bin/bun");
   await copyRequired(bunSource, bunTarget);
@@ -218,6 +333,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   progress("captured repository-based current and minimal stock setup templates");
 
   const state: RunState = {
+    profile,
+    submodules,
     schema_version: 1,
     id: basename(runDir),
     created_at: new Date().toISOString(),
@@ -226,7 +343,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     task: { path: "control/task.md", sha256: await sha256(join(runDir, "control/task.md")) },
     acceptance: acceptancePath ? { path: "evaluator/acceptance_test.go", sha256: await sha256(join(runDir, "evaluator/acceptance_test.go")) } : undefined,
     image: options.image,
-    execution: { model: "gpt-6-astra", reasoning_effort: "medium", service_tier: serviceTier },
+    execution: { model: "gpt-6-astra", reasoning_effort: reasoningEffort, service_tier: serviceTier },
     resource_limits: { cpus: options.cpus, memory: options.memory },
     timeout_seconds: options.timeoutSeconds,
     snapshot_manifest: relative(runDir, snapshotManifest),

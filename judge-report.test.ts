@@ -347,3 +347,21 @@ describe("report completion and winner eligibility", () => {
     expect(markdown).toContain("Measurements are retained, but gates, completion, and winner are suppressed.");
   });
 });
+
+test("stock singleton reports executed checks and complete root plus child usage without a winner", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.selected_arms = ["stock"];
+  delete state.results!.current;
+  delete state.arm_attempts!.current;
+  await usageSession(join(run, "arms/stock/home/ubuntu/.codex"), "stock-child", "gpt-6-astra", 40);
+  await writeState(run, state);
+  const paths = await buildReport(run);
+  const report = JSON.parse(await readFile(paths.jsonPath, "utf8"));
+  expect(report.checks_executed).toBe(true);
+  expect(report.arm_usage_complete).toBe(true);
+  expect(report.arms.stock.usage.agents).toHaveLength(2);
+  expect(report.arms.stock.usage.totals.input_tokens).toBe(60);
+  expect(report.measurement_complete).toBe(false);
+  expect(report.winner).toBe("none");
+});

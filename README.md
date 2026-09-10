@@ -47,7 +47,7 @@ Runtime supplements are copied separately: installed hooks, materialized skills 
 
 The clone preserves absolute `/home/ubuntu` paths inside its container. `snapshot-manifest.json` records the configuration commit and tree, overlaid tracked paths, a SHA-256 for every regular setup file (excluding Git metadata), literal symlink targets, and portability adaptations. Before inference, preflight runs a referenced remote skill and the registered Go-guidelines hook with networking disabled. An unsupported hook or missing tool fails instead of being silently disabled.
 
-The evaluator test is copied under `evaluator/`, which is never mounted into an arm. Each arm sees only its own clone, output directory, Go cache, and private home. It cannot see the sibling, the host's live home or repositories, the Docker socket, the acceptance test, or evaluator artifacts.
+The evaluator test is copied under `evaluator/`, which is never mounted into an arm. Each arm sees only its own clone, Go cache, and private home. Agent logs and captured patches are kept outside its writable mounts. It cannot see the sibling, the host's live home or repositories, the Docker socket, the acceptance test, or evaluator artifacts.
 
 Validate the image and snapshotted dependencies without making a model request:
 
@@ -66,13 +66,30 @@ After reviewing `run.json`, start the model runs explicitly:
   --confirm-paid-inference
 ```
 
-The command first checks that the image exposes Codex 0.153.4, its hash-matched code-mode host, and no `hpatch`; exercises a real local code-mode execution without model access; and checks the current snapshot's required tools. For each arm it installs locked plugin dependencies, builds only the ignored JavaScript embed missing from a clean checkout, verifies that the tracked WASM is unchanged, and compile-prewarms a dedicated Go cache. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both gpt-6-astra, medium-reasoning arms concurrently with identical two-CPU and 4 GiB limits. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
+The command first checks that the image exposes Codex 0.153.4, its hash-matched code-mode host, and no `hpatch`; exercises a real local code-mode execution without model access; and checks the current snapshot's required tools. For each arm it installs locked plugin dependencies, builds only the ignored JavaScript embed missing from a clean checkout, verifies that the tracked WASM is unchanged, and compile-prewarms a dedicated Go cache. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both gpt-6-astra arms at the selected reasoning effort (default medium) concurrently with identical two-CPU and 4 GiB limits. Preflight and the final launch check verify copied controls, both setup templates, the Bun snapshot, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
 
 Milestones go to stderr. Timeout or cancellation stops session-created containers and preserves available patches and results. Runs never restart or resume: prepare a new directory for another attempt.
 
-For a non-comparative repeat of the snapshotted current setup, use `run --arm current`. Only that arm is prepared, launched, captured, and graded. The run records the selected arm and the current snapshot's capture time and aggregate manifest hash. Because the stock result is intentionally absent, the report cannot claim paired measurement completeness or a winner, and `judge` refuses it.
+For a non-comparative run, use `run --arm current` or `run --arm stock`. Only the selected arm is launched, captured, and graded. The report shows its executed checks and root-plus-child usage, but cannot claim paired measurement completeness or a winner; `judge` refuses singleton runs.
 
-After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces, install their locked dependencies without rewriting tracked generated assets, inject `acceptance_test.go`, run the focused `^TestABAcceptance` prefix gate, and run the full `internal/router` suite. Agent and grader times remain separate.
+After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces, install their locked dependencies without rewriting tracked generated assets, inject `acceptance_test.go`, run the focused `^TestABAcceptance` prefix gate, and run the full `internal/router` suite. Git inspection and patch capture of candidate repositories run in separate offline containers, never on the host. Acceptance injection also happens inside the evaluator container, so candidate symlinks cannot redirect writes into the host. Agent and grader times remain separate.
+
+## GoDoxy icons profile
+
+Use `prepare --profile godoxy-icons --reasoning-effort medium` (or `xhigh`) with explicit `--source`, `--base`, `--forbidden`, `--task`, and `--acceptance` inputs. This profile requires `run --arm stock`; prepare a fresh directory for each effort or repeat. The default profile remains Hpatch. The GoDoxy profile requires explicit task and acceptance options and accepts only the pinned synthetic base `c335ef2d83d9fb8a774cb70b9b628ade54c654a2`, its recorded tree, excluded solution, and three exact submodule commits; altered identities or copied controls fail preflight.
+
+The source must contain local repositories at `goutils`, `internal/go-oidc`, and `internal/gopsutil` with the base commit's gitlink objects. Preparation shallow-fetches those exact commits into independent submodule clones, removes their remotes, and records their paths, source provenance, and SHAs in `run.json`. It rejects root remotes and initialized or populated `webui` throughout setup, patch collection, and grading. It does not initialize `webui`, capture current-home instructions or skills, or prepare Hpatch assets.
+
+Preflight retains the bare-image and local Code Mode checks, then tests the icons package in an ephemeral copy. Go's module-selected toolchain must be at least 1.27; downloading it and dependencies may require network access. Prewarm uses the same package and rejects changes to tracked root files or initialized submodules. Candidate edits inside those submodules are rejected during patch collection.
+
+The evaluator runs in a fresh clone with the same submodule commits. It receives the supplied test at `internal/homepage/icons/fetch/ab_acceptance_test.go` and runs:
+
+```sh
+go test -json -count=1 -ldflags=-checklinkname=0 -run '^TestABAcceptance' ./internal/homepage/icons/fetch
+go test -json -count=1 -ldflags=-checklinkname=0 ./internal/homepage/icons/fetch
+```
+
+For both profiles, grading requires each declared `TestABAcceptance` test to emit run and pass events in both commands. A zero exit without executed tests, or skipped acceptance tests, does not pass. These checks never inject the evaluator into the agent's baseline. CPU, memory, authentication, no-resume rules, and usage metering are unchanged. The stock profile uses the default service tier and persists the selected reasoning effort in both state and its minimal config.
 
 ## Blind judge
 
@@ -97,6 +114,8 @@ The report writes `reports/report.md` and `reports/report.json`. It includes raw
 - Exit 0 means the requested command completed, not that an arm passed its evaluation.
 - Invalid isolation, missing setup dependencies, non-private auth, malformed judge output, and repeated run/judge attempts exit nonzero.
 - If an infrastructure fault is discovered after an attempt, record it without discarding evidence: `./dist/codex-ab invalidate --run-dir "$run_dir" --reason "concrete reason"`. Invalidated attempts retain metrics but cannot be judged or produce a winner.
+- Commands reject unknown, inapplicable, and repeated options rather than silently changing the requested scope.
+- Operations on one run are mutually exclusive, including report generation and invalidation, so concurrent commands cannot overwrite lifecycle state or start duplicate inference. A second command fails while the first owns the run. Normal exit releases the lock. A hard-killed process leaves `.operation-lock`; verify that its process and containers are stopped before manually removing that empty directory to inspect retained evidence. Never use lock removal to resume or restart inference.
 - `run.json` is written atomically and is the machine-readable lifecycle record.
 - Logs and manifests never contain auth contents. Treat the whole mode-0700 run directory as private because it contains temporary Codex homes and agent patches.
 
