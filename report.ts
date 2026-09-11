@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fetchPricing, meterRollouts, USAGE_KEYS, type MeteredRollouts, type PricingSnapshot } from "./usage";
+import { readJudgeResponse, summarizeCheck } from "./judge";
+import { collectBundle, finalizeBundle } from "./bundle";
 import { readState, writeState, withRunLock } from "./state";
 import type { ArmName, ArmResult, JudgePass } from "./types";
 
@@ -66,7 +68,7 @@ async function invalidateRunUnlocked(runDirectory: string, reasons: string[]): P
   await writeState(runDir, state);
 }
 
-async function buildReportUnlocked(runDirectory: string): Promise<{ jsonPath: string; markdownPath: string }> {
+export async function buildReportUnlocked(runDirectory: string): Promise<{ jsonPath: string; markdownPath: string }> {
   const runDir = resolve(runDirectory);
   const state = await readState(runDir);
   const pricing = (state.pricing ?? await fetchPricing()) as PricingSnapshot;
@@ -93,7 +95,7 @@ async function buildReportUnlocked(runDirectory: string): Promise<{ jsonPath: st
     && state.judge.usage_homes.length === 2
     && typeof state.judge.agreement === "boolean";
   const judgeUsageComplete = judgeUsage?.complete === true;
-  const measurementComplete = valid && checksExecuted && armUsageComplete && judgeComplete && judgeUsageComplete;
+  const measurementComplete = valid && state.finishing?.status !== "failed" && checksExecuted && armUsageComplete && judgeComplete && judgeUsageComplete;
 
   const delta: Record<string, number | null> = {};
   if (usage.stock && usage.current) {
@@ -111,6 +113,13 @@ async function buildReportUnlocked(runDirectory: string): Promise<{ jsonPath: st
     if (judgedWinner === "tie" && ARMS.every(arm => state.results?.[arm]?.grade?.passed === true)) effectiveWinner = "tie";
   }
 
+  let rejectedSourceAssessment: { pass: number; error: string | undefined; response: unknown } | null = null;
+  if (state.judge?.status === "failed") {
+    const pass = state.judge.passes.length + 1;
+    try {
+      rejectedSourceAssessment = { pass, error: state.judge.error, response: await readJudgeResponse(runDir, pass) };
+    } catch { /* A failed process or malformed response may have no readable assessment. */ }
+  }
   const report = {
     generated_at: new Date().toISOString(),
     run_id: state.id,
@@ -119,6 +128,7 @@ async function buildReportUnlocked(runDirectory: string): Promise<{ jsonPath: st
     profile: state.profile ?? "hpatch",
     source: state.source,
     setup: { ...state.execution, resource_limits: state.resource_limits, snapshot_manifest: state.snapshot_manifest },
+    finishing: state.finishing ?? null,
     status: state.status,
     validity: valid ? "valid" : "invalid",
     invalidity_reasons: invalidityReasons,
@@ -131,6 +141,7 @@ async function buildReportUnlocked(runDirectory: string): Promise<{ jsonPath: st
     winner: effectiveWinner,
     arms: Object.fromEntries(ARMS.map(arm => [arm, { attempt: state.arm_attempts?.[arm] ?? null, result: state.results?.[arm] ?? null, usage: usage[arm] ?? null }])),
     current_minus_stock_percent: delta,
+    rejected_source_assessment: rejectedSourceAssessment,
     judge: state.judge ? { result: state.judge, attempts: judgeAttempts, usage: judgeUsage } : null,
     pricing,
   };
@@ -146,11 +157,22 @@ async function buildReportUnlocked(runDirectory: string): Promise<{ jsonPath: st
     const totals = usage[arm]?.totals;
     return `| ${arm} | ${gradeLabel(result)} | ${number(result ? result.agent_elapsed_ms / 1000 : null, 3)} | ${number(graderSeconds(result), 3)} | ${number(totals?.input_tokens)} | ${number(totals?.cached_input_tokens)} | ${number(totals?.cache_write_input_tokens)} | ${number(totals?.output_tokens)} | ${number(totals?.reasoning_output_tokens)} | ${number(totals?.total_tokens)} | ${number(totals?.command_seconds, 3)} | ${number(totals?.estimated_api_usd, 6)} |`;
   });
+  const checkDetails = selectedArms.flatMap(arm => {
+    const grade = state.results?.[arm]?.grade;
+    if (!grade) return [`- ${arm}: no grading evidence.`];
+    return (["preparation", "acceptance", "router_suite", "supplemental_repeat"] as const).map(name => {
+      const check = grade[name];
+      if (!check) return `- ${arm} ${name}: not run.`;
+      const summary = summarizeCheck(check);
+      return `- ${arm} ${name}: exit ${check.exit_code}${check.validation_error ? `; ${check.validation_error}` : ""}; failed tests: ${JSON.stringify(summary.failed_tests)}; ${number(check.elapsed_ms / 1000, 3)} seconds.`;
+    });
+  });
   const judgeRows = judgeAttempts.map((attempt, index) => {
     const totals = attempt.usage.totals;
     return `| ${index + 1} | ${attempt.usage.complete ? "complete" : "incomplete"} | ${totals.input_tokens} | ${totals.cached_input_tokens} | ${totals.cache_write_input_tokens} | ${totals.output_tokens} | ${totals.reasoning_output_tokens} | ${totals.total_tokens} | ${totals.command_seconds.toFixed(3)} | ${number(totals.estimated_api_usd, 6)} |`;
   });
   const warnings = [
+    ...(state.finishing?.status === "failed" ? [`finishing: ${state.finishing.error ?? "failed"}`] : []),
     ...pricing.warnings.map(warning => `pricing: ${warning}`),
     ...selectedArms.flatMap(arm => (usage[arm]?.warnings ?? [state.results?.[arm] ? "usage was not measured" : "result and usage are missing"]).map(warning => `${arm}: ${warning}`)),
     ...(state.judge ? (judgeUsage?.warnings ?? ["judge usage was not measured"]).map(warning => `judge: ${warning}`) : ["judge: not run"]),
@@ -159,13 +181,34 @@ async function buildReportUnlocked(runDirectory: string): Promise<{ jsonPath: st
     ? `Status: **${state.judge.status}**. ${state.judge.passes.length} of 2 passes produced valid results.${state.judge.error ? ` Error: ${state.judge.error}` : ""}\n\n${state.judge.status === "complete" ? `Two independent reversed-order passes ${state.judge.agreement ? "agreed" : "disagreed"}. Judge winner: **${state.judge.winner}**.${state.judge.disagreement ? ` ${state.judge.disagreement}` : ""}` : "No judge winner is eligible from an incomplete attempt."}\n\n${state.judge.passes.map(passMarkdown).join("\n\n")}\n\n### Judge usage by attempted pass\n\n| Pass | usage status | input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${judgeRows.join("\n") || "| - | missing | - | - | - | - | - | - | - | unknown |"}\n\nJudge aggregate estimated list-price API cost: ${number(judgeUsage?.totals.estimated_api_usd, 6)} USD; ${number(judgeUsage?.totals.total_tokens)} total tokens.`
     : "Not run.";
   const invalidityNotice = valid ? "" : `> **Infrastructure validity: INVALID**\n>\n${invalidityReasons.map(reason => `> - ${reason}`).join("\n")}\n>\n> Measurements are retained, but gates, completion, and winner are suppressed.\n\n`;
-  const md = `# Codex A/B report\n\n${invalidityNotice}> This is a descriptive benchmark. A singleton run has no paired winner; this does not establish a causal or generalizable difference.\n\n- Run: \`${state.id}\`\n- Base: \`${state.source.base_commit}\` (tree \`${state.source.base_tree}\`, source timestamp ${state.source.source_timestamp})\n- Model: ${state.execution.model}, ${state.execution.reasoning_effort} reasoning, ${state.execution.service_tier} service tier\n- Infrastructure validity: **${valid ? "valid" : "invalid"}**\n- Required checks executed: **${checksExecuted ? "yes" : "no"}**\n- Gate result eligible: **${gatesComplete ? "yes" : "no"}**\n- Arm usage complete: **${armUsageComplete ? "yes" : "no"}**\n- Judge result and usage complete: **${judgeComplete && judgeUsageComplete ? "yes" : "no"}**\n- Overall winner: **${effectiveWinner}**\n\nA failed grade does not make measurement incomplete. It only makes that candidate ineligible to win. Missing checks, usage, or infrastructure validity make the overall result incomplete and suppress the winner.\n\n## Arms\n\n| Arm | preparation, acceptance, and scoped package checks | agent seconds | grader seconds | input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${armRows.join("\n")}\n\n## Current minus stock\n\n${Object.entries(delta).map(([key, value]) => `- ${key}: ${value === null ? "not available" : `${value}%`}`).join("\n") || "No paired usage is available."}\n\n## Judge\n\n${judgeSummary}\n\n## Pricing provenance\n\nEstimated USD values apply public list-price API rates to recorded tokens. They are not a subscription charge or invoice, and any premium for the selected service tier is not modeled.\n\n- Source: ${pricing.source}\n- Fetched at: ${pricing.fetched_at}\n- Catalog: ${pricing.catalog_url}\n${pricing.assumptions.map(assumption => `- Assumption: ${assumption}`).join("\n") || "- No pricing assumptions recorded."}\n\n## Warnings\n\n${warnings.map(warning => `- ${warning}`).join("\n") || "- None."}\n\nSee \`report.json\` for per-agent usage records, complete grading evidence, all judge attempts and passes, and the pricing snapshot.\n`;
+  const md = `# Codex A/B report\n\n${invalidityNotice}> This is a descriptive benchmark. A singleton run has no paired winner; this does not establish a causal or generalizable difference.\n\n- Run: \`${state.id}\`\n- Base: \`${state.source.base_commit}\` (tree \`${state.source.base_tree}\`, source timestamp ${state.source.source_timestamp})\n- Model: ${state.execution.model}, ${state.execution.reasoning_effort} reasoning, ${state.execution.service_tier} service tier\n- Infrastructure validity: **${valid ? "valid" : "invalid"}**\n- Required checks executed: **${checksExecuted ? "yes" : "no"}**\n- Gate result eligible: **${gatesComplete ? "yes" : "no"}**\n- Arm usage complete: **${armUsageComplete ? "yes" : "no"}**\n- Judge result and usage complete: **${judgeComplete && judgeUsageComplete ? "yes" : "no"}**\n- Overall winner: **${effectiveWinner}**\n\nA failed grade does not make measurement incomplete. It only makes that candidate ineligible to win. Missing checks, usage, or infrastructure validity make the overall result incomplete and suppress the winner.\n\n## Arms\n\n| Arm | preparation, acceptance, and scoped package checks | agent seconds | grader seconds | input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${armRows.join("\n")}\n\n## Check details\n\n${checkDetails.join("\n")}\n\n## Current minus stock\n\n${Object.entries(delta).map(([key, value]) => `- ${key}: ${value === null ? "not available" : `${value}%`}`).join("\n") || "No paired usage is available."}\n\n## Judge\n\n${judgeSummary}\n\n## Pricing provenance\n\nEstimated USD values apply public list-price API rates to recorded tokens. They are not a subscription charge or invoice, and any premium for the selected service tier is not modeled.\n\n- Source: ${pricing.source}\n- Fetched at: ${pricing.fetched_at}\n- Catalog: ${pricing.catalog_url}\n${pricing.assumptions.map(assumption => `- Assumption: ${assumption}`).join("\n") || "- No pricing assumptions recorded."}\n\n## Warnings\n\n${warnings.map(warning => `- ${warning}`).join("\n") || "- None."}\n\nSee \`report.json\` for per-agent usage records, complete grading evidence, all judge attempts and passes, and the pricing snapshot.\n`;
   await writeFile(markdownPath, md);
   return { jsonPath, markdownPath };
 }
 
 export async function buildReport(runDirectory: string): Promise<{ jsonPath: string; markdownPath: string }> {
-  return withRunLock(resolve(runDirectory), () => buildReportUnlocked(runDirectory));
+  return withRunLock(resolve(runDirectory), async () => {
+    const paths = await buildReportUnlocked(runDirectory);
+    if ((await readState(resolve(runDirectory))).finishing) {
+      try {
+        await collectBundle(runDirectory);
+      } catch (error) {
+        const state = await readState(resolve(runDirectory));
+        if (state.finishing) {
+          state.finishing.status = "failed";
+          state.finishing.error = String(error);
+          await writeState(resolve(runDirectory), state);
+        }
+        await buildReportUnlocked(runDirectory);
+        await finalizeBundle(runDirectory);
+        throw error;
+      }
+      await finalizeBundle(runDirectory);
+
+    }
+    return paths;
+  });
+
 }
 
 export async function invalidateRun(runDirectory: string, reasons: string[]): Promise<void> {

@@ -298,8 +298,25 @@ describe("report completion and winner eligibility", () => {
     expect(report.arms.current.result).toBeNull();
     expect(report.arms.current.attempt.status).toBe("stopped");
     expect(report.arms.current.usage.totals.total_tokens).toBe(34);
-    expect(report.winner).toBe("none");
+  expect(report.winner).toBe("none");
+});
+
+test("large grading logs stay complete in read-only evidence files outside the prompt", async () => {
+  const { run, auth } = await fixtureRun();
+  const state = await readState(run);
+  state.results!.stock!.grade!.router_suite.stdout = "large fixture output\n".repeat(120_000) + "END_OF_FULL_LOG\n";
+  await writeState(run, state);
+  const fake = await fakeDocker({
+    1: verdict("tie", "same source quality"),
+    2: verdict("tie", "same source quality"),
   });
+  const judged = await judgeRun(run, auth, fake.path);
+  expect(judged.status).toBe("complete");
+  const full = JSON.parse(await readFile(join(run, "evaluator/judge/evidence-1/candidate-1.json"), "utf8"));
+  expect(full.router_suite.stdout.endsWith("END_OF_FULL_LOG\n")).toBe(true);
+  expect(full.router_suite.stdout.length).toBeGreaterThan(1_500_000);
+  expect(await readFile(fake.log, "utf8")).toContain("/evidence:ro");
+}, 30_000);
 
   test("retains reversed-pass disagreement without forcing an overall winner", async () => {
     const { run, auth } = await fixtureRun();
@@ -365,3 +382,16 @@ test("stock singleton reports executed checks and complete root plus child usage
   expect(report.measurement_complete).toBe(false);
   expect(report.winner).toBe("none");
 });
+
+test("rejected judge response remains available without another model request", async () => {
+  const { run, auth } = await fixtureRun(false, false);
+  const fake = await fakeDocker({ 1: verdict("candidate-1", "source observations remain useful") });
+  await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("required benchmark gates");
+  const before = await readFile(fake.log, "utf8");
+  const { jsonPath } = await buildReport(run);
+  const report = JSON.parse(await readFile(jsonPath, "utf8"));
+  expect(report.winner).toBe("none");
+  expect(report.rejected_source_assessment.response.rationale).toBe("source observations remain useful");
+  expect(report.judge_complete).toBe(false);
+  expect(await readFile(fake.log, "utf8")).toBe(before);
+}, 30_000);

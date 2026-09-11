@@ -5,7 +5,7 @@ FROM hpatch-bench:run-D9ZuS3 AS benchmark-toolchains
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 # Preserve the benchmark's Go and Node versions without inheriting its old
-# libc, Hpatch executables, wrappers, source, or credentials.
+# libc, Mekugi executables, wrappers, source, or credentials.
 COPY --from=benchmark-toolchains /usr/local/go /usr/local/go
 COPY --from=benchmark-toolchains /usr/local/bin/node /usr/local/bin/node
 ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
@@ -39,6 +39,7 @@ RUN chmod 0755 /usr/local/bin/codex /usr/local/bin/codex-code-mode-host \
         "$CODEX_CODE_MODE_HOST_SHA256" /usr/local/bin/codex-code-mode-host \
         | sha256sum --check --strict \
     && ! command -v hpatch \
+    && ! command -v mekugi \
     && /usr/local/bin/codex --version
 
 ARG BENCH_UID=1001

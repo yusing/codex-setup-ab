@@ -15,13 +15,15 @@ export interface PrepareOptions {
   taskPath: string;
   acceptancePath?: string;
   outputParent?: string;
+  reviewTreatment?: string;
   currentHome: string;
   image: string;
   cpus: string;
   memory: string;
   timeoutSeconds: number;
   currentLauncher?: CodexLauncher;
-  hpatchBinary?: string;
+  mekugiBinary?: string;
+  mekugiShellBinary?: string;
   codexBinary?: string;
 }
 
@@ -111,13 +113,15 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   if (JSON.stringify(await manifest(setupInstalls)) !== JSON.stringify(setupFiles.files)) {
     throw new Error("snapshotted current setup installations changed");
   }
-  if (state.execution.current_launcher === "hpatch") {
-    const hpatch = state.runtime_tools.hpatch_sha256;
-    if (!hpatch || await sha256(join(currentTemplate, ".local/bin/hpatch")) !== hpatch) throw new Error("snapshotted Hpatch changed");
+  if (state.execution.current_launcher === "mekugi") {
+    const mekugi = state.runtime_tools.mekugi_sha256;
+    if (!mekugi || await sha256(join(currentTemplate, ".local/bin/mekugi")) !== mekugi) throw new Error("snapshotted Mekugi changed");
+    const shell = state.runtime_tools.mekugi_shell_sha256;
+    if (!shell || await sha256(join(currentTemplate, ".local/bin/shell")) !== shell) throw new Error("snapshotted Mekugi shell helper changed or is missing");
   }
 }
 
-async function snapshotCurrent(home: string, destination: string, hpatchBinary: string | undefined, miseBinary: string): Promise<string> {
+async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, mekugiShellBinary: string | undefined, miseBinary: string, reviewTreatment?: string): Promise<string> {
   const repository = (await checked(["git", "-C", home, "rev-parse", "--show-toplevel"])).stdout.trim();
   if (await realpath(repository) !== await realpath(home)) throw new Error("--current-home must be the configuration repository root");
   await checked(["git", "clone", "--depth=1", "--no-local", "--no-hardlinks", pathToFileURL(repository).href, destination]);
@@ -144,9 +148,26 @@ async function snapshotCurrent(home: string, destination: string, hpatchBinary: 
   await copyRequired(join(home, ".cache/go-modern-guidelines/v0.1.1"), join(destination, ".cache/go-modern-guidelines/v0.1.1"));
   await copyRequired(miseBinary, join(destination, ".local/bin/mise"));
   await chmod(join(destination, ".local/bin/mise"), 0o755);
-  if (hpatchBinary) {
-    await copyRequired(hpatchBinary, join(destination, ".local/bin/hpatch"));
-    await chmod(join(destination, ".local/bin/hpatch"), 0o755);
+  if (mekugiBinary) {
+    await copyRequired(mekugiBinary, join(destination, ".local/bin/mekugi"));
+    await chmod(join(destination, ".local/bin/mekugi"), 0o755);
+  }
+  if (mekugiShellBinary) {
+    await copyRequired(mekugiShellBinary, join(destination, ".local/bin/shell"));
+    await chmod(join(destination, ".local/bin/shell"), 0o755);
+  }
+  const treatmentFiles: Array<{ source: string; destination: string; before_sha256: string; after_sha256: string }> = [];
+  if (reviewTreatment) {
+    for (const path of [".codex", ".codex/agents"]) {
+      if (!(await lstat(join(destination, path))).isDirectory()) throw new Error(`treatment destination is not a real directory: ${path}`);
+    }
+    for (const [source, target] of REVIEW_TREATMENT_FILES) {
+      const destinationPath = join(destination, target);
+      if (!(await lstat(destinationPath)).isFile()) throw new Error(`treatment destination is not a regular file: ${target}`);
+      const before = await sha256(destinationPath);
+      await copyFile(join(reviewTreatment, source), destinationPath);
+      treatmentFiles.push({ source, destination: target, before_sha256: before, after_sha256: await sha256(destinationPath) });
+    }
   }
   const configPath = join(destination, ".codex/config.toml");
   let config = await readFile(configPath, "utf8");
@@ -155,12 +176,13 @@ async function snapshotCurrent(home: string, destination: string, hpatchBinary: 
   await writeFile(configPath, config, { mode: 0o600 });
   const output = join(dirname(destination), "snapshot-manifest.json");
   await writeFile(output, `${JSON.stringify({ created_at: new Date().toISOString(), source_home: home,
+    review_treatment: reviewTreatment ? { source: reviewTreatment, files: treatmentFiles } : null,
     configuration_repository: { path: repository, commit, tree, tracked_worktree_changes: changed }, adaptations: [
     "configuration repository shallow-cloned independently with its remote removed; current tracked working-tree changes overlaid",
     "project trust entries replaced with /workspace",
-    "untracked home files excluded except explicit runtime supplements; no host auth, session history or Hpatch state copied",
+    "untracked home files excluded except explicit runtime supplements; no host auth, session history or Mekugi state copied",
     "mise copied to /home/ubuntu/.local/bin; its complete installed tool store captured separately",
-    ...(hpatchBinary ? ["Hpatch launcher copied to /home/ubuntu/.local/bin without host Hpatch state"] : []),
+    ...(mekugiBinary ? ["Mekugi launcher and matching shell helper copied to /home/ubuntu/.local/bin without host Mekugi state"] : []),
     "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
     "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
   ], files: await manifest(destination) }, null, 2)}\n`);
@@ -259,13 +281,20 @@ export async function verifySubmodules(repository: string, submodules: NonNullab
   }
 }
 
+const REVIEW_TREATMENT_FILES = [
+  ["parent-agents.md", ".codex/AGENTS.md"],
+  ["review-correctness.toml", ".codex/agents/review-correctness.toml"],
+  ["review-simplify.toml", ".codex/agents/review-simplify.toml"],
+  ["web-reviewer.toml", ".codex/agents/web-reviewer.toml"],
+] as const;
+
 export async function prepare(options: PrepareOptions): Promise<string> {
-  const profile = options.profile ?? "hpatch";
+  const profile = options.profile ?? "mekugi";
   const currentLauncher = options.currentLauncher ?? "codex";
   const reasoningEffort = options.reasoningEffort ?? "medium";
-  if (!["hpatch", "godoxy-icons"].includes(profile)) throw new Error("unknown benchmark profile");
-  if (!["codex", "hpatch"].includes(currentLauncher)) throw new Error("current launcher must be codex or hpatch");
-  if (options.hpatchBinary && currentLauncher !== "hpatch") throw new Error("--hpatch-bin requires --current-launcher hpatch");
+  if (!["mekugi", "godoxy-icons"].includes(profile)) throw new Error("unknown benchmark profile");
+  if (!["codex", "mekugi"].includes(currentLauncher)) throw new Error("current launcher must be codex or mekugi");
+  if (options.mekugiBinary && currentLauncher !== "mekugi") throw new Error("--mekugi-bin requires --current-launcher mekugi");
   if (!["medium", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be medium or xhigh");
   if (profile === "godoxy-icons" && (!options.taskPath || !options.acceptancePath)) throw new Error("godoxy-icons requires explicit task and acceptance");
   if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
@@ -274,6 +303,16 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const uid = process.getuid?.();
   const gid = process.getgid?.();
   if (uid === undefined || gid === undefined || uid <= 0 || gid <= 0) throw new Error("prepare requires a non-root POSIX operator identity");
+  const reviewTreatment = options.reviewTreatment ? await realpath(options.reviewTreatment) : undefined;
+  if (reviewTreatment) {
+    for (const [source] of REVIEW_TREATMENT_FILES) {
+      const path = join(reviewTreatment, source);
+      if (!(await lstat(path)).isFile()) throw new Error(`treatment input is not a regular file: ${source}`);
+      const content = await readFile(path, "utf8");
+      if (!content.trim()) throw new Error(`empty treatment input: ${source}`);
+      if (source.endsWith(".toml")) Bun.TOML.parse(content);
+    }
+  }
   const source = await realpath(options.source);
   const taskPath = await realpath(options.taskPath);
   const acceptancePath = options.acceptancePath ? await realpath(options.acceptancePath) : undefined;
@@ -288,12 +327,19 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const miseStat = await stat(miseBinary);
   if (!miseStat.isFile() || (miseStat.mode & 0o111) === 0) throw new Error(`current setup manager is not executable: ${miseBinary}`);
   const miseSha256 = await sha256(miseBinary);
-  const hpatchBinary = currentLauncher === "hpatch"
-    ? await realpath(options.hpatchBinary ?? join(options.currentHome, "go/bin/hpatch"))
+  if (options.mekugiShellBinary && currentLauncher !== "mekugi") throw new Error("--mekugi-shell-bin requires --current-launcher mekugi");
+  const mekugiBinary = currentLauncher === "mekugi"
+    ? await realpath(options.mekugiBinary ?? join(options.currentHome, "go/bin/mekugi"))
     : undefined;
-  const hpatchStat = hpatchBinary ? await stat(hpatchBinary) : undefined;
-  if (hpatchStat && (!hpatchStat.isFile() || (hpatchStat.mode & 0o111) === 0)) throw new Error(`Hpatch launcher is not executable: ${hpatchBinary}`);
-  const hpatchSha256 = hpatchBinary ? await sha256(hpatchBinary) : undefined;
+  const mekugiStat = mekugiBinary ? await stat(mekugiBinary) : undefined;
+  if (mekugiStat && (!mekugiStat.isFile() || (mekugiStat.mode & 0o111) === 0)) throw new Error(`Mekugi launcher is not executable: ${mekugiBinary}`);
+  const mekugiSha256 = mekugiBinary ? await sha256(mekugiBinary) : undefined;
+  const mekugiShellBinary = mekugiBinary
+    ? await realpath(options.mekugiShellBinary ?? join(dirname(mekugiBinary), "shell"))
+    : undefined;
+  const mekugiShellStat = mekugiShellBinary ? await stat(mekugiShellBinary) : undefined;
+  if (mekugiShellStat && (!mekugiShellStat.isFile() || (mekugiShellStat.mode & 0o111) === 0)) throw new Error(`Mekugi shell helper is not executable: ${mekugiShellBinary}`);
+  const mekugiShellSha256 = mekugiShellBinary ? await sha256(mekugiShellBinary) : undefined;
   const codeModeHostSha256 = await sha256(codeModeHost);
   const currentConfig = await readFile(join(options.currentHome, ".codex/config.toml"), "utf8");
   const configured = (key: string): string | undefined => currentConfig.match(new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, "m"))?.[1];
@@ -342,7 +388,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
 
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
-  const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate, hpatchBinary, miseBinary);
+  const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate, mekugiBinary, mekugiShellBinary, miseBinary, reviewTreatment);
   const currentSetupInstalls = join(runDir, "snapshots/current/mise/installs");
   await copyRequired(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls);
   const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json");
@@ -383,7 +429,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       current_setup_files: relative(runDir, currentSetupFiles), current_setup_files_sha256: await sha256(currentSetupFiles),
       current_setup_mise_sha256: miseSha256,
       codex_code_mode_host_sha256: codeModeHostSha256,
-      hpatch_source: hpatchBinary, hpatch_sha256: hpatchSha256,
+      mekugi_source: mekugiBinary, mekugi_sha256: mekugiSha256,
+      mekugi_shell_source: mekugiShellBinary, mekugi_shell_sha256: mekugiShellSha256,
       codex_code_mode_host_size: codeModeHostStat.size,
     },
     operator: { uid, gid },

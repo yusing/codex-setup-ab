@@ -2,7 +2,8 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { prepare } from "./prepare";
-import { preflightRun, runPair } from "./runner";
+import { preflightRun } from "./runner";
+import { finishBenchmark, runBenchmark } from "./workflow";
 import { judgeRun } from "./judge";
 import { buildReport, invalidateRun } from "./report";
 
@@ -18,29 +19,32 @@ Usage:
   codex-ab prepare [options]
   codex-ab preflight --run-dir DIR [--docker-bin FILE]
   codex-ab run --run-dir DIR --confirm-paid-inference [options]
+  codex-ab finish --run-dir DIR --confirm-paid-inference [options]
   codex-ab judge --run-dir DIR --confirm-paid-inference [options]
   codex-ab report --run-dir DIR
   codex-ab invalidate --run-dir DIR --reason TEXT
 
 Prepare options:
-  --profile NAME        hpatch (default) or godoxy-icons
+  --profile NAME        mekugi (default) or godoxy-icons
   --reasoning-effort N   medium (default) or xhigh
-  --source DIR          source Git repository (default /home/ubuntu/projects/hpatch)
+  --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
   --task FILE           task prompt (default ./task.md)
   --acceptance FILE     evaluator-only Go test (default ./acceptance_test.go)
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --current-home DIR    configuration Git repository root (default current home)
-  --current-launcher N  codex (default) or hpatch for the current arm
-  --hpatch-bin FILE     Hpatch executable used by --current-launcher hpatch
+  --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
+  --current-launcher N  codex (default) or mekugi for the current arm
+  --mekugi-bin FILE     Mekugi executable used by --current-launcher mekugi
+  --mekugi-shell-bin FILE  matching shell helper (default shell beside Mekugi)
   --codex-bin FILE      standalone Codex executable used to build the image
   --image NAME          prebuilt bare-Codex image (default codex-ab:0.1.0)
   --timeout SECONDS     per agent and judge pass (default 1800)
   --cpus COUNT          identical per-container CPU limit (default 2)
   --memory LIMIT        identical per-container memory limit (default 4g)
 
-Run/judge options:
+Run/judge options (run includes automatic source assessment and reporting):
   --auth-file FILE      auth copied privately into isolated homes
   --docker-bin FILE     Docker-compatible fixture or executable
   --arm NAME            run only stock or current (run only; default is both)
@@ -50,9 +54,10 @@ Started or finished attempts are never resumed or restarted; prepare a new exper
 
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "current-launcher", "hpatch-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "review-treatment", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
+    finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     report: ["run-dir"],
     invalidate: ["run-dir", "reason"],
@@ -89,13 +94,15 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const timeout = Number(string(o, "timeout", "1800"));
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
     const runDir = await prepare({
-      profile: string(o, "profile", "hpatch") as import("./types").BenchmarkProfile,
+      profile: string(o, "profile", "mekugi") as import("./types").BenchmarkProfile,
       reasoningEffort: string(o, "reasoning-effort", "medium") as import("./types").ReasoningEffort,
-      source: string(o, "source", "/home/ubuntu/projects/hpatch"), baseCommit: string(o, "base", DEFAULT_BASE),
+      source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
       acceptancePath: string(o, "acceptance", resolve("acceptance_test.go")), outputParent: o["output-parent"] as string | undefined,
+      reviewTreatment: o["review-treatment"] as string | undefined,
       currentLauncher: string(o, "current-launcher", "codex") as import("./types").CodexLauncher,
-      hpatchBinary: o["hpatch-bin"] as string | undefined,
+      mekugiBinary: o["mekugi-bin"] as string | undefined,
+      mekugiShellBinary: o["mekugi-shell-bin"] as string | undefined,
       currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),
       cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
       codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),
@@ -103,15 +110,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     process.stdout.write(`${runDir}\n`);
     return 0;
   }
-  if (command === "run" || command === "judge") {
+  if (command === "run" || command === "judge" || command === "finish") {
     if (o["confirm-paid-inference"] !== true) throw new Error(`${command} launches model inference; pass --confirm-paid-inference to confirm intentional execution`);
     const runDir = string(o, "run-dir");
     const auth = string(o, "auth-file", join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"));
     if (command === "run") {
       const arm = o.arm;
       if (arm !== undefined && arm !== "current" && arm !== "stock") throw new Error("--arm must be stock or current");
-      await runPair({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined, arm });
+      await runBenchmark({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined, arm });
     }
+    else if (command === "finish") await finishBenchmark({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined });
     else await judgeRun(runDir, auth, o["docker-bin"] as string | undefined);
     process.stdout.write(`${resolve(runDir)}\n`);
     return 0;

@@ -1,5 +1,5 @@
-export type BenchmarkProfile = "hpatch" | "godoxy-icons";
-export type CodexLauncher = "codex" | "hpatch";
+export type BenchmarkProfile = "mekugi" | "godoxy-icons";
+export type CodexLauncher = "codex" | "mekugi";
 export type ReasoningEffort = "medium" | "xhigh";
 
 export type ArmName = "stock" | "current";
@@ -34,6 +34,8 @@ export interface ArmResult {
   grade?: {
     preparation: CommandEvidence;
     acceptance: CommandEvidence;
+    supplemental_infrastructure_error?: string;
+    supplemental_repeat?: CommandEvidence;
     router_suite: CommandEvidence;
     elapsed_ms: number;
     passed: boolean;
@@ -70,8 +72,10 @@ export interface RunState {
     current_setup_files_sha256: string;
     current_setup_mise_sha256: string;
     codex_code_mode_host_sha256: string;
-    hpatch_source?: string;
-    hpatch_sha256?: string;
+    mekugi_source?: string;
+    mekugi_sha256?: string;
+    mekugi_shell_source?: string;
+    mekugi_shell_sha256?: string;
     codex_code_mode_host_size: number;
   };
   operator: { uid: number; gid: number };
@@ -90,6 +94,14 @@ export interface RunState {
     status: "started" | "stopped" | "failed";
     error?: string;
   }>>;
+  finishing_history?: NonNullable<RunState["finishing"]>[];
+  finishing?: {
+    status: "running" | "complete" | "failed";
+    started_at: string;
+    finished_at?: string;
+    error?: string;
+    bundle_path: string;
+  };
   judge?: JudgeReport;
 }
 
