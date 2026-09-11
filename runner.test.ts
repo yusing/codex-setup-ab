@@ -49,6 +49,7 @@ async function fixtureHome(): Promise<string> {
   await file(join(h, ".cache/skills-mgr/remote-skills/entries/modern.json"), JSON.stringify({ name: "use-modern-go", content: "content/current-modern" }));
   await file(join(h, ".cache/skills-mgr/remote-skills/content/current-modern/scripts/VERSION"), "v0.1.1\n");
   await file(join(h, ".cache/skills-mgr/remote-skills/content/current-modern/SKILL.md"), "full remote body\n");
+  await file(join(h, ".local/share/mise/migrations/runtime-symlink-dirs-v2"), "ok\n");
   await file(join(h, ".cache/go-modern-guidelines/v0.1.1/go-modern-guidelines"), "#!/bin/sh\necho guideline\n", 0o755);
   await file(join(h, ".local/share/mise/installs/go-github-com-yusing-skills-mgr/0.0.0-20260908072306-37a730da5ab5/bin/skills-mgr"), "fixture\n", 0o755);
   await file(join(h, ".local/share/mise/installs/aqua-rtk-ai-rtk/0.48.0/rtk"), "fixture\n", 0o755);
@@ -133,6 +134,8 @@ test("prepare makes base-only independent clones and an audited secret-free snap
   expect(manifest).toContain(".cache/skills-mgr/remote-skills/content/current-modern/SKILL.md");
   expect(manifest).toContain(".cache/go-modern-guidelines/v0.1.1/go-modern-guidelines");
   expect(await readFile(join(run, "snapshots/current/home/ubuntu/new-guidance/committed.md"), "utf8")).toBe("automatically cloned guidance\n");
+  expect(await readFile(join(run, "snapshots/current/home/ubuntu/.local/share/mise/migrations/runtime-symlink-dirs-v2"), "utf8")).toBe("ok\n");
+  expect(manifest).toContain(".local/share/mise/migrations/runtime-symlink-dirs-v2");
   expect(state.runtime_tools.current_setup_mise_sha256).toMatch(/^[0-9a-f]{64}$/);
   expect(state.runtime_tools.current_setup_files_sha256).toMatch(/^[0-9a-f]{64}$/);
   expect(await Bun.file(join(run, state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner")).exists()).toBe(true);
@@ -807,3 +810,14 @@ test("regrade reporting failure cannot leave a successful status", async () => {
   expect(state.regrade?.error).toContain("fixture reporting failure");
   expect(state.results?.stock?.grade?.passed).toBe(true);
 }, 30_000);
+
+test("preflight rejects mise migration warnings even when mise exits successfully", async () => {
+  const run = await prepared();
+  const fake = await fakeOwnedDocker(0);
+  const script = await readFile(fake.path, "utf8");
+  await writeFile(fake.path, script.replace('    case "$name" in', `    case "$name" in
+      *-preflight-setup) printf '%s\\n' '[WARN] migrate: failed to remove symlink: readonly tool store' >&2 ;;`));
+  await expect(preflightRun(run, fake.path)).rejects.toThrow("mise migration failed");
+  const state = await readState(run);
+  expect(state.arm_attempts?.current).toBeUndefined();
+});

@@ -146,6 +146,12 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   }
   await copyRemoteSkillCache(home, destination);
   await copyRequired(join(home, ".cache/go-modern-guidelines/v0.1.1"), join(destination, ".cache/go-modern-guidelines/v0.1.1"));
+  // The read-only tool store has already been migrated on the source home.
+  // Preserve its completion records so mise does not try to migrate it again.
+  const miseMigrations = ".local/share/mise/migrations";
+  if (await exists(join(home, miseMigrations))) {
+    await copyRequired(join(home, miseMigrations), join(destination, miseMigrations));
+  }
   await copyRequired(miseBinary, join(destination, ".local/bin/mise"));
   await chmod(join(destination, ".local/bin/mise"), 0o755);
   if (mekugiBinary) {
@@ -181,7 +187,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     "configuration repository shallow-cloned independently with its remote removed; current tracked working-tree changes overlaid",
     "project trust entries replaced with /workspace",
     "untracked home files excluded except explicit runtime supplements; no host auth, session history or Mekugi state copied",
-    "mise copied to /home/ubuntu/.local/bin; its complete installed tool store captured separately",
+    "mise copied to /home/ubuntu/.local/bin with its migration completion records; its complete installed tool store captured separately",
     ...(mekugiBinary ? ["Mekugi launcher and matching shell helper copied to /home/ubuntu/.local/bin without host Mekugi state"] : []),
     "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
     "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
