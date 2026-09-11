@@ -113,6 +113,28 @@ async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi"
     mekugiBinary: currentLauncher === "mekugi" ? join(home, "go/bin/mekugi") : undefined });
 }
 
+test("skills-mgr profile uses root package checks and evaluator-only acceptance", async () => {
+  await expect(main(["prepare", "--profile", "skills-mgr-bundle"])).rejects.toThrow("requires explicit");
+  const run = await prepare({ profile: "skills-mgr-bundle", source, baseCommit: base, forbiddenCommit: future,
+    taskPath: task, acceptancePath: acceptance, outputParent: root, currentHome: home,
+    image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    codexBinary: join(home, ".local/bin/codex") });
+  const fake = await fakeOwnedDocker(0);
+  const auth = join(root, "bundle-auth.json");
+  await file(auth, "{}", 0o600);
+  await runPair({ runDir: run, authFile: auth, dockerBin: fake.path, arm: "current" });
+  const log = await readFile(fake.log, "utf8");
+  expect(log).toContain("cp --remove-destination /acceptance.go ab_acceptance_test.go");
+  expect(log).toContain("go test -json . -run ^TestABAcceptance -count=1");
+  expect(log).toContain("go test -json . -count=2 -timeout=180s");
+  expect(log).not.toContain("plugins/tools.ts");
+  expect(log).not.toContain("./internal/router");
+  const warm = log.split("\n").filter(line => line.includes(" create ") && line.includes("-agent-warm "));
+  expect(warm).toHaveLength(1);
+  expect(warm[0]).not.toContain("/acceptance.go");
+  expect((await readState(run)).results.current?.grade?.passed).toBe(true);
+});
+
 test("prepare makes base-only independent clones and an audited secret-free snapshot", async () => {
   const run = await prepared();
   const state = await readState(run);

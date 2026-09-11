@@ -29,7 +29,7 @@ Usage:
   codex-ab invalidate --run-dir DIR --reason TEXT
 
 Prepare options:
-  --profile NAME        mekugi (default) or godoxy-icons
+  --profile NAME        mekugi (default), godoxy-icons, or skills-mgr-bundle
   --reasoning-effort N   medium (default) or xhigh
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit
@@ -37,6 +37,7 @@ Prepare options:
   --task FILE           task prompt (default ./task.md)
   --acceptance FILE     evaluator-only Go test (default ./acceptance_test.go)
   --output-parent DIR   parent for mktemp run directory (default system temp)
+  --snapshot-base DIR   completed run whose unchanged installed tools can be hard-linked
   --current-home DIR    configuration Git repository root (default current home)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
   --current-launcher N  codex (default) or mekugi for the current arm
@@ -58,7 +59,7 @@ Started or finished attempts are never resumed or restarted; prepare a new exper
 
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "review-treatment", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "snapshot-base", "review-treatment", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -97,6 +98,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   const o = options(command, argv.slice(1));
   if (command === "prepare") {
     if (o.profile === "godoxy-icons" && (typeof o.task !== "string" || typeof o.acceptance !== "string")) throw new Error("godoxy-icons requires explicit --task and --acceptance");
+    if (o.profile === "skills-mgr-bundle" && ["source", "base", "forbidden", "task", "acceptance"].some(key => typeof o[key] !== "string")) {
+      throw new Error("skills-mgr-bundle requires explicit --source, --base, --forbidden, --task, and --acceptance");
+    }
     const timeout = Number(string(o, "timeout", "1800"));
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
     const runDir = await prepare({
@@ -105,6 +109,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
       acceptancePath: string(o, "acceptance", resolve("acceptance_test.go")), outputParent: o["output-parent"] as string | undefined,
+      snapshotBase: o["snapshot-base"] as string | undefined,
       reviewTreatment: o["review-treatment"] as string | undefined,
       currentLauncher: string(o, "current-launcher", "codex") as import("./types").CodexLauncher,
       mekugiBinary: o["mekugi-bin"] as string | undefined,

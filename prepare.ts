@@ -3,10 +3,12 @@ import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { checked, exec } from "./process";
+import { snapshotToolStore } from "./snapshot";
 import { sha256, writeState } from "./state";
 import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from "./types";
 
 export interface PrepareOptions {
+  snapshotBase?: string;
   profile?: BenchmarkProfile;
   reasoningEffort?: ReasoningEffort;
   source: string;
@@ -298,7 +300,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const profile = options.profile ?? "mekugi";
   const currentLauncher = options.currentLauncher ?? "codex";
   const reasoningEffort = options.reasoningEffort ?? "medium";
-  if (!["mekugi", "godoxy-icons"].includes(profile)) throw new Error("unknown benchmark profile");
+  if (!["mekugi", "godoxy-icons", "skills-mgr-bundle"].includes(profile)) throw new Error("unknown benchmark profile");
   if (!["codex", "mekugi"].includes(currentLauncher)) throw new Error("current launcher must be codex or mekugi");
   if (options.mekugiBinary && currentLauncher !== "mekugi") throw new Error("--mekugi-bin requires --current-launcher mekugi");
   if (!["medium", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be medium or xhigh");
@@ -306,6 +308,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
     throw new Error("godoxy-icons benchmark identity mismatch");
   }
+  if (profile === "skills-mgr-bundle" && !options.acceptancePath) throw new Error("skills-mgr-bundle requires explicit acceptance");
   const uid = process.getuid?.();
   const gid = process.getgid?.();
   if (uid === undefined || gid === undefined || uid <= 0 || gid <= 0) throw new Error("prepare requires a non-root POSIX operator identity");
@@ -396,7 +399,17 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   await mkdir(currentTemplate, { recursive: true });
   const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate, mekugiBinary, mekugiShellBinary, miseBinary, reviewTreatment);
   const currentSetupInstalls = join(runDir, "snapshots/current/mise/installs");
-  await copyRequired(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls);
+  let previousInstalls: string | undefined;
+  if (options.snapshotBase) {
+    const previousRun = await realpath(options.snapshotBase);
+    const previousState = JSON.parse(await readFile(join(previousRun, "run.json"), "utf8")) as RunState;
+    if (previousState.status !== "complete") throw new Error("snapshot base must be a completed benchmark");
+    previousInstalls = join(previousRun, "snapshots/current/mise/installs");
+  }
+  progress("snapshotting installed tools incrementally");
+  const snapshotStats = await snapshotToolStore(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls, previousInstalls);
+  await writeFile(join(runDir, "snapshots/current/incremental.json"), `${JSON.stringify({ base: options.snapshotBase ?? null, ...snapshotStats }, null, 2)}\n`);
+  progress(`tool snapshot: reused ${snapshotStats.linked} files (${snapshotStats.linkedBytes} bytes), copied ${snapshotStats.copied} files (${snapshotStats.copiedBytes} bytes)`);
   const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json");
   await writeFile(currentSetupFiles, `${JSON.stringify({ files: await manifest(currentSetupInstalls) }, null, 2)}\n`);
 

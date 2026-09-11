@@ -1,4 +1,4 @@
-export type BenchmarkProfile = "mekugi" | "godoxy-icons";
+export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle";
 export type CodexLauncher = "codex" | "mekugi";
 export type ReasoningEffort = "medium" | "xhigh";
 
