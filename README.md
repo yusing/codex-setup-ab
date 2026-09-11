@@ -26,7 +26,7 @@ docker build \
 ./dist/codex-ab --version
 ```
 
-No model request occurs during the build or `prepare`. The `run` command includes two independent source-assessment requests after a completed pair; `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
+No model request occurs during the build or `prepare`. The `run` command includes two independent source-assessment passes after a completed pair, with at most three Sol launches per pass on capacity errors; `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
 
 ## Prepare an isolated pair
 
@@ -103,6 +103,12 @@ For both profiles, grading requires each declared `TestABAcceptance` test to emi
 
 The runner also repeats the scoped package tests twice in one process, offline, against read-only evaluator source. These supplemental checks have a 180-second test timeout and do not replace required gates. A test failure is advisory; an infrastructure or cleanup failure retains required-check evidence but prevents judging and successful workflow completion. Required grading time, supplemental time, and source-assessment usage remain separate. Task-specific extra contracts belong in the evaluator test selected before inference, not in manual post-run work.
 
+
+The workflow is hybrid: grading, usage accounting, token/time/cost breakdowns, report generation,
+and retry decisions are deterministic code. Only candidate implementation and qualitative source
+inspection use models. No conversational subagents are needed to grade, judge, or explain the
+recorded performance measurements.
+
 ## Blind judge
 
 The `run` command performs this step automatically after both grading gates complete. For an older complete pair without a judge attempt:
@@ -113,19 +119,70 @@ The `run` command performs this step automatically after both grading gates comp
 
 The gpt-5.6-sol judge uses high reasoning and the fast service tier (normalized by Codex to the priority request tier). It receives the task, anonymous patches, changed-file lists, test evidence, and read-only anonymous evaluator source directories for inspecting affected contracts and callers. It does not receive arm labels, costs, the original solution, agent logs, or either agent's writable filesystem. Two independent stock-config homes judge opposite presentation orders. Each returns validated JSON scores for correctness (50%), completeness (20%), maintainability (20%), and test quality (10%), plus evidence, issues, and a winner. Critical findings override totals; a candidate that failed any required gate cannot win. Disagreement is reported rather than forced into consensus. Prompts include check summaries and references to complete, read-only sanitized logs. Large logs stay available without filling the prompt or being truncated. Oversized patches or summary packs still fail explicitly. Reports created before this setting change retain their recorded medium/default judge metadata.
 
+Sol capacity errors retry automatically within the active judge command: at most three launches
+per pass, with 5-second and 15-second delays. Each launch gets a fresh isolated home and distinct
+logs; the state and report retain every attempt and its usage. A completed pass is never repeated.
+Cancellation interrupts the delay and prevents another launch. Other failures, timeouts, invalid
+verdicts, and exhausted retries stop with the available evidence preserved. There is no automatic
+model substitution or conversational-agent fallback. Once the command exits, it cannot restart a
+judge attempt; historical failed attempts remain unchanged.
+
 ## Report
 
 ```sh
 ./dist/codex-ab report --run-dir "$run_dir"
 ```
 
+The command prints one result path: `reports/report.md`. This self-contained Markdown includes
+the task and setup, behavioral explanation with inline event evidence, measurements, checks,
+source judgments, and limitations. JSON files and the checksummed bundle retain machine-readable
+evidence; no second explanation or source-review Markdown is needed. Refreshing a finishing bundle
+removes the former generated `SOURCE-REVIEW.md` and `COMPARISON.md` duplicates.
+
+To leave a historical run and its original reports unchanged, export elsewhere using its recorded pricing:
+
+```sh
+./dist/codex-ab report --run-dir "$run_dir" --output-dir ./results/refreshed-result
+```
+
+If supplemental source assessments were already recorded separately, add
+`--source-assessments FILE` to include them in the same Markdown. The JSON input contains
+`passes`, an array of two objects with `presentation` (candidate-1/candidate-2 arm labels,
+`["stock", "current"]` then the reverse, or vice versa) and `response` (the original judge-schema
+JSON with scores, evidence, issues, winner, and rationale). The report validates both responses,
+recalculates weighted scores, records the input hash, and shows agreement or disagreement inline.
+Imported assessments do not restart inference, replace the official judge, supply missing usage,
+or change overall winner eligibility. They are supplied evidence, not an operational fallback.
+
 The runner automatically writes `reports/report.md`, `reports/report.json`, and a checksummed `reports/bundle/` after execution, including partial runs. The bundle contains setup identities, task and evaluator controls, captured patches, interaction and role audits, source assessment, paired comparison, supplemental repeat results, and integrity checks. Encrypted interaction content remains unknown; command waits are counted separately from reviewer-status polling. The standalone `report` command refreshes the standard report and an existing finishing bundle without starting inference. Readable rejected judge responses are retained separately as unvalidated evidence, never as an eligible winner. It includes raw, cached, cache-write, output, reasoning-output, and total tokens for root and child agents; estimated public-list API cost; command time; agent and grader wall time; gate status; B-minus-A percentages; both raw judge passes; and a separate judge cost. Pricing is fetched and snapshotted once per run, with source, timestamp, assumptions, and warnings. If usage or required checks are incomplete, the report shows no overall winner.
+
+The behavioral explanation matches captured review instructions against visible execution events.
+It recognizes isolated reviewer preparation, review gated until after validation,
+finding/edit/test/re-review cycles, and copied-workspace test overhead. Every supported mechanism
+includes its event locations and limits. Edits require completed file-change records. Test
+classification requires a single recognized command; compound scripts, quoted examples, and
+unsupported shell syntax are not treated as proof of individual operations or successful reads.
+Encrypted messages are not decoded or labeled as known
+readiness signals: their ordering can support a qualified handoff inference, not a claim about
+their contents. Unrecognized workflows and cache-miss causes remain explicitly unknown. Rules do
+not call a model, assume every extra action is waste, or estimate counterfactual savings.
+
+The programmatic performance section separates root and child usage, model-request counts,
+mean and peak input context, uncached/cached/output cost components, and matched outer-tool
+blocking spans. JSON includes these diagnostics and current-minus-stock role/cost differences.
+Request IDs are deduplicated before accounting; cumulative-only usage leaves request counts
+unknown. Tool intervals end at the first matched output and are unioned within each session,
+not added across overlapping agents. Additional or unmatched outputs mark timing partial.
+A report refresh requires no model calls. The numbers locate observed overhead, but do not infer
+causal blame for a specific instruction or launcher, decode encrypted messages, or replace
+source-quality inspection. Missing judge-attempt usage remains unknown even if a later attempt
+succeeds; the report never fabricates a complete cost or overall winner.
 
 If execution completed but finishing failed before a judge request, fix the reported issue and use `finish --run-dir DIR --confirm-paid-inference`. It archives the failed bundle, preserves the same candidates and grades, runs only a not-yet-started judge, and regenerates the report bundle. It never restarts either A/B agent or a started judge attempt. A completed judge can be reused when only artifact generation failed.
 
 For post-hoc troubleshooting deductions, use `remeter --run-dir DIR --exclusions FILE`. The JSON file contains `arm` (`stock` or `current`), `rationale`, and `responses` and `commands` arrays of `{ "id": "...", "reason": "..." }`. IDs must match recorded response and command IDs. The command writes a separate `reports/remeter-*/` accounting report using the recorded pricing, retaining the original run and reports. It does not rerun agents, rewrite later context usage, or claim an adjusted wall time.
 
-For a confirmed evaluator infrastructure fault, fix the runner and use `regrade --run-dir DIR --reason "concrete correction"`. This archives the previous report bundle and grading state, verifies unchanged task/test/Bun inputs and captured patches, then grades fresh evaluator workspaces with the pinned image and evaluator-only caches. It refreshes the reports without rerunning agents or making model requests. Earlier judge results are marked stale because their test evidence has changed; their original output and cost remain preserved. This command cannot clear run-wide isolation or input invalidity.
+For a confirmed evaluator infrastructure fault, fix the runner and use `regrade --run-dir DIR --reason "concrete correction"`. An evaluator interface/format gap can be corrected with `--acceptance FILE`: the named functional checks must remain the same, the original evaluator and grades are archived, and old/new control hashes are recorded. This also accepts otherwise-complete runs marked partial solely for evaluator incompatibility. Review the correction before regrading; it must not relax the task to favor a candidate. This archives the previous report bundle and grading state, verifies the original task/test/Bun inputs and captured patches, and records any explicitly supplied evaluator revision, then grades fresh evaluator workspaces with the pinned image and evaluator-only caches. It refreshes the reports without rerunning agents or making model requests. Earlier judge results are marked stale because their test evidence has changed; their original output and cost remain preserved. This command cannot clear run-wide isolation or input invalidity.
 
 Evaluator-declared unsupported CLI or archive formats are reported as **unassessed**, not failed implementations. They stop automatic judging and require evaluator coverage to be corrected before a quality conclusion.
 

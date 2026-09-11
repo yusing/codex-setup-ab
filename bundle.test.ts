@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { auditSession } from "./bundle";
+import { auditSession, finalizeBundle } from "./bundle";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 test("interaction audit separates command waits, collaboration and encrypted payloads without copying bodies", () => {
   const events = [
@@ -20,3 +23,19 @@ test("interaction audit separates command waits, collaboration and encrypted pay
   expect(JSON.stringify(audit)).not.toContain("private");
 });
 
+test("finishing keeps one result Markdown and removes only superseded generated duplicates", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "single-report-test-"));
+  try {
+    const bundle = join(directory, "reports/bundle");
+    await mkdir(bundle, { recursive: true });
+    await writeFile(join(directory, "run.json"), "{}");
+    await writeFile(join(directory, "reports/report.json"), "{}");
+    await writeFile(join(directory, "reports/report.md"), "complete result");
+    for (const name of ["SOURCE-REVIEW.md", "COMPARISON.md", "task.md"]) await writeFile(join(bundle, name), name);
+    await finalizeBundle(directory);
+    expect((await readdir(bundle)).filter(name => name.endsWith(".md")).sort()).toEqual(["report.md", "task.md"]);
+    expect(await readFile(join(bundle, "report.md"), "utf8")).toBe("complete result");
+    expect(await readFile(join(bundle, "task.md"), "utf8")).toBe("task.md");
+    expect(await readFile(join(bundle, "MANIFEST.sha256"), "utf8")).not.toContain("SOURCE-REVIEW");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

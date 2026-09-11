@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { judgeRun } from "./judge";
@@ -92,11 +92,11 @@ function verdict(winner: "candidate-1" | "candidate-2" | "tie" | "none", rationa
   };
 }
 
-async function fakeDocker(responses: Record<number, Record<string, unknown>>, failures: number[] = [], cancelPass?: number, cancelCreatePass?: number): Promise<{ path: string; log: string }> {
+async function fakeDocker(responses: Record<number, Record<string, unknown>>, failures: number[] = [], cancelPass?: number, cancelCreatePass?: number, capacityFailures: number[] = []): Promise<{ path: string; log: string }> {
   const directory = join(root, `fake-${Math.random().toString(16).slice(2)}`);
   await mkdir(directory, { recursive: true });
   const log = join(directory, "calls.jsonl");
-  await file(join(directory, "config.json"), JSON.stringify({ responses, failures, cancelPass, cancelCreatePass }));
+  await file(join(directory, "config.json"), JSON.stringify({ responses, failures, cancelPass, cancelCreatePass, capacityFailures }));
   const path = join(directory, "docker.ts");
   await file(path, `#!/usr/bin/env bun
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -152,6 +152,7 @@ const events = [
 await mkdir(join(home, ".codex/sessions"), { recursive: true });
 await writeFile(join(home, ".codex/sessions/judge.jsonl"), events.map(event => JSON.stringify(event)).join("\\n") + "\\n");
 if (config.cancelPass === count) { process.kill(process.ppid, "SIGTERM"); await Bun.sleep(200); process.exit(7); }
+if (config.capacityFailures.includes(count)) { process.stdout.write(JSON.stringify({ type: "error", message: "Selected model is at capacity. Please try a different model." }) + "\\n"); process.exit(1); }
 if (config.failures.includes(count)) process.exit(7);
 const response = config.responses[String(count)];
 process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(response) } }) + "\\n");
@@ -234,6 +235,75 @@ describe("judge isolation and immutable progress", () => {
     expect(calls.filter(call => call[0] === "start")).toHaveLength(0);
     expect(calls).toContainEqual(["rm", "--force", "codex-ab-fixture-run-judge-1"]);
   });
+
+  test("retries capacity in fresh homes, preserves every launch and meters all attempts", async () => {
+    const { run, auth } = await fixtureRun();
+    const fake = await fakeDocker({ 2: verdict("candidate-1", "first"), 3: verdict("candidate-2", "second") }, [], undefined, undefined, [1]);
+    const judged = await judgeRun(run, auth, fake.path);
+    expect(judged.status).toBe("complete");
+    expect(judged.attempts?.map(item => [item.pass, item.attempt, item.status])).toEqual([[1, 1, "failed"], [1, 2, "complete"], [2, 1, "complete"]]);
+    expect(judged.usage_homes).toHaveLength(3);
+    expect(new Set(judged.usage_homes).size).toBe(3);
+    expect(await readFile(join(run, judged.attempts![0]!.stdout_path), "utf8")).toContain("at capacity");
+    expect(await readFile(join(run, judged.attempts![1]!.stdout_path), "utf8")).toContain("first");
+    const paths = await buildReport(run);
+    const report = await Bun.file(paths.jsonPath).json();
+    expect(report.judge.usage.totals.total_tokens).toBe(48);
+    expect(report.measurement_complete).toBe(true);
+    expect(report.performance_breakdown.current_minus_stock.total_tokens).toBe(10);
+    expect(await readFile(paths.markdownPath, "utf8")).toContain("## Programmatic performance breakdown");
+    expect(report.winner).toBe("stock");
+    await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("cannot be resumed or retried");
+    // Capacity can fail before any usage record exists. Keep both returned assessments,
+    // but never turn the unmetered failed launch into an assumed zero-cost attempt.
+    await file(join(run, judged.usage_homes[0]!, "sessions/judge.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "judge-1" } })}\n`);
+    const incomplete = await Bun.file((await buildReport(run)).jsonPath).json();
+    expect(incomplete.judge.result.passes).toHaveLength(2);
+    expect(incomplete.judge.usage.complete).toBe(false);
+    expect(incomplete.judge.usage.totals.estimated_api_usd).toBeNull();
+    expect(incomplete.measurement_complete).toBe(false);
+    expect(incomplete.winner).toBe("none");
+  }, 15_000);
+
+  test("cancellation during capacity backoff prevents another launch", async () => {
+    const { run, auth } = await fixtureRun();
+    const fake = await fakeDocker({}, [], undefined, undefined, [1]);
+    const driver = join(root, "backoff-cancel.ts");
+    await file(driver, `import { judgeRun } from ${JSON.stringify(resolve(import.meta.dir, "judge.ts"))};
+try { await judgeRun(process.argv[2], process.argv[3], process.argv[4]); } catch {}
+`);
+    const child = Bun.spawn([process.execPath, driver, run, auth, fake.path], { stdout: "pipe", stderr: "pipe" });
+    const reader = child.stderr.getReader();
+    let text = "";
+    try {
+      while (!text.includes("retrying in")) {
+        const next = await reader.read();
+        if (next.done) throw new Error("judge exited before backoff");
+        text += new TextDecoder().decode(next.value);
+      }
+      child.kill("SIGTERM");
+      expect(await child.exited).toBe(0);
+      const state = await readState(run);
+      expect(state.judge?.status).toBe("canceled");
+      expect(state.judge?.attempts).toHaveLength(1);
+      const calls = (await readFile(fake.log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
+      expect(calls.filter(call => call[0] === "start")).toHaveLength(1);
+    } finally {
+      reader.releaseLock();
+      if (child.exitCode === null) { child.kill(); await child.exited; }
+    }
+  }, 10_000);
+
+  test("stops after three capacity attempts without launching the other pass", async () => {
+    const { run, auth } = await fixtureRun();
+    const fake = await fakeDocker({}, [], undefined, undefined, [1, 2, 3]);
+    await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("model at capacity");
+    const state = await readState(run);
+    expect(state.judge?.status).toBe("failed");
+    expect(state.judge?.attempts?.map(item => item.status)).toEqual(["failed", "failed", "failed"]);
+    expect(state.judge?.passes).toHaveLength(0);
+    expect(state.judge?.usage_homes).toHaveLength(3);
+  }, 30_000);
 
   test("rejects schema-invalid output without coercion", async () => {
     const { run, auth } = await fixtureRun();
@@ -381,6 +451,71 @@ test("stock singleton reports executed checks and complete root plus child usage
   expect(report.arms.stock.usage.totals.input_tokens).toBe(60);
   expect(report.measurement_complete).toBe(false);
   expect(report.winner).toBe("none");
+});
+
+test("report exports one self-contained Markdown without modifying historical state or reports", async () => {
+  const { run } = await fixtureRun();
+  await file(join(run, "control/task.md"), "Implement the requested behavior.\nKeep it local.\n");
+  await file(join(run, "reports/report.md"), "original report");
+  const stateBefore = await readFile(join(run, "run.json"), "utf8");
+  const directory = join(root, "export");
+  const result = Bun.spawn([process.execPath, resolve(import.meta.dir, "cli.ts"), "report", "--run-dir", run, "--output-dir", directory], { stdout: "pipe", stderr: "pipe" });
+  const stdout = await new Response(result.stdout).text();
+  expect(await result.exited).toBe(0);
+  expect(stdout).toBe(`${join(directory, "report.md")}\n`);
+  const markdown = await readFile(join(directory, "report.md"), "utf8");
+  for (const text of ["## Why the observed workflow added work", "## Task and setup", "> Implement the requested behavior.", "## Check details", "## Programmatic performance breakdown", "## Judge"]) expect(markdown).toContain(text);
+  expect(markdown).toContain("> Implement the requested behavior.\n> Keep it local.");
+  expect(markdown).not.toMatch(/\]\([^)]*(?:ANALYSIS|PERFORMANCE|SOURCE-REVIEW|COMPARISON)\.md\)/);
+  expect(await readFile(join(run, "run.json"), "utf8")).toBe(stateBefore);
+  expect(await readFile(join(run, "reports/report.md"), "utf8")).toBe("original report");
+  expect((await Bun.file(join(directory, "report.json")).json()).workflow_mechanisms).toBeDefined();
+  await expect(buildReport(run, { outputDirectory: join(run, "export") })).rejects.toThrow("outside the source run");
+});
+
+test("supplied source assessments are rescored and rendered inline without replacing the official judge", async () => {
+  const { run } = await fixtureRun();
+  const input = join(root, "assessments.json");
+  const passes = [
+    { presentation: ["stock", "current"], response: verdict("candidate-1", "first assessment evidence") },
+    { presentation: ["current", "stock"], response: verdict("candidate-1", "second assessment evidence") },
+  ];
+  await file(input, JSON.stringify({ passes }));
+  const before = await readFile(join(run, "run.json"), "utf8");
+  const paths = await buildReport(run, { outputDirectory: join(root, "export"), sourceAssessmentsFile: input });
+  const report = await Bun.file(paths.jsonPath).json();
+  expect(report.supplied_source_assessments.agreement).toBe(false);
+  expect(report.supplied_source_assessments.passes[0].scores["candidate-1"].weighted_total).toBe(90);
+  expect(report.judge).toBeNull();
+  expect(report.winner).toBe("none");
+  const markdown = await readFile(paths.markdownPath, "utf8");
+  expect(markdown).toContain("no consistent source-quality winner is established");
+  expect(markdown).toContain("first assessment evidence");
+  expect(markdown).toContain("second assessment evidence");
+  expect(await readFile(join(run, "run.json"), "utf8")).toBe(before);
+  passes[1]!.presentation = ["stock", "current"];
+  await file(input, JSON.stringify({ passes }));
+  await expect(buildReport(run, { outputDirectory: join(root, "bad-export"), sourceAssessmentsFile: input })).rejects.toThrow("reverse presentation");
+});
+
+test("report export preserves the source through directory aliases and linked output files", async () => {
+  const { run } = await fixtureRun();
+  await file(join(run, "reports/report.md"), "original markdown");
+  await file(join(run, "reports/report.json"), "original json");
+  const alias = join(root, "report-alias");
+  await symlink(join(run, "reports"), alias);
+  await expect(buildReport(run, { outputDirectory: alias })).rejects.toThrow("outside the source run");
+  const parentAlias = join(root, "run-alias");
+  await symlink(run, parentAlias);
+  await expect(buildReport(run, { outputDirectory: join(parentAlias, "new-report") })).rejects.toThrow("outside the source run");
+  const output = join(root, "safe-export");
+  await mkdir(output);
+  await symlink(join(run, "reports/report.md"), join(output, "report.md"));
+  await link(join(run, "reports/report.json"), join(output, "report.json"));
+  await buildReport(run, { outputDirectory: output });
+  expect(await readFile(join(run, "reports/report.md"), "utf8")).toBe("original markdown");
+  expect(await readFile(join(run, "reports/report.json"), "utf8")).toBe("original json");
+  expect(await readFile(join(output, "report.md"), "utf8")).toContain("## Task and setup");
 });
 
 test("rejected judge response remains available without another model request", async () => {

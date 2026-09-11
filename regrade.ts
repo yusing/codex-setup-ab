@@ -1,12 +1,13 @@
 import { copyFile, cp, mkdir, mkdtemp } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
+import { acceptanceTestNames } from "./grading";
 import { gradeArm } from "./runner";
 import { readState, sha256, withRunLock, writeState } from "./state";
 import { buildReportUnlocked } from "./report";
 import { collectBundle, finalizeBundle } from "./bundle";
 import type { ArmName } from "./types";
 
-export async function regradeRun(runDirectory: string, reason: string, docker = process.env.CODEX_AB_DOCKER_BIN ?? "docker"): Promise<void> {
+export async function regradeRun(runDirectory: string, reason: string, docker = process.env.CODEX_AB_DOCKER_BIN ?? "docker", acceptanceSource?: string): Promise<void> {
   if (!reason.trim()) throw new Error("regrade requires a concrete infrastructure correction reason");
   const runDir = resolve(runDirectory);
   return withRunLock(runDir, async () => {
@@ -17,8 +18,10 @@ export async function regradeRun(runDirectory: string, reason: string, docker = 
     try {
       const state = await readState(runDir);
       const arms = state.selected_arms ?? [];
-      if (state.status !== "complete" || !state.acceptance || !state.image_id || !arms.length ||
-          arms.some(arm => !state.results?.[arm]?.grade || state.results[arm]!.collection_error || state.results[arm]!.lifecycle_error)) {
+      const evaluatorRecovery = state.status === "partial" && arms.some(arm => state.results?.[arm]?.grade?.evaluator_error);
+      if ((state.status !== "complete" && !evaluatorRecovery) || !state.acceptance || !state.image_id || !arms.length ||
+          arms.some(arm => !state.results?.[arm]?.grade || state.results[arm]!.collection_error ||
+            (state.results[arm]!.lifecycle_error && state.results[arm]!.lifecycle_error !== state.results[arm]!.grade?.evaluator_error))) {
         throw new Error("regrade requires completed execution and captured candidates with grading evidence");
       }
       if (state.invalidity_reasons?.length) throw new Error("regrade cannot clear run-wide isolation or input invalidity");
@@ -31,6 +34,16 @@ export async function regradeRun(runDirectory: string, reason: string, docker = 
         if (hash !== await sha256(join(runDir, "reports/bundle", `${arm}-changes.patch`))) throw new Error(`${arm} patch differs from the captured report bundle`);
         hashes[arm] = hash;
       }
+      let replacement: { source: string; sha256: string } | undefined;
+      if (acceptanceSource) {
+        const source = resolve(acceptanceSource);
+        const oldTests = acceptanceTestNames(await Bun.file(join(runDir, state.acceptance.path)).text()).sort();
+        const newTests = acceptanceTestNames(await Bun.file(source).text()).sort();
+        if (!oldTests.length || JSON.stringify(oldTests) !== JSON.stringify(newTests)) {
+          throw new Error("corrected evaluator must retain the same named acceptance checks");
+        }
+        replacement = { source, sha256: await sha256(source) };
+      }
       const archive = await mkdtemp(join(runDir, "reports/regrade-"));
       await cp(join(runDir, "reports/bundle"), join(archive, "bundle"), { recursive: true, force: false, errorOnExist: true });
       await copyFile(join(runDir, "run.json"), join(archive, "run.json"));
@@ -42,9 +55,21 @@ export async function regradeRun(runDirectory: string, reason: string, docker = 
         archive_path: relative(runDir, archive), evaluator_root: relative(runDir, evaluatorRoot),
         patch_sha256: hashes, judge_stale: Boolean(state.judge),
       };
+      if (replacement) {
+        const path = join(archive, "acceptance_test.go");
+        await copyFile(replacement.source, path);
+        if (await sha256(path) !== replacement.sha256) throw new Error("corrected evaluator changed while copying");
+        const next = { path: relative(runDir, path), sha256: replacement.sha256 };
+        state.regrade.acceptance_revision = { previous: state.acceptance, replacement: next, source: replacement.source };
+        state.acceptance = next;
+      }
       state.status = "partial";
       delete state.error;
-      for (const arm of arms) delete state.results![arm]!.grade;
+      for (const arm of arms) {
+        const result = state.results![arm]!;
+        if (result.lifecycle_error === result.grade?.evaluator_error) delete result.lifecycle_error;
+        delete result.grade;
+      }
       await writeState(runDir, state);
       let failure: unknown;
       try {
@@ -52,7 +77,10 @@ export async function regradeRun(runDirectory: string, reason: string, docker = 
         const outcomes = await Promise.allSettled(arms.map(async arm => {
           const result = state.results![arm]!;
           result.grade = await gradeArm(docker, runDir, state, arm, join(runDir, result.patch_path), controller.signal, join(evaluatorRoot, arm));
-          if (result.grade?.evaluator_error) throw new Error(result.grade.evaluator_error);
+          if (result.grade?.evaluator_error) {
+            result.lifecycle_error = result.grade.evaluator_error;
+            throw new Error(result.grade.evaluator_error);
+          }
           if (result.grade?.supplemental_infrastructure_error) throw new Error(result.grade.supplemental_infrastructure_error);
           if (await sha256(join(runDir, result.patch_path)) !== hashes[arm]) throw new Error(`${arm} captured patch changed during regrading`);
           process.stderr.write(`[regrade] ${arm}: required gates ${result.grade?.passed ? "passed" : "failed"}\n`);

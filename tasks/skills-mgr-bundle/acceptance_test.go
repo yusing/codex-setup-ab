@@ -18,6 +18,7 @@ import (
 
 type abBundleCLI struct {
 	prefix                    []string
+	payloadPrefix             string
 	createStyle, extractStyle int
 }
 
@@ -31,6 +32,8 @@ func abBundleArgs(prefix []string, operation string, style int, source, destinat
 		return append(args, source, "--output", destination)
 	case 2:
 		return append(args, "--output", destination, source)
+	case 3:
+		return append(args, destination, source)
 	default:
 		return append(args, source, destination)
 	}
@@ -57,13 +60,33 @@ func abBundleRead(t *testing.T, path string) []byte {
 }
 func abBundleSource(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "example")
 	abBundleWrite(t, filepath.Join(root, "SKILL.md"), []byte("---\nname: example\ndescription: A fixture\n---\n# Example\n"), 0o644)
 	abBundleWrite(t, filepath.Join(root, "references/guide.txt"), []byte("guide\n"), 0o644)
 	abBundleWrite(t, filepath.Join(root, "scripts/run.sh"), []byte("#!/bin/sh\necho example\n"), 0o755)
 	abBundleWrite(t, filepath.Join(root, "assets/binary"), []byte{0, 255, 13, 10, 42}, 0o644)
 	return root
 }
+
+// A bundle may contain a single skill directly or preserve its named root.
+func abBundlePayloadRoot(destination string) (string, bool) {
+	var roots []string
+	err := filepath.WalkDir(destination, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type().IsRegular() && entry.Name() == "SKILL.md" {
+			roots = append(roots, filepath.Dir(path))
+		}
+		return nil
+	})
+	if err != nil || len(roots) != 1 {
+		return "", false
+	}
+	relative, err := filepath.Rel(destination, roots[0])
+	return relative, err == nil
+}
+
 func abBundleSetup(t *testing.T) abBundleCLI {
 	t.Helper()
 	taskHome := t.TempDir()
@@ -77,7 +100,7 @@ func abBundleSetup(t *testing.T) abBundleCLI {
 	source := abBundleSource(t)
 	// The prompt leaves CLI shape open. Probe common forms rather than impose a private ABI.
 	for _, prefix := range [][]string{{"bundle"}, {"bundles"}, {}} {
-		for style := range 3 {
+		for style := range 4 {
 			archive := filepath.Join(t.TempDir(), "fixture.tar.gz")
 			if err := run(abBundleArgs(prefix, "create", style, source, archive)); err != nil {
 				continue
@@ -91,8 +114,8 @@ func abBundleSetup(t *testing.T) abBundleCLI {
 			for extractStyle := range 3 {
 				dest := filepath.Join(t.TempDir(), "extracted")
 				if err := run(abBundleArgs(prefix, "extract", extractStyle, archive, dest)); err == nil {
-					if _, err := os.Stat(filepath.Join(dest, "SKILL.md")); err == nil {
-						return abBundleCLI{prefix, style, extractStyle}
+					if payloadPrefix, ok := abBundlePayloadRoot(dest); ok {
+						return abBundleCLI{prefix: prefix, createStyle: style, extractStyle: extractStyle, payloadPrefix: payloadPrefix}
 					}
 				}
 			}
@@ -122,6 +145,7 @@ func TestABAcceptanceBundleRoundTrip(t *testing.T) {
 	if err := run(cli.args("extract", archive, dest)); err != nil {
 		t.Fatal(err)
 	}
+	dest = filepath.Join(dest, cli.payloadPrefix)
 	for _, path := range []string{"SKILL.md", "references/guide.txt", "scripts/run.sh", "assets/binary"} {
 		if !bytes.Equal(abBundleRead(t, filepath.Join(source, path)), abBundleRead(t, filepath.Join(dest, path))) {
 			t.Errorf("content differs for %s", path)
@@ -336,9 +360,9 @@ func TestABAcceptanceBundleNoOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	dest := filepath.Join(root, "existing")
-	abBundleWrite(t, filepath.Join(dest, "SKILL.md"), []byte("preserve"), 0o644)
+	abBundleWrite(t, filepath.Join(dest, cli.payloadPrefix, "SKILL.md"), []byte("preserve"), 0o644)
 	_ = run(cli.args("extract", valid, dest))
-	if string(abBundleRead(t, filepath.Join(dest, "SKILL.md"))) != "preserve" {
+	if string(abBundleRead(t, filepath.Join(dest, cli.payloadPrefix, "SKILL.md"))) != "preserve" {
 		t.Error("existing extracted file destroyed")
 	}
 }
@@ -398,7 +422,7 @@ func TestABAcceptanceBundleConcurrentNoOverwrite(t *testing.T) {
 	}
 	dest := filepath.Join(root, "winner")
 	publish(cli.args("extract", archive, dest))
-	if !bytes.Equal(abBundleRead(t, filepath.Join(source, "SKILL.md")), abBundleRead(t, filepath.Join(dest, "SKILL.md"))) {
+	if !bytes.Equal(abBundleRead(t, filepath.Join(source, "SKILL.md")), abBundleRead(t, filepath.Join(dest, cli.payloadPrefix, "SKILL.md"))) {
 		t.Error("winning extraction corrupted")
 	}
 }

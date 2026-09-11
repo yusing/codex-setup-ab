@@ -23,9 +23,9 @@ Usage:
   codex-ab run --run-dir DIR --confirm-paid-inference [options]
   codex-ab finish --run-dir DIR --confirm-paid-inference [options]
   codex-ab judge --run-dir DIR --confirm-paid-inference [options]
-  codex-ab regrade --run-dir DIR --reason TEXT [--docker-bin FILE]
+  codex-ab regrade --run-dir DIR --reason TEXT [--acceptance FILE] [--docker-bin FILE]
   codex-ab remeter --run-dir DIR --exclusions FILE
-  codex-ab report --run-dir DIR
+  codex-ab report --run-dir DIR [--output-dir DIR]
   codex-ab invalidate --run-dir DIR --reason TEXT
 
 Prepare options:
@@ -45,7 +45,7 @@ Prepare options:
   --mekugi-shell-bin FILE  matching shell helper (default shell beside Mekugi)
   --codex-bin FILE      standalone Codex executable used to build the image
   --image NAME          prebuilt bare-Codex image (default codex-ab:0.1.0)
-  --timeout SECONDS     per agent and judge pass (default 1800)
+  --timeout SECONDS     per agent and judge launch (default 1800)
   --cpus COUNT          identical per-container CPU limit (default 2)
   --memory LIMIT        identical per-container memory limit (default 4g)
 
@@ -54,7 +54,14 @@ Run/judge options (run includes automatic source assessment and reporting):
   --docker-bin FILE     Docker-compatible fixture or executable
   --arm NAME            run only stock or current (run only; default is both)
 
-Started or finished attempts are never resumed or restarted; prepare a new experiment to rerun. Run and judge require the explicit model-execution confirmation flag.
+Report options:
+  --output-dir DIR      export outside the source run without changing its reports or state
+  --source-assessments FILE  include recorded supplemental assessments inline; never reruns judging
+
+Started or finished commands are never resumed or restarted; prepare a new experiment to rerun.
+Within an active judge command, Sol capacity errors retry twice (5s, 15s), preserving all attempts.
+Grading and performance reporting are programmatic; only source judging uses additional model calls.
+Run and judge require the explicit model-execution confirmation flag.
 `;
 
 function options(command: string, args: string[]): Record<string, string | boolean> {
@@ -64,9 +71,9 @@ function options(command: string, args: string[]): Record<string, string | boole
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
-    regrade: ["run-dir", "reason", "docker-bin"],
+    regrade: ["run-dir", "reason", "docker-bin", "acceptance"],
     remeter: ["run-dir", "exclusions"],
-    report: ["run-dir"],
+    report: ["run-dir", "output-dir", "source-assessments"],
     invalidate: ["run-dir", "reason"],
   };
   if (!Object.hasOwn(allowed, command)) throw new Error(`unknown command: ${command}`);
@@ -141,7 +148,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
   if (command === "regrade") {
-    await regradeRun(string(o, "run-dir"), string(o, "reason"), o["docker-bin"] as string | undefined);
+    await regradeRun(string(o, "run-dir"), string(o, "reason"), o["docker-bin"] as string | undefined, o.acceptance as string | undefined);
     process.stdout.write(`${resolve(string(o, "run-dir"))}/reports/bundle/report.md\n`);
     return 0;
   }
@@ -150,8 +157,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     return 0;
   }
   if (command === "report") {
-    const result = await buildReport(string(o, "run-dir"));
-    process.stdout.write(`${result.markdownPath}\n${result.jsonPath}\n`);
+    const result = await buildReport(string(o, "run-dir"), { outputDirectory: o["output-dir"] as string | undefined, sourceAssessmentsFile: o["source-assessments"] as string | undefined });
+    process.stdout.write(`${result.markdownPath}\n`);
     return 0;
   }
   if (command === "invalidate") {

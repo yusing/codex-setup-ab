@@ -116,6 +116,13 @@ describe("meterRollouts", () => {
     const result = await meterRollouts(home, pricing({ "test-model": rate(), "child-model": rate({ model_id: "child-model" }) }));
 
     expect(result.complete).toBe(true);
+    expect(result.agents.find(agent => agent.thread_id === "main")?.request_count).toBe(1);
+    expect(result.agents.find(agent => agent.thread_id === "main")?.mean_input_tokens).toBe(120);
+    expect(result.agents.find(agent => agent.thread_id === "child")?.request_count).toBe(1);
+    expect(result.sessions.find(session => session.thread_id === "child")?.parent_thread_id).toBe("main");
+    expect(result.agents.find(agent => agent.thread_id === "main")?.cost_components).toEqual({
+      uncached_input_usd: 0.1, cached_input_usd: 0.002, cache_write_input_usd: 0, output_usd: 0.12,
+    });
     expect(result.agents).toHaveLength(2);
     expect(result.agents.find((agent) => agent.thread_id === "main")?.usage).toEqual(mainLatest);
     expect(result.agents.find((agent) => agent.thread_id === "child")?.usage).toEqual(child);
@@ -137,6 +144,9 @@ describe("meterRollouts", () => {
     const result = await meterRollouts(home, pricing({ "test-model": rate() }));
 
     expect(result.agents[0].usage.input_tokens).toBe(25);
+    expect(result.agents[0].request_count).toBeNull();
+    expect(result.agents[0].mean_input_tokens).toBeNull();
+    expect(result.agents[0].max_input_tokens).toBeNull();
     expect(result.agents[0].method).toBe("token_count.total_token_usage (request-cost approximation)");
     expect(result.warnings.join("\n")).toContain("priced as one request");
   });

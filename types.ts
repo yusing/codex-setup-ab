@@ -102,6 +102,11 @@ export interface RunState {
     finished_at?: string;
     archive_path: string;
     evaluator_root: string;
+    acceptance_revision?: {
+      previous: { path: string; sha256: string };
+      replacement: { path: string; sha256: string };
+      source: string;
+    };
     patch_sha256: Partial<Record<ArmName, string>>;
     judge_stale: boolean;
     error?: string;
@@ -127,6 +132,19 @@ export interface JudgePass {
   rationale: string;
 }
 
+export interface JudgeAttempt {
+  pass: 1 | 2;
+  attempt: number;
+  status: "running" | "complete" | "failed" | "canceled";
+  started_at: string;
+  finished_at?: string;
+  stdout_path: string;
+  stderr_path: string;
+  usage_home: string;
+  error?: string;
+  retry_delay_ms?: number;
+}
+
 export interface JudgeReport {
   status: "incomplete" | "complete" | "failed" | "canceled";
   started_at: string;
@@ -141,5 +159,6 @@ export interface JudgeReport {
   winner: ArmName | "tie" | "none";
   disagreement?: string;
   error?: string;
+  attempts?: JudgeAttempt[];
   usage_homes: string[];
 }

@@ -1,8 +1,9 @@
 import { chmod, copyFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { join, resolve } from "node:path";
 import { OwnedContainerError, runOwnedContainer } from "./container";
 import { readState, writeState, withRunLock } from "./state";
-import type { ArmName, CommandEvidence, JudgePass, JudgeReport } from "./types";
+import type { ArmName, CommandEvidence, JudgeAttempt, JudgePass, JudgeReport } from "./types";
 
 const MAX_PATCH_BYTES = 500_000;
 const MAX_EVIDENCE_BYTES = 1_500_000;
@@ -10,6 +11,7 @@ const JUDGE_MODEL = "gpt-5.6-sol" as const;
 const JUDGE_REASONING = "high" as const;
 const JUDGE_SERVICE_TIER_CONFIG = "fast" as const;
 const JUDGE_SERVICE_TIER_EFFECTIVE = "priority" as const;
+const CAPACITY_RETRY_DELAYS_MS = [5_000, 15_000] as const;
 const CANDIDATES = ["candidate-1", "candidate-2"] as const;
 const SCORE_KEYS = ["correctness", "completeness", "maintainability", "test_quality"] as const;
 type ScoreKey = (typeof SCORE_KEYS)[number];
@@ -83,7 +85,7 @@ function nonemptyString(value: unknown, context: string): string {
   return value;
 }
 
-function validatePass(value: unknown, pass: 1 | 2, presentation: [ArmName, ArmName], passing: Record<Candidate, boolean>): JudgePass {
+export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: [ArmName, ArmName], passing: Record<Candidate, boolean>): JudgePass {
   const root = exactObject(value, ["scores", "evidence", "issues", "winner", "rationale"], `judge pass ${pass}`);
   const rawScores = exactObject(root.scores, CANDIDATES, `judge pass ${pass}.scores`);
   const scores = {} as JudgePass["scores"];
@@ -130,7 +132,9 @@ function sanitizeTestText(text: string, runDir: string, arm: ArmName, id: Candid
 }
 
 export async function readJudgeResponse(runDirectory: string, pass: number): Promise<unknown> {
-  return JSON.parse(lastAgentMessage(await readFile(join(runDirectory, `evaluator/judge/output/pass-${pass}.jsonl`), "utf8")));
+  const state = await readState(runDirectory);
+  const attempt = state.judge?.attempts?.filter(item => item.pass === pass).at(-1);
+  return JSON.parse(lastAgentMessage(await readFile(join(runDirectory, attempt?.stdout_path ?? `evaluator/judge/output/pass-${pass}.jsonl`), "utf8")));
 }
 
 export function summarizeCheck(check: CommandEvidence): Record<string, unknown> {
@@ -218,7 +222,7 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
 
   const report: JudgeReport = {
     status: "incomplete", started_at: new Date().toISOString(), model: JUDGE_MODEL, reasoning_effort: JUDGE_REASONING,
-    service_tier: JUDGE_SERVICE_TIER_EFFECTIVE, passes: [], winner: "none", usage_homes: [],
+    service_tier: JUDGE_SERVICE_TIER_EFFECTIVE, passes: [], winner: "none", usage_homes: [], attempts: [],
   };
   state.judge = report;
   const controller = new AbortController();
@@ -232,46 +236,95 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
   try {
     for (let index = 0; index < presentations.length; index++) {
       const passNumber = (index + 1) as 1 | 2;
-      if (controller.signal.aborted) throw new Error(`judge pass ${passNumber} canceled before setup`);
-      const judgeHome = join(judgeRoot, `pass-${passNumber}/home/ubuntu`);
-      await cp(join(runDir, state.arms.stock.home_template), judgeHome, { recursive: true });
-      if (controller.signal.aborted) throw new Error(`judge pass ${passNumber} canceled during setup`);
-      await mkdir(join(judgeHome, ".codex"), { recursive: true, mode: 0o700 });
-      await copyFile(auth, join(judgeHome, ".codex/auth.json"));
-      await chmod(judgeHome, 0o700);
-      await chmod(join(judgeHome, ".codex"), 0o700);
-      await chmod(join(judgeHome, ".codex/auth.json"), 0o600);
-      report.usage_homes.push(`evaluator/judge/pass-${passNumber}/home/ubuntu/.codex`);
-      // This write is the no-retry boundary: every paid launch is recorded before Docker starts.
-      await writeState(runDir, state);
-      if (controller.signal.aborted) throw new Error(`judge pass ${passNumber} canceled before launch`);
+      for (let attemptNumber = 1; attemptNumber <= CAPACITY_RETRY_DELAYS_MS.length + 1; attemptNumber++) {
+        if (controller.signal.aborted) throw new Error(`judge pass ${passNumber} canceled before setup`);
+        const suffix = attemptNumber === 1 ? "" : `-attempt-${attemptNumber}`;
+        const homeRelative = `evaluator/judge/pass-${passNumber}${suffix}/home/ubuntu`;
+        const judgeHome = join(runDir, homeRelative);
+        await cp(join(runDir, state.arms.stock.home_template), judgeHome, { recursive: true });
+        if (controller.signal.aborted) throw new Error(`judge pass ${passNumber} canceled during setup`);
+        await mkdir(join(judgeHome, ".codex"), { recursive: true, mode: 0o700 });
+        await copyFile(auth, join(judgeHome, ".codex/auth.json"));
+        await chmod(judgeHome, 0o700);
+        await chmod(join(judgeHome, ".codex"), 0o700);
+        await chmod(join(judgeHome, ".codex/auth.json"), 0o600);
+        const attempt: JudgeAttempt = {
+          pass: passNumber, attempt: attemptNumber, status: "running", started_at: new Date().toISOString(),
+          stdout_path: `evaluator/judge/output/pass-${passNumber}${suffix}.jsonl`,
+          stderr_path: `evaluator/judge/output/pass-${passNumber}${suffix}.stderr`,
+          usage_home: `${homeRelative}/.codex`,
+        };
+        report.attempts!.push(attempt);
+        report.usage_homes.push(attempt.usage_home);
+        // Persist each launch before inference. Capacity retries use fresh homes and never replace evidence.
+        await writeState(runDir, state);
+        const stdoutPath = join(runDir, attempt.stdout_path);
+        const stderrPath = join(runDir, attempt.stderr_path);
+        const container = `codex-ab-${state.id}-judge-${passNumber}${suffix}`;
+        progress(`pass ${passNumber}, attempt ${attemptNumber}/3: anonymous reversed-order evaluation started`);
+        try {
+          if (controller.signal.aborted) throw new Error(`judge pass ${passNumber} canceled before launch`);
+          const result = await runOwnedContainer({ docker: dockerBin, name: container, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
+            "-i", "-v", `${judgeHome}:/home/ubuntu`, "-v", `${schemaPath}:/tmp/judge-output-schema.json:ro`,
+            "-v", `${join(judgeRoot, `evidence-${passNumber}`)}:/evidence:ro`,
+            ...presentations[index]!.flatMap((arm, candidateIndex) => ["-v", `${join(runDir, state.regrade?.evaluator_root ?? "evaluator", arm)}:/candidates/${CANDIDATES[candidateIndex]}:ro`]),
+            state.image_id ?? state.image,
 
-      const stdoutPath = join(output, `pass-${passNumber}.jsonl`);
-      const stderrPath = join(output, `pass-${passNumber}.stderr`);
-      const container = `codex-ab-${state.id}-judge-${passNumber}`;
-      progress(`pass ${passNumber}: anonymous reversed-order evaluation started`);
-      const result = await runOwnedContainer({ docker: dockerBin, name: container, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
-                "-i", "-v", `${judgeHome}:/home/ubuntu`, "-v", `${schemaPath}:/tmp/judge-output-schema.json:ro`,
-        "-v", `${join(judgeRoot, `evidence-${passNumber}`)}:/evidence:ro`,
-        ...presentations[index]!.flatMap((arm, candidateIndex) => ["-v", `${join(runDir, state.regrade?.evaluator_root ?? "evaluator", arm)}:/candidates/${CANDIDATES[candidateIndex]}:ro`]),
-        state.image_id ?? state.image,
-
-        "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check", "--output-schema", "/tmp/judge-output-schema.json", "--model", JUDGE_MODEL,
-        "-c", `model_reasoning_effort="${JUDGE_REASONING}"`, "-c", `service_tier="${JUDGE_SERVICE_TIER_CONFIG}"`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"', "-"],
-        stdin: judgePrompt(packs[index]), stdoutFile: stdoutPath, stderrFile: stderrPath,
-        timeoutMs: state.timeout_seconds * 1000, signal: controller.signal });
-      if (result.timedOut) throw new Error(`judge pass ${passNumber} timed out`);
-      if (result.canceled || controller.signal.aborted) throw new Error(`judge pass ${passNumber} canceled`);
-      if (result.exitCode !== 0) throw new Error(`judge pass ${passNumber} failed (${result.exitCode})`);
-      const raw = await readFile(stdoutPath, "utf8");
-      let parsed: unknown;
-      try { parsed = JSON.parse(lastAgentMessage(raw)); }
-      catch (error) { throw new Error(`judge pass ${passNumber} returned malformed schema output: ${error instanceof Error ? error.message : String(error)}`); }
-      const order = presentations[index];
-      const passing = Object.fromEntries(CANDIDATES.map((id, candidateIndex) => [id, state.results![order[candidateIndex]]!.grade?.passed === true])) as Record<Candidate, boolean>;
-      report.passes.push(validatePass(parsed, passNumber, order, passing));
-      await writeState(runDir, state);
-      progress(`pass ${passNumber}: validated and persisted`);
+            "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check", "--output-schema", "/tmp/judge-output-schema.json", "--model", JUDGE_MODEL,
+            "-c", `model_reasoning_effort="${JUDGE_REASONING}"`, "-c", `service_tier="${JUDGE_SERVICE_TIER_CONFIG}"`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"', "-"],
+            stdin: judgePrompt(packs[index]), stdoutFile: stdoutPath, stderrFile: stderrPath,
+            timeoutMs: state.timeout_seconds * 1000, signal: controller.signal });
+          if (result.timedOut) throw new Error(`judge pass ${passNumber} timed out`);
+          if (result.canceled || controller.signal.aborted) throw new Error(`judge pass ${passNumber} canceled`);
+          if (result.exitCode !== 0) {
+            const stderr = await readFile(stderrPath, "utf8");
+            const stdout = await readFile(stdoutPath, "utf8");
+            // Match the provider's explicit capacity error, not arbitrary source/judge prose.
+            const capacity = stderr.includes("Selected model is at capacity")
+              || stdout.split("\n").some(line => {
+                try {
+                  const event: unknown = JSON.parse(line);
+                  return isRecord(event) && event.type === "error" && typeof event.message === "string"
+                    && event.message.includes("Selected model is at capacity");
+                } catch { return false; }
+              });
+            let hasAssessment = false;
+            try { lastAgentMessage(stdout); hasAssessment = true; } catch { /* No assessment to preserve as a verdict. */ }
+            const retryDelay = CAPACITY_RETRY_DELAYS_MS[attemptNumber - 1];
+            attempt.error = `judge pass ${passNumber} failed (${result.exitCode})${capacity ? ": model at capacity" : ""}`;
+            if (capacity && !hasAssessment && retryDelay !== undefined) {
+              attempt.status = "failed";
+              attempt.finished_at = new Date().toISOString();
+              attempt.retry_delay_ms = retryDelay;
+              await writeState(runDir, state);
+              progress(`pass ${passNumber}: Sol at capacity; retrying in ${retryDelay / 1000}s with a fresh home`);
+              await delay(retryDelay, undefined, { signal: controller.signal });
+              continue;
+            }
+            throw new Error(attempt.error);
+          }
+          const raw = await readFile(stdoutPath, "utf8");
+          let parsed: unknown;
+          try { parsed = JSON.parse(lastAgentMessage(raw)); }
+          catch (error) { throw new Error(`judge pass ${passNumber} returned malformed schema output: ${error instanceof Error ? error.message : String(error)}`); }
+          const order = presentations[index];
+          const passing = Object.fromEntries(CANDIDATES.map((id, candidateIndex) => [id, state.results![order[candidateIndex]]!.grade?.passed === true])) as Record<Candidate, boolean>;
+          report.passes.push(validateJudgePass(parsed, passNumber, order, passing));
+          attempt.status = "complete";
+          attempt.finished_at = new Date().toISOString();
+          await writeState(runDir, state);
+          progress(`pass ${passNumber}: validated and persisted`);
+          break;
+        } catch (error) {
+          if (attempt.status === "running") {
+            const result = error instanceof OwnedContainerError ? error.result : undefined;
+            attempt.status = controller.signal.aborted || result?.canceled ? "canceled" : "failed";
+            attempt.finished_at = new Date().toISOString();
+            attempt.error = error instanceof Error ? error.message : String(error);
+          }
+          throw error;
+        }
+      }
     }
 
     const winners = report.passes.map(mappedWinner);

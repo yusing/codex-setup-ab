@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { readState, sha256, writeState } from "./state";
 import type { ArmName } from "./types";
@@ -194,20 +194,18 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     source_quality: state.judge ?? null, validity: report.validity,
     limitations: "Single paired descriptive comparison. Different tasks and historical source snapshots are not equivalent baselines.",
   });
-  await writeFile(join(destination, "SOURCE-REVIEW.md"), state.judge
-    ? `# Independent source assessment\n\nTwo anonymous reversed-order patch-and-test reviews. This is source inspection, not additional runtime or browser coverage.\n\nStatus: ${state.judge.status}${state.regrade?.judge_stale ? " (stale: used grading evidence from before the infrastructure correction)" : ""}\n\n${report.rejected_source_assessment ? "A rejected response is retained in rejected-source-assessment.json. Its scores, findings and proposed winner are unvalidated and do not establish an overall winner.\n\n" : ""}${state.judge.passes.map(pass => `## Pass ${pass.pass}\n\n${pass.rationale}\n\n${pass.evidence.map(item => `- ${item}`).join("\n")}\n\n${pass.issues.map(issue => `- ${issue.candidate} (${issue.severity}): ${issue.detail}`).join("\n")}`).join("\n\n")}\n`
-    : "# Independent source assessment\n\nNot run: no completed comparable pair. No source-quality winner is claimed.\n");
   return destination;
-
 }
 
 /** Refresh outcome-bearing artifacts last, including after partial collection failures. */
 export async function finalizeBundle(runDirectory: string): Promise<void> {
   const destination = join(resolve(runDirectory), "reports/bundle");
   await mkdir(destination, { recursive: true, mode: 0o700 });
-  for (const [source, target] of [["run.json", "run.json"], ["reports/report.json", "report.json"], ["reports/report.md", "report.md"], ["reports/report.md", "COMPARISON.md"]]) {
+  for (const [source, target] of [["run.json", "run.json"], ["reports/report.json", "report.json"], ["reports/report.md", "report.md"]]) {
     await copyFile(join(runDirectory, source!), join(destination, target!));
   }
+  // These former generated result documents are superseded by the complete report.md.
+  for (const name of ["SOURCE-REVIEW.md", "COMPARISON.md"]) await rm(join(destination, name), { force: true });
   const checksums = await Promise.all((await regularFiles(destination)).filter(path => !path.endsWith("/MANIFEST.sha256")).map(async path =>
     `${await sha256(path)}  ${relative(destination, path)}`));
   await writeFile(join(destination, "MANIFEST.sha256"), `${checksums.join("\n")}\n`);

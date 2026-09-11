@@ -753,10 +753,21 @@ test("regrade archives old evidence and leaves measured candidates and usage unc
   await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
   const original = await readState(run);
   const beforeLog = await readFile(fake.log, "utf8");
-  await regradeRun(run, "provide the snapshotted Bun in all evaluator containers", fake.path);
+  original.status = "partial";
+  original.results!.stock!.grade!.evaluator_error = "fixture evaluator gap";
+  original.results!.stock!.lifecycle_error = "fixture evaluator gap";
+  await writeState(run, original);
+  const corrected = join(root, "corrected-acceptance.go");
+  await file(corrected, `${await readFile(acceptance, "utf8")}\n// Corrected CLI adapter.\n`);
+  await regradeRun(run, "correct evaluator CLI adapter without changing functional checks", fake.path, corrected);
   const updated = await readState(run);
   expect(updated.regrade?.status).toBe("complete");
   expect(updated.regrade?.judge_stale).toBe(true);
+  expect(updated.status).toBe("complete");
+  expect(updated.results!.stock!.lifecycle_error).toBeUndefined();
+  expect(updated.regrade?.acceptance_revision?.previous.sha256).toBe(original.acceptance!.sha256);
+  expect(updated.acceptance!.sha256).not.toBe(original.acceptance!.sha256);
+  expect(await readFile(join(run, updated.regrade!.archive_path, "bundle/acceptance_test.go"), "utf8")).toBe(await readFile(acceptance, "utf8"));
   expect(updated.arm_attempts).toEqual(original.arm_attempts);
   expect(updated.judge).toEqual(original.judge);
   for (const arm of ["stock", "current"] as const) {

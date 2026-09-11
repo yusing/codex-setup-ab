@@ -1,6 +1,8 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
+
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_TIMEOUT_MS = 8_000;
 const LONG_CONTEXT_TOKENS = 272_000;
@@ -46,15 +48,27 @@ export interface PricingSnapshot {
   models: Record<string, ModelPricing>;
 }
 
+export interface CostComponents {
+  uncached_input_usd: number | null;
+  cached_input_usd: number | null;
+  cache_write_input_usd: number | null;
+  output_usd: number | null;
+}
+
 export interface AgentUsage {
   model: string;
   thread_id: string;
   method: "token_usage_record" | "token_count.total_token_usage (request-cost approximation)";
   usage: Usage;
   estimated_api_usd: number | null;
+  request_count: number | null;
+  mean_input_tokens: number | null;
+  max_input_tokens: number | null;
+  cost_components: CostComponents;
 }
 
 export interface MeteredRollouts {
+  sessions: SessionDiagnostics[];
   agents: AgentUsage[];
   totals: Usage & {
     estimated_api_usd: number | null;
@@ -70,6 +84,7 @@ interface SessionFile {
   path: string;
   threadId: string;
   events: JsonObject[];
+  lines: number[];
 }
 
 interface UsageCandidate {
@@ -84,6 +99,7 @@ interface RequestUsage {
   threadId: string;
   model: string;
   usage: Usage;
+  excluded?: boolean;
 }
 
 const FALLBACK_USD_PER_MILLION: Record<string, {
@@ -313,7 +329,7 @@ function ratesFor(pricing: PricingSnapshot, model: string): ModelPricing | null 
   return pricing.models[normalized] ?? pricing.models[modelSlug(normalized)] ?? null;
 }
 
-function requestCost(usage: Usage, rates: ModelPricing): number | null {
+function requestCost(usage: Usage, rates: ModelPricing): CostComponents {
   let prompt = rates.prompt;
   let completion = rates.completion;
   let cacheRead = rates.input_cache_read;
@@ -329,19 +345,14 @@ function requestCost(usage: Usage, rates: ModelPricing): number | null {
     if (Object.hasOwn(override, "input_cache_write")) cacheWrite = override.input_cache_write ?? null;
   }
   const uncached = Math.max(usage.input_tokens - usage.cached_input_tokens, 0);
-  const components: Array<[number, number | null]> = [
-    [uncached, prompt],
-    [usage.cached_input_tokens, cacheRead],
-    [usage.cache_write_input_tokens, cacheWrite],
-    [usage.output_tokens, completion],
-  ];
-  let total = 0;
-  for (const [tokens, price] of components) {
-    if (tokens === 0) continue;
-    if (price === null || !Number.isFinite(price)) return null;
-    total += tokens * price;
-  }
-  return total;
+  const cost = (tokens: number, price: number | null): number | null =>
+    tokens === 0 ? 0 : price === null || !Number.isFinite(price) ? null : tokens * price;
+  return {
+    uncached_input_usd: cost(uncached, prompt),
+    cached_input_usd: cost(usage.cached_input_tokens, cacheRead),
+    cache_write_input_usd: cost(usage.cache_write_input_tokens, cacheWrite),
+    output_usd: cost(usage.output_tokens, completion),
+  };
 }
 
 export interface MeterExclusions {
@@ -372,6 +383,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
       continue;
     }
     const events: JsonObject[] = [];
+    const eventLines: number[] = [];
     const lines = contents.split(/\r?\n/);
     for (let index = 0; index < lines.length; index++) {
       if (!lines[index].trim()) continue;
@@ -379,6 +391,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
         const event: unknown = JSON.parse(lines[index]);
         if (!isObject(event)) throw new Error("event is not an object");
         events.push(event);
+        eventLines.push(index + 1);
       } catch (error) {
         warnings.push(`${path}:${index + 1}: invalid JSONL (${error instanceof Error ? error.message : String(error)})`);
         complete = false;
@@ -392,7 +405,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
       complete = false;
       continue;
     }
-    files.push({ path, threadId, events });
+    files.push({ path, threadId, events, lines: eventLines });
   }
 
   if (files.length === 0) {
@@ -488,6 +501,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
   // restoring excluded usage, including when all of a thread's requests go.
   for (const candidate of chosen.values()) requests.push({
     threadId: candidate.ownerThreadId, model: candidate.model,
+    excluded: exclusions?.response_ids.includes(candidate.key!) ?? false,
     usage: exclusions?.response_ids.includes(candidate.key!) ? emptyUsage() : candidate.usage,
   });
 
@@ -522,27 +536,34 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
       groups.set(key, group);
     }
     addUsage(group.usage, request.usage);
-    group.requests.push(request.usage);
+    if (!request.excluded) group.requests.push(request.usage);
   }
 
   const agents: AgentUsage[] = [];
   for (const group of groups.values()) {
     const rates = ratesFor(pricing, group.model);
     let estimated: number | null = 0;
+    const costs: CostComponents = { uncached_input_usd: 0, cached_input_usd: 0, cache_write_input_usd: 0, output_usd: 0 };
     if (!rates) {
+      for (const key of Object.keys(costs) as Array<keyof CostComponents>) costs[key] = null;
       estimated = null;
       warnings.push(`${group.threadId}/${group.model}: no API price for model`);
       complete = false;
     } else {
       for (const request of group.requests) {
-        const cost = requestCost(request, rates);
-        if (cost === null) {
-          estimated = null;
-          warnings.push(`${group.threadId}/${group.model}: required API price component is missing`);
-          complete = false;
-          break;
+        const components = requestCost(request, rates);
+        for (const key of Object.keys(costs) as Array<keyof CostComponents>) {
+          if (components[key] === null) costs[key] = null;
+          else if (costs[key] !== null) costs[key] += components[key];
         }
-        estimated += cost;
+      }
+      const values = Object.values(costs);
+      if (values.some(value => value === null)) {
+        estimated = null;
+        warnings.push(`${group.threadId}/${group.model}: required API price component is missing`);
+        complete = false;
+      } else {
+        estimated = values.reduce<number>((total, value) => total + value!, 0);
       }
     }
     agents.push({
@@ -550,6 +571,10 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
       thread_id: group.threadId,
       method: group.approximate ? "token_count.total_token_usage (request-cost approximation)" : "token_usage_record",
       usage: group.usage,
+      request_count: group.approximate ? null : group.requests.length,
+      mean_input_tokens: group.approximate || group.requests.length === 0 ? null : group.usage.input_tokens / group.requests.length,
+      max_input_tokens: group.approximate || group.requests.length === 0 ? null : group.requests.reduce((peak, request) => Math.max(peak, request.input_tokens), 0),
+      cost_components: costs,
       estimated_api_usd: estimated,
     });
   }
@@ -566,6 +591,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
 
   return {
     agents,
+    sessions: files.map(file => sessionDiagnostics(file.threadId, file.events, file.path, file.lines)),
     totals: { ...usageTotals, estimated_api_usd: estimatedTotal, command_seconds: commandSeconds },
     warnings: [...new Set(warnings)],
     complete,

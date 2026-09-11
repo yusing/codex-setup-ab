@@ -89,7 +89,7 @@ function stockConfig(reasoningEffort: ReasoningEffort): string {
 }
 
 export async function verifyPreparedInputs(runDir: string, state: RunState): Promise<void> {
-  if (state.task.path !== "control/task.md" || (state.acceptance && state.acceptance.path !== "evaluator/acceptance_test.go")) throw new Error("copied benchmark control path changed");
+  if (state.task.path !== "control/task.md" || (state.acceptance && state.acceptance.path !== "evaluator/acceptance_test.go" && !/^reports\/regrade-[A-Za-z0-9]+\/acceptance_test\.go$/.test(state.acceptance.path))) throw new Error("copied benchmark control path changed");
   const stock = join(runDir, state.arms.stock.home_template);
   const stockFiles = await manifest(stock);
   if (stockFiles.length !== 1 || stockFiles[0].path !== ".codex/config.toml" || stockFiles[0].type !== "file"
