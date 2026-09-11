@@ -88,7 +88,7 @@ export async function buildReportUnlocked(runDirectory: string): Promise<{ jsonP
   const checksExecuted = state.status === "complete" && selectedArms.every(arm => resultHasAllChecks(state.results?.[arm]));
   const gatesComplete = valid && checksExecuted;
   const armUsageComplete = selectedArms.every(arm => usage[arm]?.complete === true);
-  const judgeComplete = state.judge?.status === "complete"
+  const judgeComplete = !state.regrade?.judge_stale && state.judge?.status === "complete"
     && typeof state.judge.finished_at === "string"
     && state.judge.passes.length === 2
     && state.judge.passes.every((pass, index) => pass.pass === index + 1)
@@ -128,6 +128,7 @@ export async function buildReportUnlocked(runDirectory: string): Promise<{ jsonP
     profile: state.profile ?? "hpatch",
     source: state.source,
     setup: { ...state.execution, resource_limits: state.resource_limits, snapshot_manifest: state.snapshot_manifest },
+    regrade: state.regrade ?? null,
     finishing: state.finishing ?? null,
     status: state.status,
     validity: valid ? "valid" : "invalid",
@@ -172,6 +173,7 @@ export async function buildReportUnlocked(runDirectory: string): Promise<{ jsonP
     return `| ${index + 1} | ${attempt.usage.complete ? "complete" : "incomplete"} | ${totals.input_tokens} | ${totals.cached_input_tokens} | ${totals.cache_write_input_tokens} | ${totals.output_tokens} | ${totals.reasoning_output_tokens} | ${totals.total_tokens} | ${totals.command_seconds.toFixed(3)} | ${number(totals.estimated_api_usd, 6)} |`;
   });
   const warnings = [
+    ...(state.regrade ? [`Regrade ${state.regrade.status}: ${state.regrade.reason}. Prior grading and reports retained at ${state.regrade.archive_path}.`, ...(state.regrade.judge_stale ? ["Judge evidence predates the corrected grading and is stale; no judge was rerun."] : [])] : []),
     ...(state.finishing?.status === "failed" ? [`finishing: ${state.finishing.error ?? "failed"}`] : []),
     ...pricing.warnings.map(warning => `pricing: ${warning}`),
     ...selectedArms.flatMap(arm => (usage[arm]?.warnings ?? [state.results?.[arm] ? "usage was not measured" : "result and usage are missing"]).map(warning => `${arm}: ${warning}`)),

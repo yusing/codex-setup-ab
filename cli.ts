@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { prepare } from "./prepare";
 import { preflightRun } from "./runner";
+import { regradeRun } from "./regrade";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { judgeRun } from "./judge";
 import { buildReport, invalidateRun } from "./report";
@@ -21,6 +22,7 @@ Usage:
   codex-ab run --run-dir DIR --confirm-paid-inference [options]
   codex-ab finish --run-dir DIR --confirm-paid-inference [options]
   codex-ab judge --run-dir DIR --confirm-paid-inference [options]
+  codex-ab regrade --run-dir DIR --reason TEXT [--docker-bin FILE]
   codex-ab report --run-dir DIR
   codex-ab invalidate --run-dir DIR --reason TEXT
 
@@ -59,6 +61,7 @@ function options(command: string, args: string[]): Record<string, string | boole
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
+    regrade: ["run-dir", "reason", "docker-bin"],
     report: ["run-dir"],
     invalidate: ["run-dir", "reason"],
   };
@@ -127,6 +130,11 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "preflight") {
     await preflightRun(string(o, "run-dir"), o["docker-bin"] as string | undefined);
     process.stdout.write(`${resolve(string(o, "run-dir"))}\n`);
+    return 0;
+  }
+  if (command === "regrade") {
+    await regradeRun(string(o, "run-dir"), string(o, "reason"), o["docker-bin"] as string | undefined);
+    process.stdout.write(`${resolve(string(o, "run-dir"))}/reports/bundle/report.md\n`);
     return 0;
   }
   if (command === "report") {

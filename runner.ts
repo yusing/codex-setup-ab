@@ -217,9 +217,9 @@ function evidence(command: string, started: Date, result: Awaited<ReturnType<typ
   return { command, started_at: started.toISOString(), elapsed_ms: result.elapsedMs, exit_code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
 }
 
-async function gradeArm(docker: string, runDir: string, state: RunState, arm: ArmName, patchPath: string, signal: AbortSignal): Promise<ArmResult["grade"]> {
+export async function gradeArm(docker: string, runDir: string, state: RunState, arm: ArmName, patchPath: string, signal: AbortSignal, evaluator = join(runDir, "evaluator", arm)): Promise<ArmResult["grade"]> {
   if (!state.acceptance) return undefined;
-  const evaluator = join(runDir, "evaluator", arm);
+
   await checked(["git", "clone", "--no-local", "--no-hardlinks", join(runDir, "seed.git"), evaluator]);
   await checked(["git", "-C", evaluator, "checkout", state.source.base_commit]);
   await checked(["git", "-C", evaluator, "remote", "remove", "origin"]);
@@ -246,7 +246,7 @@ async function gradeArm(docker: string, runDir: string, state: RunState, arm: Ar
     const skipped = { command: "not run", started_at: new Date().toISOString(), elapsed_ms: 0, exit_code: -1, stdout: "", stderr: signal.aborted ? "grading canceled" : "grading preparation failed" };
     return { preparation, acceptance: skipped, router_suite: skipped, elapsed_ms: Math.round(performance.now() - gradeStarted), passed: false };
   }
-  const base = [...containerArgs(state), "--network", "none", "-v", `${resolve(evaluator)}:/workspace`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, ...dependencyCaches, imageRef(state)];
+  const base = [...containerArgs(state), "--network", "none", "-v", `${resolve(evaluator)}:/workspace`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, ...dependencyCaches, "-v", `${bun}:/usr/local/bin/bun:ro`, imageRef(state)];
   started = new Date();
   const acceptanceCommand = state.profile === "godoxy-icons" ? `go test -json -count=1 -ldflags=-checklinkname=0 -run '^TestABAcceptance' ${iconsPackage}` : "go test -json ./internal/router -run '^TestABAcceptance' -count=1";
   const acceptanceResult = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${arm}-grade`, signal, createArgs: state.profile === "godoxy-icons" ? [...base, "sh", "-lc", acceptanceCommand] : [...base, "go", "test", "-json", "./internal/router", "-run", "^TestABAcceptance", "-count=1"] });
@@ -265,18 +265,20 @@ async function gradeArm(docker: string, runDir: string, state: RunState, arm: Ar
   const routerSuite = evidence(suiteCommand, started, suiteResult);
   routerSuite.validation_error = acceptanceExecutionError(routerSuite.stdout, expectedTests);
   const requiredElapsedMs = Math.round(performance.now() - gradeStarted);
-  const repeatCommand = `${suiteCommand.replace("-count=1", "-count=2")} -timeout=60s`;
+  // Two full package runs need more than the previous one-minute budget.
+  const repeatCommand = `${suiteCommand.replace("-count=1", "-count=2")} -timeout=180s`;
+
   started = new Date();
   let supplementalInfrastructureError: string | undefined;
   let supplementalRepeat: CommandEvidence;
   try {
     const repeatResult = await runOwnedContainer({
       docker, name: `codex-ab-${state.id}-${arm}-supplemental-repeat`, signal,
-      timeoutMs: 90_000,
+      timeoutMs: 210_000,
       createArgs: [...containerArgs(state), "--network", "none",
         "-v", `${resolve(evaluator)}:/workspace:ro`,
         "-v", `${cache}:/home/ubuntu/.cache/go-build`,
-        ...dependencyCaches, imageRef(state), "sh", "-lc", repeatCommand],
+        ...dependencyCaches, "-v", `${bun}:/usr/local/bin/bun:ro`, imageRef(state), "sh", "-lc", repeatCommand],
     });
     supplementalRepeat = evidence(repeatCommand, started, repeatResult);
     supplementalRepeat.validation_error = acceptanceExecutionError(supplementalRepeat.stdout, expectedTests);

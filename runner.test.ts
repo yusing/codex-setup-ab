@@ -1,14 +1,16 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepare, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
+import { regradeRun } from "./regrade";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { main } from "./cli";
 import { checked } from "./process";
 import { readState, writeState } from "./state";
 import { preflightRun, runPair } from "./runner";
+import * as bundles from "./bundle";
 import { buildReport } from "./report";
 import { judgePrompt } from "./judge";
 import type { PricingSnapshot } from "./usage";
@@ -320,6 +322,10 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   expect(log).toContain("snapshots/current/mise/installs:/home/ubuntu/.local/share/mise/installs:ro");
   const gradingCalls = log.split("\n").filter(line => /-grade(?:-prepare|-suite)? /.test(line));
   expect(gradingCalls).toHaveLength(6);
+  expect(gradingCalls.every(line => line.includes("/snapshots/runtime/bin/bun:/usr/local/bin/bun:ro"))).toBe(true);
+  const repeatCalls = log.split("\n").filter(line => line.includes(" create ") && line.includes("-supplemental-repeat "));
+  expect(repeatCalls).toHaveLength(2);
+  expect(repeatCalls.every(line => line.includes("/snapshots/runtime/bin/bun:/usr/local/bin/bun:ro"))).toBe(true);
   expect(gradingCalls.every(line => line.includes(" --network none "))).toBe(true);
   expect(gradingCalls.every(line => line.includes("/grader-bun-cache:/home/ubuntu/.bun/install/cache:ro"))).toBe(true);
   const agentWarmCalls = log.split("\n").filter(line => /-agent-warm /.test(line));
@@ -693,4 +699,111 @@ test("finish recovers pre-judge reporting failure without restarting candidates"
   expect(additional).not.toContain("-stock ");
   expect(additional).not.toContain("-current ");
   await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("failed finishing");
+}, 30_000);
+
+test("regrade archives old evidence and leaves measured candidates and usage unchanged", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture://pricing", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const auth = join(root, "regrade-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const original = await readState(run);
+  const beforeLog = await readFile(fake.log, "utf8");
+  await regradeRun(run, "provide the snapshotted Bun in all evaluator containers", fake.path);
+  const updated = await readState(run);
+  expect(updated.regrade?.status).toBe("complete");
+  expect(updated.regrade?.judge_stale).toBe(true);
+  expect(updated.arm_attempts).toEqual(original.arm_attempts);
+  expect(updated.judge).toEqual(original.judge);
+  for (const arm of ["stock", "current"] as const) {
+    expect(updated.results![arm]!.agent_elapsed_ms).toBe(original.results![arm]!.agent_elapsed_ms);
+    expect(updated.results![arm]!.grade?.passed).toBe(true);
+  }
+  expect(await Bun.file(join(run, updated.regrade!.archive_path, "run.json")).exists()).toBe(true);
+  const report = JSON.parse(await readFile(join(run, "reports/report.json"), "utf8"));
+  expect(report.judge_complete).toBe(false);
+  expect(report.winner).toBe("none");
+  const extraLog = (await readFile(fake.log, "utf8")).slice(beforeLog.length);
+  expect(extraLog).toContain("-count=2 -timeout=180s");
+  expect(extraLog).not.toContain("codex exec");
+  await file(join(run, updated.results!.stock!.patch_path), "changed captured patch");
+  await expect(regradeRun(run, "must reject tampering", "/must-not-run")).rejects.toThrow("patch differs");
+  expect(extraLog).not.toContain("-judge-");
+}, 30_000);
+
+test("regrade preserves completed gates and records supplemental infrastructure failure", async () => {
+  const run = await prepared();
+  const initial = await readState(run);
+  initial.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture://pricing", assumptions: [], warnings: [], models: {} };
+  await writeState(run, initial);
+  const auth = join(root, "regrade-failure-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const successful = await fakeOwnedDocker(0);
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: successful.path });
+  const failing = await fakeOwnedDocker(0, false, false, "", true);
+  await expect(regradeRun(run, "fixture infrastructure failure", failing.path)).rejects.toThrow();
+  const state = await readState(run);
+  expect(state.status).toBe("partial");
+  expect(state.regrade?.status).toBe("failed");
+  expect(state.results?.stock?.grade?.passed).toBe(true);
+  expect(state.results?.current?.grade?.passed).toBe(true);
+  expect(state.regrade?.judge_stale).toBe(true);
+  const bundled = JSON.parse(await readFile(join(run, "reports/bundle/report.json"), "utf8"));
+  expect(bundled.regrade.status).toBe("failed");
+  expect(bundled.winner).toBe("none");
+  expect(await readFile(failing.log, "utf8")).not.toContain("codex exec");
+}, 30_000);
+
+test("regrade releases cancellation ownership without changing state on early cancellation", async () => {
+  const run = await prepared();
+  const initial = await readState(run);
+  initial.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture://pricing", assumptions: [], warnings: [], models: {} };
+  await writeState(run, initial);
+  const auth = join(root, "regrade-cancel-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const before = await readFile(join(run, "run.json"), "utf8");
+  const listeners = process.listenerCount("SIGTERM");
+  const on = process.on.bind(process);
+  const registration = spyOn(process, "on").mockImplementation((event, listener) => {
+    const result = on(event, listener);
+    if (event === "SIGTERM") queueMicrotask(() => listener());
+    return result;
+  });
+  try {
+    await expect(regradeRun(run, "cancellation fixture", "/must-not-run")).rejects.toThrow();
+  } finally {
+    registration.mockRestore();
+  }
+  expect(await readFile(join(run, "run.json"), "utf8")).toBe(before);
+  expect(process.listenerCount("SIGTERM")).toBe(listeners);
+  expect(await Bun.file(join(run, ".operation-lock")).exists()).toBe(false);
+}, 30_000);
+
+test("regrade reporting failure cannot leave a successful status", async () => {
+  const run = await prepared();
+  const initial = await readState(run);
+  initial.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture://pricing", assumptions: [], warnings: [], models: {} };
+  await writeState(run, initial);
+  const auth = join(root, "regrade-report-failure-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const report = spyOn(bundles, "finalizeBundle").mockRejectedValueOnce(new Error("fixture reporting failure"));
+  try {
+    await expect(regradeRun(run, "reporting failure fixture", fake.path)).rejects.toThrow("fixture reporting failure");
+  } finally {
+    report.mockRestore();
+  }
+  const state = await readState(run);
+  expect(state.status).toBe("partial");
+  expect(state.regrade?.status).toBe("failed");
+  const comparison = JSON.parse(await readFile(join(run, "reports/bundle/comparison.json"), "utf8"));
+  expect(comparison.regrade.status).toBe("failed");
+  expect(state.regrade?.error).toContain("fixture reporting failure");
+  expect(state.results?.stock?.grade?.passed).toBe(true);
 }, 30_000);

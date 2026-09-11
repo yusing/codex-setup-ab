@@ -253,7 +253,7 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
       const result = await runOwnedContainer({ docker: dockerBin, name: container, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
                 "-i", "-v", `${judgeHome}:/home/ubuntu`, "-v", `${schemaPath}:/tmp/judge-output-schema.json:ro`,
         "-v", `${join(judgeRoot, `evidence-${passNumber}`)}:/evidence:ro`,
-        ...presentations[index]!.flatMap((arm, candidateIndex) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${CANDIDATES[candidateIndex]}:ro`]),
+        ...presentations[index]!.flatMap((arm, candidateIndex) => ["-v", `${join(runDir, state.regrade?.evaluator_root ?? "evaluator", arm)}:/candidates/${CANDIDATES[candidateIndex]}:ro`]),
         state.image_id ?? state.image,
 
         "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check", "--output-schema", "/tmp/judge-output-schema.json", "--model", JUDGE_MODEL,

@@ -94,6 +94,17 @@ export interface RunState {
     status: "started" | "stopped" | "failed";
     error?: string;
   }>>;
+  regrade?: {
+    status: "running" | "complete" | "failed";
+    reason: string;
+    started_at: string;
+    finished_at?: string;
+    archive_path: string;
+    evaluator_root: string;
+    patch_sha256: Partial<Record<ArmName, string>>;
+    judge_stale: boolean;
+    error?: string;
+  };
   finishing_history?: NonNullable<RunState["finishing"]>[];
   finishing?: {
     status: "running" | "complete" | "failed";

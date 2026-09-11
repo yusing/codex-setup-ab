@@ -189,12 +189,13 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     current: "Audited current-home snapshot, including recorded tracked worktree changes.",
   });
   await write("comparison.json", {
+    regrade: state.regrade ?? null,
     design: report.design, arms: report.arms, current_minus_stock_percent: report.current_minus_stock_percent,
     source_quality: state.judge ?? null, validity: report.validity,
     limitations: "Single paired descriptive comparison. Different tasks and historical source snapshots are not equivalent baselines.",
   });
   await writeFile(join(destination, "SOURCE-REVIEW.md"), state.judge
-    ? `# Independent source assessment\n\nTwo anonymous reversed-order patch-and-test reviews. This is source inspection, not additional runtime or browser coverage.\n\nStatus: ${state.judge.status}\n\n${report.rejected_source_assessment ? "A rejected response is retained in rejected-source-assessment.json. Its scores, findings and proposed winner are unvalidated and do not establish an overall winner.\n\n" : ""}${state.judge.passes.map(pass => `## Pass ${pass.pass}\n\n${pass.rationale}\n\n${pass.evidence.map(item => `- ${item}`).join("\n")}\n\n${pass.issues.map(issue => `- ${issue.candidate} (${issue.severity}): ${issue.detail}`).join("\n")}`).join("\n\n")}\n`
+    ? `# Independent source assessment\n\nTwo anonymous reversed-order patch-and-test reviews. This is source inspection, not additional runtime or browser coverage.\n\nStatus: ${state.judge.status}${state.regrade?.judge_stale ? " (stale: used grading evidence from before the infrastructure correction)" : ""}\n\n${report.rejected_source_assessment ? "A rejected response is retained in rejected-source-assessment.json. Its scores, findings and proposed winner are unvalidated and do not establish an overall winner.\n\n" : ""}${state.judge.passes.map(pass => `## Pass ${pass.pass}\n\n${pass.rationale}\n\n${pass.evidence.map(item => `- ${item}`).join("\n")}\n\n${pass.issues.map(issue => `- ${issue.candidate} (${issue.severity}): ${issue.detail}`).join("\n")}`).join("\n\n")}\n`
     : "# Independent source assessment\n\nNot run: no completed comparable pair. No source-quality winner is claimed.\n");
   return destination;
 
