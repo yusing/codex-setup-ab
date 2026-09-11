@@ -134,7 +134,14 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   if (state.profile !== "godoxy-icons") {
     progress("compiling the exact base and task dependencies in an ephemeral container");
     const bun = resolve(runDir, state.runtime_tools.bun);
-    const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
+    const preflightCache = state.runtime_tools.preflight_cache;
+    const cacheArgs = preflightCache ? [
+      ...(state.profile === "skills-mgr-bundle" || preflightCache.bun ? ["--network", "none"] : []),
+      "-v", `${resolve(runDir, preflightCache.go_build)}:/home/ubuntu/.cache/go-build`,
+      "-v", `${resolve(runDir, preflightCache.go_pkg)}:/home/ubuntu/go/pkg`,
+      ...(preflightCache.bun ? ["-v", `${resolve(runDir, preflightCache.bun)}:/home/ubuntu/.bun/install/cache`] : []),
+    ] : [];
+    const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, ...cacheArgs,
       "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, "-v", `${bun}:/usr/local/bin/bun:ro`, image, "sh", "-lc",
       `git clone --no-hardlinks /seed /tmp/preflight >/dev/null && git -C /tmp/preflight checkout ${state.source.base_commit} >/dev/null && cd /tmp/preflight && ${prepareAssets(state)} && git diff --quiet HEAD -- && go test ${testPackage(state)} -run '^$'`] });
     if (compile.exitCode !== 0) throw new Error(`base dependency/compile preflight failed: ${compile.stderr.trim()}`);

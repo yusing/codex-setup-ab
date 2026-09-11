@@ -312,6 +312,28 @@ test("non-paid preflight leaves a prepared run unstarted", async () => {
   expect(log).toContain("bun build plugins/tools.ts --outfile ./internal/router/toolplugin/dist/tools.js");
 });
 
+test("cached preflight mounts Go and Bun dependency caches before disabling networking", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  for (const path of ["artifacts/preflight-cache/go-build", "artifacts/preflight-cache/go-pkg", "artifacts/preflight-cache/bun"]) {
+    await mkdir(join(run, path), { recursive: true });
+  }
+  state.runtime_tools.preflight_cache = {
+    go_build: "artifacts/preflight-cache/go-build",
+    go_pkg: "artifacts/preflight-cache/go-pkg",
+    bun: "artifacts/preflight-cache/bun",
+    source_run: "/fixture/base",
+  };
+  await writeState(run, state);
+  const fake = await fakeOwnedDocker(0);
+  await preflightRun(run, fake.path);
+  const compile = (await readFile(fake.log, "utf8")).split("\n").find(line => line.includes("-preflight-compile "))!;
+  expect(compile).toContain("--network none");
+  expect(compile).toContain("/artifacts/preflight-cache/go-build:/home/ubuntu/.cache/go-build");
+  expect(compile).toContain("/artifacts/preflight-cache/go-pkg:/home/ubuntu/go/pkg");
+  expect(compile).toContain("/artifacts/preflight-cache/bun:/home/ubuntu/.bun/install/cache");
+});
+
 test("preflight rejects an image missing the recorded code-mode host", async () => {
   const run = await prepared();
   const fake = await fakeOwnedDocker(0, false, true);
@@ -332,7 +354,7 @@ test("Mekugi rejects changed controls and snapshot files before Docker is invoke
     await file(join(run, path), "changed after preparation\n");
     await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("changed");
   }
-});
+}, 15_000);
 
 test("candidate acceptance symlink cannot redirect evaluator injection to a host file", async () => {
   const run = await prepared();

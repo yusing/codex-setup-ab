@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { checked, exec } from "./process";
-import { snapshotToolStore } from "./snapshot";
+import { snapshotToolStore, verifySnapshotIdentities, type PreviousSnapshot, type SnapshotFile } from "./snapshot";
 import { sha256, writeState } from "./state";
 import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from "./types";
 
@@ -32,6 +32,31 @@ export interface PrepareOptions {
 function progress(message: string): void { process.stderr.write(`[prepare] ${message}\n`); }
 
 async function exists(path: string): Promise<boolean> { try { await lstat(path); return true; } catch { return false; } }
+
+async function makeDirectoriesWritable(root: string): Promise<void> {
+  const pending = [root];
+  while (pending.length) {
+    const directory = pending.pop()!;
+    const info = await lstat(directory);
+    await chmod(directory, info.mode | 0o200);
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) pending.push(join(directory, entry.name));
+    }
+  }
+}
+
+async function copyCacheTree(source: string, destination: string): Promise<void> {
+  await mkdir(destination, { recursive: true });
+  try {
+    await checked(["cp", "-al", `${source}/.`, destination]);
+  } catch {
+    await makeDirectoriesWritable(destination);
+    await rm(destination, { recursive: true, force: true });
+    await mkdir(destination, { recursive: true });
+    await checked(["cp", "-a", `${source}/.`, destination]);
+  }
+  await makeDirectoriesWritable(destination);
+}
 
 async function copyRequired(source: string, target: string): Promise<void> {
   if (!(await exists(source))) throw new Error(`current setup dependency is missing: ${source}`);
@@ -111,8 +136,12 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   if (await sha256(setupFilesPath) !== state.runtime_tools.current_setup_files_sha256) {
     throw new Error("snapshotted current setup file manifest changed");
   }
-  const setupFiles = JSON.parse(await readFile(setupFilesPath, "utf8")) as { files: unknown };
-  if (JSON.stringify(await manifest(setupInstalls)) !== JSON.stringify(setupFiles.files)) {
+  const setupFiles = JSON.parse(await readFile(setupFilesPath, "utf8")) as { files: SnapshotFile[] };
+  const hasIdentities = Array.isArray(setupFiles.files) && setupFiles.files.every(file => file.identity !== undefined);
+  const setupIsUnchanged = hasIdentities
+    ? await verifySnapshotIdentities(setupInstalls, setupFiles.files)
+    : JSON.stringify(await manifest(setupInstalls)) === JSON.stringify(setupFiles.files);
+  if (!setupIsUnchanged) {
     throw new Error("snapshotted current setup installations changed");
   }
   if (state.execution.current_launcher === "mekugi") {
@@ -399,15 +428,59 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   await mkdir(currentTemplate, { recursive: true });
   const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate, mekugiBinary, mekugiShellBinary, miseBinary, reviewTreatment);
   const currentSetupInstalls = join(runDir, "snapshots/current/mise/installs");
-  let previousInstalls: string | undefined;
+  let previousSnapshot: PreviousSnapshot | undefined;
+  let preflightCache: NonNullable<RunState["runtime_tools"]["preflight_cache"]> | undefined;
   if (options.snapshotBase) {
     const previousRun = await realpath(options.snapshotBase);
     const previousState = JSON.parse(await readFile(join(previousRun, "run.json"), "utf8")) as RunState;
     if (previousState.status !== "complete") throw new Error("snapshot base must be a completed benchmark");
-    previousInstalls = join(previousRun, "snapshots/current/mise/installs");
+    const previousManifestPath = join(previousRun, previousState.snapshot_manifest);
+    if (await sha256(previousManifestPath) !== previousState.current_snapshot.manifest_sha256) {
+      throw new Error("snapshot base current-home manifest changed");
+    }
+    const previousManifest = JSON.parse(await readFile(previousManifestPath, "utf8")) as { source_home?: unknown };
+    if (typeof previousManifest.source_home !== "string") throw new Error("snapshot base has no source home");
+    const previousFilesPath = join(previousRun, previousState.runtime_tools.current_setup_files);
+    if (await sha256(previousFilesPath) !== previousState.runtime_tools.current_setup_files_sha256) {
+      throw new Error("snapshot base tool manifest changed");
+    }
+    const previousFiles = JSON.parse(await readFile(previousFilesPath, "utf8")) as { files?: unknown };
+    if (!Array.isArray(previousFiles.files)) throw new Error("snapshot base tool manifest has no files");
+    previousSnapshot = {
+      root: join(previousRun, previousState.runtime_tools.current_setup_installs),
+      files: previousFiles.files as SnapshotFile[],
+      sourceRoot: join(previousManifest.source_home, ".local/share/mise/installs"),
+      capturedAt: previousState.current_snapshot.captured_at,
+    };
+    const matchingRuntime = previousState.source.base_commit === base && previousState.source.base_tree === tree &&
+      previousState.runtime_tools.codex_sha256 === codexSha256;
+    let cacheArm: "stock" | "current" | undefined;
+    for (const arm of ["stock", "current"] as const) {
+      if (previousState.results?.[arm] &&
+          await exists(join(previousRun, "arms", arm, "grader-go-cache")) &&
+          await exists(join(previousRun, "arms", arm, "grader-go-pkg-cache"))) {
+        cacheArm = arm;
+        break;
+      }
+    }
+    if (matchingRuntime && cacheArm) {
+      const goBuild = join(runDir, "artifacts/preflight-cache/go-build");
+      const goPkg = join(runDir, "artifacts/preflight-cache/go-pkg");
+      const previousBun = join(previousRun, "arms", cacheArm, "grader-bun-cache");
+      const bun = await exists(previousBun) ? join(runDir, "artifacts/preflight-cache/bun") : undefined;
+      await Promise.all([
+        copyCacheTree(join(previousRun, "arms", cacheArm, "grader-go-cache"), goBuild),
+        copyCacheTree(join(previousRun, "arms", cacheArm, "grader-go-pkg-cache"), goPkg),
+        ...(bun ? [copyCacheTree(previousBun, bun)] : []),
+      ]);
+      preflightCache = {
+        go_build: relative(runDir, goBuild), go_pkg: relative(runDir, goPkg),
+        bun: bun ? relative(runDir, bun) : undefined, source_run: previousRun,
+      };
+    }
   }
   progress("snapshotting installed tools incrementally");
-  const { files: setupFiles, ...snapshotStats } = await snapshotToolStore(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls, previousInstalls);
+  const { files: setupFiles, ...snapshotStats } = await snapshotToolStore(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls, previousSnapshot);
   await writeFile(join(runDir, "snapshots/current/incremental.json"), `${JSON.stringify({ base: options.snapshotBase ?? null, ...snapshotStats }, null, 2)}\n`);
   progress(`tool snapshot: reused ${snapshotStats.linked} files (${snapshotStats.linkedBytes} bytes), copied ${snapshotStats.copied} files (${snapshotStats.copiedBytes} bytes)`);
   const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json");
@@ -447,6 +520,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       current_setup_installs: relative(runDir, currentSetupInstalls),
       current_setup_files: relative(runDir, currentSetupFiles), current_setup_files_sha256: await sha256(currentSetupFiles),
       current_setup_mise_sha256: miseSha256,
+      preflight_cache: preflightCache,
       codex_code_mode_host_sha256: codeModeHostSha256,
       mekugi_source: mekugiBinary, mekugi_sha256: mekugiSha256,
       mekugi_shell_source: mekugiShellBinary, mekugi_shell_sha256: mekugiShellSha256,
