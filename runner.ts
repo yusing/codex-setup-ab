@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
 import { OwnedContainerError, runOwnedContainer } from "./container";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
-import { acceptanceExecutionError, acceptanceTestNames } from "./grading";
+import { acceptanceExecutionError, acceptanceTestNames, evaluatorCompatibilityError } from "./grading";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { readState, writeState, withRunLock } from "./state";
@@ -302,7 +302,8 @@ export async function gradeArm(docker: string, runDir: string, state: RunState, 
       validation_error: "supplemental infrastructure failure; required checks retained" };
   }
 
-  return { preparation, acceptance, router_suite: routerSuite, supplemental_repeat: supplementalRepeat, supplemental_infrastructure_error: supplementalInfrastructureError, elapsed_ms: requiredElapsedMs, passed: preparation.exit_code === 0 && acceptance.exit_code === 0 && routerSuite.exit_code === 0 && !acceptance.validation_error && !routerSuite.validation_error };
+  const evaluatorError = evaluatorCompatibilityError(acceptance.stdout) ?? evaluatorCompatibilityError(routerSuite.stdout);
+  return { preparation, acceptance, router_suite: routerSuite, evaluator_error: evaluatorError, supplemental_repeat: supplementalRepeat, supplemental_infrastructure_error: supplementalInfrastructureError, elapsed_ms: requiredElapsedMs, passed: !evaluatorError && preparation.exit_code === 0 && acceptance.exit_code === 0 && routerSuite.exit_code === 0 && !acceptance.validation_error && !routerSuite.validation_error };
 }
 
 async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, cache: string, moduleCache: string, task: string, signal: AbortSignal): Promise<ArmResult> {
@@ -454,6 +455,10 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
       const graded = await Promise.allSettled(selectedArms.map(async arm => {
         const result = state.results![arm]!;
         result.grade = await gradeArm(docker, runDir, state, arm, join(runDir, result.patch_path), controller.signal);
+        if (result.grade?.evaluator_error) {
+          result.lifecycle_error = result.grade.evaluator_error;
+          state.error = `${arm}: ${result.grade.evaluator_error}`;
+        }
         if (result.grade?.supplemental_infrastructure_error) {
           result.lifecycle_error = result.grade.supplemental_infrastructure_error;
           state.error = `${arm}: supplemental infrastructure failed: ${result.lifecycle_error}`;

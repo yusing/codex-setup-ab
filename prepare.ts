@@ -407,11 +407,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     previousInstalls = join(previousRun, "snapshots/current/mise/installs");
   }
   progress("snapshotting installed tools incrementally");
-  const snapshotStats = await snapshotToolStore(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls, previousInstalls);
+  const { files: setupFiles, ...snapshotStats } = await snapshotToolStore(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls, previousInstalls);
   await writeFile(join(runDir, "snapshots/current/incremental.json"), `${JSON.stringify({ base: options.snapshotBase ?? null, ...snapshotStats }, null, 2)}\n`);
   progress(`tool snapshot: reused ${snapshotStats.linked} files (${snapshotStats.linkedBytes} bytes), copied ${snapshotStats.copied} files (${snapshotStats.copiedBytes} bytes)`);
   const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json");
-  await writeFile(currentSetupFiles, `${JSON.stringify({ files: await manifest(currentSetupInstalls) }, null, 2)}\n`);
+  await writeFile(currentSetupFiles, `${JSON.stringify({ files: setupFiles }, null, 2)}\n`);
 
   const snapshotDocument = JSON.parse(await readFile(snapshotManifest, "utf8")) as { created_at?: unknown };
   if (typeof snapshotDocument.created_at !== "string") throw new Error("current snapshot manifest has no capture timestamp");

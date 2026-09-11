@@ -21,3 +21,16 @@ export function acceptanceExecutionError(jsonl: string, expectedTests: string[])
   const missing = expectedTests.filter(name => !passed.has(name));
   return missing.length ? `acceptance tests did not execute and pass: ${missing.join(", ")}` : undefined;
 }
+
+/** A free-form task may produce a valid interface the evaluator cannot exercise. */
+export function evaluatorCompatibilityError(jsonl: string): string | undefined {
+  for (const line of jsonl.split("\n")) {
+    let event: { Action?: string; Test?: string; Output?: string };
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event.Action === "output" && event.Test?.startsWith("TestABAcceptance") &&
+        /EVALUATOR_(?:INTERFACE|FORMAT)_UNSUPPORTED:/.test(event.Output ?? "")) {
+      return "evaluator interface/format coverage gap; candidate requires assessment before grading";
+    }
+  }
+  return undefined;
+}

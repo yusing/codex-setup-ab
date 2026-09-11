@@ -135,6 +135,22 @@ test("skills-mgr profile uses root package checks and evaluator-only acceptance"
   expect((await readState(run)).results.current?.grade?.passed).toBe(true);
 });
 
+test("unsupported evaluator interfaces remain unassessed and prevent judging", async () => {
+  const run = await prepared();
+  const fake = await fakeOwnedDocker(0);
+  const script = await readFile(fake.path, "utf8");
+  const marker = JSON.stringify({ Action: "output", Test: "TestABAcceptanceFixture", Output: "EVALUATOR_INTERFACE_UNSUPPORTED: custom CLI" });
+  await writeFile(fake.path, script.replace("*-grade|*-grade-suite|*-supplemental-repeat)\n",
+    `*-grade|*-grade-suite|*-supplemental-repeat)\n        printf '%s\\n' '${marker}'\n`));
+  const auth = join(root, "compatibility-auth.json");
+  await file(auth, "{}", 0o600);
+  const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path, arm: "current" });
+  expect(state.status).toBe("partial");
+  expect(state.results.current?.grade?.evaluator_error).toContain("coverage gap");
+  expect(state.results.current?.grade?.passed).toBe(false);
+  expect(state.results.current?.lifecycle_error).toContain("coverage gap");
+});
+
 test("prepare makes base-only independent clones and an audited secret-free snapshot", async () => {
   const run = await prepared();
   const state = await readState(run);

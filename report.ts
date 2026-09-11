@@ -34,7 +34,7 @@ function graderSeconds(result: ArmResult | undefined): number | null {
 }
 
 function resultHasAllChecks(result: ArmResult | undefined): boolean {
-  if (!result?.grade) return false;
+  if (!result?.grade || result.grade.evaluator_error) return false;
   return [result.grade.preparation, result.grade.acceptance, result.grade.router_suite]
     .every(check => check.command !== "not run" && check.exit_code !== -1);
 }
@@ -44,6 +44,7 @@ function number(value: number | null | undefined, digits = 0): string {
 }
 
 function gradeLabel(result: ArmResult | undefined): string {
+  if (result?.grade?.evaluator_error) return "unassessed";
   return result?.grade?.passed === true ? "pass" : result?.grade ? "fail" : "missing";
 }
 

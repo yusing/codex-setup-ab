@@ -18,6 +18,10 @@ test("incremental snapshots reuse old copies, isolate live edits, and survive ba
     await rm(join(live, "removed"));
     const stats = await snapshotToolStore(live, second, first);
     expect(stats.linked).toBe(1);
+    expect(stats.files.map(file => file.path)).toEqual(["alias", "changed", "same"]);
+    for (const entry of stats.files.filter(file => file.type === "file")) {
+      expect(entry.sha256).toBe(new Bun.CryptoHasher("sha256").update(await readFile(join(second, entry.path))).digest("hex"));
+    }
     expect(stats.copied).toBe(1);
     expect((await lstat(join(first, "same"))).ino).toBe((await lstat(join(second, "same"))).ino);
     expect((await lstat(join(live, "same"))).ino).not.toBe((await lstat(join(second, "same"))).ino);
@@ -43,4 +47,3 @@ test("old parent symlinks cannot cause live files to be linked", async () => {
     expect((await lstat(join(live, "nested/file"))).ino).not.toBe((await lstat(join(next, "nested/file"))).ino);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
-

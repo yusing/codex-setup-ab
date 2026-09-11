@@ -1,15 +1,15 @@
 # Portable skill bundle benchmark
 
-A new task in skills-mgr, replacing the rejected info-command task. It requires reproducible archive creation, strict untrusted-input verification, atomic no-clobber extraction, executable-mode preservation, and bounded resource use.
+A new task in skills-mgr, replacing the rejected info-command task. The user-approved prompt asks for reproducible archive creation, verification and extraction, executable preservation, rejection of corrupt/unsafe archives, and no overwrites. It deliberately leaves the archive schema and implementation choices open.
 
 - Source: `/home/ubuntu/projects/skills-mgr`.
 - Base: `f16d629d7acafaa57ddc94a9a295f5040eb2c8df`.
 - No existing solution commit: the forbidden identity is the all-zero SHA sentinel, which must remain absent.
-- [Task](task.md) specifies the complete public CLI and v1 format.
-- [Evaluator](acceptance_test.go) uses the existing command dispatcher and independently constructed archives.
+- [Task](task.md) is the complete short user-approved prompt. No additional specification is supplied to the agent.
+- [Evaluator](acceptance_test.go) checks observable behavior using candidate-created archives, without requiring the discarded private v1 schema. Unsupported CLI/archive shapes must be reported as evaluator coverage gaps rather than product failures.
 - Package: root `.`. No submodules or generated Mekugi plugin assets.
 
-## V3 run
+## Stock A versus v3 B
 
 Use current home plus the original v3 overlay and the current installed matching Mekugi/shell pair. Active home guidance and source repositories remain unchanged.
 
@@ -31,7 +31,8 @@ Use current home plus the original v3 overlay and the current installed matching
   --image codex-ab:0.154.0
 ```
 
-Use the returned directory for `preflight`, then `run --arm current --confirm-paid-inference`. This is v3 only, not a stock comparison. The finishing bundle records checks, usage, timing, list-price cost estimates, patches, identities, and reviewer/interaction audits. Prior v3 measurements remain descriptive only because the task and launcher differ.
+Use the returned directory for `preflight`, then `run --confirm-paid-inference`. A uses stock Codex; B uses current home plus v3 through `mekugi codex`. Both receive the same short task and start concurrently after non-inference checks pass. The finishing bundle records checks, usage, timing, list-price cost estimates, patches, identities, and reviewer/interaction audits. Prior v3 measurements remain descriptive only because the task and launcher differ.
 
 Required checks run `go test -json . -run '^TestABAcceptance' -count=1` and `go test -json . -count=1` with evaluator-private offline caches. A supplemental check repeats the suite twice with a 180-second timeout. Acceptance source stays hidden from the benchmark agent. Because the task is invented, there is no oracle solution against which to validate positive behavior before inference.
 
+The evaluator accepts common positional and `--output` CLI forms. Archive-structure probes support ZIP and tar.gz; an unsupported form is a coverage gap to investigate, not evidence that the feature is wrong. Corruption checks do not impose a private manifest schema, exact resource limits, or exact permission normalization. Concurrent-process checks verify usable publication; source assessment must still inspect no-clobber race handling.

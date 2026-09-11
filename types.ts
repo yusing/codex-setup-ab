@@ -34,6 +34,7 @@ export interface ArmResult {
   grade?: {
     preparation: CommandEvidence;
     acceptance: CommandEvidence;
+    evaluator_error?: string;
     supplemental_infrastructure_error?: string;
     supplemental_repeat?: CommandEvidence;
     router_suite: CommandEvidence;

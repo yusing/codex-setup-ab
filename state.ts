@@ -1,4 +1,5 @@
-import { chmod, mkdir, rename, rmdir, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { chmod, mkdir, rename, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunState } from "./types";
 
@@ -28,8 +29,22 @@ export async function writeState(runDir: string, state: RunState): Promise<void>
   await rename(temporary, target);
 }
 
+const verifiedHashes = new Map<string, { signature: string; hash: string }>();
+
+async function contentSignature(path: string): Promise<string> {
+  const info = await stat(path, { bigint: true });
+  return [info.dev, info.ino, info.size, info.mode, info.mtimeNs, info.ctimeNs].join(":");
+}
+
+/** Recheck file identity and nanosecond change time before reusing an in-process hash. */
 export async function sha256(path: string): Promise<string> {
+  const before = await contentSignature(path);
+  const cached = verifiedHashes.get(path);
+  if (cached?.signature === before) return cached.hash;
   const hash = new Bun.CryptoHasher("sha256");
-  hash.update(await Bun.file(path).arrayBuffer());
-  return hash.digest("hex");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  if (await contentSignature(path) !== before) throw new Error(`file changed while hashing: ${path}`);
+  const digest = hash.digest("hex");
+  verifiedHashes.set(path, { signature: before, hash: digest });
+  return digest;
 }

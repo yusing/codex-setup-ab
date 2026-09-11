@@ -52,6 +52,7 @@ export async function regradeRun(runDirectory: string, reason: string, docker = 
         const outcomes = await Promise.allSettled(arms.map(async arm => {
           const result = state.results![arm]!;
           result.grade = await gradeArm(docker, runDir, state, arm, join(runDir, result.patch_path), controller.signal, join(evaluatorRoot, arm));
+          if (result.grade?.evaluator_error) throw new Error(result.grade.evaluator_error);
           if (result.grade?.supplemental_infrastructure_error) throw new Error(result.grade.supplemental_infrastructure_error);
           if (await sha256(join(runDir, result.patch_path)) !== hashes[arm]) throw new Error(`${arm} captured patch changed during regrading`);
           process.stderr.write(`[regrade] ${arm}: required gates ${result.grade?.passed ? "passed" : "failed"}\n`);
