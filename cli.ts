@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { prepare } from "./prepare";
 import { preflightRun } from "./runner";
+import { remeterRun } from "./remeter";
 import { regradeRun } from "./regrade";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { judgeRun } from "./judge";
@@ -23,6 +24,7 @@ Usage:
   codex-ab finish --run-dir DIR --confirm-paid-inference [options]
   codex-ab judge --run-dir DIR --confirm-paid-inference [options]
   codex-ab regrade --run-dir DIR --reason TEXT [--docker-bin FILE]
+  codex-ab remeter --run-dir DIR --exclusions FILE
   codex-ab report --run-dir DIR
   codex-ab invalidate --run-dir DIR --reason TEXT
 
@@ -62,6 +64,7 @@ function options(command: string, args: string[]): Record<string, string | boole
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     regrade: ["run-dir", "reason", "docker-bin"],
+    remeter: ["run-dir", "exclusions"],
     report: ["run-dir"],
     invalidate: ["run-dir", "reason"],
   };
@@ -135,6 +138,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "regrade") {
     await regradeRun(string(o, "run-dir"), string(o, "reason"), o["docker-bin"] as string | undefined);
     process.stdout.write(`${resolve(string(o, "run-dir"))}/reports/bundle/report.md\n`);
+    return 0;
+  }
+  if (command === "remeter") {
+    process.stdout.write(`${await remeterRun(string(o, "run-dir"), string(o, "exclusions"))}\n`);
     return 0;
   }
   if (command === "report") {

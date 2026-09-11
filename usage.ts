@@ -344,8 +344,13 @@ function requestCost(usage: Usage, rates: ModelPricing): number | null {
   return total;
 }
 
+export interface MeterExclusions {
+  response_ids: string[];
+  command_ids: string[];
+}
+
 /** Meter every rollout in a dedicated per-arm Codex home. */
-export async function meterRollouts(codexHome: string, pricing: PricingSnapshot): Promise<MeteredRollouts> {
+export async function meterRollouts(codexHome: string, pricing: PricingSnapshot, exclusions?: MeterExclusions): Promise<MeteredRollouts> {
   const warnings = [...pricing.warnings];
   let complete = true;
   const files: SessionFile[] = [];
@@ -444,7 +449,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot)
           warnings.push(`${file.path}: completed command has missing or invalid duration`);
           complete = false;
         } else {
-          commandSeconds += duration;
+          if (!id || !exclusions?.command_ids.includes(id)) commandSeconds += duration;
           if (id) commandIds.add(id);
         }
       }
@@ -473,7 +478,19 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot)
       chosen.set(candidate.key, candidate);
     }
   }
-  for (const candidate of chosen.values()) requests.push({ threadId: candidate.ownerThreadId, model: candidate.model, usage: candidate.usage });
+  for (const id of exclusions?.response_ids ?? []) {
+    if (!chosen.has(id)) throw new Error(`excluded response not found: ${id}`);
+  }
+  for (const id of exclusions?.command_ids ?? []) {
+    if (!commandIds.has(id)) throw new Error(`excluded command not found: ${id}`);
+  }
+  // Keep a zero-valued owner record to prevent cumulative fallback from
+  // restoring excluded usage, including when all of a thread's requests go.
+  for (const candidate of chosen.values()) requests.push({
+    threadId: candidate.ownerThreadId, model: candidate.model,
+    usage: exclusions?.response_ids.includes(candidate.key!) ? emptyUsage() : candidate.usage,
+  });
+
 
   const threadsWithRecords = new Set(requests.map((request) => request.threadId));
   for (const [threadId, fallback] of fallbackByThread) {

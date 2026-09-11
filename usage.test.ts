@@ -266,3 +266,30 @@ test("fetchPricing falls back with exact stock rates and serializable provenance
     globalThis.fetch = originalFetch;
   }
 });
+
+test("explicit exclusions remove deduplicated requests and commands without cumulative fallback", async () => {
+  const consumed = usage({ input_tokens: 100, output_tokens: 10, total_tokens: 110 });
+  const home = await homeWith({
+    "main.jsonl": [
+      meta("main"), model("test-model"),
+      record("main", "keep", consumed),
+      record("child", "remove", consumed),
+      { type: "event_msg", payload: { type: "item_completed", item: { type: "CommandExecution", id: "diagnose", duration: 6 } } },
+    ],
+    "child.jsonl": [
+      meta("child", "main"), model("test-model"),
+      record("child", "remove", consumed),
+      { type: "event_msg", payload: { type: "token_count", info: { total_token_usage: consumed } } },
+    ],
+  });
+  const prices = pricing({ "test-model": rate() });
+  const original = await meterRollouts(home, prices);
+  const adjusted = await meterRollouts(home, prices, { response_ids: ["remove"], command_ids: ["diagnose"] });
+  expect(adjusted.complete).toBe(true);
+  expect(adjusted.totals.total_tokens).toBe(110);
+  expect(adjusted.totals.estimated_api_usd).toBeCloseTo(original.totals.estimated_api_usd! / 2);
+  expect(adjusted.totals.command_seconds).toBe(0);
+  expect(adjusted.agents.find(agent => agent.thread_id === "child")?.usage.total_tokens).toBe(0);
+  await expect(meterRollouts(home, prices, { response_ids: ["missing"], command_ids: [] })).rejects.toThrow("excluded response not found");
+  await expect(meterRollouts(home, prices, { response_ids: [], command_ids: ["missing"] })).rejects.toThrow("excluded command not found");
+});
