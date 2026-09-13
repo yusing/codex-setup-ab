@@ -5,6 +5,7 @@ import { OwnedContainerError, runOwnedContainer } from "./container";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
 import { acceptanceExecutionError, acceptanceTestNames, evaluatorCompatibilityError } from "./grading";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
+import { executorOwnership, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { readState, writeState, withRunLock } from "./state";
 import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
@@ -109,9 +110,9 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   const identity = await runOwnedContainer({ docker, name: `${prefix}-identity`, signal, createArgs: [image, "sh", "-lc", "printf '%s:%s\\n' \"$(id -u)\" \"$(id -g)\""] });
   const expectedIdentity = `${state.operator.uid}:${state.operator.gid}`;
   if (identity.exitCode !== 0 || identity.stdout.trim() !== expectedIdentity) throw new Error(`container operator identity must be ${expectedIdentity}, got ${identity.stdout.trim()}`);
-  const binaryHash = await runOwnedContainer({ docker, name: `${prefix}-hash`, signal, createArgs: [image, "sha256sum", "/usr/local/bin/codex", "/usr/local/bin/codex-code-mode-host"] });
+  const binaryHash = await runOwnedContainer({ docker, name: `${prefix}-hash`, signal, createArgs: [image, "sha256sum", "/usr/local/bin/codex", "/usr/local/bin/codex-code-mode-host", ...(state.protected_runtime ? ["/usr/local/libexec/codex-real"] : [])] });
   const hashes = binaryHash.stdout.trim().split("\n").map(line => line.trim().split(/\s+/)[0]);
-  if (binaryHash.exitCode !== 0 || hashes[0] !== state.runtime_tools.codex_sha256 || hashes[1] !== state.runtime_tools.codex_code_mode_host_sha256) {
+  if (binaryHash.exitCode !== 0 || hashes[0] !== state.runtime_tools.codex_sha256 || hashes[1] !== state.runtime_tools.codex_code_mode_host_sha256 || (state.protected_runtime && hashes[2] !== state.runtime_tools.codex_sha256)) {
     throw new Error(`container Codex hash differs from prepared source: ${binaryHash.stdout.trim()}`);
   }
   progress("exercising the local code-mode host protocol without model access");
@@ -162,6 +163,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     await writeFile(join(runDir, "artifacts/preflight-icons.json"), JSON.stringify(compile, null, 2));
     if (compile.exitCode !== 0) throw new Error(`icons preflight failed: ${compile.stdout.trim()} ${compile.stderr.trim()}`);
   }
+  if (state.protected_runtime) await protectedPreflight(docker, runDir, state, signal);
   progress("preflight passed without model inference");
   return image;
 
@@ -344,16 +346,26 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     ? ["--capture-output=/mekugi-exports/capture.jsonl", "--metrics-output=/mekugi-exports/metrics.json"] : [];
   const exportMount = exportArgs.length ? ["-v", `${join(output, "mekugi")}:/mekugi-exports`] : [];
   if (exportArgs.length) await mkdir(join(output, "mekugi"), { recursive: true, mode: 0o700 });
+  const protectedArm = arm === "current" && state.protected_runtime;
+  const runtime = join(output, "runtime");
+  const ownedPaths = [repository, home, cache, moduleCache, join(output, "mekugi"), runtime];
+  if (protectedArm) await mkdir(runtime, { recursive: true });
   const codexLauncher = arm === "current" && state.execution.current_launcher === "mekugi" ? ["mekugi", ...(state.mekugi_flags ?? []), ...exportArgs, "codex"] : ["codex"];
   const launcher = arm === "current" || state.comparison === "same-setup" ? ["mise", "exec", "--", ...codexLauncher] : ["codex"];
   try {
+    if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
     result = await runOwnedContainer({ docker, name, signal, stdin: task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "-i", "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin",
       "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`, ...currentSetupMounts(runDir, state, arm), ...exportMount,
+      ...(protectedArm ? [...protectedArgs(runDir, state, runtime), "-v", `${join(moduleCache, "mod")}:/go/pkg/mod:ro`] : []),
       imageRef(state), ...launcher, "exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
       "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"] });
   } catch (error) {
     lifecycleError = error instanceof Error ? error.message : String(error);
     if (error instanceof OwnedContainerError && error.result) result = error.result;
+  }
+  if (protectedArm) {
+    try { await executorOwnership(docker, state, `${name}-restore`, ownedPaths, true); }
+    catch (error) { lifecycleError = `${lifecycleError ?? ""} ${String(error)}`.trim(); }
   }
   const finishedAt = new Date().toISOString();
   progress(`${arm}: agent stopped after ${Math.round((result?.elapsedMs ?? 0) / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);

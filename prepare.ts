@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { checked, exec } from "./process";
 import { snapshotToolStore, verifySnapshotIdentities, type PreviousSnapshot, type SnapshotFile } from "./snapshot";
+import { ISOLATION_SCRIPTS } from "./isolation";
 import { readMekugiBuild } from "./provenance";
 import { loadTaskPack } from "./task-pack";
 import { validateCriteria } from "./semantic";
@@ -13,6 +14,7 @@ import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from 
 
 export interface PrepareOptions {
   comparison?: import("./types").Comparison;
+  protectMekugi?: boolean;
   mekugiBuild?: string;
   mekugiSource?: string;
   mekugiFlags?: string[];
@@ -135,6 +137,9 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   validateMekugiFlags(state.mekugi_flags ?? []);
   if (state.mekugi_exports && (await sha256(join(runDir, state.mekugi_exports.validator.path)) !== state.mekugi_exports.validator.sha256 || await sha256(join(runDir, state.mekugi_exports.reader.path)) !== state.mekugi_exports.reader.sha256)) {
     throw new Error("Mekugi capture validator changed");
+  }
+  for (const file of state.protected_runtime?.scripts ?? []) {
+    if (await sha256(join(runDir, file.path)) !== file.sha256) throw new Error("runtime isolation script changed");
   }
   for (const file of state.mekugi_build?.files ?? []) {
     if (await sha256(join(runDir, file.path)) !== file.sha256) throw new Error("Mekugi build input changed");
@@ -365,6 +370,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const currentLauncher = options.currentLauncher ?? (comparison === "same-setup" ? "mekugi" : "codex");
   if (comparison === "same-setup" && !options.mekugiSource) throw new Error("same-setup requires --mekugi-source for capturer-owned export validation");
   if (comparison === "same-setup" && currentLauncher !== "mekugi") throw new Error("same-setup requires the Mekugi launcher");
+  if (options.protectMekugi && (currentLauncher !== "mekugi" || !options.mekugiSource)) throw new Error("protected runtime requires Mekugi and matching --mekugi-source or --mekugi-build");
   if (options.mekugiFlags?.length && currentLauncher !== "mekugi") throw new Error("Mekugi flags require the Mekugi launcher");
   const reasoningEffort = options.reasoningEffort ?? "medium";
   if (!["mekugi", "godoxy-icons", "skills-mgr-bundle", "task"].includes(profile)) throw new Error("unknown benchmark profile");
@@ -572,10 +578,22 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       reader: { path: readerPath, sha256: await sha256(join(runDir, readerPath)) } };
   }
 
+  let protectedRuntime: RunState["protected_runtime"];
+  if (options.protectMekugi) {
+    const scripts = [];
+    for (const name of ISOLATION_SCRIPTS) {
+      const path = `snapshots/runtime/isolation/${name}`;
+      await copyRequired(join(options.mekugiSource!, "benchmarks", name), join(runDir, path));
+      await chmod(join(runDir, path), 0o755);
+      scripts.push({ path, sha256: await sha256(join(runDir, path)) });
+    }
+    protectedRuntime = { boundary: "direct-egress-vs-router-only", scripts };
+  }
   const state: RunState = {
     profile,
     comparison,
     mekugi_flags: mekugiFlags,
+    protected_runtime: protectedRuntime,
     mekugi_build: buildProvenance,
     mekugi_exports: mekugiExports,
     submodules,

@@ -47,6 +47,7 @@ Prepare options:
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
   --comparison NAME    stock-current (default) or same-setup (direct versus Mekugi)
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
+  --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
   --mekugi-build DIR    captured build bundle; selects its matching binaries and source
   --mekugi-source DIR   matching Mekugi source for its capture validator
   --current-launcher N  codex (default; same-setup uses mekugi) or mekugi
@@ -76,7 +77,7 @@ Run and judge require the explicit model-execution confirmation flag.
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -94,7 +95,7 @@ function options(command: string, args: string[]): Record<string, string | boole
     const key = item.slice(2);
     if (!allowed[command].includes(key)) throw new Error(`unknown option for ${command}: ${item}`);
     if (Object.hasOwn(parsed, key)) throw new Error(`duplicate option: ${item}`);
-    if (key === "confirm-paid-inference") { parsed[key] = true; continue; }
+    if (key === "confirm-paid-inference" || key === "protect-mekugi") { parsed[key] = true; continue; }
     const value = args[++i];
     if (!value || value.startsWith("--")) throw new Error(`${item} requires a value`);
     parsed[key] = value;
@@ -154,6 +155,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,
       mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
       currentLauncher: o["current-launcher"] as import("./types").CodexLauncher | undefined,
+      protectMekugi: o["protect-mekugi"] === true,
       mekugiBuild: o["mekugi-build"] as string | undefined,
       mekugiSource: o["mekugi-source"] as string | undefined,
       mekugiBinary: o["mekugi-bin"] as string | undefined,

@@ -114,6 +114,11 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       }
     }
   }
+  if (state.protected_runtime) {
+    await mkdir(join(destination, "isolation"), { recursive: true });
+    for (const file of state.protected_runtime.scripts) await copy(file.path, `isolation/${file.path.split("/").at(-1)}`);
+    await copy("artifacts/preflight-isolation.json", "isolation/preflight.json");
+  }
   if (state.mekugi_build) await mkdir(join(destination, "mekugi-build"), { recursive: true });
   for (const file of state.mekugi_build?.files ?? []) await copy(file.path, `mekugi-build/${file.path.split("/").at(-1)}`);
   if (state.task_pack) await copy(state.task_pack.path, "task-pack.json");
@@ -140,6 +145,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     [state.snapshot_manifest, state.current_snapshot.manifest_sha256],
     [state.task.path, state.task.sha256],
     ...(state.acceptance ? [[state.acceptance.path, state.acceptance.sha256]] : []),
+    ...(state.protected_runtime?.scripts.map(file => [file.path, file.sha256]) ?? []),
     ...(state.mekugi_build?.files.map(file => [file.path, file.sha256]) ?? []),
     ...(state.task_pack ? [[state.task_pack.path, state.task_pack.sha256]] : []),
     ...(state.criteria ? [[state.criteria.path, state.criteria.sha256]] : []),

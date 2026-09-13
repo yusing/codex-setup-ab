@@ -99,8 +99,29 @@ Supply `--mekugi-source DIR` from the matching Mekugi checkout (required for `sa
 and `--metrics-output` exports and snapshot its analyzer. The report validates the capturer's
 schema, treatment identity and raw-record consistency with that analyzer, retaining missing or
 invalid telemetry explicitly. Capture calculations remain owned by Mekugi. The exports are
-within-arm diagnostics, not measured savings against A, and consistency is not tamper-proof
-provenance: this runner does not yet protect those mounts from its executor.
+within-arm diagnostics, not measured savings against A. Consistency checks alone do not protect
+exports from executor writes; the optional protected runtime below supplies that boundary.
+
+## Protected Mekugi runtime
+
+Add `--protect-mekugi` to preparation with `--mekugi-source` or `--mekugi-build`, and use an image
+rebuilt from the current Dockerfile. Preflight reuses Mekugi's snapshotted isolation scripts:
+a real router starts, its executor can reach only that listener, capture/runtime mounts are
+read-only, and private Go compilation and Code Mode execution must work without inference.
+The check copies the captured B home and workspace, mounts its exact mise tool store, and uses
+the same `mise exec -- mekugi` launch path. The wrapper's underlying Codex executable must also
+hash-match direct A. The recorded preflight result is retained in the bundle.
+
+The trusted launcher needs Docker `NET_ADMIN`, `SYS_ADMIN`, and private mount/PID namespaces.
+The executor keeps UID 0 for compatibility with Mekugi-owned state, but has no capabilities,
+no supplementary groups, no privilege elevation, and an immutable non-root network GID.
+Only run-owned writable trees are temporarily assigned to that executor; ownership is restored
+after termination. An interrupted ownership restore is a lifecycle error, not a successful run.
+
+**Arm A remains true direct Codex**, with its ordinary non-root container and provider egress.
+Protected arm B has a different process/network boundary, recorded explicitly in state and
+the report. This is not passthrough-versus-Mekugi and should not be described as identical
+sandbox behavior. Existing unprotected runs remain readable and retain their diagnostic caveat.
 
 ## Retain exact Mekugi build provenance
 

@@ -151,6 +151,35 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   await expect(verifyPreparedInputs(run, state)).rejects.toThrow("identity changed");
 });
 
+test("protected runtime snapshots owner scripts without changing the direct arm", async () => {
+  const owner = join(root, "isolation-owner/benchmarks");
+  for (const name of ["analyze_capture.py", "benchmark_jsonl.py", "isolated-codex.sh", "agent-mounts.sh", "agent-check.py"]) {
+    await file(join(owner, name), "#!/bin/sh\nexit 0\n", 0o755);
+  }
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    acceptancePath: acceptance, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "same-setup",
+    protectMekugi: true, mekugiSource: join(owner, "..") });
+  const state = await readState(run);
+  expect(state.protected_runtime?.boundary).toBe("direct-egress-vs-router-only");
+  expect(state.protected_runtime?.scripts).toHaveLength(3);
+  expect(state.execution.current_launcher).toBe("mekugi");
+  expect(state.arms.stock.home_template).toBe(state.arms.current.home_template);
+  await verifyPreparedInputs(run, state);
+  const auth = join(root, "protected-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const wrong = await fakeOwnedDocker(0, false, false, "", false, true);
+  await expect(preflightRun(run, wrong.path)).rejects.toThrow("container Codex hash differs from prepared source");
+  await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json "));
+  expect(launches.find(line => line.includes(" mise exec -- codex exec "))!).not.toContain("--cap-add");
+  expect(launches.find(line => line.includes(" mise exec -- mekugi "))!).toContain("--cap-add SYS_ADMIN");
+  expect(launches.find(line => line.includes(" mise exec -- mekugi "))!).toContain("/usr/local/libexec/mekugi-agent-check.py:ro");
+  await file(join(run, state.protected_runtime!.scripts[0]!.path), "changed");
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("isolation script changed");
+});
+
 test("Mekugi build inputs are pinned, bundled and independent of the live checkout", async () => {
   const build = join(root, "mekugi-build");
   const context = join(root, "build-context");
@@ -413,7 +442,7 @@ async function fakeDocker(sleepSeconds: number): Promise<{ path: string; log: st
   return { path, log };
 }
 
-async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = "", failSupplemental = false): Promise<{ path: string; log: string; stateDir: string }> {
+async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = "", failSupplemental = false, wrongProtectedBinary = false): Promise<{ path: string; log: string; stateDir: string }> {
   const path = join(root, `fake-owned-docker-${crypto.randomUUID()}.sh`);
   const log = `${path}.log`;
   const stateDir = `${path}.state`;
@@ -443,9 +472,11 @@ case "$operation" in
     test -f '${stateDir}/'$name || exit 3
     status=0
     case "$name" in
+      *-isolation-codex) printf '%s\\n' 'codex-cli 0.154.0' ;;
+      *-isolation-probe) printf '%s\\n' CODEX_AB_PROTECTED_RUNTIME_OK ;;
       *-preflight-image) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.154.0' ;;
       *-preflight-identity) printf '%s\\n' '${process.getuid?.()}:${process.getgid?.()}' ;;
-      *-preflight-hash) ${missingHost ? `printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex'; status=1` : `printf '%s  %s\\n%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' '${codeModeHostHash}' '/usr/local/bin/codex-code-mode-host'`} ;;
+      *-preflight-hash) ${missingHost ? `printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex'; status=1` : `printf '%s  %s\\n%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' '${codeModeHostHash}' '/usr/local/bin/codex-code-mode-host'; printf '%s  %s\\n' '${wrongProtectedBinary ? "bad" : codexHash}' '/usr/local/libexec/codex-real'`} ;;
       *-preflight-toolhost) printf '%s\\n' 'CODEX_AB_TOOL_HOST_OK' ;;
       *-warm) ${failWarm ? "echo prewarm-failed >&2; status=9" : ":"} ;;
       *-capture)

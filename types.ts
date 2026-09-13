@@ -63,6 +63,7 @@ export interface RunState {
   image: string;
   image_id?: string;
   comparison?: Comparison;
+  protected_runtime?: { boundary: "direct-egress-vs-router-only"; scripts: Array<{ path: string; sha256: string }> };
   mekugi_build?: { identity: import("./provenance").MekugiBuild; files: Array<{ path: string; sha256: string }> };
   mekugi_exports?: { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } };
   mekugi_flags?: string[];
