@@ -61,20 +61,20 @@ export async function verifySnapshotIdentities(root: string, expected: SnapshotF
 }
 
 /** Reuse only isolated snapshot inodes, never files from the live tool store. */
-export async function snapshotToolStore(source: string, destination: string, previous?: string | PreviousSnapshot): Promise<SnapshotStats & { files: SnapshotFile[] }> {
+export async function snapshotToolStore(source: string, destination: string, previous?: PreviousSnapshot): Promise<SnapshotStats & { files: SnapshotFile[] }> {
   const sourceRoot = await realpath(source);
-  const previousRoot = previous ? await realpath(typeof previous === "string" ? previous : previous.root) : undefined;
+  const previousRoot = previous ? await realpath(previous.root) : undefined;
   if (previousRoot && (previousRoot === sourceRoot || previousRoot.startsWith(`${sourceRoot}/`) || sourceRoot.startsWith(`${previousRoot}/`))) {
     throw new Error("incremental snapshot base must be independent of the live tool store");
   }
-  const previousFiles = typeof previous === "object" ? new Map(previous.files.map(file => [file.path, file])) : undefined;
-  const previousSourceRoot = typeof previous === "object"
+  const previousFiles = previous ? new Map(previous.files.map(file => [file.path, file])) : undefined;
+  const previousSourceRoot = previous
     ? await realpath(previous.sourceRoot).catch(error => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     })
     : undefined;
-  const unchangedBefore = typeof previous === "object" && previousSourceRoot === sourceRoot
+  const unchangedBefore = previous && previousSourceRoot === sourceRoot
     ? Date.parse(previous.capturedAt)
     : Number.NaN;
   const files: SnapshotFile[] = [];

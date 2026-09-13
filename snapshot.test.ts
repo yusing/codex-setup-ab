@@ -13,11 +13,11 @@ test("incremental snapshots reuse old copies, isolate live edits, and survive ba
     await writeFile(join(live, "changed"), "before");
     await writeFile(join(live, "removed"), "old");
     await symlink("same", join(live, "alias"));
-    await snapshotToolStore(live, first);
+    const initial = await snapshotToolStore(live, first);
     await writeFile(join(live, "changed"), "after!");
     await writeFile(join(live, "added"), "new");
     await rm(join(live, "removed"));
-    const stats = await snapshotToolStore(live, second, first);
+    const stats = await snapshotToolStore(live, second, { root: first, files: initial.files, sourceRoot: live, capturedAt: new Date(0).toISOString() });
     expect(stats.linked).toBe(1);
     expect(stats.files.map(file => file.path)).toEqual(["added", "alias", "changed", "same"]);
     for (const entry of stats.files.filter(file => file.type === "file")) {
@@ -32,7 +32,7 @@ test("incremental snapshots reuse old copies, isolate live edits, and survive ba
     await rm(first, { recursive: true });
     expect(await readFile(join(second, "alias"), "utf8")).toBe("same");
     expect(await readFile(join(second, "changed"), "utf8")).toBe("after!");
-    await expect(snapshotToolStore(live, join(root, "bad"), live)).rejects.toThrow("independent");
+    await expect(snapshotToolStore(live, join(root, "bad"), { root: live, files: initial.files, sourceRoot: live, capturedAt: new Date(0).toISOString() })).rejects.toThrow("independent");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -44,7 +44,7 @@ test("old parent symlinks cannot cause live files to be linked", async () => {
     await mkdir(old);
     await writeFile(join(live, "nested/file"), "data");
     await symlink(join(live, "nested"), join(old, "nested"));
-    expect((await snapshotToolStore(live, next, old)).linked).toBe(0);
+    expect((await snapshotToolStore(live, next, { root: old, files: [], sourceRoot: live, capturedAt: new Date(0).toISOString() })).linked).toBe(0);
     expect((await lstat(join(live, "nested/file"))).ino).not.toBe((await lstat(join(next, "nested/file"))).ino);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
