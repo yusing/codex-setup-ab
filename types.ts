@@ -5,6 +5,8 @@ export type CodexLauncher = "codex" | "mekugi";
 export type Comparison = "stock-current" | "same-setup";
 export type ReasoningEffort = "medium" | "xhigh";
 
+export type ArmOrder = "concurrent" | "stock-first" | "current-first";
+
 export type ArmName = "stock" | "current";
 
 export interface CommandEvidence {
@@ -63,6 +65,8 @@ export interface RunState {
   image: string;
   image_id?: string;
   comparison?: Comparison;
+  arm_order?: ArmOrder;
+  trial?: { set_id: string; index: number; controls_sha256: string; plan_sha256: string };
   protected_runtime?: { boundary: "direct-egress-vs-router-only"; scripts: Array<{ path: string; sha256: string }> };
   mekugi_build?: { identity: import("./provenance").MekugiBuild; files: Array<{ path: string; sha256: string }> };
   mekugi_exports?: { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } };

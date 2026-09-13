@@ -184,7 +184,7 @@ async function preflight(docker: string, state: RunState, runDir: string): Promi
   }
 }
 
-async function preflightRunUnlocked(runDirectory: string, dockerBin = process.env.CODEX_AB_DOCKER_BIN ?? "docker"): Promise<void> {
+export async function preflightRunUnlocked(runDirectory: string, dockerBin = process.env.CODEX_AB_DOCKER_BIN ?? "docker"): Promise<void> {
   const runDir = resolve(runDirectory);
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`preflight requires a prepared run, got ${state.status}`);
@@ -460,30 +460,39 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
       const repo = resolve(runDir, state.arms[arm].repository);
       await inspectCandidate(docker, runDir, state, repo, `${arm}-launch-verify`, controller.signal, true, true);
     }
-    const launchTime = new Date().toISOString();
-    state.arm_attempts = Object.fromEntries(selectedArms.map(arm => [arm, {
-      codex_home: `arms/${arm}/home/ubuntu/.codex`,
-      container: `codex-ab-${state.id}-${arm}`,
-      started_at: launchTime,
-      status: "started",
-    }])) as RunState["arm_attempts"];
-    await writeState(runDir, state);
-    const settled = await Promise.allSettled(selectedArms.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, setups[arm]!.cache, setups[arm]!.moduleCache, task, controller.signal)));
-    settled.forEach((item, index) => {
-      const arm = selectedArms[index]!;
-      const attempt = state.arm_attempts![arm]!;
-      attempt.finished_at = new Date().toISOString();
-      if (item.status === "fulfilled") state.results![arm] = item.value;
-      else {
-        attempt.status = "failed";
-        attempt.error = String(item.reason);
-        const message = `${arm}: failed to collect result: ${String(item.reason)}`;
-        state.error = state.error ? `${state.error}; ${message}` : message;
-        progress(message);
-      }
-      if (item.status === "fulfilled") attempt.status = "stopped";
-    });
-    await writeState(runDir, state);
+    const order = state.arm_order ?? "concurrent";
+    if (!["concurrent", "stock-first", "current-first"].includes(order)) throw new Error("invalid arm execution order");
+    progress(`agent execution order: ${order}`);
+    state.arm_attempts = {};
+    const batches: ArmName[][] = order === "concurrent" ? [selectedArms]
+      : (order === "stock-first" ? arms : [...arms].reverse()).filter(arm => selectedArms.includes(arm)).map(arm => [arm]);
+    for (const batch of batches) {
+      if (controller.signal.aborted) break;
+      for (const arm of batch) state.arm_attempts[arm] = {
+        codex_home: `arms/${arm}/home/ubuntu/.codex`,
+        container: `codex-ab-${state.id}-${arm}`,
+        started_at: new Date().toISOString(),
+        status: "started",
+      };
+      await writeState(runDir, state);
+      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, setups[arm]!.cache, setups[arm]!.moduleCache, task, controller.signal)));
+      settled.forEach((item, index) => {
+        const arm = batch[index]!;
+        const attempt = state.arm_attempts![arm]!;
+        attempt.finished_at = new Date().toISOString();
+        if (item.status === "fulfilled") {
+          state.results![arm] = item.value;
+          attempt.status = "stopped";
+        } else {
+          attempt.status = "failed";
+          attempt.error = String(item.reason);
+          const message = `${arm}: failed to collect result: ${String(item.reason)}`;
+          state.error = state.error ? `${state.error}; ${message}` : message;
+          progress(message);
+        }
+      });
+      await writeState(runDir, state);
+    }
     const collected = await Promise.allSettled(selectedArms.map(async arm => {
       const result = state.results?.[arm];
       if (result && !result.lifecycle_error) await collectArm(docker, runDir, state, arm, result);

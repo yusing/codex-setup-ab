@@ -46,7 +46,8 @@ export async function verifySnapshotIdentities(root: string, expected: SnapshotF
       seen++;
       if (!wanted) { valid = false; continue; }
       if (entry.isSymbolicLink()) {
-        if (wanted.type !== "symlink" || wanted.target !== await readlink(path) || !sameIdentity(await identity(path), wanted.identity)) valid = false;
+        // A fresh copy has a new inode; the literal target is its complete content.
+        if (wanted.type !== "symlink" || wanted.target !== await readlink(path)) valid = false;
       } else if (!entry.isFile() || wanted.type !== "file") {
         valid = false;
       } else if (!sameIdentity(await identity(path), wanted.identity) && (!wanted.sha256 || await sha256(path) !== wanted.sha256)) {

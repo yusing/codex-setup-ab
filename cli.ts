@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { validateMekugiFlags } from "./mekugi";
 import { buildMekugi } from "./provenance";
+import { prepareTrials, reportTrials, runTrials } from "./trials";
 import { prepare } from "./prepare";
 import { preflightRun } from "./runner";
 import { remeterRun } from "./remeter";
@@ -17,11 +18,14 @@ const DEFAULT_FORBIDDEN = "d50b9e6d7a2b01fc033a8aab523791876e4441b5";
 
 const HELP = `codex-ab ${VERSION}
 
-Prepare, run, grade, blindly judge, and report one isolated stock-versus-current Codex pair.
+Prepare, run, grade, blindly judge, and report isolated Codex pairs or a pinned trial set.
 
 Usage:
   codex-ab build-mekugi --source DIR --image NAME [--output-parent DIR] [--docker-bin FILE]
   codex-ab prepare [options]
+  codex-ab prepare-trials --run-dir DIR --count N [--order concurrent|alternating] [--output-parent DIR] [--docker-bin FILE]
+  codex-ab run-trials --trial-set DIR --confirm-paid-inference [--auth-file FILE] [--docker-bin FILE]
+  codex-ab report-trials --trial-set DIR
   codex-ab preflight --run-dir DIR [--docker-bin FILE]
   codex-ab run --run-dir DIR --confirm-paid-inference [options]
   codex-ab finish --run-dir DIR --confirm-paid-inference [options]
@@ -78,6 +82,9 @@ function options(command: string, args: string[]): Record<string, string | boole
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
     prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
+    "run-trials": ["trial-set", "auth-file", "docker-bin", "confirm-paid-inference"],
+    "report-trials": ["trial-set"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -165,6 +172,24 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),
     });
     process.stdout.write(`${runDir}\n`);
+    return 0;
+  }
+  if (command === "prepare-trials") {
+    const order = string(o, "order", "concurrent");
+    if (order !== "concurrent" && order !== "alternating") throw new Error("--order must be concurrent or alternating");
+    process.stdout.write(`${await prepareTrials({ runDir: string(o, "run-dir"), count: Number(string(o, "count")),
+      schedule: order, outputParent: o["output-parent"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined })}\n`);
+    return 0;
+  }
+  if (command === "run-trials") {
+    if (o["confirm-paid-inference"] !== true) throw new Error("run-trials launches model inference; pass --confirm-paid-inference to confirm intentional execution");
+    process.stdout.write(`${await runTrials({ directory: string(o, "trial-set"),
+      authFile: string(o, "auth-file", join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json")),
+      dockerBin: o["docker-bin"] as string | undefined })}\n`);
+    return 0;
+  }
+  if (command === "report-trials") {
+    process.stdout.write(`${await reportTrials(string(o, "trial-set"))}\n`);
     return 0;
   }
   if (command === "run" || command === "judge" || command === "finish") {

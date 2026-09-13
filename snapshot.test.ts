@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readFile, lstat, rm, symlink, utimes } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, lstat, rm, symlink, utimes, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { snapshotToolStore, verifySnapshotIdentities } from "./snapshot";
@@ -105,5 +105,21 @@ test("a retained base remains reusable after its original live store is removed"
     });
     expect(next.linked).toBe(1);
     expect(await readFile(join(second, "tool"), "utf8")).toBe("payload");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("fresh copied snapshots verify literal symlink targets rather than original inodes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-copy-"));
+  try {
+    const live = join(root, "live"), first = join(root, "first"), second = join(root, "second");
+    await mkdir(live);
+    await writeFile(join(live, "tool"), "trusted");
+    await symlink("./tool", join(live, "alias"));
+    const initial = await snapshotToolStore(live, first);
+    await cp(first, second, { recursive: true, verbatimSymlinks: true });
+    expect(await verifySnapshotIdentities(second, initial.files)).toBe(true);
+    await rm(join(second, "alias"));
+    await symlink("other", join(second, "alias"));
+    expect(await verifySnapshotIdentities(second, initial.files)).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

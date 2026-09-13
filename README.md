@@ -80,6 +80,47 @@ After both agents stop, the runner captures tracked, committed, staged, and untr
 
 For Mekugi's original router task, use the `mekugi` profile and explicitly select `--current-launcher mekugi`, with `--mekugi-bin` and `--mekugi-shell-bin`. Historical result bundles and the pinned toolchain image retain their original names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
 
+## Repeat a pinned comparison
+
+Start from an unused prepared pair. `prepare-trials` runs model-free preflight, pins the immutable
+image, input identities and pricing snapshot, then copies fresh source/setup trees for every pair.
+The prototype is not executed. Each pair has independent writable homes and caches; copying large
+tool snapshots requires enough disk space for all pairs.
+
+```sh
+trial_set="$(./dist/codex-ab prepare-trials --run-dir "$run_dir" --count 4)"
+```
+
+Pairs run one after another, with **both arms concurrent by default**. To alternate sequential
+arm order, prepare with `--order alternating`: A then B for odd-numbered pairs, B then A for even
+pairs. This changes resource contention relative to concurrent arms and is recorded in every
+report. Do not pool the two schedules as equivalent experiments.
+
+Execution includes both arms and their independent judges for every pair, so it consumes model
+quota repeatedly. Start it only when intended:
+
+```sh
+./dist/codex-ab run-trials --trial-set "$trial_set" --confirm-paid-inference
+```
+
+Failed pairs retain their evidence and do not discard later planned trials. Cancellation stops
+the active pair and leaves remaining pairs unstarted. Started sets never resume or restart;
+prepare a new set for another attempt. Each finished pair's existing evidence bundle is copied
+into trial-set-owned storage before moving on, so later standalone regrading or reporting cannot
+silently replace the trial observation.
+
+The command prints one aggregate `report.md` path. It contains setup identities, paired means,
+medians, sample standard deviations, winner counts, separate judge costs, and the full per-pair
+reports inline. Adjacent JSON, checksums and per-pair machine bundles retain the evidence without
+copying private authentication homes. Every planned pair appears, including failed or incomplete
+ones. Only complete valid paired measurements enter aggregates; missing metrics remain unknown,
+and percentage differences omit zero A baselines. Negative differences are retained. Repeats
+are descriptive evidence, not a significance test or a causal conclusion.
+
+To generate another self-contained report from retained evidence without inference or rerunning
+judges, use `report-trials --trial-set "$trial_set"`. Each report gets a new output directory;
+previous reports remain unchanged.
+
 ## Same-setup direct Codex versus Mekugi
 
 Add `--comparison same-setup --mekugi-source /path/to/matching/mekugi` to `prepare`. A (stored as `stock` for compatibility)

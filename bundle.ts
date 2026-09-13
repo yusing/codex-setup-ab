@@ -222,7 +222,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   }
   await write("setup-comparison.json", {
     source: state.source, task: state.task, task_pack: state.task_pack, criteria: state.criteria, acceptance: state.acceptance, submodules: state.submodules ?? [],
-    comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [],
+    comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null,
     execution: state.execution, image_id: state.image_id, runtime_tools: state.runtime_tools,
     resource_limits: state.resource_limits, current_configuration: manifest.configuration_repository,
     review_treatment: treatment,
@@ -247,7 +247,22 @@ export async function finalizeBundle(runDirectory: string): Promise<void> {
   }
   // These former generated result documents are superseded by the complete report.md.
   for (const name of ["SOURCE-REVIEW.md", "COMPARISON.md"]) await rm(join(destination, name), { force: true });
-  const checksums = await Promise.all((await regularFiles(destination)).filter(path => !path.endsWith("/MANIFEST.sha256")).map(async path =>
+  await writeBundleManifest(destination);
+}
+
+async function bundleManifestContents(destination: string): Promise<string> {
+  const checksums = await Promise.all((await regularFiles(destination)).filter(path => path !== join(destination, "MANIFEST.sha256")).map(async path =>
     `${await sha256(path)}  ${relative(destination, path)}`));
-  await writeFile(join(destination, "MANIFEST.sha256"), `${checksums.join("\n")}\n`);
+  return `${checksums.join("\n")}\n`;
+}
+
+export async function writeBundleManifest(destination: string): Promise<void> {
+  await writeFile(join(destination, "MANIFEST.sha256"), await bundleManifestContents(destination));
+}
+
+export async function verifyBundleManifest(destination: string, expectedSha256: string): Promise<void> {
+  const manifest = join(destination, "MANIFEST.sha256");
+  if (await sha256(manifest) !== expectedSha256 || await readFile(manifest, "utf8") !== await bundleManifestContents(destination)) {
+    throw new Error("retained bundle evidence changed");
+  }
 }

@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepare, verifyPreparedInputs, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
 import { regradeRun } from "./regrade";
 import { finishBenchmark, runBenchmark } from "./workflow";
+import { prepareTrials, readTrialSet, reportTrials, runTrials } from "./trials";
 import { main, parseMekugiFlags } from "./cli";
 import { checked } from "./process";
 import { readState, writeState, sha256 } from "./state";
@@ -55,6 +56,8 @@ async function fixtureHome(): Promise<string> {
   await file(join(h, ".local/share/mise/installs/go-github-com-yusing-skills-mgr/0.0.0-20260908072306-37a730da5ab5/bin/skills-mgr"), "fixture\n", 0o755);
   await file(join(h, ".local/share/mise/installs/aqua-rtk-ai-rtk/0.48.0/rtk"), "fixture\n", 0o755);
   await file(join(h, ".local/share/mise/installs/fixture-runner/1/bin/project-runner"), "#!/bin/sh\nexit 0\n", 0o755);
+  await symlink("./1", join(h, ".local/share/mise/installs/fixture-runner/latest"));
+  await symlink("project-runner", join(h, ".local/share/mise/installs/fixture-runner/1/bin/alias"));
   await file(join(h, ".local/bin/mise"), `#!/bin/sh
 case "$*" in
   *'ls --current --missing --no-header'*) exit 0 ;;
@@ -213,6 +216,17 @@ test("Mekugi build inputs are pinned, bundled and independent of the live checko
   await rm(build, { recursive: true });
   await rm(context, { recursive: true });
   await verifyPreparedInputs(run, state);
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const fake = await fakeOwnedDocker(0);
+  const trials = await prepareTrials({ runDir: run, count: 2, outputParent: root, dockerBin: fake.path });
+  for (const trial of (await readTrialSet(trials)).trials) {
+    const copy = join(trials, trial.run_dir);
+    await verifyPreparedInputs(copy, await readState(copy));
+    expect(await Bun.file(join(copy, "artifacts/mekugi-build/source/dirty-guidance.md")).exists()).toBe(false);
+    for (const file of state.mekugi_build!.files) expect(await sha256(join(copy, file.path))).toBe(file.sha256);
+  }
+  expect(await Bun.file(join(run, "artifacts/mekugi-build/source/dirty-guidance.md")).exists()).toBe(true);
   await file(join(run, "reports/report.json"), "{}");
   await file(join(run, "reports/report.md"), "fixture report");
   await bundles.collectBundle(run);
@@ -1122,3 +1136,119 @@ test("preflight rejects mise migration warnings even when mise exits successfull
   const state = await readState(run);
   expect(state.arm_attempts?.current).toBeUndefined();
 });
+
+test("trial CLI pins fresh pairs, alternates launches, and retains self-contained reports without inference", async () => {
+  const prototype = await prepared();
+  const initial = await readState(prototype);
+  initial.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(prototype, initial);
+  const fake = await fakeOwnedDocker(0.2);
+  const made = await checked(["bun", join(import.meta.dir, "cli.ts"), "prepare-trials",
+    "--run-dir", prototype, "--count", "2", "--order", "alternating", "--output-parent", root, "--docker-bin", fake.path]);
+  const directory = made.stdout.trim();
+  const set = await readTrialSet(directory);
+  expect(set.status).toBe("prepared");
+  expect(set.trials.map(trial => trial.order)).toEqual(["stock-first", "current-first"]);
+  expect(set.controls.image_id).toBe(`sha256:${"a".repeat(64)}`);
+  const first = join(directory, set.trials[0]!.run_dir);
+  const second = join(directory, set.trials[1]!.run_dir);
+  expect(await readlink(join(first, initial.runtime_tools.current_setup_installs, "fixture-runner/latest"))).toBe("./1");
+  expect(await readFile(join(first, initial.runtime_tools.current_setup_installs, "fixture-runner/1/bin/alias"), "utf8")).toContain("exit 0");
+  const snapshot = initial.arms.current.home_template;
+  const original = await stat(join(prototype, snapshot, ".codex/AGENTS.md"));
+  expect((await stat(join(first, snapshot, ".codex/AGENTS.md"))).ino).not.toBe(original.ino);
+  expect((await stat(join(first, "arms/stock/repo/internal/router/router.go"))).ino)
+    .not.toBe((await stat(join(second, "arms/stock/repo/internal/router/router.go"))).ino);
+  expect(await Bun.file(join(first, "arms/stock/home/ubuntu/.codex/auth.json")).exists()).toBe(false);
+  const auth = join(root, "trials-auth.json"); await file(auth, "{}\n", 0o600);
+  await expect(main(["run-trials", "--trial-set", directory])).rejects.toThrow("confirm-paid-inference");
+  const executed = await checked(["bun", join(import.meta.dir, "cli.ts"), "run-trials", "--trial-set", directory,
+    "--auth-file", auth, "--docker-bin", fake.path, "--confirm-paid-inference"]);
+  const markdown = executed.stdout.trim();
+  expect(await readFile(markdown, "utf8")).toContain("# Repeated Codex A/B report");
+  expect(await readFile(markdown, "utf8")).toContain("## Pair 2: current-first");
+  expect((await readTrialSet(directory)).status).toBe("complete");
+  for (const [run, leading, trailing] of [[first, "stock", "current"], [second, "current", "stock"]] as const) {
+    const state = await readState(run);
+    expect(Date.parse(state.results![trailing]!.started_at)).toBeGreaterThanOrEqual(Date.parse(state.results![leading]!.finished_at));
+    expect(state.results![leading]!.grade?.passed).toBe(true);
+  }
+  const report = JSON.parse(await readFile(join(markdown, "..", "report.json"), "utf8"));
+  expect(report.planned_pairs).toBe(2);
+  // Fixture model output deliberately has no metered rollout history.
+  expect(report.eligible_pairs).toBe(0);
+  expect(report.current_minus_stock.total_tokens.difference.mean).toBeNull();
+  expect(await Bun.file(join(markdown, "..", "trials/1/run.json")).exists()).toBe(true);
+  expect(await Bun.file(join(markdown, "..", "trials/1/auth.json")).exists()).toBe(false);
+  expect((await readState(prototype)).status).toBe("prepared");
+  await expect(runTrials({ directory, authFile: auth, dockerBin: fake.path })).rejects.toThrow("never resume");
+  const regenerated = await checked(["bun", join(import.meta.dir, "cli.ts"), "report-trials", "--trial-set", directory]);
+  expect(regenerated.stdout.trim()).not.toBe(markdown);
+  const changed = await readState(first);
+  changed.execution.reasoning_effort = "xhigh";
+  await writeState(first, changed);
+  const frozen = await reportTrials(directory);
+  expect(await readFile(frozen, "utf8")).not.toContain("trial controls or membership changed");
+  const retained = JSON.parse(await readFile(join(frozen, "..", "trials/1/run.json"), "utf8"));
+  expect(retained.execution.reasoning_effort).toBe("medium");
+  await file(join(directory, "evidence/2/stock-changes.patch"), "changed after freezing");
+  await file(join(directory, "evidence/1/report.json"), "{}");
+  const excluded = await reportTrials(directory);
+  expect(await readFile(excluded, "utf8")).toContain("retained bundle evidence changed");
+}, 30000);
+
+test("trial failures and cancellation retain every planned pair and never launch unstarted work", async () => {
+  const prototype = await prepared();
+  const state = await readState(prototype);
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(prototype, state);
+  const fake = await fakeOwnedDocker(0, true);
+  const directory = await prepareTrials({ runDir: prototype, count: 2, outputParent: root, dockerBin: fake.path });
+  expect((await readTrialSet(directory)).trials.every(trial => trial.order === "concurrent")).toBe(true);
+  const auth = join(root, "failed-trials-auth.json"); await file(auth, "{}\n", 0o600);
+  const originalManifest = bundles.writeBundleManifest;
+  const frozenUnderLock: string[] = [];
+  const manifestSpy = spyOn(bundles, "writeBundleManifest").mockImplementation(async destination => {
+    if (destination.startsWith(`${directory}/evidence/`)) {
+      const index = destination.split("/").at(-1)!;
+      await expect(buildReport(join(directory, "runs", index))).rejects.toThrow("locked");
+      frozenUnderLock.push(index);
+    }
+    await originalManifest(destination);
+  });
+  try {
+    await expect(runTrials({ directory, authFile: auth, dockerBin: fake.path })).rejects.toThrow("trial set incomplete");
+  } finally { manifestSpy.mockRestore(); }
+  expect(frozenUnderLock).toEqual(["1", "2"]);
+  const failed = await readTrialSet(directory);
+  expect(failed.status).toBe("partial");
+  expect(failed.trials.map(trial => trial.status)).toEqual(["failed", "failed"]);
+  expect(await readFile(fake.log, "utf8")).not.toContain(" codex exec ");
+  const canceled = await prepareTrials({ runDir: prototype, count: 2, outputParent: root, dockerBin: fake.path });
+  await expect(runTrials({ directory: canceled, authFile: auth, dockerBin: fake.path, signal: AbortSignal.abort() }))
+    .rejects.toThrow("trial set incomplete");
+  expect((await readTrialSet(canceled)).trials.map(trial => trial.status)).toEqual(["prepared", "prepared"]);
+  await expect(prepareTrials({ runDir: prototype, count: 1 })).rejects.toThrow("at least 2");
+}, 30000);
+
+test("sequential cancellation does not start the second arm", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  state.arm_order = "stock-first";
+  await writeState(run, state);
+  const fake = await fakeOwnedDocker(10);
+  const auth = join(root, "sequential-cancel-auth.json"); await file(auth, "{}\n", 0o600);
+  const controller = new AbortController();
+  const pending = runPair({ runDir: run, authFile: auth, dockerBin: fake.path, signal: controller.signal });
+  const deadline = Date.now() + 10000;
+  while (!(await Bun.file(fake.log).text().catch(() => "")).includes(`start --attach --interactive codex-ab-${state.id}-stock`)) {
+    if (Date.now() > deadline) { controller.abort(); await pending.catch(() => {}); throw new Error("stock did not start"); }
+    await Bun.sleep(20);
+  }
+  controller.abort();
+  const result = await pending;
+  expect(result.status).toBe("partial");
+  expect(result.arm_attempts?.current).toBeUndefined();
+  expect(result.results?.current).toBeUndefined();
+  expect(await readFile(fake.log, "utf8")).not.toContain(`start --attach --interactive codex-ab-${state.id}-current`);
+}, 20000);
