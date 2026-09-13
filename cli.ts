@@ -30,12 +30,13 @@ Usage:
   codex-ab invalidate --run-dir DIR --reason TEXT
 
 Prepare options:
-  --profile NAME        mekugi (default), godoxy-icons, or skills-mgr-bundle
+  --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
   --reasoning-effort N   medium (default) or xhigh
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
   --task FILE           task prompt (default ./task.md)
+  --criteria FILE       predetermined behavioral contract; defaults to task profile
   --acceptance FILE     evaluator-only Go test (default ./acceptance_test.go)
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --snapshot-base DIR   completed run whose unchanged installed tools can be hard-linked
@@ -64,13 +65,13 @@ Report options:
 
 Started or finished commands are never resumed or restarted; prepare a new experiment to rerun.
 Within an active judge command, Sol capacity errors retry twice (5s, 15s), preserving all attempts.
-Grading and performance reporting are programmatic; only source judging uses additional model calls.
+Test execution and accounting are programmatic; semantic harness authors and source judges use additional model calls.
 Run and judge require the explicit model-execution confirmation flag.
 `;
 
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -119,11 +120,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const timeout = Number(string(o, "timeout", "1800"));
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
     const runDir = await prepare({
-      profile: string(o, "profile", "mekugi") as import("./types").BenchmarkProfile,
+      profile: string(o, "profile", o.criteria ? "task" : "mekugi") as import("./types").BenchmarkProfile,
       reasoningEffort: string(o, "reasoning-effort", "medium") as import("./types").ReasoningEffort,
       source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
-      acceptancePath: string(o, "acceptance", resolve("acceptance_test.go")), outputParent: o["output-parent"] as string | undefined,
+      criteriaPath: o.criteria as string | undefined,
+      acceptancePath: o.criteria && !o.acceptance ? undefined : string(o, "acceptance", resolve("acceptance_test.go")), outputParent: o["output-parent"] as string | undefined,
       snapshotBase: o["snapshot-base"] as string | undefined,
       reviewTreatment: o["review-treatment"] as string | undefined,
       comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,

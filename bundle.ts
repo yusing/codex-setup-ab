@@ -1,4 +1,4 @@
-import { copyFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, copyFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { readState, sha256, writeState } from "./state";
 import type { ArmName } from "./types";
@@ -114,6 +114,22 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       }
     }
   }
+  if (state.criteria) {
+    await copy(state.criteria.path, "criteria.json");
+    const semanticRoot = join(runDir, "evaluator/semantic");
+    try { await cp(semanticRoot, join(destination, "semantic"), { recursive: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await rm(join(destination, "semantic"), { recursive: true, force: true });
+    }
+    for (const [index, attempt] of (state.judge?.attempts ?? []).entries()) {
+      if (!attempt.stage) continue;
+      for (const [source, suffix] of [[attempt.stdout_path, "jsonl"], [attempt.stderr_path, "stderr"]]) {
+        try { await copy(source!, `semantic-judge-${index + 1}.${suffix}`); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+    }
+  }
   if (state.acceptance) await copy(state.acceptance.path, "acceptance_test.go");
   const sessions: Partial<Record<ArmName, SessionAudit[]>> = {};
   const integrity: Array<{ path: string; sha256: string; expected_sha256: string; matches: boolean }> = [];
@@ -121,6 +137,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     [state.snapshot_manifest, state.current_snapshot.manifest_sha256],
     [state.task.path, state.task.sha256],
     ...(state.acceptance ? [[state.acceptance.path, state.acceptance.sha256]] : []),
+    ...(state.criteria ? [[state.criteria.path, state.criteria.sha256]] : []),
     [state.runtime_tools.current_setup_files, state.runtime_tools.current_setup_files_sha256],
   ] as Array<[string, string]>) {
     const actual = await sha256(within(runDir, path));

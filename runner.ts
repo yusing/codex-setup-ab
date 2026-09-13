@@ -34,7 +34,7 @@ function testPackage(state: RunState): string {
 }
 
 function prepareAssets(state: RunState): string {
-  return state.profile === "skills-mgr-bundle" ? "go version" : prepareRouterAssets;
+  return state.criteria?.contract.preparation ?? (state.profile === "skills-mgr-bundle" ? "go version" : prepareRouterAssets);
 }
 
 function acceptanceTarget(state: RunState): string {
@@ -126,7 +126,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     : "";
   const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none", "-e", `CODEX_AB_HOOK_EVENT=${hookEvent}`,
     "-v", `${currentHome}:/setup:ro`, "-v", `${workspace}:/workspace:ro`, ...currentSetupMounts(runDir, state), image, "sh", "-lc",
-    `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && test -z "$(mise ls --current --missing --no-header)" && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go && printf "%s\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="'${mekugiCheck}`] });
+    `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && test -z "$(mise ls --current --missing --no-header)" && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go && if test -f /workspace/go.mod; then printf "%s\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="; fi'${mekugiCheck}`] });
   if (/\[WARN\] migrate:/.test(`${dependencies.stdout}\n${dependencies.stderr}`)) {
     throw new Error("current setup mise migration failed against the read-only tool snapshot; prepare again from a home with completed mise migrations");
   }
@@ -152,7 +152,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     ] : [];
     const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, ...cacheArgs,
       "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, "-v", `${bun}:/usr/local/bin/bun:ro`, image, "sh", "-lc",
-      `git clone --no-hardlinks /seed /tmp/preflight >/dev/null && git -C /tmp/preflight checkout ${state.source.base_commit} >/dev/null && cd /tmp/preflight && ${prepareAssets(state)} && git diff --quiet HEAD -- && go test ${testPackage(state)} -run '^$'`] });
+      `git clone --no-hardlinks /seed /tmp/preflight >/dev/null && git -C /tmp/preflight checkout ${state.source.base_commit} >/dev/null && cd /tmp/preflight && ${prepareAssets(state)} && git diff --quiet HEAD -- && ${state.criteria ? "true" : `go test ${testPackage(state)} -run '^$'`}`] });
     if (compile.exitCode !== 0) throw new Error(`base dependency/compile preflight failed: ${compile.stderr.trim()}`);
   } else {
     const repository = resolve(runDir, state.arms.stock.repository);
@@ -196,7 +196,7 @@ async function prewarm(docker: string, runDir: string, state: RunState, arm: Arm
   const bun = resolve(runDir, state.runtime_tools.bun);
   const command = state.profile === "godoxy-icons"
     ? `${iconsGoCheck} && ${iconsTest}`
-    : `${prepareAssets(state)} && go test ${testPackage(state)} -run '^$'`;
+    : `${prepareAssets(state)} && ${state.criteria ? "true" : `go test ${testPackage(state)} -run '^$'`}`;
   const result = await runOwnedContainer({ docker, name, signal, createArgs: [...containerArgs(state),
     "-v", `${repo}:/workspace`, "-v", `${home}:/home/ubuntu`,
     "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`,
@@ -218,6 +218,7 @@ async function freezeGraderCaches(runDir: string, state: RunState, arm: ArmName,
 
 async function prewarmEvaluatorCaches(docker: string, runDir: string, state: RunState, arm: ArmName,
   signal: AbortSignal): Promise<void> {
+  if (!state.acceptance) return;
   const armRoot = join(runDir, "arms", arm);
   const repo = resolve(runDir, state.arms[arm].repository);
   const acceptance = resolve(runDir, state.acceptance!.path);
@@ -246,7 +247,7 @@ function evidence(command: string, started: Date, result: Awaited<ReturnType<typ
 }
 
 export async function gradeArm(docker: string, runDir: string, state: RunState, arm: ArmName, patchPath: string, signal: AbortSignal, evaluator = join(runDir, "evaluator", arm)): Promise<ArmResult["grade"]> {
-  if (!state.acceptance) return undefined;
+  if (!state.acceptance && !state.criteria) return undefined;
 
   await checked(["git", "clone", "--no-local", "--no-hardlinks", join(runDir, "seed.git"), evaluator]);
   await checked(["git", "-C", evaluator, "checkout", state.source.base_commit]);
@@ -256,6 +257,13 @@ export async function gradeArm(docker: string, runDir: string, state: RunState, 
   const patchStat = await Bun.file(patchPath).size;
   if (patchStat > 0) await checked(["git", "-C", evaluator, "apply", "--binary", patchPath]);
   await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
+  const forbiddenChanges = state.criteria?.contract.allowed_paths ? (state.results?.[arm]?.changed_files ?? []).filter(path => !state.criteria!.contract.allowed_paths!.includes(path)) : [];
+  if (!state.acceptance || forbiddenChanges.length) {
+    const ready: CommandEvidence = { command: "immutable candidate capture and task-required change boundaries", started_at: new Date().toISOString(),
+      elapsed_ms: 0, exit_code: forbiddenChanges.length ? 1 : 0, stdout: "", stderr: forbiddenChanges.length ? `Outside task change boundary: ${forbiddenChanges.join(", ")}` : "" };
+    const pending: CommandEvidence = { ...ready, command: "semantic checks pending independent judges", exit_code: -1 };
+    return { preparation: ready, acceptance: pending, router_suite: pending, elapsed_ms: 0, passed: false };
+  }
   const evaluatorAcceptanceTarget = acceptanceTarget(state);
   const injectAcceptance = `cp --remove-destination /acceptance.go ${evaluatorAcceptanceTarget}`;
   const gradeStarted = performance.now();
@@ -394,7 +402,8 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   const runDir = resolve(options.runDir);
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`run is ${state.status}; prepare a new run instead of resuming or restarting it`);
-  if (!state.acceptance) throw new Error("run has no evaluator acceptance test; prepare with --acceptance");
+  if (!state.acceptance && !state.criteria) throw new Error("run has no evaluator contract; prepare with --criteria or --acceptance");
+  if (state.criteria && options.arm) throw new Error("semantic grading requires both arms for independent reversed-order assessment");
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
   state.image_id = await preflight(docker, state, runDir);
   await writeState(runDir, state);
@@ -483,7 +492,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
           result.lifecycle_error = result.grade.supplemental_infrastructure_error;
           state.error = `${arm}: supplemental infrastructure failed: ${result.lifecycle_error}`;
         }
-        progress(`${arm}: grading ${result.grade ? (result.grade.passed ? "passed" : "failed") : "not configured"}`);
+        progress(`${arm}: grading ${state.criteria && !state.acceptance ? "prepared for independent semantic assessment" : result.grade ? (result.grade.passed ? "passed" : "failed") : "not configured"}`);
       }));
       const gradeFailure = graded.find(result => result.status === "rejected");
       if (gradeFailure?.status === "rejected") throw gradeFailure.reason;

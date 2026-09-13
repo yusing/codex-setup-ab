@@ -530,3 +530,45 @@ test("rejected judge response remains available without another model request", 
   expect(report.judge_complete).toBe(false);
   expect(await readFile(fake.log, "utf8")).toBe(before);
 }, 30_000);
+
+test("a later covered semantic pass cannot hide earlier unassessed criteria", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.criteria = { path: "evaluator/criteria.json", sha256: "criteria",
+    contract: { schema: "codex-ab.criteria.v1", task_sha256: state.task.sha256,
+      criteria: [{ id: "behavior", description: "Required behavior" }], preparation: "true", existing_tests: "true", qualification: "not-run" } };
+  for (const arm of ["stock", "current"] as const) {
+    const passed = { criterion: "behavior", status: "pass" as const, basis: "executed" as const, reasoning: "Executed" };
+    state.results![arm]!.grade!.semantic = {
+      "pass-1": [{ ...passed, status: "unassessed" }], "pass-1-fixed": [], "pass-1-existing": [passed],
+      "pass-2": [passed], "pass-2-fixed": [], "pass-2-existing": [passed],
+    };
+  }
+  await writeState(run, state);
+  const result = await buildReport(run);
+  const report = JSON.parse(await readFile(result.jsonPath, "utf8"));
+  expect(report.checks_executed).toBe(false);
+  expect(report.measurement_complete).toBe(false);
+  expect(report.winner).toBe("none");
+});
+
+test("conclusive source-only interface failures do not hide completed assessment", async () => {
+  const { run } = await fixtureRun(false, true);
+  const state = await readState(run);
+  state.criteria = { path: "evaluator/criteria.json", sha256: "criteria",
+    contract: { schema: "codex-ab.criteria.v1", task_sha256: state.task.sha256,
+      criteria: [{ id: "behavior", description: "Required behavior", required_interface: "export add" }],
+      preparation: "true", existing_tests: "true", qualification: "not-run" } };
+  for (const arm of ["stock", "current"] as const) {
+    const executed = { criterion: "behavior", status: "pass" as const, basis: "executed" as const, reasoning: "Executed" };
+    const assessed = arm === "stock" ? { ...executed, status: "fail" as const, basis: "source-only" as const, reasoning: "Required export absent" } : executed;
+    state.results![arm]!.grade!.semantic = {
+      "pass-1": [assessed], "pass-1-fixed": [], "pass-1-existing": [executed],
+      "pass-2": [assessed], "pass-2-fixed": [], "pass-2-existing": [executed],
+    };
+  }
+  await writeState(run, state);
+  const result = await buildReport(run);
+  const report = JSON.parse(await readFile(result.jsonPath, "utf8"));
+  expect(report.checks_executed).toBe(true);
+});

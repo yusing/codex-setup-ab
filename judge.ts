@@ -2,6 +2,7 @@ import { chmod, copyFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/p
 import { setTimeout as delay } from "node:timers/promises";
 import { join, resolve } from "node:path";
 import { OwnedContainerError, runOwnedContainer } from "./container";
+import { runSemanticJudge } from "./semantic-judge";
 import { readState, writeState, withRunLock } from "./state";
 import type { ArmName, CommandEvidence, JudgeAttempt, JudgePass, JudgeReport } from "./types";
 
@@ -17,7 +18,7 @@ const SCORE_KEYS = ["correctness", "completeness", "maintainability", "test_qual
 type ScoreKey = (typeof SCORE_KEYS)[number];
 type Candidate = (typeof CANDIDATES)[number];
 
-const OUTPUT_SCHEMA = {
+export const OUTPUT_SCHEMA = {
   $schema: "http://json-schema.org/draft-07/schema#",
   type: "object", additionalProperties: false,
   required: ["scores", "evidence", "issues", "winner", "rationale"],
@@ -50,7 +51,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function lastAgentMessage(jsonl: string): string {
+export function lastAgentMessage(jsonl: string): string {
   let found = "";
   for (const line of jsonl.split("\n")) {
     if (!line.trim()) continue;
@@ -118,7 +119,7 @@ export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: [Ar
   return { pass, presentation, scores, evidence, issues, winner, rationale: nonemptyString(root.rationale, `judge pass ${pass}.rationale`) };
 }
 
-function mappedWinner(pass: JudgePass): ArmName | "tie" | "none" {
+export function mappedWinner(pass: JudgePass): ArmName | "tie" | "none" {
   if (pass.winner === "tie" || pass.winner === "none") return pass.winner;
   return pass.presentation[pass.winner === "candidate-1" ? 0 : 1];
 }
@@ -168,6 +169,7 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
   const auth = resolve(authFile);
   if (((await stat(auth)).mode & 0o777) & 0o077) throw new Error("auth file must be mode 0600");
 
+  if (state.criteria) return runSemanticJudge(runDir, state, auth, dockerBin, signal);
   const task = await readFile(join(runDir, state.task.path), "utf8");
   const patches: Record<ArmName, string> = { stock: "", current: "" };
   for (const arm of ["stock", "current"] as const) {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { checked, exec } from "./process";
 import { snapshotToolStore, verifySnapshotIdentities, type PreviousSnapshot, type SnapshotFile } from "./snapshot";
+import { validateCriteria } from "./semantic";
 import { validateMekugiFlags } from "./mekugi";
 import { sha256, writeState } from "./state";
 import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from "./types";
@@ -19,6 +20,7 @@ export interface PrepareOptions {
   baseCommit: string;
   forbiddenCommit: string;
   taskPath: string;
+  criteriaPath?: string;
   acceptancePath?: string;
   outputParent?: string;
   reviewTreatment?: string;
@@ -130,8 +132,13 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   if (state.mekugi_exports && (await sha256(join(runDir, state.mekugi_exports.validator.path)) !== state.mekugi_exports.validator.sha256 || await sha256(join(runDir, state.mekugi_exports.reader.path)) !== state.mekugi_exports.reader.sha256)) {
     throw new Error("Mekugi capture validator changed");
   }
-  for (const control of [state.task, state.acceptance]) {
+  for (const control of [state.task, state.acceptance, state.criteria]) {
     if (control && await sha256(join(runDir, control.path)) !== control.sha256) throw new Error("copied benchmark control changed");
+  }
+  if (state.criteria) {
+    if (state.criteria.path !== "evaluator/criteria.json") throw new Error("criteria control path changed");
+    const contract = validateCriteria(JSON.parse(await readFile(join(runDir, state.criteria.path), "utf8")), state.task.sha256);
+    if (JSON.stringify(contract) !== JSON.stringify(state.criteria.contract)) throw new Error("predetermined criteria changed");
   }
   if (await sha256(join(runDir, state.runtime_tools.bun)) !== state.runtime_tools.bun_sha256) throw new Error("snapshotted Bun changed");
   const manifestPath = join(runDir, state.snapshot_manifest);
@@ -337,7 +344,7 @@ const REVIEW_TREATMENT_FILES = [
 ] as const;
 
 export async function prepare(options: PrepareOptions): Promise<string> {
-  const profile = options.profile ?? "mekugi";
+  const profile = options.profile ?? (options.criteriaPath ? "task" : "mekugi");
   const mekugiFlags = validateMekugiFlags(options.mekugiFlags ?? []);
   const comparison = options.comparison ?? "stock-current";
   if (!["stock-current", "same-setup"].includes(comparison)) throw new Error("comparison must be stock-current or same-setup");
@@ -346,7 +353,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (comparison === "same-setup" && currentLauncher !== "mekugi") throw new Error("same-setup requires the Mekugi launcher");
   if (options.mekugiFlags?.length && currentLauncher !== "mekugi") throw new Error("Mekugi flags require the Mekugi launcher");
   const reasoningEffort = options.reasoningEffort ?? "medium";
-  if (!["mekugi", "godoxy-icons", "skills-mgr-bundle"].includes(profile)) throw new Error("unknown benchmark profile");
+  if (!["mekugi", "godoxy-icons", "skills-mgr-bundle", "task"].includes(profile)) throw new Error("unknown benchmark profile");
   if (!["codex", "mekugi"].includes(currentLauncher)) throw new Error("current launcher must be codex or mekugi");
   if (options.mekugiBinary && currentLauncher !== "mekugi") throw new Error("--mekugi-bin requires --current-launcher mekugi");
   if (!["medium", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be medium or xhigh");
@@ -354,6 +361,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
     throw new Error("godoxy-icons benchmark identity mismatch");
   }
+  if (profile === "task" && !options.criteriaPath) throw new Error("task profile requires predetermined --criteria");
   if (profile === "skills-mgr-bundle" && !options.acceptancePath) throw new Error("skills-mgr-bundle requires explicit acceptance");
   const uid = process.getuid?.();
   const gid = process.getgid?.();
@@ -370,6 +378,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   }
   const source = await realpath(options.source);
   const taskPath = await realpath(options.taskPath);
+  const criteriaPath = options.criteriaPath ? await realpath(options.criteriaPath) : undefined;
+  const criteriaContract = criteriaPath ? validateCriteria(JSON.parse(await readFile(criteriaPath, "utf8")), await sha256(taskPath)) : undefined;
   const acceptancePath = options.acceptancePath ? await realpath(options.acceptancePath) : undefined;
   const codexBinary = await realpath(options.codexBinary ?? join(options.currentHome, ".local/bin/codex"));
   const codexVersion = (await checked([codexBinary, "--version"])).stdout.trim();
@@ -409,6 +419,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   progress(`created isolated run ${runDir}`);
   for (const dir of ["control", "evaluator", "arms", "snapshots", "artifacts"]) await mkdir(join(runDir, dir), { recursive: true });
   await copyFile(taskPath, join(runDir, "control/task.md"));
+  if (criteriaPath) await copyFile(criteriaPath, join(runDir, "evaluator/criteria.json"));
   if (acceptancePath) await copyFile(acceptancePath, join(runDir, "evaluator/acceptance_test.go"));
 
   const seed = join(runDir, "seed.git");
@@ -537,6 +548,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     status: "prepared",
     source: { path: source, base_commit: base, base_tree: tree, source_timestamp: sourceTimestamp, forbidden_commit: options.forbiddenCommit },
     task: { path: "control/task.md", sha256: await sha256(join(runDir, "control/task.md")) },
+    criteria: criteriaContract ? { path: "evaluator/criteria.json", sha256: await sha256(join(runDir, "evaluator/criteria.json")), contract: criteriaContract } : undefined,
     acceptance: acceptancePath ? { path: "evaluator/acceptance_test.go", sha256: await sha256(join(runDir, "evaluator/acceptance_test.go")) } : undefined,
     image: options.image,
     execution: { model: "gpt-6-astra", reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },

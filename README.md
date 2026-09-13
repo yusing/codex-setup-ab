@@ -51,7 +51,7 @@ Runtime supplements are copied separately: installed hooks, materialized skills 
 
 The clone preserves absolute `/home/ubuntu` paths inside its container. `snapshot-manifest.json` records the configuration commit and tree, overlaid tracked paths, a SHA-256 for every regular setup file (excluding Git metadata), literal symlink targets, and portability adaptations. The installed-tool content manifest and copied setup manager are also verified before launch. Preflight requires every configured tool to be present, then runs a referenced remote skill and the registered Go-guidelines hook with networking disabled. For Mekugi, it also resolves `shell` on the executor's PATH and executes its missing-thread diagnostic, catching absent or non-runnable helpers before inference. This checks helper startup, not a complete model-to-tool request. An incomplete setup fails before inference instead of being silently bypassed.
 
-The evaluator test is copied under `evaluator/`, which is never mounted into an arm. Each arm sees only its own clone, Go caches, and private home; the current arm also receives its read-only installed-tool snapshot. Agent logs and captured patches are kept outside its writable mounts. It cannot see the sibling, the host's live home or repositories, the Docker socket, the acceptance test, or evaluator artifacts.
+For legacy Go gates, the evaluator test is copied under `evaluator/`, which is never mounted into an arm. Each arm sees only its own clone, Go caches, and private home; the current arm also receives its read-only installed-tool snapshot. Agent logs and captured patches are kept outside its writable mounts. It cannot see the sibling, the host's live home or repositories, the Docker socket, the acceptance test, or evaluator artifacts.
 
 Validate the image and snapshotted dependencies without making a model request:
 
@@ -76,7 +76,7 @@ Milestones go to stderr. Timeout or cancellation stops session-created container
 
 For a non-comparative run, use `run --arm current` or `run --arm stock`. Only the selected arm is launched, captured, and graded. The report shows its executed checks and root-plus-child usage, but cannot claim paired measurement completeness or a winner; `judge` refuses singleton runs.
 
-After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces, inject `acceptance_test.go`, and run the focused `^TestABAcceptance` prefix gate plus the full package suite offline with evaluator-only module, build, and package caches frozen before inference. Git inspection and patch capture of candidate repositories run in separate offline containers, never on the host. Acceptance injection also happens inside the evaluator container, so candidate symlinks cannot redirect writes into the host. Agent and grader times remain separate.
+After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces. For `--acceptance` runs it injects `acceptance_test.go` and runs the focused `^TestABAcceptance` prefix gate plus the full package suite offline with evaluator-only module, build, and package caches frozen before inference. Git inspection and patch capture of candidate repositories run in separate offline containers, never on the host. Acceptance injection also happens inside the evaluator container, so candidate symlinks cannot redirect writes into the host. Agent and grader times remain separate.
 
 New runs use the `mekugi` profile and `--current-launcher mekugi`, with `--mekugi-bin` and `--mekugi-shell-bin`. Historical result bundles and the pinned toolchain image retain their original names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
 
@@ -127,13 +127,63 @@ The runner also repeats the scoped package tests twice in one process, offline, 
 
 
 The workflow is hybrid: grading, usage accounting, token/time/cost breakdowns, report generation,
-and retry decisions are deterministic code. Only candidate implementation and qualitative source
-inspection use models. No conversational subagents are needed to grade, judge, or explain the
+and retry decisions are deterministic code. Only candidate implementation, semantic harness authoring and qualitative source
+assessment use models. No conversational subagents are needed to grade, judge, or explain the
 recorded performance measurements.
+
+## Task-derived semantic grading
+
+Use `prepare --criteria FILE` to select a task-independent evaluation contract, without requiring
+a hidden Go test. The JSON contract has this form:
+
+```json
+{
+  "schema": "codex-ab.criteria.v1",
+  "task_sha256": "SHA256_OF_THE_EXACT_TASK_FILE",
+  "criteria": [
+    {"id": "behavior", "description": "Observable outcome required by the task"}
+  ],
+  "preparation": "command that prepares the pinned baseline dependencies",
+  "existing_tests": "command that runs the relevant existing tests",
+  "qualification": "not-run"
+}
+```
+
+Write and review the criteria from the task **before** running either candidate. Only add
+`required_interface` to a criterion when the task explicitly fixes that public interface.
+Preparation records and verifies the contract hash and task binding. An optional `allowed_paths` array enforces exact file boundaries only when the task requires them. The `task` profile uses
+these commands rather than repository-specific Go targets. Commands run inside containers,
+not on the host. Prepare dependencies without introducing evaluator-only checks into agent
+workspaces; evaluator build storage stays separate.
+
+After both agents stop and their patches are captured, two blind passes inspect candidates in
+opposite orders. Each pass runs the predetermined existing tests and asks Sol for additional
+checks adapted to the actual candidate interfaces. The runner executes those checks offline,
+without credentials or a Docker socket, against private copies of read-only candidate source.
+It rejects harness files that overwrite candidate files and detects changes to original files.
+
+A judge may repair a broken harness once per pass, including a failed check whose wiring was wrong. Earlier evidence remains available to the final assessment; real behavior failures must not be weakened into passes. Different names and test wiring are
+allowed; different required outcomes are not. Compilation failures caused by assumed names
+remain **unassessed**, not automatic candidate failures. A missing explicitly required public
+interface can be a source-only defect. Passing requires executed evidence plus the judge's
+assessment that the check actually covers the criterion. Both passes, disagreements, source,
+commands, outputs and repair attempts are retained.
+
+Optional `black_box` checks use the same `{criterion, files: [{path, source}], command: [argv],
+rationale}` structure and must target criteria with explicitly required public interfaces.
+They remain evaluator-only. No baseline or known-solution qualification is implied:
+`qualification` is `not-run`. Legacy `--acceptance` Go gates remain supported, including their
+isolated dependency prewarm. Semantic runs require both arms; they do not support singleton
+judging or restarting a started assessment.
+
+Harness authoring, an optional repair, and final assessment each have their own recorded model
+attempts, with the existing capacity-only retry policy. Model usage and timing remain separate
+from offline check time. No semantic model request occurs during `prepare` or `preflight`;
+`run`, `judge` and `finish` still require `--confirm-paid-inference`.
 
 ## Blind judge
 
-The `run` command performs this step automatically after both grading gates complete. For an older complete pair without a judge attempt:
+The `run` command performs blind assessment automatically after both candidates are captured. Semantic contracts use the workflow above; legacy Go acceptance runs use the source-only workflow below after their grading gates complete. For an older complete pair without a judge attempt:
 
 ```sh
 ./dist/codex-ab judge --run-dir "$run_dir" --confirm-paid-inference

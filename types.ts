@@ -1,4 +1,6 @@
-export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle";
+import type { CriterionEvidence } from "./semantic";
+
+export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" | "task";
 export type CodexLauncher = "codex" | "mekugi";
 export type Comparison = "stock-current" | "same-setup";
 export type ReasoningEffort = "medium" | "xhigh";
@@ -37,6 +39,7 @@ export interface ArmResult {
     acceptance: CommandEvidence;
     evaluator_error?: string;
     supplemental_infrastructure_error?: string;
+    semantic?: Record<string, CriterionEvidence[]>;
     supplemental_repeat?: CommandEvidence;
     router_suite: CommandEvidence;
     elapsed_ms: number;
@@ -54,6 +57,7 @@ export interface RunState {
   error?: string;
   source: { path: string; base_commit: string; base_tree: string; source_timestamp: number; forbidden_commit: string };
   task: { path: string; sha256: string };
+  criteria?: { path: string; sha256: string; contract: import("./semantic").CriteriaContract };
   acceptance?: { path: string; sha256: string };
   image: string;
   image_id?: string;
@@ -134,10 +138,12 @@ export interface JudgePass {
   evidence: string[];
   issues: Array<{ candidate: "candidate-1" | "candidate-2"; severity: "critical" | "major" | "minor"; detail: string }>;
   winner: "candidate-1" | "candidate-2" | "tie" | "none";
+  criteria?: Record<"candidate-1" | "candidate-2", CriterionEvidence[]>;
   rationale: string;
 }
 
 export interface JudgeAttempt {
+  stage?: string;
   pass: 1 | 2;
   attempt: number;
   status: "running" | "complete" | "failed" | "canceled";

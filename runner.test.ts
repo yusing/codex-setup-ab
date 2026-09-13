@@ -8,8 +8,9 @@ import { regradeRun } from "./regrade";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { main, parseMekugiFlags } from "./cli";
 import { checked } from "./process";
-import { readState, writeState } from "./state";
-import { preflightRun, runPair } from "./runner";
+import { readState, writeState, sha256 } from "./state";
+import { gradeArm, preflightRun, runPair } from "./runner";
+import { prepareSemanticAssessment } from "./semantic-assessment";
 import * as bundles from "./bundle";
 import { buildReport } from "./report";
 import { judgePrompt } from "./judge";
@@ -155,6 +156,70 @@ test("Mekugi argument arrays cannot redirect benchmark-owned exports", () => {
   for (const value of ['["codex"]', '["--capture-output=/tmp/elsewhere"]', '["--config=other"]', '{}', '[3]']) {
     expect(() => parseMekugiFlags(value)).toThrow();
   }
+});
+
+test("predetermined semantic criteria flow through both frozen candidates and reversed blind passes", async () => {
+  const criteriaPath = join(root, "criteria.json");
+  await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
+    criteria: [{ id: "fixture", description: "Make the fixture better." }],
+    preparation: "true", existing_tests: "true", qualification: "not-run" }));
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath, outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
+  const state = await readState(run);
+  expect(state.profile).toBe("task");
+  expect(state.acceptance).toBeUndefined();
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const auth = join(root, "semantic-auth.json"); await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const done = await readState(run);
+  expect(done.judge?.status).toBe("complete");
+  expect(done.judge?.passes.map(pass => pass.presentation)).toEqual([["stock", "current"], ["current", "stock"]]);
+  expect(done.judge?.attempts).toHaveLength(4);
+  expect(done.results?.stock?.grade?.passed).toBe(true);
+  expect(done.results?.current?.grade?.semantic?.["pass-2"]?.[0]?.status).toBe("pass");
+  const log = await readFile(fake.log, "utf8");
+  expect(log.indexOf("-current-capture")).toBeLessThan(log.indexOf("-judge-1-harness"));
+  expect(log.indexOf("-stock-capture")).toBeLessThan(log.indexOf("-judge-1-harness"));
+  const modelLaunches = log.split("\n").filter(line => line.includes(" exec --json ") && !line.includes("-judge-"));
+  expect(modelLaunches.every(line => !line.includes("/evaluator/"))).toBe(true);
+  const evaluatorLaunches = log.split("\n").filter(line => line.includes("create ") && line.includes("-semantic-"));
+  expect(evaluatorLaunches.every(line => line.includes("--network none") && !line.includes("auth.json") && !line.includes("docker.sock"))).toBe(true);
+});
+
+test("optional Go acceptance cannot disable semantic file boundaries", async () => {
+  const criteriaPath = join(root, "boundary-criteria.json");
+  await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
+    criteria: [{ id: "fixture", description: "Make the fixture better." }], allowed_paths: ["internal/router/router.go"],
+    preparation: "true", existing_tests: "true", qualification: "not-run" }));
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, acceptancePath: acceptance,
+    criteriaPath, outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
+  const state = await readState(run);
+  state.results = { stock: { changed_files: ["forbidden.txt"] } as import("./types").ArmResult };
+  const patch = join(root, "boundary.patch"); await file(patch, "");
+  const fake = await fakeOwnedDocker(0);
+  const grade = await gradeArm(fake.path, run, state, "stock", patch, new AbortController().signal);
+  expect(grade?.passed).toBe(false);
+  expect(grade?.preparation.exit_code).toBe(1);
+  expect(grade?.preparation.stderr).toContain("forbidden.txt");
+});
+
+test("completed semantic check time and artifacts survive a later author failure", async () => {
+  const criteriaPath = join(root, "timing-criteria.json");
+  await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
+    criteria: [{ id: "fixture", description: "Make the fixture better." }],
+    preparation: "true", existing_tests: "true", qualification: "not-run" }));
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath, outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
+  const auth = join(root, "timing-auth.json"); await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
+  await expect(prepareSemanticAssessment({ runDir: run, state, contract: state.criteria!.contract, pass: 1,
+    order: ["stock", "current"], docker: fake.path, ask: async () => { throw new Error("author unavailable"); } })).rejects.toThrow("author unavailable");
+  const captured = JSON.parse(await readFile(join(run, "evaluator/semantic/pass-1/existing/candidate-1/__existing_tests/evidence.json"), "utf8"));
+  expect((await readState(run)).results!.stock!.grade!.elapsed_ms).toBe(captured.execution.elapsed_ms);
+  expect(captured.execution.elapsed_ms).toBeGreaterThan(0);
 });
 
 test("skills-mgr profile uses root package checks and evaluator-only acceptance", async () => {
@@ -309,6 +374,14 @@ case "$operation" in
         ;;
       *-grade|*-grade-suite|*-supplemental-repeat)
         printf '%s\\n' '{"Action":"run","Test":"TestABAcceptanceFixture"}' '{"Action":"pass","Test":"TestABAcceptanceFixture"}'
+        ;;
+      *-judge-*-harness-*)
+        cat >/dev/null
+        printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked." }]]))) } })}'
+        ;;
+      *-judge-*-assessment-*)
+        cat >/dev/null
+        printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ scores: { "candidate-1": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 }, "candidate-2": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 } }, evidence: ["fixture semantic assessment"], issues: [], winner: "tie", rationale: "Both fixtures meet the criterion.", criteria: Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "fixture", status: "pass", basis: "executed", reasoning: "Executed fixture assertion." }]])) }) } })}'
         ;;
       *-judge-1|*-judge-2)
         cat >/dev/null
