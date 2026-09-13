@@ -51,7 +51,7 @@ function containerArgs(state: RunState): string[] {
 }
 
 function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current"): string[] {
-  if (arm !== "current") return [];
+  if (arm !== "current" && state.comparison !== "same-setup") return [];
   return ["-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
 }
 
@@ -131,6 +131,15 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     throw new Error("current setup mise migration failed against the read-only tool snapshot; prepare again from a home with completed mise migrations");
   }
   if (dependencies.exitCode !== 0) throw new Error(`current setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
+  if (state.execution.current_launcher === "mekugi") {
+    progress("checking selected Mekugi flags and exports offline without model access");
+    const launch = await runOwnedContainer({ docker, name: `${prefix}-mekugi`, signal, timeoutMs: 30000,
+      createArgs: ["--network", "none", "-v", `${currentHome}:/setup:ro`, image, "sh", "-lc",
+        'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && mekugi "$@" --capture-output=/tmp/capture.jsonl --metrics-output=/tmp/metrics.json codex --version',
+        "preflight", ...(state.mekugi_flags ?? [])] });
+    await writeFile(join(runDir, "artifacts/preflight-mekugi.json"), JSON.stringify(launch, null, 2));
+    if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
+  }
   if (state.profile !== "godoxy-icons") {
     progress("compiling the exact base and task dependencies in an ephemeral container");
     const bun = resolve(runDir, state.runtime_tools.bun);
@@ -323,11 +332,15 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   progress(`${arm}: agent started`);
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
-  const codexLauncher = state.execution.current_launcher === "mekugi" ? ["mekugi", "codex"] : ["codex"];
-  const launcher = arm === "current" ? ["mise", "exec", "--", ...codexLauncher] : ["codex"];
+  const exportArgs = arm === "current" && state.mekugi_exports
+    ? ["--capture-output=/mekugi-exports/capture.jsonl", "--metrics-output=/mekugi-exports/metrics.json"] : [];
+  const exportMount = exportArgs.length ? ["-v", `${join(output, "mekugi")}:/mekugi-exports`] : [];
+  if (exportArgs.length) await mkdir(join(output, "mekugi"), { recursive: true, mode: 0o700 });
+  const codexLauncher = arm === "current" && state.execution.current_launcher === "mekugi" ? ["mekugi", ...(state.mekugi_flags ?? []), ...exportArgs, "codex"] : ["codex"];
+  const launcher = arm === "current" || state.comparison === "same-setup" ? ["mise", "exec", "--", ...codexLauncher] : ["codex"];
   try {
     result = await runOwnedContainer({ docker, name, signal, stdin: task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "-i", "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin",
-      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`, ...currentSetupMounts(runDir, state, arm),
+      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`, ...currentSetupMounts(runDir, state, arm), ...exportMount,
       imageRef(state), ...launcher, "exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
       "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"] });
   } catch (error) {

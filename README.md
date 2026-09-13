@@ -6,7 +6,7 @@ This is designed for a careful pilot, not a claim that one setup causes better r
 
 ## Prerequisites and build
 
-You need Bun 1.4 or later, Git, Docker with BuildKit named-context support, access to the source commit, a standalone Codex binary and its matching `codex-code-mode-host` companion, and a mode-0600 Codex `auth.json`. The pinned Ubuntu 24.04 image copies only Go and Node from `hpatch-bench:run-D9ZuS3`; it does not inherit that image's Mekugi runtime, wrappers, source, home, or credentials. It copies the chosen standalone Codex pair directly. Preparation records the CLI version plus both files' SHA-256 identities; preflight requires both container copies to match.
+You need Bun 1.4 or later, Git, Python 3 for Mekugi export validation, Docker with BuildKit named-context support, access to the source commit, a standalone Codex binary and its matching `codex-code-mode-host` companion, and a mode-0600 Codex `auth.json`. The pinned Ubuntu 24.04 image copies only Go and Node from `hpatch-bench:run-D9ZuS3`; it does not inherit that image's Mekugi runtime, wrappers, source, home, or credentials. It copies the chosen standalone Codex pair directly. Preparation records the CLI version plus both files' SHA-256 identities; preflight requires both container copies to match.
 
 ```sh
 bun install
@@ -79,6 +79,28 @@ For a non-comparative run, use `run --arm current` or `run --arm stock`. Only th
 After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces, inject `acceptance_test.go`, and run the focused `^TestABAcceptance` prefix gate plus the full package suite offline with evaluator-only module, build, and package caches frozen before inference. Git inspection and patch capture of candidate repositories run in separate offline containers, never on the host. Acceptance injection also happens inside the evaluator container, so candidate symlinks cannot redirect writes into the host. Agent and grader times remain separate.
 
 New runs use the `mekugi` profile and `--current-launcher mekugi`, with `--mekugi-bin` and `--mekugi-shell-bin`. Historical result bundles and the pinned toolchain image retain their original names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
+
+## Same-setup direct Codex versus Mekugi
+
+Add `--comparison same-setup --mekugi-source /path/to/matching/mekugi` to `prepare`. A (stored as `stock` for compatibility)
+and B (`current`) receive separate writable copies of the **same immutable current-home
+snapshot**, the same read-only installed tools, prompt, source, model, reasoning, service tier,
+and resource limits. A launches direct Codex through mise; B launches Mekugi through mise.
+A reviewer overlay, if selected, therefore applies to both arms. There is no treatment-only
+general workflow guidance. The default `stock-current` comparison is unchanged.
+
+Select the matching executable pair with `--mekugi-bin` and `--mekugi-shell-bin`.
+Use `--mekugi-flags '["--mode=mekugi","--model-protocol=native"]'` for explicit Mekugi options placed before its `codex`
+subcommand. Export destinations and runtime configuration are benchmark-owned and cannot be
+overridden through this option. The selected arguments and comparison identity appear in the
+machine state and consolidated report. Preparation and preflight make no model requests.
+
+Supply `--mekugi-source DIR` from the matching Mekugi checkout (required for `same-setup`) to enable its `--capture-output`
+and `--metrics-output` exports and snapshot its analyzer. The report validates the capturer's
+schema, treatment identity and raw-record consistency with that analyzer, retaining missing or
+invalid telemetry explicitly. Capture calculations remain owned by Mekugi. The exports are
+within-arm diagnostics, not measured savings against A, and consistency is not tamper-proof
+provenance: this runner does not yet protect those mounts from its executor.
 
 ## Skills manager bundle profile
 

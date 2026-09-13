@@ -241,7 +241,7 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
         const suffix = attemptNumber === 1 ? "" : `-attempt-${attemptNumber}`;
         const homeRelative = `evaluator/judge/pass-${passNumber}${suffix}/home/ubuntu`;
         const judgeHome = join(runDir, homeRelative);
-        await cp(join(runDir, state.arms.stock.home_template), judgeHome, { recursive: true });
+        await cp(join(runDir, "snapshots/stock/home/ubuntu"), judgeHome, { recursive: true });
         if (controller.signal.aborted) throw new Error(`judge pass ${passNumber} canceled during setup`);
         await mkdir(join(judgeHome, ".codex"), { recursive: true, mode: 0o700 });
         await copyFile(auth, join(judgeHome, ".codex/auth.json"));

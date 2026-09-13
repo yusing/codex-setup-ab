@@ -1,5 +1,6 @@
 export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle";
 export type CodexLauncher = "codex" | "mekugi";
+export type Comparison = "stock-current" | "same-setup";
 export type ReasoningEffort = "medium" | "xhigh";
 
 export type ArmName = "stock" | "current";
@@ -56,6 +57,9 @@ export interface RunState {
   acceptance?: { path: string; sha256: string };
   image: string;
   image_id?: string;
+  comparison?: Comparison;
+  mekugi_exports?: { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } };
+  mekugi_flags?: string[];
   execution: { model: "gpt-6-astra"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;

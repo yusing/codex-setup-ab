@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { validateMekugiFlags } from "./mekugi";
 import { prepare } from "./prepare";
 import { preflightRun } from "./runner";
 import { remeterRun } from "./remeter";
@@ -40,7 +41,10 @@ Prepare options:
   --snapshot-base DIR   completed run whose unchanged installed tools can be hard-linked
   --current-home DIR    configuration Git repository root (default current home)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
-  --current-launcher N  codex (default) or mekugi for the current arm
+  --comparison NAME    stock-current (default) or same-setup (direct versus Mekugi)
+  --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
+  --mekugi-source DIR   matching Mekugi source for its capture validator
+  --current-launcher N  codex (default; same-setup uses mekugi) or mekugi
   --mekugi-bin FILE     Mekugi executable used by --current-launcher mekugi
   --mekugi-shell-bin FILE  matching shell helper (default shell beside Mekugi)
   --codex-bin FILE      standalone Codex executable used to build the image
@@ -66,7 +70,7 @@ Run and judge require the explicit model-execution confirmation flag.
 
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "snapshot-base", "review-treatment", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -98,6 +102,10 @@ function string(o: Record<string, string | boolean>, key: string, fallback?: str
   return value;
 }
 
+export function parseMekugiFlags(value: string): string[] {
+  return validateMekugiFlags(JSON.parse(value));
+}
+
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (argv.length === 0 || argv[0] === "--help" || argv[0] === "-h") { process.stdout.write(HELP); return 0; }
   if (argv[0] === "--version" || argv[0] === "-V") { process.stdout.write(`${VERSION}\n`); return 0; }
@@ -118,7 +126,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       acceptancePath: string(o, "acceptance", resolve("acceptance_test.go")), outputParent: o["output-parent"] as string | undefined,
       snapshotBase: o["snapshot-base"] as string | undefined,
       reviewTreatment: o["review-treatment"] as string | undefined,
-      currentLauncher: string(o, "current-launcher", "codex") as import("./types").CodexLauncher,
+      comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,
+      mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
+      currentLauncher: o["current-launcher"] as import("./types").CodexLauncher | undefined,
+      mekugiSource: o["mekugi-source"] as string | undefined,
       mekugiBinary: o["mekugi-bin"] as string | undefined,
       mekugiShellBinary: o["mekugi-shell-bin"] as string | undefined,
       currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),

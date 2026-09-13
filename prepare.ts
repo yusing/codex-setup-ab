@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { checked, exec } from "./process";
 import { snapshotToolStore, verifySnapshotIdentities, type PreviousSnapshot, type SnapshotFile } from "./snapshot";
+import { validateMekugiFlags } from "./mekugi";
 import { sha256, writeState } from "./state";
 import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from "./types";
 
 export interface PrepareOptions {
+  comparison?: import("./types").Comparison;
+  mekugiSource?: string;
+  mekugiFlags?: string[];
   snapshotBase?: string;
   profile?: BenchmarkProfile;
   reasoningEffort?: ReasoningEffort;
@@ -115,10 +119,17 @@ function stockConfig(reasoningEffort: ReasoningEffort): string {
 
 export async function verifyPreparedInputs(runDir: string, state: RunState): Promise<void> {
   if (state.task.path !== "control/task.md" || (state.acceptance && state.acceptance.path !== "evaluator/acceptance_test.go" && !/^reports\/regrade-[A-Za-z0-9]+\/acceptance_test\.go$/.test(state.acceptance.path))) throw new Error("copied benchmark control path changed");
-  const stock = join(runDir, state.arms.stock.home_template);
+  const stock = join(runDir, "snapshots/stock/home/ubuntu");
+  const sameSetup = state.comparison === "same-setup";
+  if (sameSetup && (state.arms.stock.home_template !== state.arms.current.home_template || state.execution.current_launcher !== "mekugi")) throw new Error("same-setup treatment identity changed");
+  if (!sameSetup && state.arms.stock.home_template !== "snapshots/stock/home/ubuntu") throw new Error("stock setup identity changed");
   const stockFiles = await manifest(stock);
   if (stockFiles.length !== 1 || stockFiles[0].path !== ".codex/config.toml" || stockFiles[0].type !== "file"
     || await readFile(join(stock, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.reasoning_effort)) throw new Error("stock setup snapshot changed");
+  validateMekugiFlags(state.mekugi_flags ?? []);
+  if (state.mekugi_exports && (await sha256(join(runDir, state.mekugi_exports.validator.path)) !== state.mekugi_exports.validator.sha256 || await sha256(join(runDir, state.mekugi_exports.reader.path)) !== state.mekugi_exports.reader.sha256)) {
+    throw new Error("Mekugi capture validator changed");
+  }
   for (const control of [state.task, state.acceptance]) {
     if (control && await sha256(join(runDir, control.path)) !== control.sha256) throw new Error("copied benchmark control changed");
   }
@@ -327,7 +338,13 @@ const REVIEW_TREATMENT_FILES = [
 
 export async function prepare(options: PrepareOptions): Promise<string> {
   const profile = options.profile ?? "mekugi";
-  const currentLauncher = options.currentLauncher ?? "codex";
+  const mekugiFlags = validateMekugiFlags(options.mekugiFlags ?? []);
+  const comparison = options.comparison ?? "stock-current";
+  if (!["stock-current", "same-setup"].includes(comparison)) throw new Error("comparison must be stock-current or same-setup");
+  const currentLauncher = options.currentLauncher ?? (comparison === "same-setup" ? "mekugi" : "codex");
+  if (comparison === "same-setup" && !options.mekugiSource) throw new Error("same-setup requires --mekugi-source for capturer-owned export validation");
+  if (comparison === "same-setup" && currentLauncher !== "mekugi") throw new Error("same-setup requires the Mekugi launcher");
+  if (options.mekugiFlags?.length && currentLauncher !== "mekugi") throw new Error("Mekugi flags require the Mekugi launcher");
   const reasoningEffort = options.reasoningEffort ?? "medium";
   if (!["mekugi", "godoxy-icons", "skills-mgr-bundle"].includes(profile)) throw new Error("unknown benchmark profile");
   if (!["codex", "mekugi"].includes(currentLauncher)) throw new Error("current launcher must be codex or mekugi");
@@ -497,8 +514,22 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   await chmod(bunTarget, 0o755);
   progress("captured repository-based current and minimal stock setup templates");
 
+  let mekugiExports: RunState["mekugi_exports"];
+  if (mekugiBinary && options.mekugiSource) {
+    const validatorPath = "snapshots/runtime/analyze_capture.py";
+    const readerPath = "snapshots/runtime/benchmark_jsonl.py";
+    await copyRequired(join(options.mekugiSource, "benchmarks/benchmark_jsonl.py"), join(runDir, readerPath));
+    await copyRequired(join(options.mekugiSource, "benchmarks/analyze_capture.py"), join(runDir, validatorPath));
+    mekugiExports = { capture: "artifacts/current/mekugi/capture.jsonl", metrics: "artifacts/current/mekugi/metrics.json",
+      validator: { path: validatorPath, sha256: await sha256(join(runDir, validatorPath)) },
+      reader: { path: readerPath, sha256: await sha256(join(runDir, readerPath)) } };
+  }
+
   const state: RunState = {
     profile,
+    comparison,
+    mekugi_flags: mekugiFlags,
+    mekugi_exports: mekugiExports,
     submodules,
     schema_version: 1,
     id: basename(runDir),
@@ -528,7 +559,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     },
     operator: { uid, gid },
     arms: {
-      stock: { repository: "arms/stock/repo", home_template: "snapshots/stock/home/ubuntu" },
+      stock: { repository: "arms/stock/repo", home_template: comparison === "same-setup" ? "snapshots/current/home/ubuntu" : "snapshots/stock/home/ubuntu" },
       current: { repository: "arms/current/repo", home_template: "snapshots/current/home/ubuntu" },
     },
   };

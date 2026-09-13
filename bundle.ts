@@ -102,6 +102,18 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   await copy(state.snapshot_manifest, "snapshot-manifest.json");
   await copy(state.runtime_tools.current_setup_files, "mise-files.json");
   await copy(state.task.path, "task.md");
+  if (state.mekugi_exports) {
+    for (const [source, target] of [[state.mekugi_exports.capture, "mekugi-capture.jsonl"],
+      [state.mekugi_exports.metrics, "mekugi-metrics.json"],
+      [state.mekugi_exports.validator.path, "analyze_capture.py"],
+      [state.mekugi_exports.reader.path, "benchmark_jsonl.py"]]) {
+      try { await copy(source!, target!); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        await rm(join(destination, target!), { force: true });
+      }
+    }
+  }
   if (state.acceptance) await copy(state.acceptance.path, "acceptance_test.go");
   const sessions: Partial<Record<ArmName, SessionAudit[]>> = {};
   const integrity: Array<{ path: string; sha256: string; expected_sha256: string; matches: boolean }> = [];
@@ -182,10 +194,11 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   }
   await write("setup-comparison.json", {
     source: state.source, task: state.task, acceptance: state.acceptance, submodules: state.submodules ?? [],
+    comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [],
     execution: state.execution, image_id: state.image_id, runtime_tools: state.runtime_tools,
     resource_limits: state.resource_limits, current_configuration: manifest.configuration_repository,
     review_treatment: treatment,
-    stock: "Minimal generated Codex configuration; no current-home guidance overlay.",
+    stock: state.comparison === "same-setup" ? "Same audited current-home snapshot as B, launched through direct Codex." : "Minimal generated Codex configuration; no current-home guidance overlay.",
     current: "Audited current-home snapshot, including recorded tracked worktree changes.",
   });
   await write("comparison.json", {

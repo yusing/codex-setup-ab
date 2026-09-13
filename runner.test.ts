@@ -3,10 +3,10 @@ import { writeFileSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepare, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
+import { prepare, verifyPreparedInputs, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
 import { regradeRun } from "./regrade";
 import { finishBenchmark, runBenchmark } from "./workflow";
-import { main } from "./cli";
+import { main, parseMekugiFlags } from "./cli";
 import { checked } from "./process";
 import { readState, writeState } from "./state";
 import { preflightRun, runPair } from "./runner";
@@ -112,6 +112,50 @@ async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi"
     codexBinary: join(home, ".local/bin/codex"), currentLauncher,
     mekugiBinary: currentLauncher === "mekugi" ? join(home, "go/bin/mekugi") : undefined });
 }
+
+test("same-setup uses one immutable configuration for both arms and rejects drift", async () => {
+  await file(join(root, "capture-source/benchmarks/analyze_capture.py"), "# fixture analyzer\n");
+  await file(join(root, "capture-source/benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    acceptancePath: acceptance, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "same-setup",
+    mekugiFlags: ["--mode=mekugi"], mekugiSource: join(root, "capture-source") });
+  const state = await readState(run);
+  expect(state.execution.current_launcher).toBe("mekugi");
+  expect(state.arms.stock.home_template).toBe(state.arms.current.home_template);
+  expect(state.mekugi_flags).toEqual(["--mode=mekugi"]);
+  await verifyPreparedInputs(run, state);
+  const auth = join(root, "same-setup-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
+  const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json "));
+  expect(launches).toHaveLength(2);
+  expect(launches.some(line => line.includes(" mise exec -- codex exec "))).toBe(true);
+  expect(launches.some(line => line.includes(" mise exec -- mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec "))).toBe(true);
+  expect(launches.every(line => line.includes("/home/ubuntu/.local/share/mise/installs:ro"))).toBe(true);
+  await file(join(run, "reports/report.json"), "{}");
+  await file(join(run, "reports/report.md"), "fixture report");
+  await file(join(run, state.mekugi_exports!.capture), "retained capture");
+  await file(join(run, state.mekugi_exports!.metrics), "{}");
+  await bundles.collectBundle(run);
+  expect(await Bun.file(join(run, "reports/bundle/mekugi-capture.jsonl")).exists()).toBe(true);
+  await rm(join(run, state.mekugi_exports!.capture));
+  await bundles.collectBundle(run);
+  expect(await Bun.file(join(run, "reports/bundle/mekugi-capture.jsonl")).exists()).toBe(false);
+  await file(join(run, "snapshots/stock/home/ubuntu/AGENTS.md"), "unexpected judge guidance\n");
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("stock setup snapshot changed");
+  await rm(join(run, "snapshots/stock/home/ubuntu/AGENTS.md"));
+  state.arms.stock.home_template = "snapshots/stock/home/ubuntu";
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("identity changed");
+});
+
+test("Mekugi argument arrays cannot redirect benchmark-owned exports", () => {
+  expect(parseMekugiFlags('["--mode=mekugi"]')).toEqual(["--mode=mekugi"]);
+  for (const value of ['["codex"]', '["--capture-output=/tmp/elsewhere"]', '["--config=other"]', '{}', '[3]']) {
+    expect(() => parseMekugiFlags(value)).toThrow();
+  }
+});
 
 test("skills-mgr profile uses root package checks and evaluator-only acceptance", async () => {
   await expect(main(["prepare", "--profile", "skills-mgr-bundle"])).rejects.toThrow("requires explicit");
