@@ -114,6 +114,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       }
     }
   }
+  if (state.task_pack) await copy(state.task_pack.path, "task-pack.json");
   if (state.criteria) {
     await copy(state.criteria.path, "criteria.json");
     const semanticRoot = join(runDir, "evaluator/semantic");
@@ -137,6 +138,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     [state.snapshot_manifest, state.current_snapshot.manifest_sha256],
     [state.task.path, state.task.sha256],
     ...(state.acceptance ? [[state.acceptance.path, state.acceptance.sha256]] : []),
+    ...(state.task_pack ? [[state.task_pack.path, state.task_pack.sha256]] : []),
     ...(state.criteria ? [[state.criteria.path, state.criteria.sha256]] : []),
     [state.runtime_tools.current_setup_files, state.runtime_tools.current_setup_files_sha256],
   ] as Array<[string, string]>) {
@@ -210,7 +212,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     }
   }
   await write("setup-comparison.json", {
-    source: state.source, task: state.task, acceptance: state.acceptance, submodules: state.submodules ?? [],
+    source: state.source, task: state.task, task_pack: state.task_pack, criteria: state.criteria, acceptance: state.acceptance, submodules: state.submodules ?? [],
     comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [],
     execution: state.execution, image_id: state.image_id, runtime_tools: state.runtime_tools,
     resource_limits: state.resource_limits, current_configuration: manifest.configuration_repository,

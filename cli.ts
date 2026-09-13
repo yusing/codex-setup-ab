@@ -36,6 +36,7 @@ Prepare options:
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
   --task FILE           task prompt (default ./task.md)
+  --task-pack FILE      portable pinned manifest; requires --source; owns task/base/criteria
   --criteria FILE       predetermined behavioral contract; defaults to task profile
   --acceptance FILE     evaluator-only Go test (default ./acceptance_test.go)
   --output-parent DIR   parent for mktemp run directory (default system temp)
@@ -71,7 +72,7 @@ Run and judge require the explicit model-execution confirmation flag.
 
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -117,6 +118,10 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (o.profile === "skills-mgr-bundle" && ["source", "base", "forbidden", "task", "acceptance"].some(key => typeof o[key] !== "string")) {
       throw new Error("skills-mgr-bundle requires explicit --source, --base, --forbidden, --task, and --acceptance");
     }
+    if (o["task-pack"] && (typeof o.source !== "string" ||
+        ["base", "forbidden", "task", "criteria", "acceptance", "profile"].some(key => o[key] !== undefined))) {
+      throw new Error("--task-pack requires --source and cannot override its base, forbidden, task, criteria, acceptance, or profile");
+    }
     const timeout = Number(string(o, "timeout", "1800"));
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
     const runDir = await prepare({
@@ -124,6 +129,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       reasoningEffort: string(o, "reasoning-effort", "medium") as import("./types").ReasoningEffort,
       source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
+      taskPackPath: o["task-pack"] as string | undefined,
       criteriaPath: o.criteria as string | undefined,
       acceptancePath: o.criteria && !o.acceptance ? undefined : string(o, "acceptance", resolve("acceptance_test.go")), outputParent: o["output-parent"] as string | undefined,
       snapshotBase: o["snapshot-base"] as string | undefined,

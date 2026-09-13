@@ -57,6 +57,7 @@ export interface RunState {
   error?: string;
   source: { path: string; base_commit: string; base_tree: string; source_timestamp: number; forbidden_commit: string };
   task: { path: string; sha256: string };
+  task_pack?: { id: string; path: string; sha256: string };
   criteria?: { path: string; sha256: string; contract: import("./semantic").CriteriaContract };
   acceptance?: { path: string; sha256: string };
   image: string;

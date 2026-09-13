@@ -1,0 +1,27 @@
+{
+  "schema": "codex-ab.task-pack.v1",
+  "id": "gin-context-copy",
+  "source": {
+    "repository": "https://github.com/gin-gonic/gin.git",
+    "base_commit": "2e4d4f38962a6f15ae496d59b294f307eef95429",
+    "forbidden_commit": "293ad7edebb3ae30369288bd6416ca0d78474727"
+  },
+  "prompt": "task.md",
+  "criteria": {
+    "schema": "codex-ab.criteria.v1",
+    "criteria": [
+      {"id": "copy-isolation", "description": "Copy preserves Errors and Accepted elements in independent slice backing storage, and preserves nil when unset.", "required_interface": "gin.Context.Copy with Errors and Accepted fields"},
+      {"id": "existing-copy-behavior", "description": "Writer state, request data, keys, parameters, handlers and paths retain the existing copy behavior."}
+    ],
+    "allowed_paths": ["context.go"],
+    "preparation": "go mod download",
+    "existing_tests": "go test . -run '^TestContextCopy$' -count=1",
+    "qualification": "not-run",
+    "black_box": [{
+      "criterion": "copy-isolation",
+      "rationale": "Fixed public Context.Copy preserves errors, accepted formats, independent storage and nil values.",
+      "command": ["go", "test", ".", "-run", "^TestMekugiBenchmarkContextCopyIsolation$", "-count=1"],
+      "files": [{"path": "codex_ab_context_copy_test.go", "source_file": "blackbox.go.txt"}]
+    }]
+  }
+}

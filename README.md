@@ -78,7 +78,7 @@ For a non-comparative run, use `run --arm current` or `run --arm stock`. Only th
 
 After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces. For `--acceptance` runs it injects `acceptance_test.go` and runs the focused `^TestABAcceptance` prefix gate plus the full package suite offline with evaluator-only module, build, and package caches frozen before inference. Git inspection and patch capture of candidate repositories run in separate offline containers, never on the host. Acceptance injection also happens inside the evaluator container, so candidate symlinks cannot redirect writes into the host. Agent and grader times remain separate.
 
-New runs use the `mekugi` profile and `--current-launcher mekugi`, with `--mekugi-bin` and `--mekugi-shell-bin`. Historical result bundles and the pinned toolchain image retain their original names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
+For Mekugi's original router task, use the `mekugi` profile and explicitly select `--current-launcher mekugi`, with `--mekugi-bin` and `--mekugi-shell-bin`. Historical result bundles and the pinned toolchain image retain their original names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
 
 ## Same-setup direct Codex versus Mekugi
 
@@ -101,6 +101,44 @@ schema, treatment identity and raw-record consistency with that analyzer, retain
 invalid telemetry explicitly. Capture calculations remain owned by Mekugi. The exports are
 within-arm diagnostics, not measured savings against A, and consistency is not tamper-proof
 provenance: this runner does not yet protect those mounts from its executor.
+
+## Portable task packs
+
+The portable [nvm download](tasks/nvm-download-no-eval/manifest.json) and
+[Gin context copy](tasks/gin-context-copy/manifest.json) packs reuse Mekugi's task prompts and
+fixed-interface checks. Each pins its upstream base and excluded solution commit, dependency
+preparation, behavioral criteria and task-required single-file boundary. They use the generic
+`task` profile, not a repository-specific runner branch.
+
+Obtain the source repository locally, then prepare from its manifest:
+
+```sh
+git clone https://github.com/nvm-sh/nvm.git /tmp/codex-ab-nvm-source
+run_dir="$(./dist/codex-ab prepare \
+  --task-pack ./tasks/nvm-download-no-eval/manifest.json \
+  --source /tmp/codex-ab-nvm-source \
+  --comparison same-setup \
+  --mekugi-source /home/ubuntu/projects/mekugi \
+  --image codex-ab:0.1.0)"
+./dist/codex-ab preflight --run-dir "$run_dir"
+```
+
+For Gin, clone `https://github.com/gin-gonic/gin.git` and select
+`tasks/gin-context-copy/manifest.json`. `--task-pack` requires `--source` and rejects overrides
+of its profile, base, forbidden commit, prompt or grading inputs. Only the pinned base reaches
+the arms, even if the source checkout contains later commits.
+
+Preparation fingerprints the manifest, prompt and check sources and freezes them, along with
+the expanded criterion contract, under evaluator-only storage. The bundle retains their
+contents and hashes. No original pack directory is needed after preparation. A fingerprint
+identifies the supplied content; it is not a signature of upstream authenticity.
+
+Nvm needs no downloaded dependencies. Its pinned installer requires Bash to be sourced, so its existing and fixed checks run with Bash; the POSIX requirement still applies to the changed function. Gin prepares the pinned Go modules before inference and
+reuses separate evaluator caches offline. The nvm existing-test command exercises installer
+source selection, not its network-dependent download integration test. The fixed checks cover
+representative cases, not every behavioral criterion. Adaptive checks still need to cover the
+remaining outcomes. Pack contracts conservatively record `qualification: "not-run"`; preparing
+a pack does not claim base or known-solution qualification or authorize inference.
 
 ## Skills manager bundle profile
 

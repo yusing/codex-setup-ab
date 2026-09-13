@@ -158,6 +158,47 @@ test("Mekugi argument arrays cannot redirect benchmark-owned exports", () => {
   }
 });
 
+test("task-pack CLI freezes pinned controls without exposing checks to either arm", async () => {
+  const directory = join(root, "portable-pack");
+  await file(join(directory, "task.md"), "Improve the fixture.\n");
+  await file(join(directory, "manifest.json"), JSON.stringify({
+    schema: "codex-ab.task-pack.v1", id: "fixture-pack", prompt: "task.md",
+    source: { repository: "https://example.test/fixture.git", base_commit: base, forbidden_commit: future },
+    criteria: { schema: "codex-ab.criteria.v1", criteria: [{ id: "fixture", description: "Improve the fixture" }],
+      preparation: "true", existing_tests: "true", qualification: "not-run" },
+  }));
+  let stdout = "";
+  const capture = spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+    stdout += chunk.toString(); return true;
+  }) as typeof process.stdout.write);
+  try {
+    expect(await main(["prepare", "--task-pack", join(directory, "manifest.json"), "--source", source,
+      "--current-home", home, "--codex-bin", join(home, ".local/bin/codex"), "--output-parent", root])).toBe(0);
+  } finally { capture.mockRestore(); }
+  const run = stdout.trim();
+  const state = await readState(run);
+  expect(state.source.base_commit).toBe(base);
+  expect(state.source.forbidden_commit).toBe(future);
+  expect(state.profile).toBe("task");
+  expect(state.task_pack?.id).toBe("fixture-pack");
+  expect(state.acceptance).toBeUndefined();
+  for (const arm of ["stock", "current"] as const) {
+    expect(await Bun.file(join(run, state.arms[arm].repository, "manifest.json")).exists()).toBe(false);
+  }
+  await verifyPreparedInputs(run, state);
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const auth = join(root, "pack-auth.json"); await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  expect(await sha256(join(run, "reports/bundle/task-pack.json"))).toBe(state.task_pack!.sha256);
+  expect(await readFile(join(run, "reports/report.md"), "utf8")).toContain("Task pack: fixture-pack");
+  await file(join(run, state.task_pack!.path), "{}");
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("control changed");
+  await expect(main(["prepare", "--task-pack", join(directory, "manifest.json")])).rejects.toThrow("requires --source");
+  await expect(main(["prepare", "--task-pack", join(directory, "manifest.json"), "--source", source, "--base", base])).rejects.toThrow("cannot override");
+});
+
 test("predetermined semantic criteria flow through both frozen candidates and reversed blind passes", async () => {
   const criteriaPath = join(root, "criteria.json");
   await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),

@@ -1,0 +1,28 @@
+{
+  "schema": "codex-ab.task-pack.v1",
+  "id": "nvm-download-no-eval",
+  "source": {
+    "repository": "https://github.com/nvm-sh/nvm.git",
+    "base_commit": "52047edfb15547042bef6fac7c83b17cb66cf02f",
+    "forbidden_commit": "b17550a0b9ab691439815dfccc8b73e3a59fa103"
+  },
+  "prompt": "task.md",
+  "criteria": {
+    "schema": "codex-ab.criteria.v1",
+    "criteria": [
+      {"id": "literal-arguments", "description": "The wget path passes URLs and output paths as single unchanged literal arguments, including spaces and shell metacharacters, without evaluating shell syntax.", "required_interface": "install.sh nvm_download"},
+      {"id": "wget-translations", "description": "Preserve wget translations for progress, compression, failure, redirect, headers, silence, output and resume flags; consume the argument after -C as its value."},
+      {"id": "curl-posix", "description": "The curl path remains unchanged and the implementation remains POSIX-shell compatible."}
+    ],
+    "allowed_paths": ["install.sh"],
+    "preparation": "sh -n install.sh",
+    "existing_tests": "cd test/install_script && bash nvm_source",
+    "qualification": "not-run",
+    "black_box": [{
+      "criterion": "literal-arguments",
+      "rationale": "Fixed nvm_download interface preserves literal arguments and representative wget translations.",
+      "command": ["bash", "codex_ab_download_check.sh"],
+      "files": [{"path": "codex_ab_download_check.sh", "source_file": "blackbox.sh"}]
+    }]
+  }
+}
