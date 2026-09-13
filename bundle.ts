@@ -114,6 +114,8 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       }
     }
   }
+  if (state.mekugi_build) await mkdir(join(destination, "mekugi-build"), { recursive: true });
+  for (const file of state.mekugi_build?.files ?? []) await copy(file.path, `mekugi-build/${file.path.split("/").at(-1)}`);
   if (state.task_pack) await copy(state.task_pack.path, "task-pack.json");
   if (state.criteria) {
     await copy(state.criteria.path, "criteria.json");
@@ -138,6 +140,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     [state.snapshot_manifest, state.current_snapshot.manifest_sha256],
     [state.task.path, state.task.sha256],
     ...(state.acceptance ? [[state.acceptance.path, state.acceptance.sha256]] : []),
+    ...(state.mekugi_build?.files.map(file => [file.path, file.sha256]) ?? []),
     ...(state.task_pack ? [[state.task_pack.path, state.task_pack.sha256]] : []),
     ...(state.criteria ? [[state.criteria.path, state.criteria.sha256]] : []),
     [state.runtime_tools.current_setup_files, state.runtime_tools.current_setup_files_sha256],

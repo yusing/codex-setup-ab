@@ -102,6 +102,30 @@ invalid telemetry explicitly. Capture calculations remain owned by Mekugi. The e
 within-arm diagnostics, not measured savings against A, and consistency is not tamper-proof
 provenance: this runner does not yet protect those mounts from its executor.
 
+## Retain exact Mekugi build provenance
+
+To bind the selected executable pair to dirty source and compiled guidance, build from a captured
+context rather than supplying a nearby checkout:
+
+```sh
+build_dir="$(./dist/codex-ab build-mekugi \
+  --source /home/ubuntu/projects/mekugi --image codex-ab:0.1.0)"
+```
+
+This model-free command uses Mekugi's own `benchmarks/build_inputs.py` exclusion rules. It
+retains a source archive, the archiver, build command/logs, immutable builder-image identity,
+and both executable hashes in a private temporary directory. Compilation consumes the archive
+inside a container without host credentials. Dependency downloads are allowed during this build;
+no model request is made. Failed builds retain their available evidence.
+
+Use `prepare --mekugi-build "$build_dir"` instead of `--mekugi-bin`, `--mekugi-shell-bin` and
+`--mekugi-source`. Preparation takes its analyzer/runtime sources from the retained archive,
+checks the binaries, and copies provenance into the existing result bundle. No live source
+checkout or original build directory is needed after preparation. The run image is still
+selected independently and verified normally. This is locally recorded build provenance,
+not a signed third-party attestation. Supplying binaries without a build bundle remains
+supported and explicitly reports missing source provenance.
+
 ## Portable task packs
 
 The portable [nvm download](tasks/nvm-download-no-eval/manifest.json) and

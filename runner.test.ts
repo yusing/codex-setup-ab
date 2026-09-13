@@ -151,6 +151,47 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   await expect(verifyPreparedInputs(run, state)).rejects.toThrow("identity changed");
 });
 
+test("Mekugi build inputs are pinned, bundled and independent of the live checkout", async () => {
+  const build = join(root, "mekugi-build");
+  const context = join(root, "build-context");
+  await file(join(context, "benchmarks/analyze_capture.py"), "# frozen analyzer\n");
+  await file(join(context, "benchmarks/benchmark_jsonl.py"), "# frozen reader\n");
+  await file(join(context, "dirty-guidance.md"), "uncommitted compiled guidance\n");
+  await mkdir(build);
+  await checked(["tar", "-cf", join(build, "source.tar"), "-C", context, "."]);
+  await file(join(build, "build_inputs.py"), "# archive owner\n");
+  await file(join(build, "bin/mekugi"), "#!/bin/sh\nexec \"$@\"\n", 0o755);
+  await file(join(build, "bin/shell"), "#!/bin/sh\nexit 1\n", 0o755);
+  for (const name of ["build.stdout", "build.stderr", "build-result.json"]) await file(join(build, name), "fixture\n");
+  await file(join(build, "build.json"), JSON.stringify({ schema: "codex-ab.mekugi-build.v1",
+    image_id: `sha256:${"a".repeat(64)}`, source_archive_sha256: await sha256(join(build, "source.tar")),
+    archiver_sha256: await sha256(join(build, "build_inputs.py")), command: ["go", "build"],
+    binaries: { mekugi: await sha256(join(build, "bin/mekugi")), shell: await sha256(join(build, "bin/shell")) } }));
+  const buildOptions = { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    acceptancePath: acceptance, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "same-setup" as const, mekugiBuild: build };
+  const mutateCodex = join(root, "mutate-build/codex");
+  await file(mutateCodex, `#!/bin/sh\nprintf '%s' changed > '${join(build, "build_inputs.py")}'\necho codex-cli 0.154.0\n`, 0o755);
+  await cp(join(home, ".local/bin/codex-code-mode-host"), join(root, "mutate-build/codex-code-mode-host"));
+  await expect(prepare({ ...buildOptions, codexBinary: mutateCodex })).rejects.toThrow("build inputs changed");
+  await file(join(build, "build_inputs.py"), "# archive owner\n");
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    acceptancePath: acceptance, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "same-setup", mekugiBuild: build });
+  const state = await readState(run);
+  expect(state.mekugi_build?.files).toHaveLength(6);
+  expect(await readFile(join(run, "artifacts/mekugi-build/source/dirty-guidance.md"), "utf8")).toContain("uncommitted");
+  await rm(build, { recursive: true });
+  await rm(context, { recursive: true });
+  await verifyPreparedInputs(run, state);
+  await file(join(run, "reports/report.json"), "{}");
+  await file(join(run, "reports/report.md"), "fixture report");
+  await bundles.collectBundle(run);
+  expect(await sha256(join(run, "reports/bundle/mekugi-build/source.tar"))).toBe(state.mekugi_build!.identity.source_archive_sha256);
+  await file(join(run, "artifacts/mekugi-build/source.tar"), "changed");
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("build input changed");
+});
+
 test("Mekugi argument arrays cannot redirect benchmark-owned exports", () => {
   expect(parseMekugiFlags('["--mode=mekugi"]')).toEqual(["--mode=mekugi"]);
   for (const value of ['["codex"]', '["--capture-output=/tmp/elsewhere"]', '["--config=other"]', '{}', '[3]']) {

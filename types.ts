@@ -63,6 +63,7 @@ export interface RunState {
   image: string;
   image_id?: string;
   comparison?: Comparison;
+  mekugi_build?: { identity: import("./provenance").MekugiBuild; files: Array<{ path: string; sha256: string }> };
   mekugi_exports?: { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } };
   mekugi_flags?: string[];
   execution: { model: "gpt-6-astra"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };

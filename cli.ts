@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { validateMekugiFlags } from "./mekugi";
+import { buildMekugi } from "./provenance";
 import { prepare } from "./prepare";
 import { preflightRun } from "./runner";
 import { remeterRun } from "./remeter";
@@ -19,6 +20,7 @@ const HELP = `codex-ab ${VERSION}
 Prepare, run, grade, blindly judge, and report one isolated stock-versus-current Codex pair.
 
 Usage:
+  codex-ab build-mekugi --source DIR --image NAME [--output-parent DIR] [--docker-bin FILE]
   codex-ab prepare [options]
   codex-ab preflight --run-dir DIR [--docker-bin FILE]
   codex-ab run --run-dir DIR --confirm-paid-inference [options]
@@ -45,6 +47,7 @@ Prepare options:
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
   --comparison NAME    stock-current (default) or same-setup (direct versus Mekugi)
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
+  --mekugi-build DIR    captured build bundle; selects its matching binaries and source
   --mekugi-source DIR   matching Mekugi source for its capture validator
   --current-launcher N  codex (default; same-setup uses mekugi) or mekugi
   --mekugi-bin FILE     Mekugi executable used by --current-launcher mekugi
@@ -72,7 +75,8 @@ Run and judge require the explicit model-execution confirmation flag.
 
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -113,6 +117,16 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (argv[0] === "--version" || argv[0] === "-V") { process.stdout.write(`${VERSION}\n`); return 0; }
   const command = argv[0];
   const o = options(command, argv.slice(1));
+  if (command === "build-mekugi") {
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
+    try {
+      process.stdout.write(`${await buildMekugi({ source: string(o, "source"), image: string(o, "image"),
+        outputParent: o["output-parent"] as string | undefined, docker: o["docker-bin"] as string | undefined, signal: controller.signal })}\n`);
+      return 0;
+    } finally { process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel); }
+  }
   if (command === "prepare") {
     if (o.profile === "godoxy-icons" && (typeof o.task !== "string" || typeof o.acceptance !== "string")) throw new Error("godoxy-icons requires explicit --task and --acceptance");
     if (o.profile === "skills-mgr-bundle" && ["source", "base", "forbidden", "task", "acceptance"].some(key => typeof o[key] !== "string")) {
@@ -121,6 +135,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (o["task-pack"] && (typeof o.source !== "string" ||
         ["base", "forbidden", "task", "criteria", "acceptance", "profile"].some(key => o[key] !== undefined))) {
       throw new Error("--task-pack requires --source and cannot override its base, forbidden, task, criteria, acceptance, or profile");
+    }
+    if (o["mekugi-build"] && ["mekugi-bin", "mekugi-shell-bin", "mekugi-source"].some(key => o[key] !== undefined)) {
+      throw new Error("--mekugi-build owns its binaries and source; do not override them");
     }
     const timeout = Number(string(o, "timeout", "1800"));
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
@@ -137,6 +154,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,
       mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
       currentLauncher: o["current-launcher"] as import("./types").CodexLauncher | undefined,
+      mekugiBuild: o["mekugi-build"] as string | undefined,
       mekugiSource: o["mekugi-source"] as string | undefined,
       mekugiBinary: o["mekugi-bin"] as string | undefined,
       mekugiShellBinary: o["mekugi-shell-bin"] as string | undefined,

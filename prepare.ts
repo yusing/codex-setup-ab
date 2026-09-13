@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { checked, exec } from "./process";
 import { snapshotToolStore, verifySnapshotIdentities, type PreviousSnapshot, type SnapshotFile } from "./snapshot";
+import { readMekugiBuild } from "./provenance";
 import { loadTaskPack } from "./task-pack";
 import { validateCriteria } from "./semantic";
 import { validateMekugiFlags } from "./mekugi";
@@ -12,6 +13,7 @@ import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from 
 
 export interface PrepareOptions {
   comparison?: import("./types").Comparison;
+  mekugiBuild?: string;
   mekugiSource?: string;
   mekugiFlags?: string[];
   snapshotBase?: string;
@@ -133,6 +135,9 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   validateMekugiFlags(state.mekugi_flags ?? []);
   if (state.mekugi_exports && (await sha256(join(runDir, state.mekugi_exports.validator.path)) !== state.mekugi_exports.validator.sha256 || await sha256(join(runDir, state.mekugi_exports.reader.path)) !== state.mekugi_exports.reader.sha256)) {
     throw new Error("Mekugi capture validator changed");
+  }
+  for (const file of state.mekugi_build?.files ?? []) {
+    if (await sha256(join(runDir, file.path)) !== file.sha256) throw new Error("Mekugi build input changed");
   }
   for (const control of [state.task, state.acceptance, state.criteria, state.task_pack]) {
     if (control && await sha256(join(runDir, control.path)) !== control.sha256) throw new Error("copied benchmark control changed");
@@ -346,6 +351,10 @@ const REVIEW_TREATMENT_FILES = [
 ] as const;
 
 export async function prepare(options: PrepareOptions): Promise<string> {
+  const build = options.mekugiBuild ? await readMekugiBuild(options.mekugiBuild) : undefined;
+  if (build) options = { ...options, currentLauncher: "mekugi",
+    mekugiBinary: join(options.mekugiBuild!, "bin/mekugi"), mekugiShellBinary: join(options.mekugiBuild!, "bin/shell"),
+    mekugiSource: join(options.mekugiBuild!, "source") };
   const pack = options.taskPackPath ? await loadTaskPack(options.taskPackPath) : undefined;
   if (pack) options = { ...options, profile: "task", baseCommit: pack.manifest.source.base_commit,
     forbiddenCommit: pack.manifest.source.forbidden_commit, taskPath: pack.taskPath, acceptancePath: undefined };
@@ -428,6 +437,27 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (pack) await writeFile(join(runDir, "evaluator/task-pack.json"), JSON.stringify(pack.snapshot, null, 2));
   if (acceptancePath) await copyFile(acceptancePath, join(runDir, "evaluator/acceptance_test.go"));
 
+  let buildProvenance: RunState["mekugi_build"];
+  if (build) {
+    const directory = join(runDir, "artifacts/mekugi-build");
+    await mkdir(directory);
+    const files: Array<{ path: string; sha256: string }> = [];
+    for (const name of ["source.tar", "build_inputs.py", "build.json", "build.stdout", "build.stderr", "build-result.json"]) {
+      const target = join(directory, name);
+      await copyFile(join(options.mekugiBuild!, name), target);
+      files.push({ path: relative(runDir, target), sha256: await sha256(target) });
+    }
+    if (await sha256(join(directory, "source.tar")) !== build.source_archive_sha256 ||
+        await sha256(join(directory, "build_inputs.py")) !== build.archiver_sha256 ||
+        JSON.stringify(JSON.parse(await readFile(join(directory, "build.json"), "utf8"))) !== JSON.stringify(build) ||
+        mekugiSha256 !== build.binaries.mekugi || mekugiShellSha256 !== build.binaries.shell) throw new Error("build inputs changed during preparation");
+    options.mekugiSource = join(directory, "source");
+    await mkdir(options.mekugiSource);
+    await checked(["python3", "-c",
+      "import sys, tarfile; tarfile.open(sys.argv[1]).extractall(sys.argv[2], filter='data')",
+      join(directory, "source.tar"), options.mekugiSource]);
+    buildProvenance = { identity: build, files };
+  }
   const seed = join(runDir, "seed.git");
   await checked(["git", "init", "--bare", seed]);
   await checked(["git", "-C", seed, "fetch", "--depth=1", `file://${source}`, `${options.baseCommit}:refs/heads/benchmark`]);
@@ -546,6 +576,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     profile,
     comparison,
     mekugi_flags: mekugiFlags,
+    mekugi_build: buildProvenance,
     mekugi_exports: mekugiExports,
     submodules,
     schema_version: 1,
