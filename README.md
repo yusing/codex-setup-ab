@@ -125,8 +125,8 @@ previous reports remain unchanged.
 
 ## Stock Codex versus stock plus Mekugi
 
-For the pinned medium NVM task, the convenience runner builds the CLI, prepares the selected
-comparison, runs model-free preflight, and then starts the paid pair:
+For the pinned medium NVM task, the convenience runner builds the CLI and a missing local image,
+prepares the selected comparison, runs model-free preflight, and then starts the paid pair:
 
 ```sh
 scripts/run.sh --preset stock-mekugi

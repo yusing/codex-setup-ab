@@ -16,6 +16,8 @@ Prepare, preflight, and run the pinned medium NVM task with one comparison:
 Optional environment overrides:
   CODEX_AB_SOURCE_DIR        NVM checkout (default: /tmp/codex-ab-nvm-source)
   CODEX_AB_IMAGE             Container image (default: codex-ab:0.1.0)
+  CODEX_AB_DOCKER_BIN        Docker executable (default: docker)
+  CODEX_AB_CODEX_BIN         Standalone Codex executable (default: $HOME/.local/bin/codex)
   CODEX_AB_MEKUGI_SOURCE     Mekugi checkout (default: $HOME/projects/mekugi)
   CODEX_AB_MEKUGI_BIN        Mekugi executable (default: $HOME/go/bin/mekugi)
   CODEX_AB_MEKUGI_SHELL_BIN  Shell helper (default: $HOME/go/bin/shell)
@@ -62,6 +64,8 @@ cd "$repo_root"
 user_home=${HOME:?HOME must be set}
 source_dir=${CODEX_AB_SOURCE_DIR:-${TMPDIR:-/tmp}/codex-ab-nvm-source}
 image=${CODEX_AB_IMAGE:-codex-ab:0.1.0}
+docker_bin=${CODEX_AB_DOCKER_BIN:-docker}
+codex_bin=${CODEX_AB_CODEX_BIN:-$user_home/.local/bin/codex}
 mekugi_source=${CODEX_AB_MEKUGI_SOURCE:-$user_home/projects/mekugi}
 mekugi_bin=${CODEX_AB_MEKUGI_BIN:-$user_home/go/bin/mekugi}
 mekugi_shell_bin=${CODEX_AB_MEKUGI_SHELL_BIN:-$user_home/go/bin/shell}
@@ -81,6 +85,33 @@ if [[ ! -d "$source_dir/.git" ]]; then
   git clone https://github.com/nvm-sh/nvm.git "$source_dir"
 fi
 
+inspect_error=
+if ! inspect_error="$("$docker_bin" image inspect --format '{{.Id}}' "$image" 2>&1)"; then
+  case "$inspect_error" in
+    *"No such image"*|*"not found"*)
+      requested_codex_bin=$codex_bin
+      codex_bin="$(readlink -f -- "$requested_codex_bin" 2>/dev/null || true)"
+      [[ -n "$codex_bin" && -x "$codex_bin" ]] || die "Codex executable is missing or not executable: $requested_codex_bin"
+      codex_dir="$(dirname -- "$codex_bin")"
+      codex_host="$codex_dir/codex-code-mode-host"
+      [[ -x "$codex_host" ]] || die "Codex code-mode host is missing or not executable: $codex_host"
+      codex_sha="$(sha256sum "$codex_bin" | cut -d' ' -f1)"
+      codex_host_sha="$(sha256sum "$codex_host" | cut -d' ' -f1)"
+      printf 'Building missing image %s\n' "$image" >&2
+      "$docker_bin" build \
+        --build-context "codex_binary=$codex_dir" \
+        --build-arg "CODEX_SHA256=$codex_sha" \
+        --build-arg "CODEX_CODE_MODE_HOST_SHA256=$codex_host_sha" \
+        --build-arg "BENCH_UID=$(id -u)" \
+        --build-arg "BENCH_GID=$(id -g)" \
+        -t "$image" .
+      ;;
+    *)
+      printf 'Cannot inspect Docker image %s:\n%s\n' "$image" "$inspect_error" >&2
+      exit 1
+      ;;
+  esac
+fi
 bun run build
 
 comparison=$preset
@@ -94,11 +125,13 @@ prepare_args=(
   --source "$source_dir"
   --comparison "$comparison"
   --reasoning-effort medium
+  --codex-bin "$codex_bin"
   --image "$image"
 )
 run_args=(
   ./dist/codex-ab run
   --auth-file "$auth_file"
+  --docker-bin "$docker_bin"
   --confirm-paid-inference
 )
 
@@ -124,5 +157,5 @@ esac
 
 run_dir="$("${prepare_args[@]}")"
 printf 'Prepared run: %s\n' "$run_dir" >&2
-./dist/codex-ab preflight --run-dir "$run_dir"
+./dist/codex-ab preflight --run-dir "$run_dir" --docker-bin "$docker_bin"
 "${run_args[@]}" --run-dir "$run_dir"
