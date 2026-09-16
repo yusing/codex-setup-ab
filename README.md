@@ -132,12 +132,12 @@ comparison, runs model-free preflight, and then starts the paid pair:
 scripts/run.sh --preset stock-mekugi
 ```
 
-Other presets are `stock-current`, `same-setup`, and `codex-mekugi-grok`. Run
+Other presets are `stock-current`, `current-vs-current-mekugi`, and `codex-mekugi-grok`. Run
 `scripts/run.sh --help` for path and image overrides.
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable and its matching `shell` helper, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
 
-Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for `same-setup`. Mekugi capture and metrics exports are retained and validated against `--mekugi-source`. The current-home Git snapshot is retained for configuration provenance, while selected executables and analyzer sources are captured separately; unused current-home executables, runtime supplements, and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
+Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated against `--mekugi-source`. The current-home Git snapshot is retained for configuration provenance, while selected executables and analyzer sources are captured separately; unused current-home executables, runtime supplements, and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
 
 ## Stock Codex plus Mekugi versus Grok CLI
@@ -162,9 +162,9 @@ run_dir="$(./dist/codex-ab prepare \
   --confirm-paid-inference
 ```
 
-`--grok-auth-file` is copied privately into both isolated homes. Grok usage is metered from each B session `usage.json`, using complete provider-recorded cost when available and otherwise a captured list-price estimate that remains unknown when request-level tiering cannot be reconstructed. Codex JSONL remains the A accounting source. Isolated launcher snapshots omit the unused current-home mise tool store. This comparison is not same-setup Codex versus Mekugi.
+`--grok-auth-file` is copied privately into both isolated homes. Grok usage is metered from each B session `usage.json`, using complete provider-recorded cost when available and otherwise a captured list-price estimate that remains unknown when request-level tiering cannot be reconstructed. Codex JSONL remains the A accounting source. Isolated launcher snapshots omit the unused current-home mise tool store. This is not a current-home direct Codex versus Mekugi comparison.
 
-## Same-setup direct Codex versus Mekugi
+## Current setup: direct Codex versus Mekugi
 
 Add `--comparison same-setup --mekugi-source /path/to/matching/mekugi` to `prepare`. A (stored as `stock` for compatibility)
 and B (`current`) receive separate writable copies of the **same immutable current-home
