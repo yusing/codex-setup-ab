@@ -233,7 +233,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   }
 }
 
-async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, mekugiShellBinary: string | undefined, miseBinary: string, reviewTreatment?: string): Promise<string> {
+async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, mekugiShellBinary: string | undefined, miseBinary: string, includeRuntimeSupplements: boolean, reviewTreatment?: string): Promise<string> {
   const repository = (await checked(["git", "-C", home, "rev-parse", "--show-toplevel"])).stdout.trim();
   if (await realpath(repository) !== await realpath(home)) throw new Error("--current-home must be the configuration repository root");
   await checked(["git", "clone", "--depth=1", "--no-local", "--no-hardlinks", pathToFileURL(repository).href, destination]);
@@ -250,14 +250,16 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   }
   // Runtime materializations are not authored configuration. Keep these
   // supplements separate from the Git-owned instructions, roles and skills.
-  for (const item of [".codex/hooks", ".codex/.tmp/bundled-marketplaces/openai-bundled", ".agents/skills"]) {
-    await copyRequired(join(home, item), join(destination, item));
+  if (includeRuntimeSupplements) {
+    for (const item of [".codex/hooks", ".codex/.tmp/bundled-marketplaces/openai-bundled", ".agents/skills"]) {
+      await copyRequired(join(home, item), join(destination, item));
+    }
+    if (await exists(join(home, ".codex/herdr-agent-state.sh"))) {
+      await copyRequired(join(home, ".codex/herdr-agent-state.sh"), join(destination, ".codex/herdr-agent-state.sh"));
+    }
+    await copyRemoteSkillCache(home, destination);
+    await copyRequired(join(home, ".cache/go-modern-guidelines/v0.1.1"), join(destination, ".cache/go-modern-guidelines/v0.1.1"));
   }
-  if (await exists(join(home, ".codex/herdr-agent-state.sh"))) {
-    await copyRequired(join(home, ".codex/herdr-agent-state.sh"), join(destination, ".codex/herdr-agent-state.sh"));
-  }
-  await copyRemoteSkillCache(home, destination);
-  await copyRequired(join(home, ".cache/go-modern-guidelines/v0.1.1"), join(destination, ".cache/go-modern-guidelines/v0.1.1"));
   // The read-only tool store has already been migrated on the source home.
   // Preserve its completion records so mise does not try to migrate it again.
   const miseMigrations = ".local/share/mise/migrations";
@@ -298,11 +300,16 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     configuration_repository: { path: repository, commit, tree, tracked_worktree_changes: changed }, adaptations: [
     "configuration repository shallow-cloned independently with its remote removed; current tracked working-tree changes overlaid",
     "project trust entries replaced with /workspace",
-    "untracked home files excluded except explicit runtime supplements; no host auth, session history or Mekugi state copied",
-    "mise copied to /home/ubuntu/.local/bin with its migration completion records; its complete installed tool store captured separately",
-    ...(mekugiBinary ? ["Mekugi launcher and matching shell helper copied to /home/ubuntu/.local/bin without host Mekugi state"] : []),
-    "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
-    "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
+    ...(includeRuntimeSupplements ? [
+      "untracked home files excluded except explicit runtime supplements; no host auth, session history or Mekugi state copied",
+      "mise copied to /home/ubuntu/.local/bin with its migration completion records; its complete installed tool store captured separately",
+      ...(mekugiBinary ? ["Mekugi launcher and matching shell helper copied to /home/ubuntu/.local/bin without host Mekugi state"] : []),
+      "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
+      "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
+    ] : [
+      "current-home runtime supplements omitted because neither benchmark arm uses the current setup",
+      "mise and selected launcher binaries copied only for recorded executable provenance",
+    ]),
   ], files: await manifest(destination) }, null, 2)}\n`);
   return output;
 }
@@ -419,6 +426,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const comparison = options.comparison ?? "stock-current";
   if (!["stock-current", "same-setup", "stock-mekugi", "codex-mekugi-grok"].includes(comparison)) throw new Error("comparison must be stock-current, same-setup, stock-mekugi, or codex-mekugi-grok");
   const grokComparison = comparison === "codex-mekugi-grok";
+  const isolatedFromCurrentTools = comparison === "stock-mekugi" || grokComparison;
   const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi";
   const currentLauncher = options.currentLauncher ?? (grokComparison ? "grok" : launcherComparison ? "mekugi" : "codex");
   if ((launcherComparison || grokComparison) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source for capturer-owned export validation`);
@@ -561,7 +569,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
 
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
-  const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate, mekugiBinary, mekugiShellBinary, miseBinary, reviewTreatment);
+  const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate, mekugiBinary, mekugiShellBinary, miseBinary, !isolatedFromCurrentTools, reviewTreatment);
   const currentSetupInstalls = join(runDir, "snapshots/current/mise/installs");
   let previousSnapshot: PreviousSnapshot | undefined;
   let preflightCache: NonNullable<RunState["runtime_tools"]["preflight_cache"]> | undefined;
@@ -614,7 +622,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       };
     }
   }
-  const isolatedFromCurrentTools = comparison === "stock-mekugi" || grokComparison;
   let setupFiles: SnapshotFile[] = [];
   let snapshotStats: SnapshotStats = { copied: 0, linked: 0, copiedBytes: 0, linkedBytes: 0 };
   if (isolatedFromCurrentTools) {

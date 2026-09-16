@@ -127,7 +127,7 @@ previous reports remain unchanged.
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable and its matching `shell` helper, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
 
-Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for `same-setup`. Mekugi capture and metrics exports are retained and validated against `--mekugi-source`. The current-home Git snapshot is still captured for executable and analyzer provenance checks, but the unused mise tool store is omitted and is not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
+Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for `same-setup`. Mekugi capture and metrics exports are retained and validated against `--mekugi-source`. The current-home Git snapshot is still captured for executable and analyzer provenance checks, but unused runtime supplements and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
 
 ## Stock Codex plus Mekugi versus Grok CLI

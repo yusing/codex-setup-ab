@@ -182,6 +182,21 @@ test("stock-mekugi isolates the launcher without current-home guidance", async (
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
     reviewTreatment: join(root, "unused-treatment"), mekugiSource: captureSource })).rejects.toThrow("does not accept");
 });
+test("stock-mekugi does not require unused current-home runtime supplements", async () => {
+  const isolatedHome = join(root, "stock-mekugi-minimal-home");
+  await cp(home, isolatedHome, { recursive: true });
+  await rm(join(isolatedHome, ".codex/.tmp/bundled-marketplaces/openai-bundled"), { recursive: true });
+
+  const captureSource = join(root, "stock-mekugi-minimal-capture-source");
+  await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
+  await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, outputParent: root, currentHome: isolatedHome, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
+    mekugiFlags: ["--mode=mekugi"], mekugiSource: captureSource });
+  await verifyPreparedInputs(run, await readState(run));
+});
+
 
 test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
   const captureSource = join(root, "grok-capture-source");
