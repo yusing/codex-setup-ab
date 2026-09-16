@@ -1,0 +1,15 @@
+{
+  "schema": "codex-ab.criteria.v1",
+  "task_sha256": "08ceb4b9a48a46f12ff657271a3328d4f350577b15f12c182cbea4b11ffe4989",
+  "criteria": [
+    {"id": "commands", "description": "Local create, verify and extract commands produce and consume portable skill bundles."},
+    {"id": "reproducibility", "description": "Equivalent inputs create reproducible bundles."},
+    {"id": "executables", "description": "Extracted scripts preserve executable permissions."},
+    {"id": "unsafe-and-corrupt", "description": "Verification and extraction reject corrupt or unsafe archives."},
+    {"id": "no-overwrite", "description": "Bundle operations never overwrite existing files."},
+    {"id": "tests", "description": "Tests cover the requested bundle behavior."}
+  ],
+  "preparation": "go mod download",
+  "existing_tests": "go test . -count=1",
+  "qualification": "not-run"
+}

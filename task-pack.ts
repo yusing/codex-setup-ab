@@ -8,9 +8,7 @@ interface TaskPack {
   id: string;
   source: { repository: string; base_commit: string; forbidden_commit: string };
   prompt: string;
-  criteria: Omit<CriteriaContract, "task_sha256" | "black_box"> & {
-    black_box?: Array<{ criterion: string; rationale: string; command: string[]; files: Array<{ path: string; source_file: string }> }>;
-  };
+  criteria: Omit<CriteriaContract, "task_sha256">;
 }
 
 const hash = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -42,10 +40,6 @@ export async function loadTaskPack(path: string): Promise<{
     return { path, content };
   }
   const task = await asset(manifest.prompt);
-  const blackBox = await Promise.all((manifest.criteria.black_box ?? []).map(async check => ({
-    criterion: check.criterion, rationale: check.rationale, command: check.command,
-    files: await Promise.all(check.files.map(async file => ({ path: file.path, source: (await asset(file.source_file)).content }))),
-  })));
-  const contract = validateCriteria({ ...manifest.criteria, task_sha256: hash(task.content), black_box: blackBox }, hash(task.content));
+  const contract = validateCriteria({ ...manifest.criteria, task_sha256: hash(task.content) }, hash(task.content));
   return { manifest, taskPath: task.path, contract, snapshot: { manifest, files } };
 }

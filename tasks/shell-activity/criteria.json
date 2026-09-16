@@ -1,0 +1,15 @@
+{
+  "schema": "codex-ab.criteria.v1",
+  "task_sha256": "be9a9e8d7ad5e111d6e5b53e6bde7b8beb4e3d1be1eb969a936c208cd11bb3ef",
+  "criteria": [
+    {"id": "running-command", "description": "Empty-input polls display Still Running with the actual command resolved from matching visible call/result execution metadata, never program stdout."},
+    {"id": "stored-script", "description": "Retained invocations display Running stored script with source resolved through existing retained-script storage."},
+    {"id": "fallback-and-input", "description": "Unavailable source displays command unavailable; nonempty write_stdin input remains Send input."},
+    {"id": "excerpt", "description": "Excerpts use the first command line, skip directives and wrappers, and fit 120 Unicode characters including an ellipsis for truncation or omitted lines."},
+    {"id": "preservation", "description": "JSON and SSE behavior, child-to-parent routing, delivery order, deduplication, execution, validation and replay payloads remain unchanged."},
+    {"id": "tests-and-docs", "description": "Focused tests and affected display documentation cover the requested behavior."}
+  ],
+  "preparation": "bun install --cwd plugins --frozen-lockfile && bun build plugins/tools.ts --outfile ./internal/router/toolplugin/dist/tools.js --production --target node --format esm --external hpatch:core/v1 --external mekugi:core/v1 && go mod download",
+  "existing_tests": "go test ./internal/router -count=1",
+  "qualification": "not-run"
+}

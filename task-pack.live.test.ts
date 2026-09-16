@@ -11,7 +11,7 @@ import type { RunState } from "./types";
 const sourceRoot = process.env.CODEX_AB_TASK_SOURCES;
 const liveTest = process.env.CODEX_AB_LIVE_DOCKER === "1" && sourceRoot ? test : test.skip;
 
-liveTest("portable task bases prepare and run existing/fixed checks without inference", async () => {
+liveTest("portable task bases prepare and run existing checks without inference", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "codex-ab-pack-live-"));
   try {
     await symlink(process.execPath, join(runDir, "bun"));
@@ -37,12 +37,6 @@ liveTest("portable task bases prepare and run existing/fixed checks without infe
         name: `codex-ab-pack-existing-${process.pid}-${sourceName}`, output: join(runDir, id!, "existing"),
         check: { criterion: "existing", files: [], rationale: "Existing baseline tests", command: ["sh", "-lc", pack.contract.existing_tests] } });
       expect(existing.status).toBe("pass");
-      const fixed = await executeSemanticCheck({ runDir, state, candidate, arm: "stock", docker: "docker",
-        name: `codex-ab-pack-fixed-${process.pid}-${sourceName}`, output: join(runDir, id!, "fixed"),
-        check: pack.contract.black_box![0]! });
-      expect(fixed.status).toBe("fail");
-      expect(fixed.execution?.stderr + fixed.execution!.stdout).toContain(sourceName === "nvm"
-        ? "nvm_download evaluated untrusted argument text" : "Context.Copy omitted request state");
     }
   } finally {
     // Go's module cache deliberately uses read-only directories.

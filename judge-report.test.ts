@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { judgeRun } from "./judge";
+import { judgeRun, mappedWinner, validateJudgePass } from "./judge";
 import { buildReport, invalidateRun } from "./report";
 import { readState, writeState } from "./state";
-import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
+import type { ArmName, ArmResult, CommandEvidence, JudgeReport, RunState } from "./types";
 import type { PricingSnapshot } from "./usage";
 
 let root: string;
@@ -23,12 +23,16 @@ function command(name: string, exitCode = 0): CommandEvidence {
 }
 
 function armResult(arm: ArmName, passed: boolean): ArmResult {
+  const assessed = { criterion: "behavior", status: passed ? "pass" as const : "fail" as const,
+    basis: "executed" as const, reasoning: "Executed behavioral check", execution: command("node --test", passed ? 0 : 1) };
+  const existing = { ...assessed, criterion: "__existing_tests" };
   return {
     arm, anonymous_id: arm === "stock" ? "candidate-1" : "candidate-2", container: `container-${arm}`,
     started_at: "2026-09-09T00:00:00.000Z", finished_at: "2026-09-09T00:00:01.000Z", agent_elapsed_ms: arm === "stock" ? 1000 : 1250,
     exit_code: 0, timed_out: false, canceled: false, patch_path: `artifacts/${arm}/changes.patch`, stdout_path: `artifacts/${arm}/codex.jsonl`, stderr_path: `artifacts/${arm}/codex.stderr`,
     changed_files: [`${arm}.ts`],
-    grade: { preparation: command("prepare"), acceptance: command("acceptance", passed ? 0 : 1), router_suite: command("router", 0), elapsed_ms: 750, passed },
+    grade: { preparation: command("prepare"), router_suite: command("router", passed ? 0 : 1), elapsed_ms: 750, passed,
+      semantic: { "pass-1": [assessed], "pass-1-existing": [existing], "pass-2": [assessed], "pass-2-existing": [existing] } },
   };
 }
 
@@ -63,7 +67,11 @@ async function fixtureRun(stockPassed = true, currentPassed = true): Promise<{ r
   const state: RunState = {
     schema_version: 1, id: "fixture-run", created_at: "2026-09-09T00:00:00.000Z", status: "complete",
     source: { path: "/source", base_commit: "base", base_tree: "tree", source_timestamp: 1, forbidden_commit: "future" },
-    task: { path: "control/task.md", sha256: "task" }, acceptance: { path: "evaluator/acceptance.go", sha256: "acceptance" },
+    task: { path: "control/task.md", sha256: "task" },
+    criteria: { path: "evaluator/criteria.json", sha256: "criteria",
+      contract: { schema: "codex-ab.criteria.v1", task_sha256: "task",
+        criteria: [{ id: "behavior", description: "Required behavior" }],
+        preparation: "true", existing_tests: "true", qualification: "not-run" } },
     image: "codex-ab:test", image_id: "sha256:immutable-test-image",
     execution: { model: "gpt-6-astra", reasoning_effort: "medium", service_tier: "priority" },
     operator: { uid: 1000, gid: 1000 },
@@ -92,234 +100,49 @@ function verdict(winner: "candidate-1" | "candidate-2" | "tie" | "none", rationa
   };
 }
 
-async function fakeDocker(responses: Record<number, Record<string, unknown>>, failures: number[] = [], cancelPass?: number, cancelCreatePass?: number, capacityFailures: number[] = []): Promise<{ path: string; log: string }> {
-  const directory = join(root, `fake-${Math.random().toString(16).slice(2)}`);
-  await mkdir(directory, { recursive: true });
-  const log = join(directory, "calls.jsonl");
-  await file(join(directory, "config.json"), JSON.stringify({ responses, failures, cancelPass, cancelCreatePass, capacityFailures }));
-  const path = join(directory, "docker.ts");
-  await file(path, `#!/usr/bin/env bun
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-const dir = import.meta.dir;
-const args = process.argv.slice(2);
-await appendFile(join(dir, "calls.jsonl"), JSON.stringify(args) + "\\n");
-const config = JSON.parse(await readFile(join(dir, "config.json"), "utf8"));
-if (args[0] === "container" && args[1] === "inspect") {
-  const name = args.at(-1);
-  const statePath = join(dir, "container-" + name + ".json");
-  if (await Bun.file(statePath).exists()) {
-    const state = JSON.parse(await readFile(statePath, "utf8"));
-    process.stdout.write(args.includes("--format") && args[args.indexOf("--format") + 1].includes("codex-ab.owner") ? state.owner + "\\n" : "fixture-id\\n");
-    process.exit(0);
-  }
-  process.stderr.write("Error: No such container: " + name + "\\n");
-  process.exit(1);
-}
-if (args[0] === "rm") {
-  await rm(join(dir, "container-" + args.at(-1) + ".json"), { force: true });
-  process.exit(0);
-}
-if (args[0] === "create") {
-  const countPath = join(dir, "count");
-  let count = 0;
-  try { count = Number(await readFile(countPath, "utf8")); } catch {}
-  count += 1;
-  await writeFile(countPath, String(count));
-  const name = args[args.indexOf("--name") + 1];
-  const mounts = args.flatMap((arg, index) => args[index - 1] === "-v" ? [arg] : []);
-  await writeFile(join(dir, "mounts-" + count + ".json"), JSON.stringify(mounts));
-  const homeMount = mounts.find(value => value.endsWith(":/home/ubuntu"));
-  if (!homeMount) process.exit(90);
-  const owner = args[args.indexOf("--label") + 1].split("=").slice(1).join("=");
-  await writeFile(join(dir, "container-" + name + ".json"), JSON.stringify({ count, home: homeMount.slice(0, -":/home/ubuntu".length), owner }));
-  if (config.cancelCreatePass === count) { process.kill(process.ppid, "SIGTERM"); await Bun.sleep(200); process.exit(7); }
-  process.stdout.write(name + "\\n");
-  process.exit(0);
-}
-if (args[0] !== "start") process.exit(91);
-const record = JSON.parse(await readFile(join(dir, "container-" + args.at(-1) + ".json"), "utf8"));
-const count = record.count;
-const home = record.home;
-const input = await Bun.stdin.text();
-await writeFile(join(dir, "prompt-" + count + ".txt"), input);
-const usage = { input_tokens: 12, cached_input_tokens: 2, cache_write_input_tokens: 1, output_tokens: 4, reasoning_output_tokens: 2, total_tokens: 16 };
-const events = [
-  { type: "session_meta", payload: { id: "judge-" + count } },
-  { type: "turn_context", payload: { model: "gpt-5.6-sol" } },
-  { type: "token_usage_record", payload: { thread_id: "judge-" + count, response_id: "judge-response-" + count, usage } },
-];
-await mkdir(join(home, ".codex/sessions"), { recursive: true });
-await writeFile(join(home, ".codex/sessions/judge.jsonl"), events.map(event => JSON.stringify(event)).join("\\n") + "\\n");
-if (config.cancelPass === count) { process.kill(process.ppid, "SIGTERM"); await Bun.sleep(200); process.exit(7); }
-if (config.capacityFailures.includes(count)) { process.stdout.write(JSON.stringify({ type: "error", message: "Selected model is at capacity. Please try a different model." }) + "\\n"); process.exit(1); }
-if (config.failures.includes(count)) process.exit(7);
-const response = config.responses[String(count)];
-process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(response) } }) + "\\n");
-`, 0o755);
-  await chmod(path, 0o755);
-  return { path, log };
+async function fixtureJudge(run: string, first: "candidate-1" | "candidate-2", second: "candidate-1" | "candidate-2"): Promise<JudgeReport> {
+  const state = await readState(run);
+  const orders: [ArmName, ArmName][] = [["stock", "current"], ["current", "stock"]];
+  const passes = orders.map((order, index) => validateJudgePass(verdict(index === 0 ? first : second, "fixture assessment"), (index + 1) as 1 | 2, order, {
+    "candidate-1": state.results![order[0]]!.grade!.passed,
+    "candidate-2": state.results![order[1]]!.grade!.passed,
+  }));
+  const winners = passes.map(mappedWinner);
+  const usageHomes = ["evaluator/judge/pass-1/.codex", "evaluator/judge/pass-2/.codex"];
+  for (const [index, home] of usageHomes.entries()) await usageSession(join(run, home), `judge-${index}`, "gpt-5.6-sol");
+  const report: JudgeReport = {
+    status: "complete", started_at: "2026-09-09T00:00:02.000Z", finished_at: "2026-09-09T00:00:03.000Z",
+    model: "gpt-5.6-sol", reasoning_effort: "high", service_tier: "priority", passes,
+    agreement: winners[0] === winners[1], winner: winners[0] === winners[1] ? winners[0]! : "none",
+    disagreement: winners[0] === winners[1] ? undefined : "stock versus current",
+    usage_homes: usageHomes,
+  };
+  state.judge = report;
+  await writeState(run, state);
+  return report;
 }
 
-describe("judge isolation and immutable progress", () => {
-  test("uses a strict read-only schema, isolated homes, and exact reversed mapping", async () => {
-    const { run, auth } = await fixtureRun();
-    const fake = await fakeDocker({ 1: verdict("candidate-1", "verdict-one-secret"), 2: verdict("candidate-2", "second pass") });
-    const report = await judgeRun(run, auth, fake.path);
-    expect(report.status).toBe("complete");
-    expect(report.model).toBe("gpt-5.6-sol");
-    expect(report.reasoning_effort).toBe("high");
-    expect(report.service_tier).toBe("priority");
-    expect(report.winner).toBe("stock");
-    expect(report.passes.map(pass => pass.presentation)).toEqual([["stock", "current"], ["current", "stock"]]);
-    expect(await readFile(join(fake.path, "../prompt-2.txt"), "utf8")).not.toContain("verdict-one-secret");
-    const mounts1 = JSON.parse(await readFile(join(fake.path, "../mounts-1.json"), "utf8")) as string[];
-    const mounts2 = JSON.parse(await readFile(join(fake.path, "../mounts-2.json"), "utf8")) as string[];
-    expect(mounts1.some(mount => mount.endsWith(":/output") || mount.endsWith(":/output:ro"))).toBe(false);
-    expect(mounts2.some(mount => mount.endsWith(":/output") || mount.endsWith(":/output:ro"))).toBe(false);
-    expect(mounts1.find(mount => mount.endsWith(":/home/ubuntu"))).not.toBe(mounts2.find(mount => mount.endsWith(":/home/ubuntu")));
-    expect(mounts2.some(mount => mount.endsWith(":/tmp/judge-output-schema.json:ro"))).toBe(true);
-    const calls = (await readFile(fake.log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[][][number]);
-    const firstCreate = calls.find(call => call[0] === "create")!;
-    expect(firstCreate).toContain("--output-schema");
-    expect(firstCreate).toContain("sha256:immutable-test-image");
-    expect(firstCreate).toContain('model_reasoning_effort="high"');
-    expect(firstCreate).toContain('service_tier="fast"');
-  });
+test("judge requires task-derived criteria instead of legacy source-only grading", async () => {
+  const { run, auth } = await fixtureRun();
+  const state = await readState(run);
+  delete state.criteria;
+  await writeState(run, state);
+  await expect(judgeRun(run, auth)).rejects.toThrow("judge requires task-derived criteria");
+  expect((await readState(run)).judge).toBeUndefined();
+});
 
-  for (const failedPass of [1, 2]) {
-    test(`persists pass ${failedPass} failure, meters its paid attempt, and refuses rerun`, async () => {
-      const { run, auth } = await fixtureRun();
-      const fake = await fakeDocker({ 1: verdict("candidate-1", "first") }, [failedPass]);
-      await expect(judgeRun(run, auth, fake.path)).rejects.toThrow(`pass ${failedPass} failed`);
-      const state = await readState(run);
-      expect(state.judge?.status).toBe("failed");
-      expect(state.judge?.usage_homes).toHaveLength(failedPass);
-      expect(state.judge?.passes).toHaveLength(failedPass - 1);
-      await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("cannot be resumed or retried");
-      const paths = await buildReport(run);
-      const json = await Bun.file(paths.jsonPath).json();
-      expect(json.judge.attempts).toHaveLength(failedPass);
-      expect(json.judge.usage.totals.total_tokens).toBe(16 * failedPass);
-      expect(json.winner).toBe("none");
-      expect(await readFile(paths.markdownPath, "utf8")).toContain(`Status: **failed**`);
-    });
-  }
-
-  test("records cancellation and removes only the active session-created judge container", async () => {
-    const { run, auth } = await fixtureRun();
-    const fake = await fakeDocker({}, [], 1);
-    const driver = join(root, "cancel-driver.ts");
-    await file(driver, `import { judgeRun } from ${JSON.stringify(resolve(import.meta.dir, "judge.ts"))};\ntry { await judgeRun(process.argv[2], process.argv[3], process.argv[4]); } catch (error) { process.stderr.write(String(error)); }\n`);
-    const child = Bun.spawn([process.execPath, driver, run, auth, fake.path], { stdout: "pipe", stderr: "pipe" });
-    expect(await child.exited).toBe(0);
-    const state = await readState(run);
-    expect(state.judge?.status).toBe("canceled");
-    expect(state.judge?.usage_homes).toHaveLength(1);
-    const calls = (await readFile(fake.log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
-    expect(calls).toContainEqual(["rm", "--force", "codex-ab-fixture-run-judge-1"]);
-    expect(calls.filter(call => call[0] === "rm")).toHaveLength(1);
-    expect(calls.some(call => call[0] === "container" && call[1] === "inspect" && call.at(-1) === "codex-ab-fixture-run-judge-1")).toBe(true);
-  });
-
-  test("does not start paid inference when cancellation lands at the create/start boundary", async () => {
-    const { run, auth } = await fixtureRun();
-    const fake = await fakeDocker({}, [], undefined, 1);
-    const driver = join(root, "pre-launch-cancel-driver.ts");
-    await file(driver, `import { judgeRun } from ${JSON.stringify(resolve(import.meta.dir, "judge.ts"))};\ntry { await judgeRun(process.argv[2], process.argv[3], process.argv[4]); } catch (error) { process.stderr.write(String(error)); }\n`);
-    const child = Bun.spawn([process.execPath, driver, run, auth, fake.path], { stdout: "pipe", stderr: "pipe" });
-    expect(await child.exited).toBe(0);
-    const state = await readState(run);
-    expect(state.judge?.status).toBe("canceled");
-    const calls = (await readFile(fake.log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
-    expect(calls.filter(call => call[0] === "start")).toHaveLength(0);
-    expect(calls).toContainEqual(["rm", "--force", "codex-ab-fixture-run-judge-1"]);
-  });
-
-  test("retries capacity in fresh homes, preserves every launch and meters all attempts", async () => {
-    const { run, auth } = await fixtureRun();
-    const fake = await fakeDocker({ 2: verdict("candidate-1", "first"), 3: verdict("candidate-2", "second") }, [], undefined, undefined, [1]);
-    const judged = await judgeRun(run, auth, fake.path);
-    expect(judged.status).toBe("complete");
-    expect(judged.attempts?.map(item => [item.pass, item.attempt, item.status])).toEqual([[1, 1, "failed"], [1, 2, "complete"], [2, 1, "complete"]]);
-    expect(judged.usage_homes).toHaveLength(3);
-    expect(new Set(judged.usage_homes).size).toBe(3);
-    expect(await readFile(join(run, judged.attempts![0]!.stdout_path), "utf8")).toContain("at capacity");
-    expect(await readFile(join(run, judged.attempts![1]!.stdout_path), "utf8")).toContain("first");
-    const paths = await buildReport(run);
-    const report = await Bun.file(paths.jsonPath).json();
-    expect(report.judge.usage.totals.total_tokens).toBe(48);
-    expect(report.measurement_complete).toBe(true);
-    expect(report.performance_breakdown.current_minus_stock.total_tokens).toBe(10);
-    expect(await readFile(paths.markdownPath, "utf8")).toContain("## Programmatic performance breakdown");
-    expect(report.winner).toBe("stock");
-    await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("cannot be resumed or retried");
-    // Capacity can fail before any usage record exists. Keep both returned assessments,
-    // but never turn the unmetered failed launch into an assumed zero-cost attempt.
-    await file(join(run, judged.usage_homes[0]!, "sessions/judge.jsonl"), `${JSON.stringify({ type: "session_meta", payload: { id: "judge-1" } })}\n`);
-    const incomplete = await Bun.file((await buildReport(run)).jsonPath).json();
-    expect(incomplete.judge.result.passes).toHaveLength(2);
-    expect(incomplete.judge.usage.complete).toBe(false);
-    expect(incomplete.judge.usage.totals.estimated_api_usd).toBeNull();
-    expect(incomplete.measurement_complete).toBe(false);
-    expect(incomplete.winner).toBe("none");
-  }, 15_000);
-
-  test("cancellation during capacity backoff prevents another launch", async () => {
-    const { run, auth } = await fixtureRun();
-    const fake = await fakeDocker({}, [], undefined, undefined, [1]);
-    const driver = join(root, "backoff-cancel.ts");
-    await file(driver, `import { judgeRun } from ${JSON.stringify(resolve(import.meta.dir, "judge.ts"))};
-try { await judgeRun(process.argv[2], process.argv[3], process.argv[4]); } catch {}
-`);
-    const child = Bun.spawn([process.execPath, driver, run, auth, fake.path], { stdout: "pipe", stderr: "pipe" });
-    const reader = child.stderr.getReader();
-    let text = "";
-    try {
-      while (!text.includes("retrying in")) {
-        const next = await reader.read();
-        if (next.done) throw new Error("judge exited before backoff");
-        text += new TextDecoder().decode(next.value);
-      }
-      child.kill("SIGTERM");
-      expect(await child.exited).toBe(0);
-      const state = await readState(run);
-      expect(state.judge?.status).toBe("canceled");
-      expect(state.judge?.attempts).toHaveLength(1);
-      const calls = (await readFile(fake.log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
-      expect(calls.filter(call => call[0] === "start")).toHaveLength(1);
-    } finally {
-      reader.releaseLock();
-      if (child.exitCode === null) { child.kill(); await child.exited; }
-    }
-  }, 10_000);
-
-  test("stops after three capacity attempts without launching the other pass", async () => {
-    const { run, auth } = await fixtureRun();
-    const fake = await fakeDocker({}, [], undefined, undefined, [1, 2, 3]);
-    await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("model at capacity");
-    const state = await readState(run);
-    expect(state.judge?.status).toBe("failed");
-    expect(state.judge?.attempts?.map(item => item.status)).toEqual(["failed", "failed", "failed"]);
-    expect(state.judge?.passes).toHaveLength(0);
-    expect(state.judge?.usage_homes).toHaveLength(3);
-  }, 30_000);
-
-  test("rejects schema-invalid output without coercion", async () => {
-    const { run, auth } = await fixtureRun();
-    const fake = await fakeDocker({ 1: verdict("candidate-1", "invalid", { surprise: true }) });
-    await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("must contain exactly");
-    const state = await readState(run);
-    expect(state.judge?.status).toBe("failed");
-    expect(state.judge?.passes).toHaveLength(0);
-  });
+test("judge validation rejects schema errors and ineligible winners", () => {
+  const order: [ArmName, ArmName] = ["stock", "current"];
+  expect(() => validateJudgePass(verdict("candidate-1", "invalid", { surprise: true }), 1, order,
+    { "candidate-1": true, "candidate-2": true })).toThrow("must contain exactly");
+  expect(() => validateJudgePass(verdict("candidate-1", "ineligible"), 1, order,
+    { "candidate-1": false, "candidate-2": false })).toThrow("required benchmark gates");
 });
 
 describe("report completion and winner eligibility", () => {
   test("allows the passing candidate to win when the other fully measured candidate fails", async () => {
     const { run, auth } = await fixtureRun(true, false);
-    const fake = await fakeDocker({ 1: verdict("candidate-1", "stock passes"), 2: verdict("candidate-2", "stock remains best") });
-    await judgeRun(run, auth, fake.path);
+    await fixtureJudge(run, "candidate-1", "candidate-2");
     const paths = await buildReport(run);
     const report = await Bun.file(paths.jsonPath).json();
     expect(report.gates_complete).toBe(true);
@@ -342,7 +165,7 @@ describe("report completion and winner eligibility", () => {
     const { run } = await fixtureRun();
     const state = await readState(run);
     const skipped = { command: "not run", started_at: "2026-09-09T00:00:02.000Z", elapsed_ms: 0, exit_code: -1, stdout: "", stderr: "grading preparation failed" };
-    state.results!.current!.grade = { preparation: command("prepare", 9), acceptance: skipped, router_suite: skipped, elapsed_ms: 250, passed: false };
+    state.results!.current!.grade = { preparation: command("prepare", 9), router_suite: skipped, elapsed_ms: 250, passed: false };
     state.judge = {
       status: "complete", started_at: "2026-09-09T00:00:02.000Z", finished_at: "2026-09-09T00:00:03.000Z",
       model: "gpt-5.6-sol", reasoning_effort: "medium", passes: [], agreement: true, winner: "stock", usage_homes: [],
@@ -371,27 +194,10 @@ describe("report completion and winner eligibility", () => {
   expect(report.winner).toBe("none");
 });
 
-test("large grading logs stay complete in read-only evidence files outside the prompt", async () => {
-  const { run, auth } = await fixtureRun();
-  const state = await readState(run);
-  state.results!.stock!.grade!.router_suite.stdout = "large fixture output\n".repeat(120_000) + "END_OF_FULL_LOG\n";
-  await writeState(run, state);
-  const fake = await fakeDocker({
-    1: verdict("tie", "same source quality"),
-    2: verdict("tie", "same source quality"),
-  });
-  const judged = await judgeRun(run, auth, fake.path);
-  expect(judged.status).toBe("complete");
-  const full = JSON.parse(await readFile(join(run, "evaluator/judge/evidence-1/candidate-1.json"), "utf8"));
-  expect(full.router_suite.stdout.endsWith("END_OF_FULL_LOG\n")).toBe(true);
-  expect(full.router_suite.stdout.length).toBeGreaterThan(1_500_000);
-  expect(await readFile(fake.log, "utf8")).toContain("/evidence:ro");
-}, 30_000);
 
   test("retains reversed-pass disagreement without forcing an overall winner", async () => {
     const { run, auth } = await fixtureRun();
-    const fake = await fakeDocker({ 1: verdict("candidate-1", "first presentation"), 2: verdict("candidate-1", "reversed presentation") });
-    const judge = await judgeRun(run, auth, fake.path);
+    const judge = await fixtureJudge(run, "candidate-1", "candidate-1");
     expect(judge.agreement).toBe(false);
     expect(judge.winner).toBe("none");
     expect(judge.disagreement).toContain("stock versus current");
@@ -404,8 +210,7 @@ test("large grading logs stay complete in read-only evidence files outside the p
 
   test("marks infrastructure-invalid runs prominently without discarding measured evidence", async () => {
     const { run, auth } = await fixtureRun();
-    const fake = await fakeDocker({ 1: verdict("candidate-1", "stock wins"), 2: verdict("candidate-2", "stock wins reversed") });
-    await judgeRun(run, auth, fake.path);
+    await fixtureJudge(run, "candidate-1", "candidate-2");
     const validPaths = await buildReport(run);
     const validReport = await Bun.file(validPaths.jsonPath).json();
     expect(validReport.validity).toBe("valid");
@@ -415,7 +220,7 @@ test("large grading logs stay complete in read-only evidence files outside the p
     await invalidateRun(run, reasons);
     const invalidState = await readState(run);
     expect(invalidState.invalidity_reasons).toEqual(reasons);
-    await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("infrastructure-invalid run");
+    await expect(judgeRun(run, auth)).rejects.toThrow("infrastructure-invalid run");
 
     const invalidPaths = await buildReport(run);
     const invalidReport = await Bun.file(invalidPaths.jsonPath).json();
@@ -518,18 +323,25 @@ test("report export preserves the source through directory aliases and linked ou
   expect(await readFile(join(output, "report.md"), "utf8")).toContain("## Task and setup");
 });
 
-test("rejected judge response remains available without another model request", async () => {
-  const { run, auth } = await fixtureRun(false, false);
-  const fake = await fakeDocker({ 1: verdict("candidate-1", "source observations remain useful") });
-  await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("required benchmark gates");
-  const before = await readFile(fake.log, "utf8");
+test("rejected semantic response remains available without another model request", async () => {
+  const { run } = await fixtureRun(false, false);
+  const state = await readState(run);
+  state.judge = {
+    status: "failed", started_at: "2026-09-09T00:00:02.000Z", model: "gpt-5.6-sol",
+    reasoning_effort: "high", passes: [], winner: "none", usage_homes: [],
+    error: "required benchmark gates failed",
+    attempts: [{ pass: 1, stage: "assessment", attempt: 1, status: "complete", started_at: "2026-09-09T00:00:02.000Z",
+      stdout_path: "evaluator/judge/assessment.jsonl", stderr_path: "evaluator/judge/stderr", usage_home: "evaluator/judge/home" }],
+  };
+  await file(join(run, "evaluator/judge/assessment.jsonl"), JSON.stringify({ type: "item.completed",
+    item: { type: "agent_message", text: JSON.stringify(verdict("candidate-1", "source observations remain useful")) } }));
+  await writeState(run, state);
   const { jsonPath } = await buildReport(run);
   const report = JSON.parse(await readFile(jsonPath, "utf8"));
   expect(report.winner).toBe("none");
   expect(report.rejected_source_assessment.response.rationale).toBe("source observations remain useful");
   expect(report.judge_complete).toBe(false);
-  expect(await readFile(fake.log, "utf8")).toBe(before);
-}, 30_000);
+});
 
 test("a later covered semantic pass cannot hide earlier unassessed criteria", async () => {
   const { run } = await fixtureRun();
@@ -540,8 +352,8 @@ test("a later covered semantic pass cannot hide earlier unassessed criteria", as
   for (const arm of ["stock", "current"] as const) {
     const passed = { criterion: "behavior", status: "pass" as const, basis: "executed" as const, reasoning: "Executed" };
     state.results![arm]!.grade!.semantic = {
-      "pass-1": [{ ...passed, status: "unassessed" }], "pass-1-fixed": [], "pass-1-existing": [passed],
-      "pass-2": [passed], "pass-2-fixed": [], "pass-2-existing": [passed],
+      "pass-1": [{ ...passed, status: "unassessed" }], "pass-1-existing": [passed],
+      "pass-2": [passed], "pass-2-existing": [passed],
     };
   }
   await writeState(run, state);
@@ -563,12 +375,60 @@ test("conclusive source-only interface failures do not hide completed assessment
     const executed = { criterion: "behavior", status: "pass" as const, basis: "executed" as const, reasoning: "Executed" };
     const assessed = arm === "stock" ? { ...executed, status: "fail" as const, basis: "source-only" as const, reasoning: "Required export absent" } : executed;
     state.results![arm]!.grade!.semantic = {
-      "pass-1": [assessed], "pass-1-fixed": [], "pass-1-existing": [executed],
-      "pass-2": [assessed], "pass-2-fixed": [], "pass-2-existing": [executed],
+      "pass-1": [assessed], "pass-1-existing": [executed],
+      "pass-2": [assessed], "pass-2-existing": [executed],
     };
   }
   await writeState(run, state);
   const result = await buildReport(run);
   const report = JSON.parse(await readFile(result.jsonPath, "utf8"));
   expect(report.checks_executed).toBe(true);
+});
+
+test("semantic criteria and existing checks complete grading without synthetic command evidence", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.criteria = { path: "evaluator/criteria.json", sha256: "criteria",
+    contract: { schema: "codex-ab.criteria.v1", task_sha256: state.task.sha256,
+      criteria: [{ id: "behavior", description: "Required behavior" }],
+      preparation: "true", existing_tests: "true", qualification: "not-run" } };
+  for (const arm of ["stock", "current"] as const) {
+    const executed = { criterion: "behavior", status: "pass" as const, basis: "executed" as const,
+      reasoning: "Adaptive behavioral assertion passed", execution: command("node --test") };
+    state.results![arm]!.grade!.semantic = {
+      "pass-1": [executed], "pass-1-existing": [{ ...executed, criterion: "__existing_tests" }],
+      "pass-2": [executed], "pass-2-existing": [{ ...executed, criterion: "__existing_tests" }],
+    };
+  }
+  await writeState(run, state);
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const paths = await buildReport(run);
+  const report = JSON.parse(await readFile(paths.jsonPath, "utf8"));
+  expect(report.checks_executed).toBe(true);
+  expect(report.measurement_complete).toBe(true);
+  expect(report.winner).toBe("stock");
+  expect(report.arms.stock.result.grade.semantic["pass-1"][0].execution.command).toBe("node --test");
+  expect(Object.keys(report.arms.stock.result.grade).sort()).toEqual(["elapsed_ms", "passed", "preparation", "router_suite", "semantic"]);
+});
+
+test("historical records without semantic criteria remain descriptive despite stored stale judges", async () => {
+  const { run } = await fixtureRun();
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const statePath = join(run, "run.json");
+  const historical = JSON.parse(await readFile(statePath, "utf8"));
+  delete historical.criteria;
+  for (const arm of ["stock", "current"]) delete historical.results[arm].grade.semantic;
+  historical.regrade = { status: "complete", judge_stale: true };
+  await writeFile(statePath, JSON.stringify(historical));
+  const before = await readFile(statePath, "utf8");
+  const paths = await buildReport(run);
+  const report = JSON.parse(await readFile(paths.jsonPath, "utf8"));
+  expect(report.checks_executed).toBe(false);
+  expect(report.gates_complete).toBe(false);
+  expect(report.measurement_complete).toBe(false);
+  expect(report.winner).toBe("none");
+  expect(report.judge.result.winner).toBe("stock");
+  expect(report.arms.stock.usage.totals.total_tokens).toBe(24);
+  expect(await readFile(paths.markdownPath, "utf8")).toContain("Historical measurements are descriptive only");
+  expect(await readFile(statePath, "utf8")).toBe(before);
 });

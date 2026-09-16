@@ -36,7 +36,7 @@ run_dir="$(./dist/codex-ab prepare \
   --base bb9e740362fd86c9214f5c893c65ae6c46587a60 \
   --forbidden d50b9e6d7a2b01fc033a8aab523791876e4441b5 \
   --task ./task.md \
-  --acceptance ./acceptance_test.go)"
+  --criteria ./criteria.json)"
 ```
 
 Preparation creates a new mode-0700 `mktemp` directory outside the repository. It shallow-fetches exactly the base commit into a bare seed, makes two `--no-local --no-hardlinks` clones, removes their remotes, and verifies tree identity, the lack of object alternates and linked worktrees, and absence of the future solution commit. The solution itself is never copied.
@@ -51,7 +51,7 @@ Runtime supplements are copied separately: installed hooks, materialized skills 
 
 The clone preserves absolute `/home/ubuntu` paths inside its container. `snapshot-manifest.json` records the configuration commit and tree, overlaid tracked paths, a SHA-256 for every regular setup file (excluding Git metadata), literal symlink targets, and portability adaptations. The installed-tool content manifest and copied setup manager are also verified before launch. Preflight requires every configured tool to be present, then runs a referenced remote skill and the registered Go-guidelines hook with networking disabled. For Mekugi, it also resolves `shell` on the executor's PATH and executes its missing-thread diagnostic, catching absent or non-runnable helpers before inference. This checks helper startup, not a complete model-to-tool request. An incomplete setup fails before inference instead of being silently bypassed.
 
-For legacy Go gates, the evaluator test is copied under `evaluator/`, which is never mounted into an arm. Each arm sees only its own clone, Go caches, and private home; the current arm also receives its read-only installed-tool snapshot. Agent logs and captured patches are kept outside its writable mounts. It cannot see the sibling, the host's live home or repositories, the Docker socket, the acceptance test, or evaluator artifacts.
+Each arm sees only its own clone, caches, and private home; the current arm also receives its read-only installed-tool snapshot. Agent logs and captured patches stay outside its writable mounts. Behavioral criteria are fixed before execution; adaptive checks are authored after both candidates stop and run in separate evaluator workspaces.
 
 Validate the image and snapshotted dependencies without making a model request:
 
@@ -70,13 +70,13 @@ After reviewing `run.json`, start the model runs explicitly:
   --confirm-paid-inference
 ```
 
-The command first checks that the image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. For each arm, agent setup installs locked plugin dependencies when required, builds the ignored JavaScript embed missing from a clean checkout, and prewarms writable agent caches without evaluator source. It then copies those caches into evaluator-only storage, injects the acceptance source into a separate ephemeral baseline, and compiles without running tests to complete the evaluator's exact dependency closure. Grading mounts those completed evaluator caches read-only and offline, without exposing them to the agent or consuming agent-modified entries after inference. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both gpt-6-astra arms at the selected reasoning effort (default medium) concurrently with identical two-CPU and 4 GiB limits. Preflight and the final launch check verify copied controls, both setup templates, the installed-tool file manifest, the Bun snapshot, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
+The command first checks that the image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. For each arm, agent setup installs locked plugin dependencies when required, builds the ignored JavaScript embed missing from a clean checkout, and prewarms writable agent caches without evaluator source. It then copies those caches into evaluator-only storage for offline semantic assessment. Grading mounts those completed evaluator caches read-only and offline, without exposing them to the agent or consuming agent-modified entries after inference. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both gpt-6-astra arms at the selected reasoning effort (default medium) concurrently with identical two-CPU and 4 GiB limits. Preflight and the final launch check verify copied controls, both setup templates, the installed-tool file manifest, the Bun snapshot, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
 
 Milestones go to stderr. Timeout or cancellation stops session-created containers and preserves available patches and results. Runs never restart or resume: prepare a new directory for another attempt. Mekugi snapshots prepared without the separate `shell` helper must be replaced with a fresh preparation; completed historical reports remain readable.
 
-For a non-comparative run, use `run --arm current` or `run --arm stock`. Only the selected arm is launched, captured, and graded. The report shows its executed checks and root-plus-child usage, but cannot claim paired measurement completeness or a winner; `judge` refuses singleton runs.
+Semantic assessment requires both arms. Historical singleton reports remain descriptive records, not paired comparisons.
 
-After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces. For `--acceptance` runs it injects `acceptance_test.go` and runs the focused `^TestABAcceptance` prefix gate plus the full package suite offline with evaluator-only module, build, and package caches frozen before inference. Git inspection and patch capture of candidate repositories run in separate offline containers, never on the host. Acceptance injection also happens inside the evaluator container, so candidate symlinks cannot redirect writes into the host. Agent and grader times remain separate.
+After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces. Independent semantic passes run the predetermined existing tests and author checks against each candidate's actual interfaces. Git inspection and patch capture run in separate offline containers, never on the host. Agent and grader times remain separate.
 
 For Mekugi's original router task, use the `mekugi` profile and explicitly select `--current-launcher mekugi`, with `--mekugi-bin` and `--mekugi-shell-bin`. Historical result bundles and the pinned toolchain image retain their original names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
 
@@ -108,7 +108,7 @@ For `codex-mekugi-grok` trial sets, also pass `--grok-auth-file /path/to/.grok/a
 Failed pairs retain their evidence and do not discard later planned trials. Cancellation stops
 the active pair and leaves remaining pairs unstarted. Started sets never resume or restart;
 prepare a new set for another attempt. Each finished pair's existing evidence bundle is copied
-into trial-set-owned storage before moving on, so later standalone regrading or reporting cannot
+into trial-set-owned storage before moving on, so later standalone reporting cannot
 silently replace the trial observation.
 
 The command prints one aggregate `report.md` path. It contains setup identities, paired means,
@@ -225,7 +225,7 @@ supported and explicitly reports missing source provenance.
 
 The portable [nvm download](tasks/nvm-download-no-eval/manifest.json) and
 [Gin context copy](tasks/gin-context-copy/manifest.json) packs reuse Mekugi's task prompts and
-fixed-interface checks. Each pins its upstream base and excluded solution commit, dependency
+behavioral criteria. Each pins its upstream base and excluded solution commit, dependency
 preparation, behavioral criteria and task-required single-file boundary. They use the generic
 `task` profile, not a repository-specific runner branch.
 
@@ -247,40 +247,24 @@ For Gin, clone `https://github.com/gin-gonic/gin.git` and select
 of its profile, base, forbidden commit, prompt or grading inputs. Only the pinned base reaches
 the arms, even if the source checkout contains later commits.
 
-Preparation fingerprints the manifest, prompt and check sources and freezes them, along with
+Preparation fingerprints the manifest and prompt and freezes them, along with
 the expanded criterion contract, under evaluator-only storage. The bundle retains their
 contents and hashes. No original pack directory is needed after preparation. A fingerprint
 identifies the supplied content; it is not a signature of upstream authenticity.
 
-Nvm needs no downloaded dependencies. Its pinned installer requires Bash to be sourced, so its existing and fixed checks run with Bash; the POSIX requirement still applies to the changed function. Gin prepares the pinned Go modules before inference and
-reuses separate evaluator caches offline. The nvm existing-test command exercises installer
-source selection, not its network-dependent download integration test. The fixed checks cover
-representative cases, not every behavioral criterion. Adaptive checks still need to cover the
-remaining outcomes. Pack contracts conservatively record `qualification: "not-run"`; preparing
-a pack does not claim base or known-solution qualification or authorize inference.
+Nvm needs no downloaded dependencies. Its pinned installer requires Bash to be sourced, so its existing checks run with Bash; the changed function must remain POSIX-compatible. Gin prepares pinned Go modules before inference and reuses separate evaluator caches offline. Nvm's existing tests exercise installer source selection, not network-dependent downloads. Adaptive semantic checks cover the task's remaining outcomes. Pack contracts record `qualification: "not-run"`; preparing a pack does not authorize inference or claim oracle qualification.
 
 ## Skills manager bundle profile
 
-The [skills-mgr bundle task](tasks/skills-mgr-bundle/README.md) is a new, multi-part task outside Mekugi and GoDoxy. Use `--profile skills-mgr-bundle` with explicit source, base, forbidden commit, task, and evaluator inputs. This profile compiles and grades the root Go package without Mekugi plugin preparation. The hidden evaluator is injected at `ab_acceptance_test.go` only in evaluator workspaces; required acceptance, package-suite, and supplemental repeat checks retain the same isolation and usage accounting as the other profiles.
+The [skills-mgr bundle task](tasks/skills-mgr-bundle/README.md) is a multi-part task outside Mekugi and GoDoxy. Use `--profile skills-mgr-bundle` with explicit source, base, forbidden commit, task, and `--criteria` inputs. It prepares the root Go package without Mekugi plugin assets. Candidate-specific checks are authored during semantic assessment, rather than supplied as hidden test files.
 
 ## GoDoxy icons profile
 
-Use `prepare --profile godoxy-icons --reasoning-effort medium` (or `xhigh`) with explicit `--source`, `--base`, `--forbidden`, `--task`, and `--acceptance` inputs. Prepare a fresh directory for each effort, launcher, or repeat. Run `--arm stock` for the minimal setup or `--arm current` for the active snapshotted setup. Add `--current-launcher mekugi` to launch the current arm as `mekugi codex`; otherwise it launches bare `codex`. Supply the matching `shell` helper as described under preparation. The GoDoxy profile accepts only the pinned synthetic base `c335ef2d83d9fb8a774cb70b9b628ade54c654a2`, its recorded tree, excluded solution, and three exact submodule commits; altered identities or copied controls fail preflight.
+Use `prepare --profile godoxy-icons --reasoning-effort medium` (or `xhigh`) with explicit `--source`, `--base`, `--forbidden`, `--task`, and `--criteria` inputs. Prepare a fresh pair for each effort, launcher, or repeat. Add `--current-launcher mekugi` to launch the current arm as `mekugi codex`; otherwise it launches bare Codex. Supply the matching `shell` helper as described above. The profile accepts only the pinned synthetic base `c335ef2d83d9fb8a774cb70b9b628ade54c654a2`, its recorded tree, excluded solution, and three exact submodule commits.
 
 The source must contain local repositories at `goutils`, `internal/go-oidc`, and `internal/gopsutil` with the base commit's gitlink objects. Preparation shallow-fetches those exact commits into independent submodule clones, removes their remotes, and records their paths, source provenance, and SHAs in `run.json`. It rejects root remotes and initialized or populated `webui` throughout setup, patch collection, and grading. It does not initialize `webui`. The current arm uses the same audited current-home snapshot rules as the default profile.
 
-Preflight retains the bare-image and local Code Mode checks, then tests the icons package in an ephemeral copy. Go's module-selected toolchain must be at least 1.27. Before inference, evaluator prewarm injects the acceptance source into a separate ephemeral baseline copy and compiles it without running tests. It completes the evaluator's exact toolchain and dependency closure only in evaluator-private caches; generated test objects never enter the agent caches. Candidate edits inside those submodules are rejected during patch collection.
-
-The evaluator runs in a fresh clone with the same submodule commits. It receives the supplied test at `internal/homepage/icons/fetch/ab_acceptance_test.go` and runs:
-
-```sh
-go test -json -count=1 -ldflags=-checklinkname=0 -run '^TestABAcceptance' ./internal/homepage/icons/fetch
-go test -json -count=1 -ldflags=-checklinkname=0 ./internal/homepage/icons/fetch
-```
-
-For both profiles, grading requires each declared `TestABAcceptance` test to emit run and pass events in both commands. A zero exit without executed tests, or skipped acceptance tests, does not pass. These checks never inject the evaluator into the agent's baseline. CPU, memory, authentication, no-resume rules, and usage metering are unchanged. The stock profile uses the default service tier and persists the selected reasoning effort in both state and its minimal config.
-
-The runner also repeats the scoped package tests twice in one process, offline, against read-only evaluator source. These supplemental checks have a 180-second test timeout and do not replace required gates. A test failure is advisory; an infrastructure or cleanup failure retains required-check evidence but prevents judging and successful workflow completion. Required grading time, supplemental time, and source-assessment usage remain separate. Task-specific extra contracts belong in the evaluator test selected before inference, not in manual post-run work.
+Preflight retains the bare-image and local Code Mode checks. Go's module-selected toolchain must be at least 1.27. Candidate edits inside the pinned submodules are rejected during patch collection. The supplied criteria choose dependency preparation and existing tests; use the icons package with `-ldflags=-checklinkname=0` where needed. Both independent semantic passes evaluate the task against the captured candidates.
 
 
 The workflow is hybrid: grading, usage accounting, token/time/cost breakdowns, report generation,
@@ -290,8 +274,7 @@ recorded performance measurements.
 
 ## Task-derived semantic grading
 
-Use `prepare --criteria FILE` to select a task-independent evaluation contract, without requiring
-a hidden Go test. The JSON contract has this form:
+Use `prepare --criteria FILE` to supply the required task-derived evaluation contract. The JSON contract has this form:
 
 ```json
 {
@@ -326,12 +309,7 @@ interface can be a source-only defect. Passing requires executed evidence plus t
 assessment that the check actually covers the criterion. Both passes, disagreements, source,
 commands, outputs and repair attempts are retained.
 
-Optional `black_box` checks use the same `{criterion, files: [{path, source}], command: [argv],
-rationale}` structure and must target criteria with explicitly required public interfaces.
-They remain evaluator-only. No baseline or known-solution qualification is implied:
-`qualification` is `not-run`. Legacy `--acceptance` Go gates remain supported, including their
-isolated dependency prewarm. Semantic runs require both arms; they do not support singleton
-judging or restarting a started assessment.
+Prewritten hidden tests are no longer supported. Supply behavioral criteria, not evaluator source. Semantic assessment requires both arms and cannot restart a started assessment.
 
 Harness authoring, an optional repair, and final assessment each have their own recorded model
 attempts, with the existing capacity-only retry policy. Model usage and timing remain separate
@@ -340,7 +318,7 @@ from offline check time. No semantic model request occurs during `prepare` or `p
 
 ## Blind judge
 
-The `run` command performs blind assessment automatically after both candidates are captured. Semantic contracts use the workflow above; legacy Go acceptance runs use the source-only workflow below after their grading gates complete. For an older complete pair without a judge attempt:
+The `run` command performs blind semantic assessment automatically after both candidates are captured. For a complete pair with criteria and no judge attempt:
 
 ```sh
 ./dist/codex-ab judge --run-dir "$run_dir" --confirm-paid-inference
@@ -383,7 +361,7 @@ recalculates weighted scores, records the input hash, and shows agreement or dis
 Imported assessments do not restart inference, replace the official judge, supply missing usage,
 or change overall winner eligibility. They are supplied evidence, not an operational fallback.
 
-The runner automatically writes `reports/report.md`, `reports/report.json`, and a checksummed `reports/bundle/` after execution, including partial runs. The bundle contains setup identities, task and evaluator controls, captured patches, interaction and role audits, source assessment, paired comparison, supplemental repeat results, and integrity checks. Encrypted interaction content remains unknown; command waits are counted separately from reviewer-status polling. The standalone `report` command refreshes the standard report and an existing finishing bundle without starting inference. Readable rejected judge responses are retained separately as unvalidated evidence, never as an eligible winner. It includes raw, cached, cache-write, output, reasoning-output, and total tokens for root and child agents; estimated public-list API cost; command time; agent and grader wall time; gate status; B-minus-A percentages; both raw judge passes; and a separate judge cost. Pricing is fetched and snapshotted once per run, with source, timestamp, assumptions, and warnings. If usage or required checks are incomplete, the report shows no overall winner.
+The runner automatically writes `reports/report.md`, `reports/report.json`, and a checksummed `reports/bundle/` after execution, including partial runs. The bundle contains setup identities, task and evaluator controls, captured patches, interaction and role audits, source assessment, paired comparison, semantic check results, and integrity checks. Encrypted interaction content remains unknown; command waits are counted separately from reviewer-status polling. The standalone `report` command refreshes the standard report and an existing finishing bundle without starting inference. Readable rejected judge responses are retained separately as unvalidated evidence, never as an eligible winner. It includes raw, cached, cache-write, output, reasoning-output, and total tokens for root and child agents; estimated public-list API cost; command time; agent and grader wall time; gate status; B-minus-A percentages; both raw judge passes; and a separate judge cost. Pricing is fetched and snapshotted once per run, with source, timestamp, assumptions, and warnings. If usage or required checks are incomplete, the report shows no overall winner.
 
 The behavioral explanation matches captured review instructions against visible execution events.
 It recognizes isolated reviewer preparation, review gated until after validation,
@@ -411,9 +389,7 @@ If execution completed but finishing failed before a judge request, fix the repo
 
 For post-hoc troubleshooting deductions, use `remeter --run-dir DIR --exclusions FILE`. The JSON file contains `arm` (`stock` or `current`), `rationale`, and `responses` and `commands` arrays of `{ "id": "...", "reason": "..." }`. IDs must match recorded response and command IDs. The command writes a separate `reports/remeter-*/` accounting report using the recorded pricing, retaining the original run and reports. It does not rerun agents, rewrite later context usage, or claim an adjusted wall time.
 
-For a confirmed evaluator infrastructure fault, fix the runner and use `regrade --run-dir DIR --reason "concrete correction"`. An evaluator interface/format gap can be corrected with `--acceptance FILE`: the named functional checks must remain the same, the original evaluator and grades are archived, and old/new control hashes are recorded. This also accepts otherwise-complete runs marked partial solely for evaluator incompatibility. Review the correction before regrading; it must not relax the task to favor a candidate. This archives the previous report bundle and grading state, verifies the original task/test/Bun inputs and captured patches, and records any explicitly supplied evaluator revision, then grades fresh evaluator workspaces with the pinned image and evaluator-only caches. It refreshes the reports without rerunning agents or making model requests. Earlier judge results are marked stale because their test evidence has changed; their original output and cost remain preserved. This command cannot clear run-wide isolation or input invalidity.
-
-Evaluator-declared unsupported CLI or archive formats are reported as **unassessed**, not failed implementations. They stop automatic judging and require evaluator coverage to be corrected before a quality conclusion.
+If an evaluator infrastructure fault prevents assessment, retain the failed evidence, fix the fault, and prepare a fresh pair. Candidate-interface wiring failures remain **unassessed**, not product failures. The legacy `regrade` command and hidden-test inputs are no longer supported.
 
 ## Failure and automation behavior
 

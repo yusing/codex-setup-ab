@@ -17,12 +17,6 @@
     "allowed_paths": ["install.sh"],
     "preparation": "sh -n install.sh",
     "existing_tests": "cd test/install_script && bash nvm_source",
-    "qualification": "not-run",
-    "black_box": [{
-      "criterion": "literal-arguments",
-      "rationale": "Fixed nvm_download interface preserves literal arguments and representative wget translations.",
-      "command": ["bash", "codex_ab_download_check.sh"],
-      "files": [{"path": "codex_ab_download_check.sh", "source_file": "blackbox.sh"}]
-    }]
+    "qualification": "not-run"
   }
 }

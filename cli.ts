@@ -7,7 +7,6 @@ import { prepareTrials, reportTrials, runTrials } from "./trials";
 import { prepare } from "./prepare";
 import { preflightRun } from "./runner";
 import { remeterRun } from "./remeter";
-import { regradeRun } from "./regrade";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { judgeRun } from "./judge";
 import { buildReport, invalidateRun } from "./report";
@@ -30,7 +29,6 @@ Usage:
   codex-ab run --run-dir DIR --confirm-paid-inference [options]
   codex-ab finish --run-dir DIR --confirm-paid-inference [options]
   codex-ab judge --run-dir DIR --confirm-paid-inference [options]
-  codex-ab regrade --run-dir DIR --reason TEXT [--acceptance FILE] [--docker-bin FILE]
   codex-ab remeter --run-dir DIR --exclusions FILE
   codex-ab report --run-dir DIR [--output-dir DIR]
   codex-ab invalidate --run-dir DIR --reason TEXT
@@ -44,7 +42,6 @@ Prepare options:
   --task FILE           task prompt (default ./task.md)
   --task-pack FILE      portable pinned manifest; requires --source; owns task/base/criteria
   --criteria FILE       predetermined behavioral contract; defaults to task profile
-  --acceptance FILE     evaluator-only Go test (default ./acceptance_test.go)
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --snapshot-base DIR   completed run whose unchanged installed tools can be hard-linked
   --current-home DIR    configuration Git repository root (default current home)
@@ -83,7 +80,7 @@ Run and judge require the explicit model-execution confirmation flag.
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
     "run-trials": ["trial-set", "auth-file", "grok-auth-file", "docker-bin", "confirm-paid-inference"],
     "report-trials": ["trial-set"],
@@ -91,7 +88,6 @@ function options(command: string, args: string[]): Record<string, string | boole
     run: ["run-dir", "auth-file", "grok-auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
-    regrade: ["run-dir", "reason", "docker-bin", "acceptance"],
     remeter: ["run-dir", "exclusions"],
     report: ["run-dir", "output-dir", "source-assessments"],
     invalidate: ["run-dir", "reason"],
@@ -138,13 +134,12 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     } finally { process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel); }
   }
   if (command === "prepare") {
-    if (o.profile === "godoxy-icons" && (typeof o.task !== "string" || typeof o.acceptance !== "string")) throw new Error("godoxy-icons requires explicit --task and --acceptance");
-    if (o.profile === "skills-mgr-bundle" && ["source", "base", "forbidden", "task", "acceptance"].some(key => typeof o[key] !== "string")) {
-      throw new Error("skills-mgr-bundle requires explicit --source, --base, --forbidden, --task, and --acceptance");
+    if (o.profile === "skills-mgr-bundle" && ["source", "base", "forbidden", "task", "criteria"].some(key => typeof o[key] !== "string")) {
+      throw new Error("skills-mgr-bundle requires explicit --source, --base, --forbidden, --task, and --criteria");
     }
     if (o["task-pack"] && (typeof o.source !== "string" ||
-        ["base", "forbidden", "task", "criteria", "acceptance", "profile"].some(key => o[key] !== undefined))) {
-      throw new Error("--task-pack requires --source and cannot override its base, forbidden, task, criteria, acceptance, or profile");
+        ["base", "forbidden", "task", "criteria", "profile"].some(key => o[key] !== undefined))) {
+      throw new Error("--task-pack requires --source and cannot override its base, forbidden, task, criteria, or profile");
     }
     if (o["mekugi-build"] && ["mekugi-bin", "mekugi-shell-bin", "mekugi-source"].some(key => o[key] !== undefined)) {
       throw new Error("--mekugi-build owns its binaries and source; do not override them");
@@ -158,7 +153,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
       taskPackPath: o["task-pack"] as string | undefined,
       criteriaPath: o.criteria as string | undefined,
-      acceptancePath: o.criteria && !o.acceptance ? undefined : string(o, "acceptance", resolve("acceptance_test.go")), outputParent: o["output-parent"] as string | undefined,
+      outputParent: o["output-parent"] as string | undefined,
       snapshotBase: o["snapshot-base"] as string | undefined,
       reviewTreatment: o["review-treatment"] as string | undefined,
       comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,
@@ -213,11 +208,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "preflight") {
     await preflightRun(string(o, "run-dir"), o["docker-bin"] as string | undefined);
     process.stdout.write(`${resolve(string(o, "run-dir"))}\n`);
-    return 0;
-  }
-  if (command === "regrade") {
-    await regradeRun(string(o, "run-dir"), string(o, "reason"), o["docker-bin"] as string | undefined, o.acceptance as string | undefined);
-    process.stdout.write(`${resolve(string(o, "run-dir"))}/reports/bundle/report.md\n`);
     return 0;
   }
   if (command === "remeter") {

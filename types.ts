@@ -39,7 +39,6 @@ export interface ArmResult {
   lifecycle_error?: string;
   grade?: {
     preparation: CommandEvidence;
-    acceptance: CommandEvidence;
     evaluator_error?: string;
     supplemental_infrastructure_error?: string;
     semantic?: Record<string, CriterionEvidence[]>;
@@ -62,7 +61,6 @@ export interface RunState {
   task: { path: string; sha256: string };
   task_pack?: { id: string; path: string; sha256: string };
   criteria?: { path: string; sha256: string; contract: import("./semantic").CriteriaContract };
-  acceptance?: { path: string; sha256: string };
   image: string;
   image_id?: string;
   comparison?: Comparison;
@@ -116,22 +114,6 @@ export interface RunState {
     status: "started" | "stopped" | "failed";
     error?: string;
   }>>;
-  regrade?: {
-    status: "running" | "complete" | "failed";
-    reason: string;
-    started_at: string;
-    finished_at?: string;
-    archive_path: string;
-    evaluator_root: string;
-    acceptance_revision?: {
-      previous: { path: string; sha256: string };
-      replacement: { path: string; sha256: string };
-      source: string;
-    };
-    patch_sha256: Partial<Record<ArmName, string>>;
-    judge_stale: boolean;
-    error?: string;
-  };
   finishing_history?: NonNullable<RunState["finishing"]>[];
   finishing?: {
     status: "running" | "complete" | "failed";

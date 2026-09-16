@@ -13,6 +13,7 @@ test("criteria are pinned before candidate-specific interface adaptation", () =>
   expect(() => validateCriteria({ ...contract, task_sha256: "other" }, "task")).toThrow();
   expect(() => validateCriteria({ ...contract, criteria: [contract.criteria[0], contract.criteria[0]] }, "task")).toThrow();
   expect(() => validateCriteria({ ...contract, qualification: "base-and-solution" }, "task")).toThrow();
+  expect(() => validateCriteria({ ...contract, black_box: [] }, "task")).toThrow("no longer supported");
   const check = { criterion: "sum", files: [{ path: "additional.test.js", source: "" }], command: ["node", "--test"], rationale: "Sum is the required behavior." };
   expect(validateSemanticChecks([check], contract)).toHaveLength(1);
   expect(() => validateSemanticChecks([{ ...check, criterion: "weaker-outcome" }], contract)).toThrow();
@@ -37,7 +38,7 @@ test("judge harness compilation problems remain unassessed, not candidate failur
 test("a missing explicit public interface is a source-only defect, not a failed invented harness", () => {
   const evidence = {
     candidates: Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "sum", status: "unassessed", basis: "executed", reasoning: "undefined name" }]])),
-    existing_tests: {}, fixed_tests: {}, history: {},
+    existing_tests: {}, history: {},
   } as Parameters<typeof validateCriterionAssessments>[2];
   const assessments = Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [
     { criterion: "sum", status: "fail", basis: "source-only", reasoning: "The required exported add interface is absent from math.cjs." },

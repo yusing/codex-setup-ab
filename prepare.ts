@@ -30,7 +30,6 @@ export interface PrepareOptions {
   taskPath: string;
   taskPackPath?: string;
   criteriaPath?: string;
-  acceptancePath?: string;
   outputParent?: string;
   reviewTreatment?: string;
   currentHome: string;
@@ -138,7 +137,7 @@ function grokStockConfig(reasoningEffort: ReasoningEffort): string {
 
 
 export async function verifyPreparedInputs(runDir: string, state: RunState): Promise<void> {
-  if (state.task.path !== "control/task.md" || (state.acceptance && state.acceptance.path !== "evaluator/acceptance_test.go" && !/^reports\/regrade-[A-Za-z0-9]+\/acceptance_test\.go$/.test(state.acceptance.path))) throw new Error("copied benchmark control path changed");
+  if (state.task.path !== "control/task.md") throw new Error("copied benchmark control path changed");
   const stock = join(runDir, "snapshots/stock/home/ubuntu");
   const sameSetup = state.comparison === "same-setup";
   const stockMekugi = state.comparison === "stock-mekugi";
@@ -191,7 +190,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   for (const file of state.mekugi_build?.files ?? []) {
     if (await sha256(join(runDir, file.path)) !== file.sha256) throw new Error("Mekugi build input changed");
   }
-  for (const control of [state.task, state.acceptance, state.criteria, state.task_pack]) {
+  for (const control of [state.task, state.criteria, state.task_pack]) {
     if (control && await sha256(join(runDir, control.path)) !== control.sha256) throw new Error("copied benchmark control changed");
   }
   if (state.criteria) {
@@ -414,7 +413,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     mekugiSource: join(options.mekugiBuild!, "source") };
   const pack = options.taskPackPath ? await loadTaskPack(options.taskPackPath) : undefined;
   if (pack) options = { ...options, profile: "task", baseCommit: pack.manifest.source.base_commit,
-    forbiddenCommit: pack.manifest.source.forbidden_commit, taskPath: pack.taskPath, acceptancePath: undefined };
+    forbiddenCommit: pack.manifest.source.forbidden_commit, taskPath: pack.taskPath };
   const profile = options.profile ?? (options.criteriaPath ? "task" : "mekugi");
   const mekugiFlags = validateMekugiFlags(options.mekugiFlags ?? []);
   const comparison = options.comparison ?? "stock-current";
@@ -435,12 +434,10 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const needsMekugi = currentLauncher === "mekugi" || grokComparison;
   if (options.mekugiBinary && !needsMekugi) throw new Error("--mekugi-bin requires a Mekugi launcher treatment");
   if (!["medium", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be medium or xhigh");
-  if (profile === "godoxy-icons" && (!options.taskPath || !options.acceptancePath)) throw new Error("godoxy-icons requires explicit task and acceptance");
   if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
     throw new Error("godoxy-icons benchmark identity mismatch");
   }
-  if (profile === "task" && !options.criteriaPath && !pack) throw new Error("task profile requires predetermined --criteria");
-  if (profile === "skills-mgr-bundle" && !options.acceptancePath) throw new Error("skills-mgr-bundle requires explicit acceptance");
+  if (!options.criteriaPath && !pack) throw new Error("prepare requires predetermined --criteria or --task-pack");
   const uid = process.getuid?.();
   const gid = process.getgid?.();
   if (uid === undefined || gid === undefined || uid <= 0 || gid <= 0) throw new Error("prepare requires a non-root POSIX operator identity");
@@ -458,7 +455,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const taskPath = await realpath(options.taskPath);
   const criteriaPath = options.criteriaPath ? await realpath(options.criteriaPath) : undefined;
   const criteriaContract = pack?.contract ?? (criteriaPath ? validateCriteria(JSON.parse(await readFile(criteriaPath, "utf8")), await sha256(taskPath)) : undefined);
-  const acceptancePath = options.acceptancePath ? await realpath(options.acceptancePath) : undefined;
   const codexBinary = await realpath(options.codexBinary ?? join(options.currentHome, ".local/bin/codex"));
   const codexVersion = (await checked([codexBinary, "--version"])).stdout.trim();
   if (!/^codex-cli \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(codexVersion)) throw new Error(`unexpected Codex version: ${codexVersion}`);
@@ -510,7 +506,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   await copyFile(taskPath, join(runDir, "control/task.md"));
   if (criteriaContract) await writeFile(join(runDir, "evaluator/criteria.json"), JSON.stringify(criteriaContract, null, 2));
   if (pack) await writeFile(join(runDir, "evaluator/task-pack.json"), JSON.stringify(pack.snapshot, null, 2));
-  if (acceptancePath) await copyFile(acceptancePath, join(runDir, "evaluator/acceptance_test.go"));
 
   let buildProvenance: RunState["mekugi_build"];
   if (build) {
@@ -699,7 +694,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     task: { path: "control/task.md", sha256: await sha256(join(runDir, "control/task.md")) },
     task_pack: pack ? { id: pack.manifest.id, path: "evaluator/task-pack.json", sha256: await sha256(join(runDir, "evaluator/task-pack.json")) } : undefined,
     criteria: criteriaContract ? { path: "evaluator/criteria.json", sha256: await sha256(join(runDir, "evaluator/criteria.json")), contract: criteriaContract } : undefined,
-    acceptance: acceptancePath ? { path: "evaluator/acceptance_test.go", sha256: await sha256(join(runDir, "evaluator/acceptance_test.go")) } : undefined,
     image: options.image,
     execution: { model, reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },
     resource_limits: { cpus: options.cpus, memory: options.memory },

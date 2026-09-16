@@ -1,0 +1,14 @@
+{
+  "schema": "codex-ab.criteria.v1",
+  "task_sha256": "27747b5fbaab443e2256c1d312ab2994e4c338343894589266394670c3635abe",
+  "criteria": [
+    {"id": "grouping", "description": "Consecutive eligible same-path child calls render under one In <canonical agent path> heading with ordered action bullets and immediate delivery."},
+    {"id": "boundaries", "description": "Different child paths, non-tool notices and deferred/current boundaries end groups; response budgets defer undeliverable actions without loss."},
+    {"id": "details", "description": "Recognized transformations retain complete details, multiline indentation and every classified operation while respecting overall activity budgets."},
+    {"id": "replay", "description": "Source calls remain independently deduplicated and router-authored copies can be stripped without losing original history."},
+    {"id": "scope-and-tests", "description": "Unsupported displays stay bounded; unrelated behavior is preserved, the owning specification is updated, and focused tests cover the requested behavior."}
+  ],
+  "preparation": "bun install --cwd plugins --frozen-lockfile && bun build plugins/tools.ts --outfile ./internal/router/toolplugin/dist/tools.js --production --target node --format esm --external hpatch:core/v1 --external mekugi:core/v1 && go mod download",
+  "existing_tests": "go test ./internal/router -count=1",
+  "qualification": "not-run"
+}

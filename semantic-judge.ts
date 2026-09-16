@@ -59,7 +59,7 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
               timeoutMs: state.timeout_seconds * 1000, stdin: prompt, stdoutFile: outputPath, stderrFile: errorPath,
               createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "-i",
                 "-v", `${home}:/home/ubuntu`, "-v", `${schemaPath}:/schema.json:ro`,
-                ...order.flatMap((arm, index) => ["-v", `${join(runDir, state.regrade?.evaluator_root ?? "evaluator", arm)}:/candidates/${ids[index]}:ro`]),
+                ...order.flatMap((arm, index) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${ids[index]}:ro`]),
                 state.image_id ?? state.image, "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check",
                 "--output-schema", "/schema.json", "--model", report.model, "-c", 'model_reasoning_effort="high"',
                 "-c", 'service_tier="fast"', "-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"', "-"],
@@ -108,11 +108,10 @@ Score correctness (50%), completeness (20%), maintainability (20%) and test qual
 Give each criterion pass, fail or unassessed, with executed or source-only basis and reasoning. A pass requires a relevant successful executed check, not just source inspection.
 A broken harness or assumed internal name is unassessed, not a candidate failure. Source-only failure is allowed only for a missing/broken explicitly required public interface, with concrete source evidence.
 Use unassessed for inadequate tests or uncertain coverage even if a command exited zero.
-A candidate may win only if every criterion and its existing tests passed, with no critical issue and no failed optional black-box gate. Otherwise winner must be none or the other eligible candidate; tie needs both eligible.
+A candidate may win only if every criterion and its existing tests passed, with no critical issue. Otherwise winner must be none or the other eligible candidate; tie needs both eligible.
 Task: ${task}
 Fixed criteria: ${JSON.stringify(contract)}
 Executed evidence: ${JSON.stringify(evidence)}
-Optional black-box gates: ${JSON.stringify(Object.fromEntries(ids.map((id, i) => [id, state.acceptance ? state.results![order[i]!]!.grade?.passed : null])))}
 Return the required JSON schema with scores, evidence, issues, winner, rationale and per-candidate criteria.`;
       const value = await ask("assessment", prompt, schema);
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid semantic assessment");
@@ -120,9 +119,7 @@ Return the required JSON schema with scores, evidence, issues, winner, rationale
       const criteria = validateCriterionAssessments(rawCriteria, contract, evidence);
       const passing = Object.fromEntries(ids.map((id, i) => [id,
         state.results![order[i]!]!.grade!.preparation.exit_code === 0 &&
-        criteria[id].every(item => item.status === "pass") && evidence.existing_tests[id].status === "pass" &&
-        evidence.fixed_tests[id].every(item => item.status === "pass") &&
-        (!state.acceptance || state.results![order[i]!]!.grade!.passed)])) as Record<typeof ids[number], boolean>;
+        criteria[id].every(item => item.status === "pass") && evidence.existing_tests[id].status === "pass"])) as Record<typeof ids[number], boolean>;
       const judged = validateJudgePass(scores, pass, order, passing);
       judged.criteria = criteria;
       report.passes.push(judged);
@@ -131,16 +128,9 @@ Return the required JSON schema with scores, evidence, issues, winner, rationale
         gates[arm].push(passing[id]);
         const grade = state.results![arm]!.grade!;
         grade.semantic ??= {};
-        grade.semantic[`pass-${pass}-fixed`] = evidence.fixed_tests[id];
         grade.semantic[`pass-${pass}-existing`] = [evidence.existing_tests[id]];
         grade.semantic[`pass-${pass}`] = criteria[id];
-        if (!state.acceptance) {
-          const executed = [...criteria[id], ...evidence.fixed_tests[id], evidence.existing_tests[id]].every(item => item.status !== "unassessed");
-          grade.acceptance = { command: "task-derived semantic criteria", started_at: report.started_at,
-            elapsed_ms: criteria[id].reduce((sum, item) => sum + (item.execution?.elapsed_ms ?? 0), 0),
-            exit_code: executed ? passing[id] ? 0 : 1 : -1, stdout: JSON.stringify(criteria[id]), stderr: "" };
-          grade.router_suite = evidence.existing_tests[id].execution!;
-        }
+        if (evidence.existing_tests[id].execution) grade.router_suite = evidence.existing_tests[id].execution;
       }
       await writeState(runDir, state);
     }

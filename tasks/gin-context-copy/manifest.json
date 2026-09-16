@@ -16,12 +16,6 @@
     "allowed_paths": ["context.go"],
     "preparation": "go mod download",
     "existing_tests": "go test . -run '^TestContextCopy$' -count=1",
-    "qualification": "not-run",
-    "black_box": [{
-      "criterion": "copy-isolation",
-      "rationale": "Fixed public Context.Copy preserves errors, accepted formats, independent storage and nil values.",
-      "command": ["go", "test", ".", "-run", "^TestMekugiBenchmarkContextCopyIsolation$", "-count=1"],
-      "files": [{"path": "codex_ab_context_copy_test.go", "source_file": "blackbox.go.txt"}]
-    }]
+    "qualification": "not-run"
   }
 }

@@ -46,7 +46,7 @@ interface PairReport {
 export function trialControls(state: RunState) {
   return {
     profile: state.profile, source: state.source, submodules: state.submodules,
-    task: state.task, task_pack: state.task_pack, criteria: state.criteria, acceptance: state.acceptance,
+    task: state.task, task_pack: state.task_pack, criteria: state.criteria,
     comparison: state.comparison ?? "stock-current", execution: state.execution,
     image_id: state.image_id, resource_limits: state.resource_limits, timeout_seconds: state.timeout_seconds,
     current_snapshot: state.current_snapshot, snapshot_manifest: state.snapshot_manifest,

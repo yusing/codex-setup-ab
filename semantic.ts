@@ -16,7 +16,6 @@ export interface CriteriaContract {
   preparation: string;
   allowed_paths?: string[];
   existing_tests: string;
-  black_box?: SemanticCheck[];
   qualification: "not-run";
 }
 
@@ -66,12 +65,7 @@ export function validateCriteria(value: unknown, taskSha256: string): CriteriaCo
   }
   // Qualification claims require separate retained evidence; this path makes none.
   if (contract.qualification !== "not-run") throw new Error("criteria qualification must be not-run; no oracle qualification has been executed");
-  if (contract.black_box !== undefined) {
-    const checks = validateSemanticChecks(contract.black_box, contract as unknown as CriteriaContract);
-    if (checks.some(check => !(contract.criteria as BehavioralCriterion[]).find(criterion => criterion.id === check.criterion)?.required_interface)) {
-      throw new Error("prewritten black-box checks require an explicitly fixed public interface");
-    }
-  }
+  if (Object.hasOwn(contract, "black_box")) throw new Error("prewritten hidden checks are no longer supported; use task-derived semantic assessment");
   return contract as unknown as CriteriaContract;
 }
 

@@ -36,7 +36,6 @@ export const CRITERION_SCHEMA = {
 
 export interface SemanticAssessmentEvidence {
   candidates: Record<Candidate, CriterionEvidence[]>;
-  fixed_tests: Record<Candidate, CriterionEvidence[]>;
   history: Record<Candidate, CriterionEvidence[]>;
   existing_tests: Record<Candidate, CriterionEvidence>;
 }
@@ -50,11 +49,11 @@ export async function prepareSemanticAssessment(options: {
   const root = join(runDir, "evaluator/semantic", `pass-${pass}`);
   await mkdir(root, { recursive: true, mode: 0o700 });
   const evidence: SemanticAssessmentEvidence = { candidates: { "candidate-1": [], "candidate-2": [] }, existing_tests: {} as Record<Candidate, CriterionEvidence>,
-    fixed_tests: { "candidate-1": [], "candidate-2": [] }, history: { "candidate-1": [], "candidate-2": [] } };
+    history: { "candidate-1": [], "candidate-2": [] } };
   const execute = async (id: Candidate, check: SemanticCheck, suffix: string) => {
     const arm = order[candidates.indexOf(id)]!;
     const result = await executeSemanticCheck({ runDir, state,
-      candidate: join(runDir, state.regrade?.evaluator_root ?? "evaluator", arm),
+      candidate: join(runDir, "evaluator", arm),
       output: join(root, suffix, id, check.criterion),
       name: `codex-ab-${state.id}-semantic-${pass}-${suffix}-${id}-${check.criterion}`,
       check, docker: options.docker, signal: options.signal, arm });
@@ -69,9 +68,6 @@ export async function prepareSemanticAssessment(options: {
       criterion: "__existing_tests", files: [], command: ["sh", "-lc", contract.existing_tests],
       rationale: "Predetermined relevant existing tests, executed in an isolated evaluator.",
     }, "existing");
-  }
-  for (const id of candidates) {
-    for (const check of contract.black_box ?? []) evidence.fixed_tests[id].push(await execute(id, check, "fixed"));
   }
   for (let round = 1; round <= 2; round++) {
     const prompt = `You are a blind behavioral evaluator. Inspect both read-only anonymous candidate directories under /candidates.

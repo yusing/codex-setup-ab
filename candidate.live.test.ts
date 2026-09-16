@@ -5,7 +5,6 @@ import { join } from "node:path";
 import source from "./candidate-script.txt" with { type: "text" };
 import { runOwnedContainer } from "./container";
 import { checked } from "./process";
-import { acceptanceExecutionError } from "./grading";
 
 const liveTest = process.env.CODEX_AB_LIVE_DOCKER === "1" ? test : test.skip;
 const docker = process.env.CODEX_AB_DOCKER_BIN ?? "docker";
@@ -79,11 +78,3 @@ liveTest("live capture never follows an output symlink into the host filesystem"
   expect((await inspect("capture")).exitCode).not.toBe(0);
   expect(await readFile(victim, "utf8")).toBe("untouched");
 }, 30_000);
-
-liveTest("real Go TestMain early success is rejected as unexecuted acceptance", async () => {
-  await writeFile(join(repo, "acceptance_test.go"), 'package fixture\nimport ("testing"; "os")\nfunc TestABAcceptanceFixture(t *testing.T) {}\nfunc TestMain(m *testing.M) { os.Exit(0) }\n');
-  const result = await runOwnedContainer({ docker, name: `codex-ab-go-${crypto.randomUUID()}`, timeoutMs: 120_000,
-    createArgs: ["--network", "none", "-v", `${repo}:/workspace`, image, "go", "test", "-json", "-count=1", "-run", "^TestABAcceptance", "."] });
-  expect(result.exitCode).toBe(0);
-  expect(acceptanceExecutionError(result.stdout, ["TestABAcceptanceFixture"])).toContain("did not execute");
-}, 150_000);

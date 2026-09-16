@@ -138,13 +138,11 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       }
     }
   }
-  if (state.acceptance) await copy(state.acceptance.path, "acceptance_test.go");
   const sessions: Partial<Record<ArmName, SessionAudit[]>> = {};
   const integrity: Array<{ path: string; sha256: string; expected_sha256: string; matches: boolean }> = [];
   for (const [path, expected] of [
     [state.snapshot_manifest, state.current_snapshot.manifest_sha256],
     [state.task.path, state.task.sha256],
-    ...(state.acceptance ? [[state.acceptance.path, state.acceptance.sha256]] : []),
     ...(state.protected_runtime?.scripts.map(file => [file.path, file.sha256]) ?? []),
     ...(state.mekugi_build?.files.map(file => [file.path, file.sha256]) ?? []),
     ...(state.task_pack ? [[state.task_pack.path, state.task_pack.sha256]] : []),
@@ -197,7 +195,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   await write("supplemental-repeat.json", {
     required_benchmark_gate_replaced: false,
     arms: Object.fromEntries((state.selected_arms ?? []).map(arm => [arm, state.results?.[arm]?.grade?.supplemental_repeat ?? null])),
-    scope: "Offline scoped-package repeat check on read-only evaluator source. Task-specific contracts are supplied by the evaluator acceptance test; no ad hoc post-run tests are silently added.",
+    scope: "Offline scoped-package repeat check on read-only evaluator source. Task-derived criteria are assessed separately with retained executable semantic checks.",
   });
   const report = record(JSON.parse(await readFile(join(runDir, "reports/report.json"), "utf8")));
   if (report.rejected_source_assessment) await write("rejected-source-assessment.json", {
@@ -240,7 +238,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
           current: "Audited current-home snapshot, including recorded tracked worktree changes.",
         };
   await write("setup-comparison.json", {
-    source: state.source, task: state.task, task_pack: state.task_pack, criteria: state.criteria, acceptance: state.acceptance, submodules: state.submodules ?? [],
+    source: state.source, task: state.task, task_pack: state.task_pack, criteria: state.criteria, submodules: state.submodules ?? [],
     comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null,
     execution: state.execution, image_id: state.image_id, runtime_tools: state.runtime_tools,
     resource_limits: state.resource_limits, current_configuration: manifest.configuration_repository,
@@ -249,7 +247,6 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     current: setupDescriptions.current,
   });
   await write("comparison.json", {
-    regrade: state.regrade ?? null,
     design: report.design, arms: report.arms, current_minus_stock_percent: report.current_minus_stock_percent,
     source_quality: state.judge ?? null, validity: report.validity,
     limitations: "Single paired descriptive comparison. Different tasks and historical source snapshots are not equivalent baselines.",
