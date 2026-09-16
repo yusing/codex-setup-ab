@@ -1,13 +1,14 @@
 # syntax=docker/dockerfile:1
 
-FROM hpatch-bench:run-D9ZuS3 AS benchmark-toolchains
+FROM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go-toolchain
+FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS node-toolchain
 
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
-# Preserve the benchmark's Go and Node versions without inheriting its old
-# libc, Mekugi executables, wrappers, source, or credentials.
-COPY --from=benchmark-toolchains /usr/local/go /usr/local/go
-COPY --from=benchmark-toolchains /usr/local/bin/node /usr/local/bin/node
+# Use public, digest-pinned official toolchains without inheriting Mekugi,
+# wrappers, source, home state, or credentials.
+COPY --from=go-toolchain /usr/local/go /usr/local/go
+COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
 ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
 
 RUN apt-get update \

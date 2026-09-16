@@ -6,7 +6,7 @@ This is designed for a careful pilot, not a claim that one setup causes better r
 
 ## Prerequisites and build
 
-You need Bun 1.4 or later, Git, Python 3 for Mekugi export validation, Docker with BuildKit named-context support, access to the source commit, a standalone Codex binary and its matching `codex-code-mode-host` companion, and a mode-0600 Codex `auth.json`. The pinned Ubuntu 24.04 image copies only Go and Node from `hpatch-bench:run-D9ZuS3`; it does not inherit that image's Mekugi runtime, wrappers, source, home, or credentials. It copies the chosen standalone Codex pair directly. Preparation records the CLI version plus both files' SHA-256 identities; preflight requires both container copies to match.
+You need Bun 1.4 or later, Git, Python 3 for Mekugi export validation, Docker with BuildKit named-context support, access to the source commit, a standalone Codex binary and its matching `codex-code-mode-host` companion, and a mode-0600 Codex `auth.json`. The pinned Ubuntu 24.04 image copies Go 1.27.1 and Node 24.21.0 from public, digest-pinned official images; it does not inherit another benchmark image's runtime, wrappers, source, home, or credentials. It copies the chosen standalone Codex pair directly. Preparation records the CLI version plus both files' SHA-256 identities; preflight requires both container copies to match.
 
 ```sh
 bun install
@@ -78,7 +78,7 @@ Semantic assessment requires both arms. Historical singleton reports remain desc
 
 After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces. Independent semantic passes run the predetermined existing tests and author checks against each candidate's actual interfaces. Git inspection and patch capture run in separate offline containers, never on the host. Agent and grader times remain separate.
 
-For Mekugi's original router task, use the `mekugi` profile and explicitly select `--current-launcher mekugi`, with `--mekugi-bin` and `--mekugi-shell-bin`. Historical result bundles and the pinned toolchain image retain their original names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
+For Mekugi's original router task, use the `mekugi` profile and explicitly select `--current-launcher mekugi`, with `--mekugi-bin` and `--mekugi-shell-bin`. Historical result bundles retain their recorded image names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
 
 ## Repeat a pinned comparison
 
