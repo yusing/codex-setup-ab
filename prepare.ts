@@ -491,8 +491,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (options.model && options.model !== model) throw new Error(`${comparison} uses ${model}`);
   const mekugiShellSha256 = mekugiShellBinary ? await sha256(mekugiShellBinary) : undefined;
   const codeModeHostSha256 = await sha256(codeModeHost);
-  const currentConfig = await readFile(join(options.currentHome, ".codex/config.toml"), "utf8");
-  const configured = (key: string): string | undefined => currentConfig.match(new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, "m"))?.[1];
+  const currentConfig = Bun.TOML.parse(await readFile(join(options.currentHome, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
+  const configured = (key: string): string | undefined =>
+    typeof currentConfig[key] === "string" ? currentConfig[key] : undefined;
   if (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium") {
     throw new Error("current setup must configure model gpt-6-astra with medium reasoning for this benchmark");
   }

@@ -33,7 +33,7 @@ async function file(path: string, content = "fixture\n", mode?: number): Promise
 async function fixtureHome(): Promise<string> {
   const h = join(root, "fixture-home");
   for (const name of ["config.toml", "overridden_base_instructions.md", "AGENTS.md", "LARGE-TASK.md", "SMALL-TASK.md", "IMPLEMENTATION.md", "hooks.json", "herdr-agent-state.sh"]) {
-    await file(join(h, ".codex", name), name === "config.toml" ? 'model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\nservice_tier = "default"\n[projects."/old"]\ntrust_level = "trusted"\n' : "fixture\n");
+    await file(join(h, ".codex", name), name === "config.toml" ? '"model" = "gpt-6-astra"\n"model_reasoning_effort" = "medium"\n"service_tier" = "default"\n[projects."/old"]\ntrust_level = "trusted"\n' : "fixture\n");
   }
   await file(join(h, "AGENTS.md"));
   await file(join(h, "new-guidance/committed.md"), "automatically cloned guidance\n");
