@@ -151,7 +151,7 @@ export async function prepareTrials(options: {
   });
 }
 
-export async function runTrials(options: { directory: string; authFile: string; dockerBin?: string; signal?: AbortSignal }): Promise<string> {
+export async function runTrials(options: { directory: string; authFile: string; grokAuthFile?: string; dockerBin?: string; signal?: AbortSignal }): Promise<string> {
   const directory = resolve(options.directory);
   return withRunLock(directory, async () => {
     const set = await readTrialSet(directory);
@@ -180,7 +180,7 @@ export async function runTrials(options: { directory: string; authFile: string; 
           await withRunLock(runDir, async () => {
             try {
               assertMembership(set, trial, await readState(runDir));
-              await runBenchmarkUnlocked({ runDir, authFile: options.authFile, dockerBin: options.dockerBin, signal: controller.signal });
+              await runBenchmarkUnlocked({ runDir, authFile: options.authFile, grokAuthFile: options.grokAuthFile, dockerBin: options.dockerBin, signal: controller.signal });
               trial.status = "complete";
             } catch (error) {
               trial.status = "failed";

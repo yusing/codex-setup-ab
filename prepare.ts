@@ -3,17 +3,20 @@ import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { checked, exec } from "./process";
-import { snapshotToolStore, verifySnapshotIdentities, type PreviousSnapshot, type SnapshotFile } from "./snapshot";
+import { snapshotToolStore, verifySnapshotIdentities, type PreviousSnapshot, type SnapshotFile, type SnapshotStats } from "./snapshot";
 import { ISOLATION_SCRIPTS } from "./isolation";
 import { readMekugiBuild } from "./provenance";
 import { loadTaskPack } from "./task-pack";
 import { validateCriteria } from "./semantic";
+import type { BenchmarkModel } from "./types";
 import { validateMekugiFlags } from "./mekugi";
 import { sha256, writeState } from "./state";
 import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from "./types";
 
 export interface PrepareOptions {
   comparison?: import("./types").Comparison;
+  model?: BenchmarkModel;
+  grokBinary?: string;
   protectMekugi?: boolean;
   mekugiBuild?: string;
   mekugiSource?: string;
@@ -117,23 +120,67 @@ async function manifest(root: string): Promise<Array<{ path: string; type: strin
   return result;
 }
 
-function stockConfig(reasoningEffort: ReasoningEffort): string {
+function stockConfig(model: BenchmarkModel, reasoningEffort: ReasoningEffort): string {
   return [
-    'model = "gpt-6-astra"', `model_reasoning_effort = "${reasoningEffort}"`, 'service_tier = "default"',
+    `model = ${JSON.stringify(model)}`, `model_reasoning_effort = "${reasoningEffort}"`, 'service_tier = "default"',
     'approval_policy = "never"', 'sandbox_mode = "danger-full-access"', 'network_access = "enabled"',
     '', '[projects."/workspace"]', 'trust_level = "trusted"', '',
   ].join("\n");
 }
 
+function grokStockConfig(reasoningEffort: ReasoningEffort): string {
+  return [
+    "[models]", 'default = "grok-4.6"', `default_reasoning_effort = "${reasoningEffort}"`,
+    "", "[features]", "telemetry = false", "",
+    "[ui]", 'permission_mode = "always-approve"', "",
+  ].join("\n");
+}
+
+
 export async function verifyPreparedInputs(runDir: string, state: RunState): Promise<void> {
   if (state.task.path !== "control/task.md" || (state.acceptance && state.acceptance.path !== "evaluator/acceptance_test.go" && !/^reports\/regrade-[A-Za-z0-9]+\/acceptance_test\.go$/.test(state.acceptance.path))) throw new Error("copied benchmark control path changed");
   const stock = join(runDir, "snapshots/stock/home/ubuntu");
   const sameSetup = state.comparison === "same-setup";
+  const stockMekugi = state.comparison === "stock-mekugi";
+  const grokComparison = state.comparison === "codex-mekugi-grok";
   if (sameSetup && (state.arms.stock.home_template !== state.arms.current.home_template || state.execution.current_launcher !== "mekugi")) throw new Error("same-setup treatment identity changed");
-  if (!sameSetup && state.arms.stock.home_template !== "snapshots/stock/home/ubuntu") throw new Error("stock setup identity changed");
-  const stockFiles = await manifest(stock);
-  if (stockFiles.length !== 1 || stockFiles[0].path !== ".codex/config.toml" || stockFiles[0].type !== "file"
-    || await readFile(join(stock, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.reasoning_effort)) throw new Error("stock setup snapshot changed");
+  if (!sameSetup && !grokComparison && state.arms.stock.home_template !== "snapshots/stock/home/ubuntu") throw new Error("stock setup identity changed");
+  if (stockMekugi && (state.arms.current.home_template !== "snapshots/stock-mekugi/home/ubuntu" || state.execution.current_launcher !== "mekugi")) throw new Error("stock-mekugi treatment identity changed");
+  if (grokComparison && (state.arms.stock.home_template !== "snapshots/stock-mekugi/home/ubuntu" || state.arms.current.home_template !== "snapshots/stock-grok/home/ubuntu" || state.execution.current_launcher !== "grok" || state.execution.model !== "grok:grok-4.6")) {
+    throw new Error("codex-mekugi-grok treatment identity changed");
+  }
+  if (grokComparison) {
+    const mekugiHome = join(runDir, state.arms.stock.home_template);
+    const grokHome = join(runDir, state.arms.current.home_template);
+    const mekugiFiles = await manifest(mekugiHome);
+    const grokFiles = await manifest(grokHome);
+    if (mekugiFiles.length !== 3
+      || await readFile(join(mekugiHome, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)
+      || await sha256(join(mekugiHome, ".local/bin/mekugi")) !== state.runtime_tools.mekugi_sha256
+      || await sha256(join(mekugiHome, ".local/bin/shell")) !== state.runtime_tools.mekugi_shell_sha256) {
+      throw new Error("codex-mekugi-grok Codex+Mekugi setup snapshot changed");
+    }
+    if (grokFiles.length !== 2
+      || grokFiles.some(file => file.path !== ".grok/config.toml" && file.path !== ".grok/bin/grok")
+      || await readFile(join(grokHome, ".grok/config.toml"), "utf8") !== grokStockConfig(state.execution.reasoning_effort)
+      || await sha256(join(grokHome, ".grok/bin/grok")) !== state.runtime_tools.grok_sha256) {
+      throw new Error("codex-mekugi-grok Grok setup snapshot changed");
+    }
+  } else {
+    const stockFiles = await manifest(stock);
+    if (stockFiles.length !== 1 || stockFiles[0].path !== ".codex/config.toml" || stockFiles[0].type !== "file"
+      || await readFile(join(stock, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)) throw new Error("stock setup snapshot changed");
+    if (stockMekugi) {
+      const treated = join(runDir, state.arms.current.home_template);
+      const treatedFiles = await manifest(treated);
+      if (treatedFiles.length !== 3
+        || await readFile(join(treated, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)
+        || await sha256(join(treated, ".local/bin/mekugi")) !== state.runtime_tools.mekugi_sha256
+        || await sha256(join(treated, ".local/bin/shell")) !== state.runtime_tools.mekugi_shell_sha256) {
+        throw new Error("stock-mekugi setup snapshot changed");
+      }
+    }
+  }
   validateMekugiFlags(state.mekugi_flags ?? []);
   if (state.mekugi_exports && (await sha256(join(runDir, state.mekugi_exports.validator.path)) !== state.mekugi_exports.validator.sha256 || await sha256(join(runDir, state.mekugi_exports.reader.path)) !== state.mekugi_exports.reader.sha256)) {
     throw new Error("Mekugi capture validator changed");
@@ -156,7 +203,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   const manifestPath = join(runDir, state.snapshot_manifest);
   if (await sha256(manifestPath) !== state.current_snapshot.manifest_sha256) throw new Error("snapshot manifest changed");
   const recorded = JSON.parse(await readFile(manifestPath, "utf8")) as { files: unknown };
-  const currentTemplate = join(runDir, state.arms.current.home_template);
+  const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   if (JSON.stringify(await manifest(currentTemplate)) !== JSON.stringify(recorded.files)) throw new Error("current setup snapshot changed");
   if (await sha256(join(currentTemplate, ".local/bin/mise")) !== state.runtime_tools.current_setup_mise_sha256) {
     throw new Error("snapshotted current setup runtime changed");
@@ -174,11 +221,16 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   if (!setupIsUnchanged) {
     throw new Error("snapshotted current setup installations changed");
   }
-  if (state.execution.current_launcher === "mekugi") {
+  const mekugiTemplate = state.comparison === "codex-mekugi-grok" ? join(runDir, state.arms.stock.home_template) : join(runDir, state.arms.current.home_template);
+  if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
     const mekugi = state.runtime_tools.mekugi_sha256;
-    if (!mekugi || await sha256(join(currentTemplate, ".local/bin/mekugi")) !== mekugi) throw new Error("snapshotted Mekugi changed");
+    if (!mekugi || await sha256(join(mekugiTemplate, ".local/bin/mekugi")) !== mekugi) throw new Error("snapshotted Mekugi changed");
     const shell = state.runtime_tools.mekugi_shell_sha256;
-    if (!shell || await sha256(join(currentTemplate, ".local/bin/shell")) !== shell) throw new Error("snapshotted Mekugi shell helper changed or is missing");
+    if (!shell || await sha256(join(mekugiTemplate, ".local/bin/shell")) !== shell) throw new Error("snapshotted Mekugi shell helper changed or is missing");
+  }
+  if (state.comparison === "codex-mekugi-grok") {
+    const grok = state.runtime_tools.grok_sha256;
+    if (!grok || await sha256(join(runDir, state.arms.current.home_template, ".grok/bin/grok")) !== grok) throw new Error("snapshotted Grok changed");
   }
 }
 
@@ -366,16 +418,22 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const profile = options.profile ?? (options.criteriaPath ? "task" : "mekugi");
   const mekugiFlags = validateMekugiFlags(options.mekugiFlags ?? []);
   const comparison = options.comparison ?? "stock-current";
-  if (!["stock-current", "same-setup"].includes(comparison)) throw new Error("comparison must be stock-current or same-setup");
-  const currentLauncher = options.currentLauncher ?? (comparison === "same-setup" ? "mekugi" : "codex");
-  if (comparison === "same-setup" && !options.mekugiSource) throw new Error("same-setup requires --mekugi-source for capturer-owned export validation");
-  if (comparison === "same-setup" && currentLauncher !== "mekugi") throw new Error("same-setup requires the Mekugi launcher");
+  if (!["stock-current", "same-setup", "stock-mekugi", "codex-mekugi-grok"].includes(comparison)) throw new Error("comparison must be stock-current, same-setup, stock-mekugi, or codex-mekugi-grok");
+  const grokComparison = comparison === "codex-mekugi-grok";
+  const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi";
+  const currentLauncher = options.currentLauncher ?? (grokComparison ? "grok" : launcherComparison ? "mekugi" : "codex");
+  if ((launcherComparison || grokComparison) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source for capturer-owned export validation`);
+  if (launcherComparison && currentLauncher !== "mekugi") throw new Error(`${comparison} requires the Mekugi launcher`);
+  if (grokComparison && currentLauncher !== "grok") throw new Error("codex-mekugi-grok requires the Grok launcher");
+  if ((comparison === "stock-mekugi" || grokComparison) && options.reviewTreatment) throw new Error(`${comparison} does not accept a current-home review treatment`);
+  if ((comparison === "stock-mekugi" || grokComparison) && options.protectMekugi) throw new Error(`${comparison} does not support the current-home protected runtime`);
   if (options.protectMekugi && (currentLauncher !== "mekugi" || !options.mekugiSource)) throw new Error("protected runtime requires Mekugi and matching --mekugi-source or --mekugi-build");
-  if (options.mekugiFlags?.length && currentLauncher !== "mekugi") throw new Error("Mekugi flags require the Mekugi launcher");
+  if (options.mekugiFlags?.length && currentLauncher !== "mekugi" && !grokComparison) throw new Error("Mekugi flags require the Mekugi launcher");
   const reasoningEffort = options.reasoningEffort ?? "medium";
   if (!["mekugi", "godoxy-icons", "skills-mgr-bundle", "task"].includes(profile)) throw new Error("unknown benchmark profile");
-  if (!["codex", "mekugi"].includes(currentLauncher)) throw new Error("current launcher must be codex or mekugi");
-  if (options.mekugiBinary && currentLauncher !== "mekugi") throw new Error("--mekugi-bin requires --current-launcher mekugi");
+  if (!["codex", "mekugi", "grok"].includes(currentLauncher)) throw new Error("current launcher must be codex, mekugi, or grok");
+  const needsMekugi = currentLauncher === "mekugi" || grokComparison;
+  if (options.mekugiBinary && !needsMekugi) throw new Error("--mekugi-bin requires a Mekugi launcher treatment");
   if (!["medium", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be medium or xhigh");
   if (profile === "godoxy-icons" && (!options.taskPath || !options.acceptancePath)) throw new Error("godoxy-icons requires explicit task and acceptance");
   if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
@@ -412,8 +470,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const miseStat = await stat(miseBinary);
   if (!miseStat.isFile() || (miseStat.mode & 0o111) === 0) throw new Error(`current setup manager is not executable: ${miseBinary}`);
   const miseSha256 = await sha256(miseBinary);
-  if (options.mekugiShellBinary && currentLauncher !== "mekugi") throw new Error("--mekugi-shell-bin requires --current-launcher mekugi");
-  const mekugiBinary = currentLauncher === "mekugi"
+  if (options.mekugiShellBinary && !needsMekugi) throw new Error("--mekugi-shell-bin requires a Mekugi launcher treatment");
+  const mekugiBinary = needsMekugi
     ? await realpath(options.mekugiBinary ?? join(options.currentHome, "go/bin/mekugi"))
     : undefined;
   const mekugiStat = mekugiBinary ? await stat(mekugiBinary) : undefined;
@@ -424,6 +482,17 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     : undefined;
   const mekugiShellStat = mekugiShellBinary ? await stat(mekugiShellBinary) : undefined;
   if (mekugiShellStat && (!mekugiShellStat.isFile() || (mekugiShellStat.mode & 0o111) === 0)) throw new Error(`Mekugi shell helper is not executable: ${mekugiShellBinary}`);
+  const grokBinary = grokComparison ? await realpath(options.grokBinary ?? join(options.currentHome, ".grok/bin/grok")) : undefined;
+  const grokStat = grokBinary ? await stat(grokBinary) : undefined;
+  if (grokStat && (!grokStat.isFile() || (grokStat.mode & 0o111) === 0)) throw new Error(`Grok executable is not executable: ${grokBinary}`);
+  const grokSha256 = grokBinary ? await sha256(grokBinary) : undefined;
+  const grokVersion = grokBinary ? (await checked([grokBinary, "--version"])).stdout.trim() : undefined;
+  if (grokBinary && !/^grok \d+\.\d+\.\d+/.test(grokVersion ?? "")) throw new Error(`unexpected Grok version: ${grokVersion}`);
+  if (grokComparison && !mekugiFlags.some(flag => flag === "--grok" || flag.startsWith("--grok="))) {
+    throw new Error("codex-mekugi-grok requires --grok in --mekugi-flags");
+  }
+  const model: BenchmarkModel = grokComparison ? "grok:grok-4.6" : "gpt-6-astra";
+  if (options.model && options.model !== model) throw new Error(`${comparison} uses ${model}`);
   const mekugiShellSha256 = mekugiShellBinary ? await sha256(mekugiShellBinary) : undefined;
   const codeModeHostSha256 = await sha256(codeModeHost);
   const currentConfig = await readFile(join(options.currentHome, ".codex/config.toml"), "utf8");
@@ -431,7 +500,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium") {
     throw new Error("current setup must configure model gpt-6-astra with medium reasoning for this benchmark");
   }
-  const serviceTier = configured("service_tier");
+  const serviceTier = comparison === "stock-mekugi" || grokComparison ? "default" : configured("service_tier");
   if (!serviceTier) throw new Error("current setup does not declare service_tier");
   if (!(await exists(join(source, ".git")))) throw new Error(`source is not a Git worktree: ${source}`);
   const runDir = await mkdtemp(join(options.outputParent ?? tmpdir(), "codex-ab-"));
@@ -549,18 +618,43 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       };
     }
   }
-  progress("snapshotting installed tools incrementally");
-  const { files: setupFiles, ...snapshotStats } = await snapshotToolStore(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls, previousSnapshot);
-  await writeFile(join(runDir, "snapshots/current/incremental.json"), `${JSON.stringify({ base: options.snapshotBase ?? null, ...snapshotStats }, null, 2)}\n`);
-  progress(`tool snapshot: reused ${snapshotStats.linked} files (${snapshotStats.linkedBytes} bytes), copied ${snapshotStats.copied} files (${snapshotStats.copiedBytes} bytes)`);
+  const isolatedFromCurrentTools = comparison === "stock-mekugi" || grokComparison;
+  let setupFiles: SnapshotFile[] = [];
+  let snapshotStats: SnapshotStats = { copied: 0, linked: 0, copiedBytes: 0, linkedBytes: 0 };
+  if (isolatedFromCurrentTools) {
+    progress("omitting the unused current-home tool store from isolated launcher snapshots");
+    await mkdir(currentSetupInstalls, { recursive: true });
+  } else {
+    progress("snapshotting installed tools incrementally");
+    ({ files: setupFiles, ...snapshotStats } = await snapshotToolStore(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls, previousSnapshot));
+    progress(`tool snapshot: reused ${snapshotStats.linked} files (${snapshotStats.linkedBytes} bytes), copied ${snapshotStats.copied} files (${snapshotStats.copiedBytes} bytes)`);
+  }
   const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json");
   await writeFile(currentSetupFiles, `${JSON.stringify({ files: setupFiles }, null, 2)}\n`);
+  await writeFile(join(runDir, "snapshots/current/incremental.json"), `${JSON.stringify({ base: options.snapshotBase ?? null, omitted: isolatedFromCurrentTools || undefined, ...snapshotStats }, null, 2)}\n`);
 
   const snapshotDocument = JSON.parse(await readFile(snapshotManifest, "utf8")) as { created_at?: unknown };
   if (typeof snapshotDocument.created_at !== "string") throw new Error("current snapshot manifest has no capture timestamp");
   const stockTemplate = join(runDir, "snapshots/stock/home/ubuntu");
   await mkdir(join(stockTemplate, ".codex"), { recursive: true });
-  await writeFile(join(stockTemplate, ".codex/config.toml"), stockConfig(reasoningEffort), { mode: 0o600 });
+  const stockMekugiTemplate = join(runDir, "snapshots/stock-mekugi/home/ubuntu");
+  if (comparison === "stock-mekugi" || grokComparison) {
+    await mkdir(join(stockMekugiTemplate, ".codex"), { recursive: true });
+    await mkdir(join(stockMekugiTemplate, ".local/bin"), { recursive: true });
+    await writeFile(join(stockMekugiTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
+    await copyRequired(mekugiBinary!, join(stockMekugiTemplate, ".local/bin/mekugi"));
+    await copyRequired(mekugiShellBinary!, join(stockMekugiTemplate, ".local/bin/shell"));
+    await chmod(join(stockMekugiTemplate, ".local/bin/mekugi"), 0o755);
+    await chmod(join(stockMekugiTemplate, ".local/bin/shell"), 0o755);
+  }
+  if (grokComparison) {
+    const grokTemplate = join(runDir, "snapshots/stock-grok/home/ubuntu");
+    await mkdir(join(grokTemplate, ".grok/bin"), { recursive: true });
+    await writeFile(join(grokTemplate, ".grok/config.toml"), grokStockConfig(reasoningEffort), { mode: 0o600 });
+    await copyRequired(grokBinary!, join(grokTemplate, ".grok/bin/grok"));
+    await chmod(join(grokTemplate, ".grok/bin/grok"), 0o755);
+  }
+  await writeFile(join(stockTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
   const bunSource = join(options.currentHome, ".local/share/mise/installs/bun/1.4.2/bin/bun");
   const bunTarget = join(runDir, "snapshots/runtime/bin/bun");
   await copyRequired(bunSource, bunTarget);
@@ -573,7 +667,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     const readerPath = "snapshots/runtime/benchmark_jsonl.py";
     await copyRequired(join(options.mekugiSource, "benchmarks/benchmark_jsonl.py"), join(runDir, readerPath));
     await copyRequired(join(options.mekugiSource, "benchmarks/analyze_capture.py"), join(runDir, validatorPath));
-    mekugiExports = { capture: "artifacts/current/mekugi/capture.jsonl", metrics: "artifacts/current/mekugi/metrics.json",
+    mekugiExports = { capture: grokComparison ? "artifacts/stock/mekugi/capture.jsonl" : "artifacts/current/mekugi/capture.jsonl", metrics: grokComparison ? "artifacts/stock/mekugi/metrics.json" : "artifacts/current/mekugi/metrics.json",
       validator: { path: validatorPath, sha256: await sha256(join(runDir, validatorPath)) },
       reader: { path: readerPath, sha256: await sha256(join(runDir, readerPath)) } };
   }
@@ -607,7 +701,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     criteria: criteriaContract ? { path: "evaluator/criteria.json", sha256: await sha256(join(runDir, "evaluator/criteria.json")), contract: criteriaContract } : undefined,
     acceptance: acceptancePath ? { path: "evaluator/acceptance_test.go", sha256: await sha256(join(runDir, "evaluator/acceptance_test.go")) } : undefined,
     image: options.image,
-    execution: { model: "gpt-6-astra", reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },
+    execution: { model, reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },
     resource_limits: { cpus: options.cpus, memory: options.memory },
     timeout_seconds: options.timeoutSeconds,
     snapshot_manifest: relative(runDir, snapshotManifest),
@@ -623,12 +717,13 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       codex_code_mode_host_sha256: codeModeHostSha256,
       mekugi_source: mekugiBinary, mekugi_sha256: mekugiSha256,
       mekugi_shell_source: mekugiShellBinary, mekugi_shell_sha256: mekugiShellSha256,
+      grok_source: grokBinary, grok_sha256: grokSha256, grok_version: grokVersion,
       codex_code_mode_host_size: codeModeHostStat.size,
     },
     operator: { uid, gid },
     arms: {
-      stock: { repository: "arms/stock/repo", home_template: comparison === "same-setup" ? "snapshots/current/home/ubuntu" : "snapshots/stock/home/ubuntu" },
-      current: { repository: "arms/current/repo", home_template: "snapshots/current/home/ubuntu" },
+      stock: { repository: "arms/stock/repo", home_template: comparison === "same-setup" ? "snapshots/current/home/ubuntu" : grokComparison ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/stock/home/ubuntu" },
+      current: { repository: "arms/current/repo", home_template: grokComparison ? "snapshots/stock-grok/home/ubuntu" : comparison === "stock-mekugi" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu" },
     },
   };
   await writeState(runDir, state);

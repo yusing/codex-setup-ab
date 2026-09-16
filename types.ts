@@ -1,9 +1,10 @@
 import type { CriterionEvidence } from "./semantic";
 
 export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" | "task";
-export type CodexLauncher = "codex" | "mekugi";
-export type Comparison = "stock-current" | "same-setup";
+export type CodexLauncher = "codex" | "mekugi" | "grok";
+export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok";
 export type ReasoningEffort = "medium" | "xhigh";
+export type BenchmarkModel = "gpt-6-astra" | "grok:grok-4.6";
 
 export type ArmOrder = "concurrent" | "stock-first" | "current-first";
 
@@ -71,7 +72,7 @@ export interface RunState {
   mekugi_build?: { identity: import("./provenance").MekugiBuild; files: Array<{ path: string; sha256: string }> };
   mekugi_exports?: { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } };
   mekugi_flags?: string[];
-  execution: { model: "gpt-6-astra"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
+  execution: { model: BenchmarkModel; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;
   snapshot_manifest: string;
@@ -93,6 +94,9 @@ export interface RunState {
     mekugi_sha256?: string;
     mekugi_shell_source?: string;
     mekugi_shell_sha256?: string;
+    grok_source?: string;
+    grok_sha256?: string;
+    grok_version?: string;
     codex_code_mode_host_size: number;
   };
   operator: { uid: number; gid: number };
@@ -105,6 +109,7 @@ export interface RunState {
   results?: Partial<Record<ArmName, ArmResult>>;
   arm_attempts?: Partial<Record<ArmName, {
     codex_home: string;
+    grok_home?: string;
     container: string;
     started_at: string;
     finished_at?: string;

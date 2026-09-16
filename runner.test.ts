@@ -154,6 +154,76 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   await expect(verifyPreparedInputs(run, state)).rejects.toThrow("identity changed");
 });
 
+test("stock-mekugi isolates the launcher without current-home guidance", async () => {
+  const captureSource = join(root, "stock-mekugi-capture-source");
+  await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
+  await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    acceptancePath: acceptance, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
+    mekugiFlags: ["--mode=mekugi"], mekugiSource: captureSource });
+  const state = await readState(run);
+  expect(state.execution).toMatchObject({ current_launcher: "mekugi", service_tier: "default" });
+  expect(state.arms.stock.home_template).toBe("snapshots/stock/home/ubuntu");
+  expect(state.arms.current.home_template).toBe("snapshots/stock-mekugi/home/ubuntu");
+  await verifyPreparedInputs(run, state);
+
+  const auth = join(root, "stock-mekugi-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
+  const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json "));
+  expect(launches).toHaveLength(2);
+  expect(launches.some(line => line.includes(" codex exec --json ") && !line.includes(" mekugi "))).toBe(true);
+  expect(launches.some(line => line.includes(" mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec --json "))).toBe(true);
+  expect(launches.every(line => !line.includes(" mise exec ") && !line.includes("/home/ubuntu/.local/share/mise/installs:ro"))).toBe(true);
+  await expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    acceptancePath: acceptance, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
+    reviewTreatment: join(root, "unused-treatment"), mekugiSource: captureSource })).rejects.toThrow("does not accept");
+});
+
+test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
+  const captureSource = join(root, "grok-capture-source");
+  await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
+  await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  const grokBin = join(root, "grok-bin");
+  await file(grokBin, "#!/bin/sh\necho grok 1.0.30\n", 0o755);
+  const grokAuth = join(root, "grok-auth.json");
+  await file(grokAuth, "{}\n", 0o600);
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    acceptancePath: acceptance, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "codex-mekugi-grok",
+    mekugiFlags: ["--mode=mekugi", "--grok"], mekugiSource: captureSource, grokBinary: grokBin });
+  const state = await readState(run);
+  expect(state.execution).toMatchObject({ current_launcher: "grok", model: "grok:grok-4.6", service_tier: "default" });
+  expect(state.arms.stock.home_template).toBe("snapshots/stock-mekugi/home/ubuntu");
+  expect(state.arms.current.home_template).toBe("snapshots/stock-grok/home/ubuntu");
+  expect(JSON.parse(await readFile(join(run, "snapshots/current/incremental.json"), "utf8"))).toMatchObject({ omitted: true, copied: 0, linked: 0 });
+  await verifyPreparedInputs(run, state);
+
+  const auth = join(root, "codex-mekugi-grok-auth.json");
+  await file(auth, "{}\n", 0o600);
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const fake = await fakeOwnedDocker(0);
+  const trials = await prepareTrials({ runDir: run, count: 2, outputParent: root, dockerBin: fake.path });
+  await checked(["bun", join(import.meta.dir, "cli.ts"), "run-trials", "--trial-set", trials,
+    "--auth-file", auth, "--grok-auth-file", grokAuth, "--docker-bin", fake.path, "--confirm-paid-inference"]);
+  expect((await readTrialSet(trials)).status).toBe("complete");
+
+  await runBenchmark({ runDir: run, authFile: auth, grokAuthFile: grokAuth, dockerBin: fake.path });
+  expect((await readState(run)).status).toBe("complete");
+  const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json ") || line.includes(" grok --prompt-file "));
+  expect(launches.some(line => line.includes(" mekugi --mode=mekugi --grok --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec --json ") && line.includes(" --model grok:grok-4.6 "))).toBe(true);
+  expect(launches.some(line => line.includes(" grok --prompt-file /control/task.md --cwd /workspace -m grok-4.6 ") && line.includes("GROK_HOME=/home/ubuntu/.grok"))).toBe(true);
+  expect(launches.every(line => !line.includes(" mise exec "))).toBe(true);
+  const comparison = JSON.parse(await readFile(join(run, "reports/bundle/setup-comparison.json"), "utf8"));
+  expect(comparison.stock).toContain("Mekugi");
+  expect(comparison.current).toContain("Grok CLI");
+  expect(comparison.current).not.toContain("Audited current-home");
+}, 60_000);
+
 test("protected runtime snapshots owner scripts without changing the direct arm", async () => {
   const owner = join(root, "isolation-owner/benchmarks");
   for (const name of ["analyze_capture.py", "benchmark_jsonl.py", "isolated-codex.sh", "agent-mounts.sh", "agent-check.py"]) {
@@ -492,6 +562,7 @@ case "$operation" in
       *-preflight-identity) printf '%s\\n' '${process.getuid?.()}:${process.getgid?.()}' ;;
       *-preflight-hash) ${missingHost ? `printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex'; status=1` : `printf '%s  %s\\n%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' '${codeModeHostHash}' '/usr/local/bin/codex-code-mode-host'; printf '%s  %s\\n' '${wrongProtectedBinary ? "bad" : codexHash}' '/usr/local/libexec/codex-real'`} ;;
       *-preflight-toolhost) printf '%s\\n' 'CODEX_AB_TOOL_HOST_OK' ;;
+      *-preflight-grok) printf '%s\\n' 'grok 1.0.30' ;;
       *-warm) ${failWarm ? "echo prewarm-failed >&2; status=9" : ":"} ;;
       *-capture)
         capture=$(cat '${stateDir}/'$name.capture)
@@ -744,7 +815,7 @@ test("prepare validates and snapshots an explicit Mekugi helper", async () => {
   await file(helper, "fixture\n", 0o644);
   await expect(prepare({ ...options, mekugiShellBinary: helper })).rejects.toThrow("Mekugi shell helper is not executable");
   await expect(prepare({ ...options, currentLauncher: "codex", mekugiBinary: undefined }))
-    .rejects.toThrow("--mekugi-shell-bin requires --current-launcher mekugi");
+    .rejects.toThrow("--mekugi-shell-bin requires a Mekugi launcher treatment");
 
   const selectedHelper = join(root, "separate-bin/helper");
   const selectedContent = "#!/bin/sh\n# Explicitly selected helper.\necho 'shell: CODEX_THREAD_ID is unavailable' >&2\nexit 1\n";

@@ -103,6 +103,8 @@ quota repeatedly. Start it only when intended:
 ./dist/codex-ab run-trials --trial-set "$trial_set" --confirm-paid-inference
 ```
 
+For `codex-mekugi-grok` trial sets, also pass `--grok-auth-file /path/to/.grok/auth.json` to `run-trials`.
+
 Failed pairs retain their evidence and do not discard later planned trials. Cancellation stops
 the active pair and leaves remaining pairs unstarted. Started sets never resume or restart;
 prepare a new set for another attempt. Each finished pair's existing evidence bundle is copied
@@ -120,6 +122,37 @@ are descriptive evidence, not a significance test or a causal conclusion.
 To generate another self-contained report from retained evidence without inference or rerunning
 judges, use `report-trials --trial-set "$trial_set"`. Each report gets a new output directory;
 previous reports remain unchanged.
+
+## Stock Codex versus stock plus Mekugi
+
+Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable and its matching `shell` helper, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
+
+Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for `same-setup`. Mekugi capture and metrics exports are retained and validated against `--mekugi-source`. The current-home Git snapshot is still captured for executable and analyzer provenance checks, but the unused mise tool store is omitted and is not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
+
+
+## Stock Codex plus Mekugi versus Grok CLI
+
+Use `--comparison codex-mekugi-grok` to compare stock Codex launched through Mekugi on `grok:grok-4.6` against the Grok CLI on `grok-4.6`. A receives the generated stock Codex configuration plus Mekugi/`shell` and launches `mekugi --grok codex`. B receives a generated Grok configuration plus the selected Grok executable and launches `grok` headlessly. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier and the selected reasoning effort.
+
+```sh
+run_dir="$(./dist/codex-ab prepare \
+  --task-pack ./tasks/nvm-download-no-eval/manifest.json \
+  --source /tmp/codex-ab-nvm-source \
+  --comparison codex-mekugi-grok \
+  --mekugi-source /home/ubuntu/projects/mekugi \
+  --mekugi-bin /home/ubuntu/go/bin/mekugi \
+  --mekugi-shell-bin /home/ubuntu/go/bin/shell \
+  --mekugi-flags '["--mode=mekugi","--model-protocol=native","--grok"]' \
+  --grok-bin /home/ubuntu/.grok/bin/grok \
+  --image codex-ab:0.154.0)"
+./dist/codex-ab preflight --run-dir "$run_dir"
+./dist/codex-ab run --run-dir "$run_dir" \
+  --auth-file /home/ubuntu/.codex/auth.json \
+  --grok-auth-file /home/ubuntu/.grok/auth.json \
+  --confirm-paid-inference
+```
+
+`--grok-auth-file` is copied privately into both isolated homes. Grok usage is metered from each B session `usage.json`, using complete provider-recorded cost when available and otherwise a captured list-price estimate that remains unknown when request-level tiering cannot be reconstructed. Codex JSONL remains the A accounting source. Isolated launcher snapshots omit the unused current-home mise tool store. This comparison is not same-setup Codex versus Mekugi.
 
 ## Same-setup direct Codex versus Mekugi
 

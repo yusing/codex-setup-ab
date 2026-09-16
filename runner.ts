@@ -10,7 +10,7 @@ import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { readState, writeState, withRunLock } from "./state";
 import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
 
-export interface RunOptions { runDir: string; authFile: string; dockerBin?: string; arm?: ArmName; signal?: AbortSignal }
+export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; signal?: AbortSignal }
 
 const arms: ArmName[] = ["stock", "current"];
 function progress(message: string): void { process.stderr.write(`[run] ${message}\n`); }
@@ -52,7 +52,8 @@ function containerArgs(state: RunState): string[] {
 }
 
 function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current"): string[] {
-  if (arm !== "current" && state.comparison !== "same-setup") return [];
+  const usesCurrentSetup = state.comparison === "same-setup" || (arm === "current" && state.comparison !== "stock-mekugi" && state.comparison !== "codex-mekugi-grok");
+  if (!usesCurrentSetup) return [];
   return ["-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
 }
 
@@ -69,7 +70,7 @@ async function inspectCandidate(docker: string, runDir: string, state: RunState,
   if (result.exitCode !== 0 || result.timedOut || result.canceled) throw new Error(`candidate ${label} verification failed: ${result.stderr.trim()}`);
 }
 
-async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string): Promise<{ home: string; output: string; cache: string; moduleCache: string }> {
+async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string, grokAuthFile?: string): Promise<{ home: string; output: string; cache: string; moduleCache: string }> {
   const armRoot = join(runDir, "arms", arm);
   const home = join(armRoot, "home/ubuntu");
   const output = join(runDir, "artifacts", arm);
@@ -83,6 +84,12 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
   await mkdir(join(home, "go/pkg"), { recursive: true });
   await mkdir(join(home, ".local/share/mise/installs"), { recursive: true });
   await mkdir(join(home, ".bun/install/cache"), { recursive: true });
+  if (state.comparison === "codex-mekugi-grok") {
+    if (!grokAuthFile) throw new Error("codex-mekugi-grok requires --grok-auth-file");
+    await mkdir(join(home, ".grok"), { recursive: true, mode: 0o700 });
+    await copyFile(grokAuthFile, join(home, ".grok/auth.json"));
+    await chmod(join(home, ".grok/auth.json"), 0o600);
+  }
   await chmod(join(home, ".codex/auth.json"), 0o600);
   await mkdir(output, { recursive: true });
   await mkdir(moduleCache, { recursive: true });
@@ -120,22 +127,42 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   if (toolHost.exitCode !== 0 || toolHost.stdout.trim() !== "CODEX_AB_TOOL_HOST_OK") throw new Error(`code-mode tool host smoke failed: ${[toolHost.stdout.trim(), toolHost.stderr.trim()].filter(Boolean).join("; ")}`);
   const currentHome = resolve(runDir, state.arms.current.home_template);
   const workspace = resolve(runDir, state.arms.current.repository);
-  progress("checking the complete current setup and registered Go hook offline");
-  const hookEvent = JSON.stringify({ hook_event_name: "PostToolUse", cwd: "/workspace", tool_input: { cmd: "skills-mgr get golang-best-practices" }, tool_response: { exit_code: 0 } });
-  const mekugiCheck = state.execution.current_launcher === "mekugi"
-    ? " && test -x /home/ubuntu/.local/bin/mekugi && test \"$(command -v shell)\" = /home/ubuntu/.local/bin/shell && (env -u MEKUGI_RUNTIME_DIR -u CODEX_THREAD_ID shell >/tmp/codex-ab-shell.stdout 2>/tmp/codex-ab-shell.stderr; test \"$?\" = 1) && grep -Fxq 'shell: CODEX_THREAD_ID is unavailable' /tmp/codex-ab-shell.stderr"
-    : "";
-  const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none", "-e", `CODEX_AB_HOOK_EVENT=${hookEvent}`,
-    "-v", `${currentHome}:/setup:ro`, "-v", `${workspace}:/workspace:ro`, ...currentSetupMounts(runDir, state), image, "sh", "-lc",
-    `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && test -z "$(mise ls --current --missing --no-header)" && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go && if test -f /workspace/go.mod; then printf "%s\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="; fi'${mekugiCheck}`] });
-  if (/\[WARN\] migrate:/.test(`${dependencies.stdout}\n${dependencies.stderr}`)) {
-    throw new Error("current setup mise migration failed against the read-only tool snapshot; prepare again from a home with completed mise migrations");
+  if (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok") {
+    const mekugiHome = resolve(runDir, state.comparison === "codex-mekugi-grok" ? state.arms.stock.home_template : state.arms.current.home_template);
+    progress(state.comparison === "codex-mekugi-grok" ? "checking the isolated Codex+Mekugi and Grok setups offline" : "checking the minimal stock-plus-Mekugi setup offline");
+    const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none",
+      "-v", `${mekugiHome}:/setup:ro`, image, "sh", "-lc",
+      "cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && test -x /home/ubuntu/.local/bin/mekugi && test \"$(command -v shell)\" = /home/ubuntu/.local/bin/shell && (env -u MEKUGI_RUNTIME_DIR -u CODEX_THREAD_ID shell >/tmp/codex-ab-shell.stdout 2>/tmp/codex-ab-shell.stderr; test \"$?\" = 1) && grep -Fxq 'shell: CODEX_THREAD_ID is unavailable' /tmp/codex-ab-shell.stderr"] });
+    if (dependencies.exitCode !== 0) throw new Error(`stock-plus-Mekugi setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
+    if (state.comparison === "codex-mekugi-grok") {
+      const grokHome = resolve(runDir, state.arms.current.home_template);
+      const grokCheck = await runOwnedContainer({ docker, name: `${prefix}-grok`, signal, createArgs: ["--network", "none",
+        "-v", `${grokHome}:/setup:ro`, image, "sh", "-lc",
+        "cp -a /setup/. /home/ubuntu/ && test -x /home/ubuntu/.grok/bin/grok && /home/ubuntu/.grok/bin/grok --version"] });
+      await writeFile(join(runDir, "artifacts/preflight-grok.json"), JSON.stringify(grokCheck, null, 2));
+      if (grokCheck.exitCode !== 0) throw new Error(`isolated Grok executable cannot run offline: ${[grokCheck.stdout.trim(), grokCheck.stderr.trim()].filter(Boolean).join("; ")}`);
+      if (state.runtime_tools.grok_version && !grokCheck.stdout.includes(state.runtime_tools.grok_version.split(" ")[1] ?? "")) {
+        throw new Error(`unexpected container Grok version: ${grokCheck.stdout.trim()}`);
+      }
+    }
+  } else {
+    progress("checking the complete current setup and registered Go hook offline");
+    const hookEvent = JSON.stringify({ hook_event_name: "PostToolUse", cwd: "/workspace", tool_input: { cmd: "skills-mgr get golang-best-practices" }, tool_response: { exit_code: 0 } });
+    const mekugiCheck = state.execution.current_launcher === "mekugi"
+      ? " && test -x /home/ubuntu/.local/bin/mekugi && test \"$(command -v shell)\" = /home/ubuntu/.local/bin/shell && (env -u MEKUGI_RUNTIME_DIR -u CODEX_THREAD_ID shell >/tmp/codex-ab-shell.stdout 2>/tmp/codex-ab-shell.stderr; test \"$?\" = 1) && grep -Fxq 'shell: CODEX_THREAD_ID is unavailable' /tmp/codex-ab-shell.stderr"
+      : "";
+    const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none", "-e", `CODEX_AB_HOOK_EVENT=${hookEvent}`,
+      "-v", `${currentHome}:/setup:ro`, "-v", `${workspace}:/workspace:ro`, ...currentSetupMounts(runDir, state), image, "sh", "-lc",
+      `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && test -z "$(mise ls --current --missing --no-header)" && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go && if test -f /workspace/go.mod; then printf "%s\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="; fi'${mekugiCheck}`] });
+    if (/\[WARN\] migrate:/.test(`${dependencies.stdout}\n${dependencies.stderr}`)) {
+      throw new Error("current setup mise migration failed against the read-only tool snapshot; prepare again from a home with completed mise migrations");
+    }
+    if (dependencies.exitCode !== 0) throw new Error(`current setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
   }
-  if (dependencies.exitCode !== 0) throw new Error(`current setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
-  if (state.execution.current_launcher === "mekugi") {
+  if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
     progress("checking selected Mekugi flags and exports offline without model access");
     const launch = await runOwnedContainer({ docker, name: `${prefix}-mekugi`, signal, timeoutMs: 30000,
-      createArgs: ["--network", "none", "-v", `${currentHome}:/setup:ro`, image, "sh", "-lc",
+      createArgs: ["--network", "none", "-v", `${state.comparison === "codex-mekugi-grok" ? resolve(runDir, state.arms.stock.home_template) : currentHome}:/setup:ro`, image, "sh", "-lc",
         'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && mekugi "$@" --capture-output=/tmp/capture.jsonl --metrics-output=/tmp/metrics.json codex --version',
         "preflight", ...(state.mekugi_flags ?? [])] });
     await writeFile(join(runDir, "artifacts/preflight-mekugi.json"), JSON.stringify(launch, null, 2));
@@ -342,7 +369,8 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   progress(`${arm}: agent started`);
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
-  const exportArgs = arm === "current" && state.mekugi_exports
+  const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
+  const exportArgs = arm === exportArm && state.mekugi_exports
     ? ["--capture-output=/mekugi-exports/capture.jsonl", "--metrics-output=/mekugi-exports/metrics.json"] : [];
   const exportMount = exportArgs.length ? ["-v", `${join(output, "mekugi")}:/mekugi-exports`] : [];
   if (exportArgs.length) await mkdir(join(output, "mekugi"), { recursive: true, mode: 0o700 });
@@ -350,15 +378,22 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const runtime = join(output, "runtime");
   const ownedPaths = [repository, home, cache, moduleCache, join(output, "mekugi"), runtime];
   if (protectedArm) await mkdir(runtime, { recursive: true });
-  const codexLauncher = arm === "current" && state.execution.current_launcher === "mekugi" ? ["mekugi", ...(state.mekugi_flags ?? []), ...exportArgs, "codex"] : ["codex"];
-  const launcher = arm === "current" || state.comparison === "same-setup" ? ["mise", "exec", "--", ...codexLauncher] : ["codex"];
+  const grokArm = state.comparison === "codex-mekugi-grok" && arm === "current";
+  const mekugiArm = state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi";
+  const grokCommand = grokArm
+    ? ["grok", "--prompt-file", "/control/task.md", "--cwd", "/workspace", "-m", "grok-4.6", "--reasoning-effort", state.execution.reasoning_effort, "--always-approve", "--sandbox", "off", "--output-format", "json", "--disable-web-search"]
+    : undefined;
+  const codexLauncher = mekugiArm ? ["mekugi", ...(state.mekugi_flags ?? []), ...exportArgs, "codex"] : ["codex"];
+  const launcher = grokCommand ?? (mekugiArm && (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok") ? codexLauncher : arm === "current" || state.comparison === "same-setup" ? ["mise", "exec", "--", ...codexLauncher] : ["codex"]);
+  const grokPath = grokArm ? ["-e", "PATH=/home/ubuntu/.grok/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin"];
+  const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
-    result = await runOwnedContainer({ docker, name, signal, stdin: task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "-i", "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin",
-      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`, ...currentSetupMounts(runDir, state, arm), ...exportMount,
+    result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), ...(grokArm ? [] : ["-i"]), ...grokPath,
+      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`, ...currentSetupMounts(runDir, state, arm), ...exportMount, ...grokTask,
       ...(protectedArm ? [...protectedArgs(runDir, state, runtime), "-v", `${join(moduleCache, "mod")}:/go/pkg/mod:ro`] : []),
-      imageRef(state), ...launcher, "exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
-      "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"] });
+      imageRef(state), ...launcher, ...(grokArm ? [] : ["exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
+      "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"])] });
   } catch (error) {
     lifecycleError = error instanceof Error ? error.message : String(error);
     if (error instanceof OwnedContainerError && error.result) result = error.result;
@@ -431,7 +466,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     const auth = resolve(options.authFile);
     const authMode = (await import("node:fs/promises")).stat(auth).then(s => s.mode & 0o777);
     if ((await authMode) & 0o077) throw new Error("auth file must not be accessible by group or others (expected mode 0600)");
-    const setupResults = await Promise.allSettled(selectedArms.map(async arm => [arm, await setupArm(runDir, state, arm, auth)] as const));
+    const setupResults = await Promise.allSettled(selectedArms.map(async arm => [arm, await setupArm(runDir, state, arm, auth, options.grokAuthFile)] as const));
     const setupFailure = setupResults.find(result => result.status === "rejected");
     if (setupFailure?.status === "rejected") throw setupFailure.reason;
     const setups = Object.fromEntries(setupResults.map(result => (result as PromiseFulfilledResult<readonly [ArmName, Awaited<ReturnType<typeof setupArm>>]>).value)) as Partial<Record<ArmName, Awaited<ReturnType<typeof setupArm>>>>;
@@ -470,6 +505,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
       if (controller.signal.aborted) break;
       for (const arm of batch) state.arm_attempts[arm] = {
         codex_home: `arms/${arm}/home/ubuntu/.codex`,
+        grok_home: state.comparison === "codex-mekugi-grok" ? `arms/${arm}/home/ubuntu/.grok` : undefined,
         container: `codex-ab-${state.id}-${arm}`,
         started_at: new Date().toISOString(),
         status: "started",

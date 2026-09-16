@@ -3,14 +3,14 @@ import { exec } from "./process";
 import { sha256 } from "./state";
 import type { RunState } from "./types";
 
-const FLAGS = new Set(["mode", "model-protocol", "main-mentor-handoff", "mentor-handoff", "timeout", "stream-idle-timeout", "debug"]);
+const FLAGS = new Set(["mode", "model-protocol", "main-mentor-handoff", "mentor-handoff", "timeout", "stream-idle-timeout", "debug", "grok"]);
 
 export function validateMekugiFlags(value: unknown): string[] {
   if (!Array.isArray(value) || value.some(flag => typeof flag !== "string")) throw new Error("Mekugi flags must be a string array");
   const seen = new Set<string>();
   for (const flag of value) {
     const match = /^--([a-z-]+)(?:=([^\0\n]*))?$/.exec(flag);
-    if (!match || !FLAGS.has(match[1]!) || seen.has(match[1]!) || (match[2] === undefined && match[1] !== "debug")) throw new Error(`unsupported or repeated Mekugi flag: ${flag}`);
+    if (!match || !FLAGS.has(match[1]!) || seen.has(match[1]!) || (match[2] === undefined && match[1] !== "debug" && match[1] !== "grok")) throw new Error(`unsupported or repeated Mekugi flag: ${flag}`);
     if (match[1] === "mode" && !["mekugi", "passthrough"].includes(match[2]!)) throw new Error("invalid Mekugi mode");
     if (match[1] === "model-protocol" && !["native", "ctp2"].includes(match[2]!)) throw new Error("invalid Mekugi protocol");
     seen.add(match[1]!);

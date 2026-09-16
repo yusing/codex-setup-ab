@@ -49,13 +49,14 @@ Prepare options:
   --snapshot-base DIR   completed run whose unchanged installed tools can be hard-linked
   --current-home DIR    configuration Git repository root (default current home)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
-  --comparison NAME    stock-current (default) or same-setup (direct versus Mekugi)
+  --comparison NAME    stock-current (default), same-setup, stock-mekugi, or codex-mekugi-grok
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
   --mekugi-build DIR    captured build bundle; selects its matching binaries and source
   --mekugi-source DIR   matching Mekugi source for its capture validator
   --current-launcher N  codex (default; same-setup uses mekugi) or mekugi
   --mekugi-bin FILE     Mekugi executable used by --current-launcher mekugi
+  --grok-bin FILE       Grok executable used by --comparison codex-mekugi-grok
   --mekugi-shell-bin FILE  matching shell helper (default shell beside Mekugi)
   --codex-bin FILE      standalone Codex executable used to build the image
   --image NAME          prebuilt bare-Codex image (default codex-ab:0.1.0)
@@ -64,6 +65,7 @@ Prepare options:
   --memory LIMIT        identical per-container memory limit (default 4g)
 
 Run/judge options (run includes automatic source assessment and reporting):
+  --grok-auth-file FILE Grok OAuth store copied privately into isolated homes
   --auth-file FILE      auth copied privately into isolated homes
   --docker-bin FILE     Docker-compatible fixture or executable
   --arm NAME            run only stock or current (run only; default is both)
@@ -81,12 +83,12 @@ Run and judge require the explicit model-execution confirmation flag.
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "acceptance", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
     "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
-    "run-trials": ["trial-set", "auth-file", "docker-bin", "confirm-paid-inference"],
+    "run-trials": ["trial-set", "auth-file", "grok-auth-file", "docker-bin", "confirm-paid-inference"],
     "report-trials": ["trial-set"],
     preflight: ["run-dir", "docker-bin"],
-    run: ["run-dir", "auth-file", "docker-bin", "arm", "confirm-paid-inference"],
+    run: ["run-dir", "auth-file", "grok-auth-file", "docker-bin", "arm", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     regrade: ["run-dir", "reason", "docker-bin", "acceptance"],
@@ -166,6 +168,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       mekugiBuild: o["mekugi-build"] as string | undefined,
       mekugiSource: o["mekugi-source"] as string | undefined,
       mekugiBinary: o["mekugi-bin"] as string | undefined,
+      grokBinary: o["grok-bin"] as string | undefined,
       mekugiShellBinary: o["mekugi-shell-bin"] as string | undefined,
       currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),
       cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
@@ -185,6 +188,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (o["confirm-paid-inference"] !== true) throw new Error("run-trials launches model inference; pass --confirm-paid-inference to confirm intentional execution");
     process.stdout.write(`${await runTrials({ directory: string(o, "trial-set"),
       authFile: string(o, "auth-file", join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json")),
+      grokAuthFile: o["grok-auth-file"] as string | undefined,
       dockerBin: o["docker-bin"] as string | undefined })}\n`);
     return 0;
   }
@@ -199,7 +203,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (command === "run") {
       const arm = o.arm;
       if (arm !== undefined && arm !== "current" && arm !== "stock") throw new Error("--arm must be stock or current");
-      await runBenchmark({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined, arm });
+      await runBenchmark({ runDir, authFile: auth, grokAuthFile: o["grok-auth-file"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined, arm });
     }
     else if (command === "finish") await finishBenchmark({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined });
     else await judgeRun(runDir, auth, o["docker-bin"] as string | undefined);

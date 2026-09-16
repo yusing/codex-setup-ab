@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   fetchPricing,
+  meterGrokHome,
   meterRollouts,
   type ModelPricing,
   type PricingSnapshot,
@@ -275,6 +276,57 @@ test("fetchPricing falls back with exact stock rates and serializable provenance
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("meterGrokHome prices the Grok build alias from aggregate usage", async () => {
+  const home = await mkdtemp(join(tmpdir(), "codex-ab-grok-usage-"));
+  await mkdir(join(home, "sessions/workspace/session"), { recursive: true });
+  await writeFile(join(home, "sessions/workspace/session/usage.json"), JSON.stringify({
+    sessionId: "grok-session",
+    session: { inputTokens: 100, outputTokens: 20, cachedReadTokens: 10, cacheCreationTokens: 0, reasoningTokens: 5, totalTokens: 120, modelCalls: 2, primaryModelId: "grok-4.6-build" },
+  }));
+  const result = await meterGrokHome(home, pricing({ "grok-4.6": {
+    model_id: "grok-4.6", source: "fallback:grok-4.6", prompt: 2 / 1_000_000, completion: 6 / 1_000_000, input_cache_read: 0.5 / 1_000_000, input_cache_write: null, overrides: [],
+  } }));
+  expect(result.complete).toBe(true);
+  expect(result.totals.input_tokens).toBe(100);
+  expect(result.totals.cached_input_tokens).toBe(10);
+  expect(result.totals.output_tokens).toBe(20);
+  expect(result.agents[0]?.model).toBe("grok-4.6-build");
+  expect(result.agents[0]?.max_input_tokens).toBeNull();
+  expect(result.agents[0]?.method).toBe("grok_usage.session (list-price estimate)");
+  expect(result.totals.estimated_api_usd).toBeCloseTo((90 * 2 + 10 * 0.5 + 20 * 6) / 1_000_000);
+});
+
+test("meterGrokHome uses complete provider cost instead of applying tiers to session totals", async () => {
+  const home = await mkdtemp(join(tmpdir(), "codex-ab-grok-provider-cost-"));
+  await mkdir(join(home, "sessions/workspace/session"), { recursive: true });
+  await writeFile(join(home, "sessions/workspace/session/usage.json"), JSON.stringify({
+    sessionId: "grok-provider-session",
+    session: { inputTokens: 250_000, outputTokens: 1_000, cachedReadTokens: 200_000, cacheCreationTokens: 0, reasoningTokens: 500, totalTokens: 251_000, modelCalls: 4, primaryModelId: "grok-4.6-build", costUsdTicks: 1_234_567_890 },
+  }));
+  const result = await meterGrokHome(home, pricing({ "grok-4.6": {
+    model_id: "grok-4.6", source: "fallback:grok-4.6", prompt: 2 / 1_000_000, completion: 6 / 1_000_000, input_cache_read: 0.5 / 1_000_000, input_cache_write: null,
+    overrides: [{ min_prompt_tokens: 200_000, min_prompt_tokens_exclusive: false, prompt: 4 / 1_000_000, completion: 12 / 1_000_000, input_cache_read: 1 / 1_000_000 }],
+  } }));
+  expect(result.complete).toBe(true);
+  expect(result.totals.estimated_api_usd).toBeCloseTo(0.123456789);
+  expect(result.agents[0]?.method).toBe("grok_usage.session (provider-recorded cost)");
+  expect(result.agents[0]?.max_input_tokens).toBeNull();
+  expect(Object.values(result.agents[0]!.cost_components).every(value => value === null)).toBe(true);
+});
+
+test("meterGrokHome marks an unpriced session incomplete", async () => {
+  const home = await mkdtemp(join(tmpdir(), "codex-ab-grok-unpriced-"));
+  await mkdir(join(home, "sessions/workspace/session"), { recursive: true });
+  await writeFile(join(home, "sessions/workspace/session/usage.json"), JSON.stringify({
+    sessionId: "grok-unpriced-session",
+    session: { inputTokens: 100, outputTokens: 20, cachedReadTokens: 10, cacheCreationTokens: 0, reasoningTokens: 5, totalTokens: 120, modelCalls: 2, primaryModelId: "unknown-grok" },
+  }));
+  const result = await meterGrokHome(home, pricing({}));
+  expect(result.complete).toBe(false);
+  expect(result.totals.estimated_api_usd).toBeNull();
+  expect(result.warnings.join("\n")).toContain("no API price for Grok model unknown-grok");
 });
 
 test("explicit exclusions remove deduplicated requests and commands without cumulative fallback", async () => {

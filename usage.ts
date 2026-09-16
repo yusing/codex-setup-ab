@@ -5,6 +5,8 @@ import { sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_TIMEOUT_MS = 8_000;
+const GROK_LONG_CONTEXT_TOKENS = 200_000;
+const GROK_USD_TICKS_PER_DOLLAR = 10_000_000_000;
 const LONG_CONTEXT_TOKENS = 272_000;
 
 export const USAGE_KEYS = [
@@ -58,7 +60,7 @@ export interface CostComponents {
 export interface AgentUsage {
   model: string;
   thread_id: string;
-  method: "token_usage_record" | "token_count.total_token_usage (request-cost approximation)";
+  method: "token_usage_record" | "token_count.total_token_usage (request-cost approximation)" | "grok_usage.session (provider-recorded cost)" | "grok_usage.session (list-price estimate)";
   usage: Usage;
   estimated_api_usd: number | null;
   request_count: number | null;
@@ -106,7 +108,7 @@ const FALLBACK_USD_PER_MILLION: Record<string, {
   prompt: number;
   completion: number;
   input_cache_read: number;
-  input_cache_write: number;
+  input_cache_write?: number;
   long_prompt?: number;
   long_completion?: number;
   long_input_cache_read?: number;
@@ -117,6 +119,8 @@ const FALLBACK_USD_PER_MILLION: Record<string, {
   "gpt-5.6-sol": { prompt: 4, completion: 20, input_cache_read: 0.4, input_cache_write: 5, long_prompt: 8, long_completion: 30, long_input_cache_read: 0.8, long_input_cache_write: 10 },
   "gpt-5.6-terra": { prompt: 2, completion: 12, input_cache_read: 0.2, input_cache_write: 2.5, long_prompt: 4, long_completion: 18, long_input_cache_read: 0.4, long_input_cache_write: 5 },
   "gpt-5.6-luna": { prompt: 0.2, completion: 1.2, input_cache_read: 0.02, input_cache_write: 0.25, long_prompt: 0.4, long_completion: 1.8, long_input_cache_read: 0.04, long_input_cache_write: 0.5 },
+  "grok-4.6": { prompt: 2, completion: 6, input_cache_read: 0.5, long_prompt: 4, long_completion: 12, long_input_cache_read: 1 },
+  "grok:grok-4.6": { prompt: 2, completion: 6, input_cache_read: 0.5, long_prompt: 4, long_completion: 12, long_input_cache_read: 1 },
 };
 
 function emptyUsage(): Usage {
@@ -166,12 +170,12 @@ function fallbackPricing(model: string, rates: (typeof FALLBACK_USD_PER_MILLION)
   const overrides: PriceOverride[] = [];
   if (rates.long_prompt !== undefined) {
     overrides.push({
-      min_prompt_tokens: LONG_CONTEXT_TOKENS,
-      min_prompt_tokens_exclusive: false,
+      min_prompt_tokens: model.includes("grok-4.6") ? GROK_LONG_CONTEXT_TOKENS : LONG_CONTEXT_TOKENS,
+      min_prompt_tokens_exclusive: !model.includes("grok-4.6"),
       prompt: perToken(rates.long_prompt),
       completion: perToken(rates.long_completion!),
       input_cache_read: perToken(rates.long_input_cache_read!),
-      input_cache_write: perToken(rates.long_input_cache_write!),
+      ...(rates.long_input_cache_write !== undefined ? { input_cache_write: perToken(rates.long_input_cache_write) } : {}),
     });
   }
   return {
@@ -180,7 +184,7 @@ function fallbackPricing(model: string, rates: (typeof FALLBACK_USD_PER_MILLION)
     prompt: perToken(rates.prompt),
     completion: perToken(rates.completion),
     input_cache_read: perToken(rates.input_cache_read),
-    input_cache_write: perToken(rates.input_cache_write),
+    input_cache_write: rates.input_cache_write === undefined ? null : perToken(rates.input_cache_write),
     overrides,
   };
 }
@@ -261,7 +265,7 @@ export async function fetchPricing(): Promise<PricingSnapshot> {
     catalog_url: OPENROUTER_MODELS_URL,
     assumptions: [
       "Prices are public list API rates in USD per token, not ChatGPT or Codex subscription rates.",
-      "Each request selects its own long-context tier; OpenRouter overrides apply strictly above min_prompt_tokens, while embedded stock fallback tiers apply at or above 272000 input tokens.",
+      "Each request selects its own long-context tier; OpenRouter overrides apply strictly above min_prompt_tokens, embedded OpenAI fallback tiers apply at or above 272000 input tokens, and the Grok fallback tier applies at or above 200000 input tokens.",
       "Input includes cached input, cache writes are billed separately, and reasoning is already a subset of output.",
       "OpenRouter values take precedence when an exact model slug is available; embedded stock rates are the fallback.",
       "A missing price remains null; an explicit zero is retained as a known zero rate.",
@@ -326,7 +330,10 @@ function durationSeconds(value: unknown): number | null {
 
 function ratesFor(pricing: PricingSnapshot, model: string): ModelPricing | null {
   const normalized = model.trim().toLowerCase();
-  return pricing.models[normalized] ?? pricing.models[modelSlug(normalized)] ?? null;
+  const withoutProvider = normalized.replace(/^grok:/, "");
+  const withoutBuildAlias = withoutProvider.replace(/^(grok-4\.6)-build$/, "$1");
+  return pricing.models[normalized] ?? pricing.models[modelSlug(normalized)]
+    ?? pricing.models[withoutProvider] ?? pricing.models[withoutBuildAlias] ?? null;
 }
 
 function requestCost(usage: Usage, rates: ModelPricing): CostComponents {
@@ -596,4 +603,107 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
     warnings: [...new Set(warnings)],
     complete,
   };
+}
+
+export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot): Promise<MeteredRollouts> {
+  const warnings = [...pricing.warnings];
+  const usagePath = join(grokHome, "sessions");
+  const agents: AgentUsage[] = [];
+  const totals = emptyUsage();
+  let estimatedTotal: number | null = 0;
+  let complete = true;
+  let found = false;
+  const markIncomplete = (warning: string): void => {
+    warnings.push(warning);
+    complete = false;
+    estimatedTotal = null;
+  };
+  const visit = async (directory: string): Promise<void> => {
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile() && entry.name === "usage.json") {
+        found = true;
+        let parsed: unknown;
+        try { parsed = JSON.parse(await readFile(path, "utf8")); }
+        catch (error) {
+          markIncomplete(`${path}: cannot parse Grok usage (${error instanceof Error ? error.message : String(error)})`);
+          continue;
+        }
+        if (!isObject(parsed) || !isObject(parsed.session)) {
+          markIncomplete(`${path}: Grok usage.json has no session totals`);
+          continue;
+        }
+        const session = parsed.session;
+        const model = typeof session.primaryModelId === "string" ? session.primaryModelId : "grok-4.6";
+        const usage: Usage = {
+          input_tokens: typeof session.inputTokens === "number" ? session.inputTokens : 0,
+          cached_input_tokens: typeof session.cachedReadTokens === "number" ? session.cachedReadTokens : 0,
+          cache_write_input_tokens: typeof session.cacheCreationTokens === "number" ? session.cacheCreationTokens : 0,
+          output_tokens: typeof session.outputTokens === "number" ? session.outputTokens : 0,
+          reasoning_output_tokens: typeof session.reasoningTokens === "number" ? session.reasoningTokens : 0,
+          total_tokens: typeof session.totalTokens === "number" ? session.totalTokens : 0,
+        };
+        if ([session.inputTokens, session.outputTokens, session.totalTokens].some(value => typeof value !== "number")) {
+          markIncomplete(`${path}: Grok usage totals are incomplete`);
+        }
+        const modelCalls = typeof session.modelCalls === "number" && Number.isSafeInteger(session.modelCalls) && session.modelCalls >= 0
+          ? session.modelCalls : null;
+        const emptyCosts: CostComponents = {
+          uncached_input_usd: null, cached_input_usd: null, cache_write_input_usd: null, output_usd: null,
+        };
+        let costs = emptyCosts;
+        let estimated: number | null = null;
+        let method: AgentUsage["method"];
+        const recordedTicks = typeof session.costUsdTicks === "number" && Number.isSafeInteger(session.costUsdTicks)
+          && session.costUsdTicks >= 0 && session.costIsPartial !== true ? session.costUsdTicks : null;
+        if (recordedTicks !== null) {
+          estimated = recordedTicks / GROK_USD_TICKS_PER_DOLLAR;
+          method = "grok_usage.session (provider-recorded cost)";
+        } else {
+          method = "grok_usage.session (list-price estimate)";
+          const rates = ratesFor(pricing, model);
+          if (!rates) {
+            markIncomplete(`${path}: no API price for Grok model ${model}`);
+          } else if (modelCalls !== 1 && rates.overrides.length > 0) {
+            markIncomplete(`${path}: per-request Grok usage is unavailable for tiered pricing`);
+          } else {
+            costs = requestCost(usage, rates);
+            const values = Object.values(costs);
+            if (values.some(value => value === null)) {
+              markIncomplete(`${path}: required Grok API price component is missing`);
+            } else {
+              estimated = values.reduce<number>((sum, value) => sum + value!, 0);
+            }
+          }
+        }
+        agents.push({
+          model,
+          thread_id: typeof parsed.sessionId === "string" ? parsed.sessionId : entry.name,
+          method,
+          usage,
+          estimated_api_usd: estimated,
+          request_count: modelCalls,
+          mean_input_tokens: modelCalls !== null && modelCalls > 0 ? usage.input_tokens / modelCalls : null,
+          max_input_tokens: modelCalls === 1 ? usage.input_tokens : null,
+          cost_components: costs,
+        });
+        addUsage(totals, usage);
+        if (estimated === null) estimatedTotal = null;
+        else if (estimatedTotal !== null) estimatedTotal += estimated;
+      }
+    }
+  };
+  try { await visit(usagePath); }
+  catch (error) {
+    markIncomplete(`cannot enumerate Grok usage: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!found) markIncomplete("no readable Grok usage.json found");
+  return { agents, sessions: [], totals: { ...totals, estimated_api_usd: estimatedTotal, command_seconds: 0 }, warnings: [...new Set(warnings)], complete };
 }

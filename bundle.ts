@@ -220,14 +220,33 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       if (await sha256(join(destination, "treatment", name)) !== item.after_sha256) throw new Error("applied treatment differs from manifest");
     }
   }
+  const setupDescriptions = state.comparison === "codex-mekugi-grok"
+    ? {
+      stock: "Minimal generated Codex configuration plus the Mekugi launcher and shell helper on grok:grok-4.6; no current-home guidance overlay.",
+      current: "Minimal generated Grok configuration plus the Grok CLI on grok-4.6; no current-home guidance overlay.",
+    }
+    : state.comparison === "stock-mekugi"
+      ? {
+        stock: "Minimal generated Codex configuration; no current-home guidance overlay.",
+        current: "Minimal generated Codex configuration plus the Mekugi launcher and shell helper; no current-home guidance overlay.",
+      }
+      : state.comparison === "same-setup"
+        ? {
+          stock: "Same audited current-home snapshot as B, launched through direct Codex.",
+          current: "Audited current-home snapshot, including recorded tracked worktree changes, launched through Mekugi.",
+        }
+        : {
+          stock: "Minimal generated Codex configuration; no current-home guidance overlay.",
+          current: "Audited current-home snapshot, including recorded tracked worktree changes.",
+        };
   await write("setup-comparison.json", {
     source: state.source, task: state.task, task_pack: state.task_pack, criteria: state.criteria, acceptance: state.acceptance, submodules: state.submodules ?? [],
     comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null,
     execution: state.execution, image_id: state.image_id, runtime_tools: state.runtime_tools,
     resource_limits: state.resource_limits, current_configuration: manifest.configuration_repository,
     review_treatment: treatment,
-    stock: state.comparison === "same-setup" ? "Same audited current-home snapshot as B, launched through direct Codex." : "Minimal generated Codex configuration; no current-home guidance overlay.",
-    current: "Audited current-home snapshot, including recorded tracked worktree changes.",
+    stock: setupDescriptions.stock,
+    current: setupDescriptions.current,
   });
   await write("comparison.json", {
     regrade: state.regrade ?? null,
