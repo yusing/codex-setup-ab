@@ -125,7 +125,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   if (state.criteria) {
     await copy(state.criteria.path, "criteria.json");
     const semanticRoot = join(runDir, "evaluator/semantic");
-    try { await cp(semanticRoot, join(destination, "semantic"), { recursive: true }); }
+    try { await cp(semanticRoot, join(destination, "semantic"), { recursive: true, verbatimSymlinks: true }); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       await rm(join(destination, "semantic"), { recursive: true, force: true });

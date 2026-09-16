@@ -360,6 +360,9 @@ test("a later covered semantic pass cannot hide earlier unassessed criteria", as
   const result = await buildReport(run);
   const report = JSON.parse(await readFile(result.jsonPath, "utf8"));
   expect(report.checks_executed).toBe(false);
+  const markdown = await readFile(result.markdownPath, "utf8");
+  expect(markdown).toContain("| stock | unassessed |");
+  expect(markdown).toContain("| current | unassessed |");
   expect(report.measurement_complete).toBe(false);
   expect(report.winner).toBe("none");
 });

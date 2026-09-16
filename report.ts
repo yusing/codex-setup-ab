@@ -82,7 +82,8 @@ function sumMeters(meters: Array<{ home: string; usage: MeteredRollouts }>): Met
   const totals: MeteredRollouts["totals"] = { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0, estimated_api_usd: 0, command_seconds: 0 };
   for (const meter of meters) {
     for (const key of USAGE_KEYS) totals[key] += meter.usage.totals[key];
-    totals.command_seconds += meter.usage.totals.command_seconds;
+    totals.command_seconds = totals.command_seconds === null || meter.usage.totals.command_seconds === null
+      ? null : totals.command_seconds + meter.usage.totals.command_seconds;
     if (totals.estimated_api_usd !== null) totals.estimated_api_usd = meter.usage.totals.estimated_api_usd === null ? null : totals.estimated_api_usd + meter.usage.totals.estimated_api_usd;
   }
   return {
@@ -123,9 +124,10 @@ function number(value: number | null | undefined, digits = 0): string {
   return value === null || value === undefined ? "unknown" : value.toFixed(digits);
 }
 
-function gradeLabel(result: ArmResult | undefined): string {
-  if (result?.grade?.evaluator_error) return "unassessed";
-  return result?.grade?.passed === true ? "pass" : result?.grade ? "fail" : "missing";
+function gradeLabel(result: ArmResult | undefined, criteria?: RunState["criteria"]): string {
+  if (!result?.grade) return "missing";
+  if (result.grade.evaluator_error || !resultHasAllChecks(result, criteria)) return "unassessed";
+  return result.grade.passed === true ? "pass" : "fail";
 }
 
 function passMarkdown(pass: JudgePass): string {
@@ -257,7 +259,7 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
   const armRows = selectedArms.map(arm => {
     const result = state.results?.[arm];
     const totals = usage[arm]?.totals;
-    return `| ${arm} | ${gradeLabel(result)} | ${number(result ? result.agent_elapsed_ms / 1000 : null, 3)} | ${number(graderSeconds(result), 3)} | ${number(totals?.input_tokens)} | ${number(totals?.cached_input_tokens)} | ${number(totals?.cache_write_input_tokens)} | ${number(totals?.output_tokens)} | ${number(totals?.reasoning_output_tokens)} | ${number(totals?.total_tokens)} | ${number(totals?.command_seconds, 3)} | ${number(totals?.estimated_api_usd, 6)} |`;
+    return `| ${arm} | ${gradeLabel(result, state.criteria)} | ${number(result ? result.agent_elapsed_ms / 1000 : null, 3)} | ${number(graderSeconds(result), 3)} | ${number(totals?.input_tokens)} | ${number(totals?.cached_input_tokens)} | ${number(totals?.cache_write_input_tokens)} | ${number(totals?.output_tokens)} | ${number(totals?.reasoning_output_tokens)} | ${number(totals?.total_tokens)} | ${number(totals?.command_seconds, 3)} | ${number(totals?.estimated_api_usd, 6)} |`;
   });
   const checkDetails = selectedArms.flatMap(arm => {
     const grade = state.results?.[arm]?.grade;
@@ -272,7 +274,7 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
   const judgeRows = judgeAttempts.map((attempt, index) => {
     const totals = attempt.usage.totals;
     const identity = state.judge?.attempts?.[index];
-    return `| ${identity ? `${identity.pass}.${identity.attempt}` : index + 1} | ${attempt.usage.complete ? "complete" : "incomplete"} | ${totals.input_tokens} | ${totals.cached_input_tokens} | ${totals.cache_write_input_tokens} | ${totals.output_tokens} | ${totals.reasoning_output_tokens} | ${totals.total_tokens} | ${totals.command_seconds.toFixed(3)} | ${number(totals.estimated_api_usd, 6)} |`;
+    return `| ${identity ? `${identity.pass}.${identity.attempt}` : index + 1} | ${attempt.usage.complete ? "complete" : "incomplete"} | ${totals.input_tokens} | ${totals.cached_input_tokens} | ${totals.cache_write_input_tokens} | ${totals.output_tokens} | ${totals.reasoning_output_tokens} | ${totals.total_tokens} | ${number(totals.command_seconds, 3)} | ${number(totals.estimated_api_usd, 6)} |`;
   });
   const warnings = [
     ...(!state.criteria ? ["No task-derived criteria were recorded. Historical measurements are descriptive only; grading completion and winner eligibility are unavailable."] : []),

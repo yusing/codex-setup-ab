@@ -55,6 +55,7 @@ Prepare options:
   --mekugi-bin FILE     Mekugi executable used by --current-launcher mekugi
   --grok-bin FILE       Grok executable used by --comparison codex-mekugi-grok
   --mekugi-shell-bin FILE  matching shell helper (default shell beside Mekugi)
+  --bun-bin FILE        Bun 1.4+ executable copied for isolated preparation
   --codex-bin FILE      standalone Codex executable used to build the image
   --image NAME          prebuilt bare-Codex image (default codex-ab:0.1.0)
   --timeout SECONDS     per agent and judge launch (default 1800)
@@ -80,7 +81,7 @@ Run and judge require the explicit model-execution confirmation flag.
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "snapshot-base", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
     "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
     "run-trials": ["trial-set", "auth-file", "grok-auth-file", "docker-bin", "confirm-paid-inference"],
     "report-trials": ["trial-set"],
@@ -168,6 +169,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),
       cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
       codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),
+      bunBinary: o["bun-bin"] as string | undefined,
     });
     process.stdout.write(`${runDir}\n`);
     return 0;

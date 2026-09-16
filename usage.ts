@@ -74,7 +74,7 @@ export interface MeteredRollouts {
   agents: AgentUsage[];
   totals: Usage & {
     estimated_api_usd: number | null;
-    command_seconds: number;
+    command_seconds: number | null;
   };
   warnings: string[];
   complete: boolean;
@@ -705,5 +705,5 @@ export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot):
     markIncomplete(`cannot enumerate Grok usage: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!found) markIncomplete("no readable Grok usage.json found");
-  return { agents, sessions: [], totals: { ...totals, estimated_api_usd: estimatedTotal, command_seconds: 0 }, warnings: [...new Set(warnings)], complete };
+  return { agents, sessions: [], totals: { ...totals, estimated_api_usd: estimatedTotal, command_seconds: null }, warnings: [...new Set(warnings), "Grok command timing is unavailable from usage.json"], complete };
 }

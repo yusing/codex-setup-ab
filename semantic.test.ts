@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { checkOutcome, validateCriteria, validateSemanticChecks } from "./semantic";
-import { validateCriterionAssessments } from "./semantic-assessment";
+import { semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
 import type { CommandEvidence } from "./types";
 
 const contract = validateCriteria({
@@ -20,6 +20,23 @@ test("criteria are pinned before candidate-specific interface adaptation", () =>
   for (const path of ["../candidate.js", "/candidate.js", "nested/../../candidate.js", ".git/config", "nested/./test.js"]) {
     expect(() => validateSemanticChecks([{ ...check, files: [{ path, source: "" }] }], contract)).toThrow();
   }
+});
+
+test("semantic prompts bound duplicated command output while retaining explicit evidence references", () => {
+  const execution: CommandEvidence = {
+    command: "test", started_at: "", elapsed_ms: 1, exit_code: 0,
+    stdout: "x".repeat(600_000), stderr: "y".repeat(600_000),
+  };
+  const item = { criterion: "sum", status: "pass", basis: "executed", reasoning: "executed", execution } as const;
+  const evidence = {
+    candidates: { "candidate-1": [item], "candidate-2": [item] },
+    history: { "candidate-1": [item], "candidate-2": [item] },
+    existing_tests: { "candidate-1": item, "candidate-2": item },
+  };
+  const summary = semanticPromptEvidence(evidence);
+  expect(JSON.stringify(summary).length).toBeLessThan(100_000);
+  expect(summary.existing_tests["candidate-1"].execution?.stdout).toContain("complete output retained under /evidence");
+  expect(execution.stdout).toHaveLength(600_000);
 });
 
 test("judge harness compilation problems remain unassessed, not candidate failures", () => {

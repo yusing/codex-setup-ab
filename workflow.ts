@@ -20,9 +20,12 @@ async function executeBenchmarkUnlocked(options: RunOptions, mode: "run" | "fini
     if (mode === "run" && (initial.status !== "prepared" || initial.finishing)) throw new Error("prepare a new run instead of resuming or restarting it");
     if (mode === "finish") {
       if (initial.status !== "complete" || initial.finishing?.status !== "failed") throw new Error("finish requires complete execution with failed finishing");
-      if (initial.judge && initial.judge.status !== "complete") throw new Error("a started judge attempt cannot be resumed or retried");
+      if (initial.judge && initial.judge.status !== "complete") {
+        if ((initial.judge.attempts?.length ?? 0) > 0) throw new Error("a started judge attempt cannot be resumed or retried");
+        delete initial.judge;
+      }
       const archive = join(await mkdtemp(join(runDir, "reports/finishing-attempt-")), "bundle");
-      await cp(join(runDir, "reports/bundle"), archive, { recursive: true, force: false, errorOnExist: true });
+      await cp(join(runDir, "reports/bundle"), archive, { recursive: true, force: false, verbatimSymlinks: true });
       initial.finishing_history ??= [];
       initial.finishing_history.push({ ...initial.finishing, bundle_path: relative(runDir, archive) });
       await writeState(runDir, initial);

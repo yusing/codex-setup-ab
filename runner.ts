@@ -48,7 +48,7 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
   const output = join(runDir, "artifacts", arm);
   const moduleCache = join(armRoot, "go-pkg-cache");
   const cache = join(armRoot, "go-cache");
-  await cp(join(runDir, state.arms[arm].home_template), home, { recursive: true, force: false });
+  await cp(join(runDir, state.arms[arm].home_template), home, { recursive: true, force: false, verbatimSymlinks: true });
   await mkdir(join(home, ".codex"), { recursive: true, mode: 0o700 });
   await copyFile(authFile, join(home, ".codex/auth.json"));
   await chmod(home, 0o700);
@@ -74,9 +74,15 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   if (state.profile === "godoxy-icons") verifyGodoxyIdentity(state.source, state.submodules);
   // Resolve the mutable tag before any checks, so every check and launch uses
   // the same image even if another process retags the operator's image.
-  const inspected = await exec([docker, "image", "inspect", "--format", "{{.Id}}", imageRef(state)]);
+  const reference = imageRef(state);
+  const inspected = await exec([docker, "image", "inspect", "--format", "{{.Id}}", reference], { signal });
   const image = inspected.stdout.trim();
-  if (inspected.exitCode !== 0 || !/^sha256:[0-9a-f]{64}$/.test(image)) throw new Error("cannot resolve immutable image ID");
+  if (inspected.exitCode !== 0) {
+    throw new Error(`cannot resolve immutable image ID for ${reference}: ${inspected.stderr.trim() || `docker image inspect exited ${inspected.exitCode}`}`);
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(image)) {
+    throw new Error(`Docker returned an invalid image ID for ${reference}: ${image || "(empty output)"}`);
+  }
   if (state.image_id && image !== state.image_id) throw new Error("prepared image changed");
   state.image_id = image;
   for (const arm of arms) await inspectCandidate(docker, runDir, state, resolve(runDir, state.arms[arm].repository), `preflight-${arm}-baseline`, signal, true, true);
@@ -168,16 +174,20 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
 
 }
 
-async function preflight(docker: string, state: RunState, runDir: string): Promise<string> {
+async function preflight(docker: string, state: RunState, runDir: string, externalSignal?: AbortSignal): Promise<string> {
   const controller = new AbortController();
   const cancel = () => controller.abort();
+  if (externalSignal?.aborted) controller.abort();
+  externalSignal?.addEventListener("abort", cancel, { once: true });
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
+    if (controller.signal.aborted) throw new Error("preflight canceled; no model was launched");
     const imageId = await preflightChecks(docker, state, runDir, controller.signal);
     if (controller.signal.aborted) throw new Error("preflight canceled; no model was launched");
     return imageId;
   } finally {
+    externalSignal?.removeEventListener("abort", cancel);
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
   }
@@ -207,11 +217,11 @@ async function freezeGraderCaches(runDir: string, state: RunState, arm: ArmName,
   home: string, cache: string, moduleCache: string): Promise<void> {
   const armRoot = join(runDir, "arms", arm);
   await Promise.all([
-    cp(cache, join(armRoot, "grader-go-cache"), { recursive: true, force: false }),
-    cp(moduleCache, join(armRoot, "grader-go-pkg-cache"), { recursive: true, force: false }),
+    cp(cache, join(armRoot, "grader-go-cache"), { recursive: true, force: false, verbatimSymlinks: true }),
+    cp(moduleCache, join(armRoot, "grader-go-pkg-cache"), { recursive: true, force: false, verbatimSymlinks: true }),
     ...(state.profile === "godoxy-icons"
       ? []
-      : [cp(join(home, ".bun/install/cache"), join(armRoot, "grader-bun-cache"), { recursive: true, force: false })]),
+      : [cp(join(home, ".bun/install/cache"), join(armRoot, "grader-bun-cache"), { recursive: true, force: false, verbatimSymlinks: true })]),
   ]);
 }
 
@@ -328,7 +338,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   if (!state.criteria) throw new Error("run has no evaluator contract; prepare with --criteria");
   if (options.arm) throw new Error("semantic grading requires both arms for independent reversed-order assessment");
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
-  state.image_id = await preflight(docker, state, runDir);
+  state.image_id = await preflight(docker, state, runDir, options.signal);
   await writeState(runDir, state);
   const controller = new AbortController();
   if (options.signal?.aborted) controller.abort();

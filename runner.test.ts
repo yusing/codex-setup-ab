@@ -33,9 +33,10 @@ async function file(path: string, content = "fixture\n", mode?: number): Promise
 async function fixtureHome(): Promise<string> {
   const h = join(root, "fixture-home");
   for (const name of ["config.toml", "overridden_base_instructions.md", "AGENTS.md", "LARGE-TASK.md", "SMALL-TASK.md", "IMPLEMENTATION.md", "hooks.json", "herdr-agent-state.sh"]) {
-    await file(join(h, ".codex", name), name === "config.toml" ? '"model" = "gpt-6-astra"\n"model_reasoning_effort" = "medium"\n"service_tier" = "default"\n[projects."/old"]\ntrust_level = "trusted"\n' : "fixture\n");
+    await file(join(h, ".codex", name), name === "config.toml" ? '"model" = "gpt-6-astra"\n"model_reasoning_effort" = "medium"\n"service_tier" = "default"\n["projects"."/old"]\ntrust_level = "trusted"\n' : "fixture\n");
   }
   await file(join(h, "AGENTS.md"));
+  await symlink("AGENTS.md", join(h, "linked-guidance"));
   await file(join(h, "new-guidance/committed.md"), "automatically cloned guidance\n");
   await file(join(h, ".codex/hooks/bin/session_start_context"), "#!/bin/sh\n", 0o755);
   for (const role of ["review-correctness", "review-simplify", "web-reviewer"]) {
@@ -63,7 +64,7 @@ case "$*" in
   'exec -- '*) exit 2 ;;
 esac
 `, 0o755);
-  await file(join(h, ".local/share/mise/installs/bun/1.4.2/bin/bun"), "fixture\n", 0o755);
+  await file(join(h, ".local/share/mise/installs/bun/1.4.2/bin/bun"), "#!/bin/sh\nprintf '1.4.2\\n'\n", 0o755);
   const codex = join(h, ".local/bin/codex");
   await file(join(h, "go/bin/mekugi"), "#!/bin/sh\nexec \"$@\"\n", 0o755);
   await file(join(h, "go/bin/shell"), "#!/bin/sh\necho 'shell: CODEX_THREAD_ID is unavailable' >&2\nexit 1\n", 0o755);
@@ -124,6 +125,7 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "same-setup",
     mekugiFlags: ["--mode=mekugi"], mekugiSource: join(root, "capture-source") });
+  expect(await readlink(join(run, "snapshots/current/home/ubuntu/linked-guidance"))).toBe("AGENTS.md");
   const state = await readState(run);
   expect(state.execution.current_launcher).toBe("mekugi");
   expect(state.arms.stock.home_template).toBe(state.arms.current.home_template);
@@ -138,6 +140,7 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   expect(launches.some(line => line.includes(" mise exec -- codex exec "))).toBe(true);
   expect(launches.some(line => line.includes(" mise exec -- mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec "))).toBe(true);
   expect(launches.every(line => line.includes("/home/ubuntu/.local/share/mise/installs:ro"))).toBe(true);
+  expect(await readlink(join(run, "arms/current/home/ubuntu/linked-guidance"))).toBe("AGENTS.md");
   await file(join(run, "reports/report.json"), "{}");
   await file(join(run, "reports/report.md"), "fixture report");
   await file(join(run, state.mekugi_exports!.capture), "retained capture");
@@ -152,6 +155,8 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   await rm(join(run, "snapshots/stock/home/ubuntu/AGENTS.md"));
   state.arms.stock.home_template = "snapshots/stock/home/ubuntu";
   await expect(verifyPreparedInputs(run, state)).rejects.toThrow("identity changed");
+  const adaptedConfig = Bun.TOML.parse(await readFile(join(run, "snapshots/current/home/ubuntu/.codex/config.toml"), "utf8")) as Record<string, unknown>;
+  expect(adaptedConfig.projects).toEqual({ "/workspace": { trust_level: "trusted" } });
 });
 
 test("stock-mekugi isolates the launcher without current-home guidance", async () => {
@@ -187,6 +192,8 @@ test("stock-mekugi does not require unused current-home runtime supplements", as
   await cp(home, isolatedHome, { recursive: true });
   await rm(join(isolatedHome, ".codex/.tmp/bundled-marketplaces/openai-bundled"), { recursive: true });
 
+  await rm(join(isolatedHome, ".local/bin/mise"));
+  await writeFile(join(isolatedHome, ".codex/config.toml"), 'model = "some-other-model"\nmodel_reasoning_effort = "xhigh"\nservice_tier = "default"\n');
   const captureSource = join(root, "stock-mekugi-minimal-capture-source");
   await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
   await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
@@ -196,6 +203,52 @@ test("stock-mekugi does not require unused current-home runtime supplements", as
     mekugiFlags: ["--mode=mekugi"], mekugiSource: captureSource });
   await verifyPreparedInputs(run, await readState(run));
 });
+for (const projectConfig of [
+  'projects = { "/old" = { trust_level = "trusted" } }\n',
+  'projects."/old".trust_level = "trusted"\n',
+  '["projects"."/old"]\ntrust_level = "trusted"\n',
+]) {
+  test(`trust adaptation preserves multiline strings with ${projectConfig.trim()}`, async () => {
+    const configHome = await mkdtemp(join(root, "config-home-"));
+    await cp(home, configHome, { recursive: true });
+    const config = 'model = "gpt-6-astra"\nmodel_reasoning_effort = "medium"\nservice_tier = "default"\ndeveloper_instructions = """\n[projects.example]\nKeep this text.\n"""\n' + projectConfig;
+    await file(join(configHome, ".codex/config.toml"), config);
+    const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+      criteriaPath: fixtureCriteria, outputParent: root, currentHome: configHome, image: "fixture-image",
+      cpus: "2", memory: "4g", timeoutSeconds: 30 });
+    const adapted = Bun.TOML.parse(await readFile(join(run, "snapshots/current/home/ubuntu/.codex/config.toml"), "utf8"));
+    expect(adapted).toEqual({ ...Bun.TOML.parse(config), projects: { "/workspace": { trust_level: "trusted" } } });
+    await verifyPreparedInputs(run, await readState(run));
+  });
+}
+
+test("current snapshot overlays exact tracked worktree state across renames, index deletions, and path type changes", async () => {
+  const overlayHome = join(root, "overlay-home");
+  await cp(home, overlayHome, { recursive: true });
+  await checked(["git", "-C", overlayHome, "mv", "AGENTS.md", "RENAMED.md"]);
+  await rm(join(overlayHome, ".codex/agents"), { recursive: true });
+  await file(join(overlayHome, ".codex/agents"), "roles intentionally replaced\n");
+  await checked(["git", "-C", overlayHome, "add", "-A"]);
+  await checked(["git", "-C", overlayHome, "rm", "--cached", "new-guidance/committed.md"]);
+
+  await rm(join(overlayHome, "RENAMED.md"));
+  await file(join(overlayHome, "RENAMED.md/private.txt"), "must not enter snapshot\n");
+  const captureSource = join(root, "overlay-capture-source");
+  await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
+  await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, outputParent: root, currentHome: overlayHome, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
+    mekugiFlags: ["--mode=mekugi"], mekugiSource: captureSource });
+  const snapshot = join(run, "snapshots/current/home/ubuntu");
+  expect(await Bun.file(join(snapshot, "AGENTS.md")).exists()).toBe(false);
+  expect(await Bun.file(join(snapshot, "RENAMED.md/private.txt")).exists()).toBe(false);
+  await expect(stat(join(snapshot, "RENAMED.md"))).rejects.toThrow();
+  expect(await Bun.file(join(snapshot, "new-guidance/committed.md")).exists()).toBe(false);
+  expect((await stat(join(snapshot, ".codex/agents"))).isFile()).toBe(true);
+  await verifyPreparedInputs(run, await readState(run));
+});
+
 
 
 test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
@@ -298,6 +351,11 @@ test("Mekugi build inputs are pinned, bundled and independent of the live checko
   const state = await readState(run);
   expect(state.mekugi_build?.files).toHaveLength(6);
   expect(await readFile(join(run, "artifacts/mekugi-build/source/dirty-guidance.md"), "utf8")).toContain("uncommitted");
+  const grok = join(root, "build-grok");
+  await file(grok, "#!/bin/sh\necho grok 1.0.30\n", 0o755);
+  const grokRun = await prepare({ ...buildOptions, comparison: "codex-mekugi-grok",
+    mekugiFlags: ["--grok"], grokBinary: grok });
+  expect((await readState(grokRun)).execution.current_launcher).toBe("grok");
   await rm(build, { recursive: true });
   await rm(context, { recursive: true });
   await verifyPreparedInputs(run, state);
@@ -596,6 +654,21 @@ test("non-paid preflight leaves a prepared run unstarted", async () => {
   expect(log).toContain("mise ls --current --missing --no-header");
   expect(log).not.toContain("go generate");
   expect(log).toContain("cd /tmp/preflight && true && git diff --quiet HEAD --");
+});
+
+test("preflight reports the missing image and Docker cause", async () => {
+  const run = await prepared();
+  const docker = join(root, "missing-image-docker");
+  await file(docker, "#!/bin/sh\necho 'No such image: fixture-image' >&2\nexit 1\n", 0o755);
+  await expect(preflightRun(run, docker)).rejects.toThrow("cannot resolve immutable image ID for fixture-image: No such image: fixture-image");
+});
+
+test("an externally canceled pair stops before Docker preflight", async () => {
+  const run = await prepared();
+  const fake = await fakeOwnedDocker(0);
+  await expect(runPair({ runDir: run, authFile: join(root, "unused-auth"), dockerBin: fake.path, signal: AbortSignal.abort() }))
+    .rejects.toThrow("preflight canceled; no model was launched");
+  expect(await Bun.file(fake.log).exists()).toBe(false);
 });
 
 test("cached preflight mounts Go and Bun dependency caches before disabling networking", async () => {
@@ -956,6 +1029,7 @@ test("finish recovers pre-judge reporting failure without restarting candidates"
   const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
   state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture://pricing", assumptions: [], warnings: [], models: {} };
   state.finishing = { status: "failed", started_at: new Date().toISOString(), bundle_path: "reports/bundle", error: "evidence pack too large before any judge request" };
+  state.judge = { status: "failed", started_at: new Date().toISOString(), model: "gpt-5.6-sol", reasoning_effort: "high", service_tier: "priority", passes: [], winner: "none", usage_homes: [], attempts: [], error: "prompt preparation failed before launch" };
   await writeState(run, state);
   await file(join(run, "reports/bundle/prior-failure.txt"), "preserve this failure");
   const before = await readFile(fake.log, "utf8");

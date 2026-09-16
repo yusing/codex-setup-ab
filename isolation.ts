@@ -33,8 +33,8 @@ export async function executorOwnership(docker: string, state: RunState, name: s
 export async function protectedPreflight(docker: string, runDir: string, state: RunState, signal: AbortSignal): Promise<void> {
   const directory = await mkdtemp(join(runDir, "artifacts/isolation-"));
   const workspace = join(directory, "workspace"), home = join(directory, "home"), runtime = join(directory, "runtime"), exports = join(directory, "exports");
-  await cp(join(runDir, state.arms.current.home_template), home, { recursive: true });
-  await cp(join(runDir, state.arms.current.repository), workspace, { recursive: true });
+  await cp(join(runDir, state.arms.current.home_template), home, { recursive: true, verbatimSymlinks: true });
+  await cp(join(runDir, state.arms.current.repository), workspace, { recursive: true, verbatimSymlinks: true });
   for (const path of [join(home, ".codex"), runtime, exports, join(directory, "modules")]) await mkdir(path, { recursive: true });
   await writeFile(join(home, ".codex/auth.json"), "{}\n", { mode: 0o600 });
   await writeFile(join(directory, "probe.go"), "package main\nfunc main() {}\n");

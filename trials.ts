@@ -190,7 +190,7 @@ export async function runTrials(options: { directory: string; authFile: string; 
             const evidence = join(directory, "evidence", String(trial.index));
             await mkdir(evidence, { recursive: true, mode: 0o700 });
             try {
-              await cp(join(runDir, "reports/bundle"), evidence, { recursive: true });
+              await cp(join(runDir, "reports/bundle"), evidence, { recursive: true, verbatimSymlinks: true });
               await copyFile(join(runDir, "run.json"), join(evidence, "run.json"));
               trial.report_sha256 = await sha256(join(evidence, "report.json"));
               trial.markdown_sha256 = await sha256(join(evidence, "report.md"));
@@ -267,7 +267,7 @@ async function reportTrialsUnlocked(directory: string, set: TrialSet): Promise<s
         await copyFile(join(directory, trial.run_dir, "run.json"), join(evidence, "run.json"));
         throw new Error("pair was not started");
       }
-      await cp(frozen, evidence, { recursive: true });
+      await cp(frozen, evidence, { recursive: true, verbatimSymlinks: true });
       const state = await readState(evidence);
       assertMembership(set, trial, state);
       if (!trial.report_sha256 || !trial.markdown_sha256) throw new Error("pair report was not finalized by this trial set");

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, writeFile, readFile, lstat, rm, symlink, utimes, cp } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { snapshotToolStore, verifySnapshotIdentities } from "./snapshot";
@@ -66,6 +66,9 @@ test("incremental metadata reuse remains isolated and detects restored-timestamp
     const before = await lstat(join(second, "large"));
     await writeFile(join(second, "large"), "modified payload!");
     await utimes(join(second, "large"), before.atime, before.mtime);
+    expect(await verifySnapshotIdentities(second, next.files)).toBe(false);
+    await writeFile(join(second, "large"), "unchanged payload");
+    await chmod(join(second, "large"), 0o755);
     expect(await verifySnapshotIdentities(second, next.files)).toBe(false);
     expect(await readFile(join(live, "large"), "utf8")).toBe("unchanged payload");
   } finally { await rm(root, { recursive: true, force: true }); }

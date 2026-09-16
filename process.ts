@@ -34,6 +34,7 @@ export async function exec(argv: string[], options: ExecOptions = {}): Promise<E
   let timedOut = false;
   let canceled = options.signal?.aborted === true;
   let abortEscalation: ReturnType<typeof setTimeout> | undefined;
+  let timeoutEscalation: ReturnType<typeof setTimeout> | undefined;
   const abort = () => {
     canceled = true;
     child.kill("SIGTERM");
@@ -44,7 +45,7 @@ export async function exec(argv: string[], options: ExecOptions = {}): Promise<E
   const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => {
     timedOut = true;
     child.kill("SIGTERM");
-    setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 10_000);
+    timeoutEscalation = setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 10_000);
   }, options.timeoutMs);
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
@@ -53,6 +54,7 @@ export async function exec(argv: string[], options: ExecOptions = {}): Promise<E
   ]);
   if (timer) clearTimeout(timer);
   if (abortEscalation) clearTimeout(abortEscalation);
+  if (timeoutEscalation) clearTimeout(timeoutEscalation);
   options.signal?.removeEventListener("abort", abort);
   return { exitCode, stdout, stderr, timedOut, canceled, elapsedMs: Math.round(performance.now() - started) };
 }

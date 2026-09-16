@@ -29,22 +29,16 @@ export async function writeState(runDir: string, state: RunState): Promise<void>
   await rename(temporary, target);
 }
 
-const verifiedHashes = new Map<string, { signature: string; hash: string }>();
-
 async function contentSignature(path: string): Promise<string> {
   const info = await stat(path, { bigint: true });
   return [info.dev, info.ino, info.size, info.mode, info.mtimeNs, info.ctimeNs].join(":");
 }
 
-/** Recheck file identity and nanosecond change time before reusing an in-process hash. */
+/** Hash the current file and reject concurrent identity changes. */
 export async function sha256(path: string): Promise<string> {
   const before = await contentSignature(path);
-  const cached = verifiedHashes.get(path);
-  if (cached?.signature === before) return cached.hash;
   const hash = new Bun.CryptoHasher("sha256");
   for await (const chunk of createReadStream(path)) hash.update(chunk);
   if (await contentSignature(path) !== before) throw new Error(`file changed while hashing: ${path}`);
-  const digest = hash.digest("hex");
-  verifiedHashes.set(path, { signature: before, hash: digest });
-  return digest;
+  return hash.digest("hex");
 }

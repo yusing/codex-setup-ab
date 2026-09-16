@@ -26,7 +26,7 @@ case "$operation" in
  start)
   name=; for argument in "$@"; do name="$argument"; done
   spec="$(cat "$state/$name")"
-  case "$spec" in *'sleep-command'*) trap 'exit 143' TERM INT; sleep 2;; *'fail-command'*) rm -f "$state/$name"; exit 7;; *) echo harmless;; esac
+  case "$spec" in *'sleep-command'*) trap 'exit 143' TERM INT; sleep 2;; *'fail-command'*) rm -f "$state/$name"; exit 7;; *'auto-remove-race'*) exit 0;; *) echo harmless;; esac
   rm -f "$state/$name";;
  container)
   target=; for argument in "$@"; do target="$argument"; done
@@ -35,7 +35,7 @@ case "$operation" in
   case " $* " in *'codex-ab.owner'*) sed -n 's/.*codex-ab.owner=\\([^ ]*\\).*/\\1/p' "$state/$target";; *) echo "$target";; esac;;
  rm)
   name=; for argument in "$@"; do name="$argument"; done
-  case "$name" in *cleanup-fails*) :;; *) rm -f "$state/$name";; esac;;
+  case "$name" in *cleanup-fails*) :;; *auto-remove-race*) rm -f "$state/$name"; echo "Error: No such container: $name" >&2; exit 1;; *) rm -f "$state/$name";; esac;;
 esac
 `, { mode: 0o755 });
   await chmod(docker, 0o755);
@@ -50,6 +50,13 @@ test("ordinary and failing commands both end with verified absence", async () =>
   const failure = await runOwnedContainer({ docker, name: "failure", createArgs: ["fixture", "fail-command"] });
   expect(failure.exitCode).toBe(7);
   expect(failure.cleanupVerified).toBe(true);
+});
+
+test("cleanup accepts Docker auto-removal after ownership inspection", async () => {
+  const result = await runOwnedContainer({ docker, name: "auto-remove-race", createArgs: ["fixture", "auto-remove-race"] });
+  expect(result.exitCode).toBe(0);
+  expect(result.cleanupVerified).toBe(true);
+  expect(await readFile(log, "utf8")).toContain("rm --force auto-remove-race");
 });
 
 test("pre-aborted signal never creates or starts a container", async () => {

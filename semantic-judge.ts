@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { runOwnedContainer } from "./container";
 import { OUTPUT_SCHEMA, lastAgentMessage, mappedWinner, validateJudgePass } from "./judge";
-import { CRITERION_SCHEMA, prepareSemanticAssessment, validateCriterionAssessments } from "./semantic-assessment";
+import { CRITERION_SCHEMA, prepareSemanticAssessment, semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
 import { verifyPreparedInputs } from "./prepare";
 import { writeState } from "./state";
 import type { ArmName, JudgeAttempt, JudgeReport, RunState } from "./types";
@@ -38,7 +38,7 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
           const relative = `evaluator/judge/pass-${pass}-${stage}-${number}`;
           const root = join(runDir, relative);
           const home = join(root, "home/ubuntu");
-          await cp(join(runDir, "snapshots/stock/home/ubuntu"), home, { recursive: true });
+          await cp(join(runDir, "snapshots/stock/home/ubuntu"), home, { recursive: true, verbatimSymlinks: true });
           await copyFile(auth, join(home, ".codex/auth.json"));
           await chmod(join(home, ".codex/auth.json"), 0o600);
           const schemaPath = join(root, "schema.json");
@@ -59,6 +59,7 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
               timeoutMs: state.timeout_seconds * 1000, stdin: prompt, stdoutFile: outputPath, stderrFile: errorPath,
               createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "-i",
                 "-v", `${home}:/home/ubuntu`, "-v", `${schemaPath}:/schema.json:ro`,
+                "-v", `${join(runDir, "evaluator/semantic", `pass-${pass}`)}:/evidence:ro`,
                 ...order.flatMap((arm, index) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${ids[index]}:ro`]),
                 state.image_id ?? state.image, "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check",
                 "--output-schema", "/schema.json", "--model", report.model, "-c", 'model_reasoning_effort="high"',
@@ -111,7 +112,7 @@ Use unassessed for inadequate tests or uncertain coverage even if a command exit
 A candidate may win only if every criterion and its existing tests passed, with no critical issue. Otherwise winner must be none or the other eligible candidate; tie needs both eligible.
 Task: ${task}
 Fixed criteria: ${JSON.stringify(contract)}
-Executed evidence: ${JSON.stringify(evidence)}
+Executed evidence summary (complete files are under /evidence): ${JSON.stringify(semanticPromptEvidence(evidence))}
 Return the required JSON schema with scores, evidence, issues, winner, rationale and per-candidate criteria.`;
       const value = await ask("assessment", prompt, schema);
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid semantic assessment");

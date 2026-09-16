@@ -311,6 +311,7 @@ test("meterGrokHome uses complete provider cost instead of applying tiers to ses
   } }));
   expect(result.complete).toBe(true);
   expect(result.totals.estimated_api_usd).toBeCloseTo(0.123456789);
+  expect(result.totals.command_seconds).toBeNull();
   expect(result.agents[0]?.method).toBe("grok_usage.session (provider-recorded cost)");
   expect(result.agents[0]?.max_input_tokens).toBeNull();
   expect(Object.values(result.agents[0]!.cost_components).every(value => value === null)).toBe(true);

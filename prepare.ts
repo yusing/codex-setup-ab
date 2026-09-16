@@ -40,6 +40,7 @@ export interface PrepareOptions {
   currentLauncher?: CodexLauncher;
   mekugiBinary?: string;
   mekugiShellBinary?: string;
+  bunBinary?: string;
   codexBinary?: string;
 }
 
@@ -75,7 +76,7 @@ async function copyCacheTree(source: string, destination: string): Promise<void>
 async function copyRequired(source: string, target: string): Promise<void> {
   if (!(await exists(source))) throw new Error(`current setup dependency is missing: ${source}`);
   await mkdir(dirname(target), { recursive: true });
-  await cp(source, target, { recursive: true, dereference: false, preserveTimestamps: true });
+  await cp(source, target, { recursive: true, dereference: false, preserveTimestamps: true, verbatimSymlinks: true });
 }
 
 async function copyRemoteSkillCache(home: string, destination: string): Promise<void> {
@@ -204,7 +205,8 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   const recorded = JSON.parse(await readFile(manifestPath, "utf8")) as { files: unknown };
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   if (JSON.stringify(await manifest(currentTemplate)) !== JSON.stringify(recorded.files)) throw new Error("current setup snapshot changed");
-  if (await sha256(join(currentTemplate, ".local/bin/mise")) !== state.runtime_tools.current_setup_mise_sha256) {
+  if (state.runtime_tools.current_setup_mise_sha256 &&
+      await sha256(join(currentTemplate, ".local/bin/mise")) !== state.runtime_tools.current_setup_mise_sha256) {
     throw new Error("snapshotted current setup runtime changed");
   }
   const setupInstalls = join(runDir, state.runtime_tools.current_setup_installs);
@@ -232,8 +234,16 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     if (!grok || await sha256(join(runDir, state.arms.current.home_template, ".grok/bin/grok")) !== grok) throw new Error("snapshotted Grok changed");
   }
 }
+function replaceProjectTrust(config: string): string {
+  const parsed = Bun.TOML.parse(config);
+  parsed.projects = { "/workspace": { trust_level: "trusted" } };
+  const adapted = Bun.TOML.stringify(parsed);
+  Bun.TOML.parse(adapted);
+  return adapted;
+}
 
-async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, mekugiShellBinary: string | undefined, miseBinary: string, includeRuntimeSupplements: boolean, reviewTreatment?: string): Promise<string> {
+
+async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, mekugiShellBinary: string | undefined, miseBinary: string | undefined, includeRuntimeSupplements: boolean, reviewTreatment?: string): Promise<string> {
   const repository = (await checked(["git", "-C", home, "rev-parse", "--show-toplevel"])).stdout.trim();
   if (await realpath(repository) !== await realpath(home)) throw new Error("--current-home must be the configuration repository root");
   await checked(["git", "clone", "--depth=1", "--no-local", "--no-hardlinks", pathToFileURL(repository).href, destination]);
@@ -242,11 +252,18 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   const tree = (await checked(["git", "-C", destination, "rev-parse", "HEAD^{tree}"])).stdout.trim();
   // Include current tracked edits, additions and deletions without copying the
   // host's index, Git configuration, untracked credentials or session state.
-  const changed = (await checked(["git", "-C", home, "diff", "--name-only", "-z", commit, "--"])).stdout.split("\0").filter(Boolean);
+  const changed = (await checked(["git", "-C", home, "diff", "--no-renames", "--name-only", "-z", commit, "--"])).stdout.split("\0").filter(Boolean);
+  const changedSet = new Set(changed);
+  const roots = changed.filter(item => {
+    const parts = item.split("/");
+    return !parts.slice(1).some((_, index) => changedSet.has(parts.slice(0, index + 1).join("/")));
+  });
+  for (const item of roots) await rm(join(destination, item), { recursive: true, force: true });
+  const indexed = new Set((await checked(["git", "-C", home, "ls-files", "-z", "--"])).stdout.split("\0").filter(Boolean));
   for (const item of changed) {
-    const target = join(destination, item);
-    await rm(target, { force: true });
-    if (await exists(join(home, item))) await copyRequired(join(home, item), target);
+    if (indexed.has(item) && await exists(join(home, item)) && !(await lstat(join(home, item))).isDirectory()) {
+      await copyRequired(join(home, item), join(destination, item));
+    }
   }
   // Runtime materializations are not authored configuration. Keep these
   // supplements separate from the Git-owned instructions, roles and skills.
@@ -260,14 +277,16 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     await copyRemoteSkillCache(home, destination);
     await copyRequired(join(home, ".cache/go-modern-guidelines/v0.1.1"), join(destination, ".cache/go-modern-guidelines/v0.1.1"));
   }
-  // The read-only tool store has already been migrated on the source home.
-  // Preserve its completion records so mise does not try to migrate it again.
-  const miseMigrations = ".local/share/mise/migrations";
-  if (await exists(join(home, miseMigrations))) {
-    await copyRequired(join(home, miseMigrations), join(destination, miseMigrations));
+  if (miseBinary) {
+    // The read-only tool store has already been migrated on the source home.
+    // Preserve its completion records so mise does not try to migrate it again.
+    const miseMigrations = ".local/share/mise/migrations";
+    if (await exists(join(home, miseMigrations))) {
+      await copyRequired(join(home, miseMigrations), join(destination, miseMigrations));
+    }
+    await copyRequired(miseBinary, join(destination, ".local/bin/mise"));
+    await chmod(join(destination, ".local/bin/mise"), 0o755);
   }
-  await copyRequired(miseBinary, join(destination, ".local/bin/mise"));
-  await chmod(join(destination, ".local/bin/mise"), 0o755);
   if (mekugiBinary) {
     await copyRequired(mekugiBinary, join(destination, ".local/bin/mekugi"));
     await chmod(join(destination, ".local/bin/mekugi"), 0o755);
@@ -290,9 +309,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     }
   }
   const configPath = join(destination, ".codex/config.toml");
-  let config = await readFile(configPath, "utf8");
-  config = config.replace(/\n\[projects\.[\s\S]*?(?=\n\[(?!projects\.)|$)/g, "");
-  config += '\n[projects."/workspace"]\ntrust_level = "trusted"\n';
+  const config = replaceProjectTrust(await readFile(configPath, "utf8"));
   await writeFile(configPath, config, { mode: 0o600 });
   const output = join(dirname(destination), "snapshot-manifest.json");
   await writeFile(output, `${JSON.stringify({ created_at: new Date().toISOString(), source_home: home,
@@ -307,8 +324,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
       "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
       "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
     ] : [
-      "current-home runtime supplements omitted because neither benchmark arm uses the current setup",
-      "mise and selected launcher binaries copied only for recorded executable provenance",
+      "current-home executables and runtime supplements omitted because neither benchmark arm uses the current setup",
     ]),
   ], files: await manifest(destination) }, null, 2)}\n`);
   return output;
@@ -415,7 +431,7 @@ const REVIEW_TREATMENT_FILES = [
 
 export async function prepare(options: PrepareOptions): Promise<string> {
   const build = options.mekugiBuild ? await readMekugiBuild(options.mekugiBuild) : undefined;
-  if (build) options = { ...options, currentLauncher: "mekugi",
+  if (build) options = { ...options, currentLauncher: options.comparison === "codex-mekugi-grok" ? "grok" : "mekugi",
     mekugiBinary: join(options.mekugiBuild!, "bin/mekugi"), mekugiShellBinary: join(options.mekugiBuild!, "bin/shell"),
     mekugiSource: join(options.mekugiBuild!, "source") };
   const pack = options.taskPackPath ? await loadTaskPack(options.taskPackPath) : undefined;
@@ -469,11 +485,22 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const codexSha256 = await sha256(codexBinary);
   const codeModeHost = await realpath(join(dirname(codexBinary), "codex-code-mode-host"));
   const codeModeHostStat = await stat(codeModeHost);
+  const pinnedBun = join(options.currentHome, ".local/share/mise/installs/bun/1.4.2/bin/bun");
+  const selectedBun = options.bunBinary ?? (await exists(pinnedBun) ? pinnedBun : Bun.which("bun"));
+  if (!selectedBun) throw new Error("Bun 1.4 or later is required; install Bun or pass --bun-bin");
+  const bunBinary = await realpath(selectedBun);
+  const bunStat = await stat(bunBinary);
+  if (!bunStat.isFile() || (bunStat.mode & 0o111) === 0) throw new Error(`Bun is not executable: ${bunBinary}`);
+  const bunVersion = (await checked([bunBinary, "--version"])).stdout.trim();
+  const bunMatch = bunVersion.match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!bunMatch || Number(bunMatch[1]) < 1 || (Number(bunMatch[1]) === 1 && Number(bunMatch[2]) < 4)) {
+    throw new Error(`Bun 1.4 or later is required, got ${bunVersion || "(empty version)"}`);
+  }
   if (!codeModeHostStat.isFile() || (codeModeHostStat.mode & 0o111) === 0) throw new Error(`Codex code-mode host is not executable: ${codeModeHost}`);
-  const miseBinary = await realpath(join(options.currentHome, ".local/bin/mise"));
-  const miseStat = await stat(miseBinary);
-  if (!miseStat.isFile() || (miseStat.mode & 0o111) === 0) throw new Error(`current setup manager is not executable: ${miseBinary}`);
-  const miseSha256 = await sha256(miseBinary);
+  const miseBinary = isolatedFromCurrentTools ? undefined : await realpath(join(options.currentHome, ".local/bin/mise"));
+  const miseStat = miseBinary ? await stat(miseBinary) : undefined;
+  if (miseStat && (!miseStat.isFile() || (miseStat.mode & 0o111) === 0)) throw new Error(`current setup manager is not executable: ${miseBinary}`);
+  const miseSha256 = miseBinary ? await sha256(miseBinary) : undefined;
   if (options.mekugiShellBinary && !needsMekugi) throw new Error("--mekugi-shell-bin requires a Mekugi launcher treatment");
   const mekugiBinary = needsMekugi
     ? await realpath(options.mekugiBinary ?? join(options.currentHome, "go/bin/mekugi"))
@@ -502,10 +529,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const currentConfig = Bun.TOML.parse(await readFile(join(options.currentHome, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
   const configured = (key: string): string | undefined =>
     typeof currentConfig[key] === "string" ? currentConfig[key] : undefined;
-  if (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium") {
+  if (!isolatedFromCurrentTools &&
+      (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium")) {
     throw new Error("current setup must configure model gpt-6-astra with medium reasoning for this benchmark");
   }
-  const serviceTier = comparison === "stock-mekugi" || grokComparison ? "default" : configured("service_tier");
+  const serviceTier = isolatedFromCurrentTools ? "default" : configured("service_tier");
   if (!serviceTier) throw new Error("current setup does not declare service_tier");
   if (!(await exists(join(source, ".git")))) throw new Error(`source is not a Git worktree: ${source}`);
   const runDir = await mkdtemp(join(options.outputParent ?? tmpdir(), "codex-ab-"));
@@ -569,7 +597,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
 
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
-  const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate, mekugiBinary, mekugiShellBinary, miseBinary, !isolatedFromCurrentTools, reviewTreatment);
+  const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate,
+    isolatedFromCurrentTools ? undefined : mekugiBinary, isolatedFromCurrentTools ? undefined : mekugiShellBinary,
+    miseBinary, !isolatedFromCurrentTools, reviewTreatment);
   const currentSetupInstalls = join(runDir, "snapshots/current/mise/installs");
   let previousSnapshot: PreviousSnapshot | undefined;
   let preflightCache: NonNullable<RunState["runtime_tools"]["preflight_cache"]> | undefined;
@@ -658,7 +688,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     await chmod(join(grokTemplate, ".grok/bin/grok"), 0o755);
   }
   await writeFile(join(stockTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
-  const bunSource = join(options.currentHome, ".local/share/mise/installs/bun/1.4.2/bin/bun");
+  const bunSource = bunBinary;
   const bunTarget = join(runDir, "snapshots/runtime/bin/bun");
   await copyRequired(bunSource, bunTarget);
   await chmod(bunTarget, 0o755);

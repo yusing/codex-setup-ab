@@ -41,8 +41,11 @@ async function removeAndVerify(docker: string, name: string, owner: string, cont
   if (!state.present) return;
   if (state.value !== owner) throw new OwnedContainerError(`refusing to remove unowned container name collision: ${name}`);
   const removed = await exec([docker, "rm", "--force", target]);
-  if (removed.exitCode !== 0) throw new OwnedContainerError(`container cleanup failed for ${name}: ${removed.stderr.trim() || `rm exited ${removed.exitCode}`}`);
-  if (!(await absent(docker, target))) throw new OwnedContainerError(`container cleanup could not verify ${name} is absent`);
+  const isAbsent = await absent(docker, target);
+  if (removed.exitCode !== 0 && !isAbsent) {
+    throw new OwnedContainerError(`container cleanup failed for ${name}: ${removed.stderr.trim() || `rm exited ${removed.exitCode}`}`);
+  }
+  if (!isAbsent) throw new OwnedContainerError(`container cleanup could not verify ${name} is absent`);
 }
 
 /** Own one named container from creation through verified absence. */

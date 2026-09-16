@@ -26,7 +26,7 @@ docker build \
 ./dist/codex-ab --version
 ```
 
-No model request occurs during the build or `prepare`. The `run` command includes two independent source-assessment passes after a completed pair, with at most three Sol launches per pass on capacity errors; `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
+No model request occurs during the build or `prepare`. The `run` command includes two independent source-assessment passes after a completed pair. Each pass has two stages when the first harness succeeds, or three when one repair stage is needed; every stage allows at most three Sol launches on capacity errors. `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
 
 ## Prepare an isolated pair
 
@@ -125,9 +125,19 @@ previous reports remain unchanged.
 
 ## Stock Codex versus stock plus Mekugi
 
+For the pinned medium NVM task, the convenience runner builds the CLI, prepares the selected
+comparison, runs model-free preflight, and then starts the paid pair:
+
+```sh
+scripts/run.sh --preset stock-mekugi
+```
+
+Other presets are `stock-current`, `same-setup`, and `codex-mekugi-grok`. Run
+`scripts/run.sh --help` for path and image overrides.
+
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable and its matching `shell` helper, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
 
-Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for `same-setup`. Mekugi capture and metrics exports are retained and validated against `--mekugi-source`. The current-home Git snapshot is still captured for executable and analyzer provenance checks, but unused runtime supplements and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
+Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for `same-setup`. Mekugi capture and metrics exports are retained and validated against `--mekugi-source`. The current-home Git snapshot is retained for configuration provenance, while selected executables and analyzer sources are captured separately; unused current-home executables, runtime supplements, and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
 
 ## Stock Codex plus Mekugi versus Grok CLI
@@ -324,11 +334,9 @@ The `run` command performs blind semantic assessment automatically after both ca
 ./dist/codex-ab judge --run-dir "$run_dir" --confirm-paid-inference
 ```
 
-The gpt-5.6-sol judge uses high reasoning and the fast service tier (normalized by Codex to the priority request tier). It receives the task, anonymous patches, changed-file lists, test evidence, and read-only anonymous evaluator source directories for inspecting affected contracts and callers. It does not receive arm labels, costs, the original solution, agent logs, or either agent's writable filesystem. Two independent stock-config homes judge opposite presentation orders. Each returns validated JSON scores for correctness (50%), completeness (20%), maintainability (20%), and test quality (10%), plus evidence, issues, and a winner. Critical findings override totals; a candidate that failed any required gate cannot win. Disagreement is reported rather than forced into consensus. Prompts include check summaries and references to complete, read-only sanitized logs. Large logs stay available without filling the prompt or being truncated. Oversized patches or summary packs still fail explicitly. Reports created before this setting change retain their recorded medium/default judge metadata.
+The gpt-5.6-sol judge uses high reasoning and the fast service tier (normalized by Codex to the priority request tier). It receives the task, anonymous patches, changed-file lists, bounded output summaries, and complete read-only evaluator evidence under `/evidence`, plus anonymous evaluator source directories for inspecting affected contracts and callers. It does not receive arm labels, costs, the original solution, agent logs, or either agent's writable filesystem. Two independent stock-config homes judge opposite presentation orders. Each pass uses two stages when its first harness succeeds or three when one repair stage is needed, with up to three capacity attempts per stage. Each assessment returns validated JSON scores for correctness (50%), completeness (20%), maintainability (20%), and test quality (10%), plus evidence, issues, and a winner. Critical findings override totals; a candidate that failed any required gate cannot win. Disagreement is reported rather than forced into consensus. Large logs stay retained and inspectable without being duplicated into the prompt. Oversized patches or summary packs still fail explicitly. Reports created before this setting change retain their recorded medium/default judge metadata.
 
-Sol capacity errors retry automatically within the active judge command: at most three launches
-per pass, with 5-second and 15-second delays. Each launch gets a fresh isolated home and distinct
-logs; the state and report retain every attempt and its usage. A completed pass is never repeated.
+Capacity errors retry automatically within the active judge command, with at most three launches per stage and 5-second and 15-second delays. Each launch gets a fresh isolated home and distinct logs; the state and report retain every attempt and its usage. A completed stage is never repeated.
 Cancellation interrupts the delay and prevents another launch. Other failures, timeouts, invalid
 verdicts, and exhausted retries stop with the available evidence preserved. There is no automatic
 model substitution or conversational-agent fallback. Once the command exits, it cannot restart a

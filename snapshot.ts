@@ -50,10 +50,15 @@ export async function verifySnapshotIdentities(root: string, expected: SnapshotF
         if (wanted.type !== "symlink" || wanted.target !== await readlink(path)) valid = false;
       } else if (!entry.isFile() || wanted.type !== "file") {
         valid = false;
-      } else if (!sameIdentity(await identity(path), wanted.identity) && (!wanted.sha256 || await sha256(path) !== wanted.sha256)) {
-        // Link creation and deletion legitimately change ctime. A digest fallback
-        // distinguishes those lifecycle changes from content tampering.
-        valid = false;
+      } else {
+        const actual = await identity(path);
+        if (wanted.identity && actual.mode !== wanted.identity.mode) {
+          valid = false;
+        } else if (!sameIdentity(actual, wanted.identity) && (!wanted.sha256 || await sha256(path) !== wanted.sha256)) {
+          // Link creation and deletion legitimately change ctime. A digest fallback
+          // distinguishes those lifecycle changes from content tampering.
+          valid = false;
+        }
       }
     }
   }
