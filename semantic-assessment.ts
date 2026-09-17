@@ -7,19 +7,23 @@ import type { ArmName, RunState } from "./types";
 type Candidate = "candidate-1" | "candidate-2";
 const candidates: Candidate[] = ["candidate-1", "candidate-2"];
 
-export const HARNESS_SCHEMA = {
-  type: "object", additionalProperties: false, required: candidates,
-  properties: Object.fromEntries(candidates.map(id => [id, {
-    type: "array", items: {
-      type: "object", additionalProperties: false, required: ["criterion", "files", "command", "rationale"],
-      properties: {
-        criterion: { type: "string" }, command: { type: "array", items: { type: "string" } }, rationale: { type: "string" },
-        files: { type: "array", items: { type: "object", additionalProperties: false, required: ["path", "source"],
-          properties: { path: { type: "string" }, source: { type: "string" } } } },
+export function semanticHarnessSchema(contract: CriteriaContract): object {
+  const criterionIds = contract.criteria.map(criterion => criterion.id);
+  return {
+    type: "object", additionalProperties: false, required: candidates,
+    properties: Object.fromEntries(candidates.map(id => [id, {
+      type: "array", maxItems: criterionIds.length, items: {
+        type: "object", additionalProperties: false, required: ["criterion", "files", "command", "rationale"],
+        properties: {
+          criterion: { enum: criterionIds }, command: { type: "array", minItems: 1, items: { type: "string" } },
+          rationale: { type: "string" },
+          files: { type: "array", items: { type: "object", additionalProperties: false, required: ["path", "source"],
+            properties: { path: { type: "string" }, source: { type: "string" } } } },
+        },
       },
-    },
-  }])),
-};
+    }])),
+  };
+}
 
 export function criterionAssessmentSchema(contract: CriteriaContract): object {
   const criterionIds = contract.criteria.map(criterion => criterion.id);
@@ -109,7 +113,7 @@ If the previous harness was broken, return only checks whose earlier status was 
 Round: ${round}. Fixed contract: ${JSON.stringify(contract)}
 Evaluator guidance fixed before either candidate ran: ${contract.evaluator_guidance ?? "No task-specific evaluator guidance was supplied."}
 Existing and earlier executed evidence: ${JSON.stringify(semanticPromptEvidence(evidence))}`;
-    const plan = await options.ask(`harness-${round}`, prompt, HARNESS_SCHEMA);
+    const plan = await options.ask(`harness-${round}`, prompt, semanticHarnessSchema(contract));
     if (!plan || typeof plan !== "object" || Array.isArray(plan)) throw new Error("invalid semantic harness response");
     for (const id of candidates) {
       const checks = validateSemanticChecks((plan as Record<string, unknown>)[id], contract);

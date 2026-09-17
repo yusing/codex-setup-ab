@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { checkOutcome, validateCriteria, validateSemanticChecks } from "./semantic";
-import { criterionAssessmentSchema, semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
+import { criterionAssessmentSchema, semanticHarnessSchema, semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
 import type { CommandEvidence } from "./types";
 
 const contract = validateCriteria({
@@ -32,6 +32,16 @@ test("assessment schema requires exactly the fixed criteria and excludes invente
     expect(schema.properties[candidate]?.minItems).toBe(1);
     expect(schema.properties[candidate]?.maxItems).toBe(1);
     expect(schema.properties[candidate]?.items.properties.criterion.enum).toEqual(["sum"]);
+  }
+});
+test("harness schema restricts checks to the fixed criterion IDs", () => {
+  const schema = semanticHarnessSchema(contract) as {
+    properties: Record<string, { maxItems: number; items: { properties: { criterion: { enum: string[] }; command: { minItems: number } } } }>;
+  };
+  for (const candidate of ["candidate-1", "candidate-2"]) {
+    expect(schema.properties[candidate]?.maxItems).toBe(1);
+    expect(schema.properties[candidate]?.items.properties.criterion.enum).toEqual(["sum"]);
+    expect(schema.properties[candidate]?.items.properties.command.minItems).toBe(1);
   }
 });
 test("semantic prompts bound duplicated command output while retaining explicit evidence references", () => {
