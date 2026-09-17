@@ -220,6 +220,9 @@ describe("report completion and winner eligibility", () => {
     await invalidateRun(run, reasons);
     const invalidState = await readState(run);
     expect(invalidState.invalidity_reasons).toEqual(reasons);
+    invalidState.judge!.status = "failed";
+    invalidState.judge!.error = "retained judge diagnostic";
+    await writeState(run, invalidState);
     await expect(judgeRun(run, auth)).rejects.toThrow("infrastructure-invalid run");
 
     const invalidPaths = await buildReport(run);
@@ -234,7 +237,11 @@ describe("report completion and winner eligibility", () => {
     expect(invalidReport.judge.usage.totals).toEqual(validReport.judge.usage.totals);
     const markdown = await readFile(invalidPaths.markdownPath, "utf8");
     expect(markdown).toContain("**Infrastructure validity: INVALID**");
+    expect(markdown).toContain("Status: **invalidated**");
+    expect(markdown).toContain("No judge winner is eligible from an incomplete or invalidated assessment.");
+    expect(markdown).toContain("Judge result and usage complete: **no**");
     expect(markdown).toContain(reasons[0]);
+    expect(markdown).toContain("Recorded error: retained judge diagnostic");
     expect(markdown).toContain(reasons[1]);
     expect(markdown).toContain("Measurements are retained, but gates, completion, and winner are suppressed.");
   });

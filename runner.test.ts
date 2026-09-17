@@ -463,6 +463,9 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   expect(modelLaunches.every(line => !line.includes("/evaluator/"))).toBe(true);
   const evaluatorLaunches = log.split("\n").filter(line => line.includes("create ") && line.includes("-semantic-"));
   expect(evaluatorLaunches.every(line => line.includes("--network none") && !line.includes("auth.json") && !line.includes("docker.sock"))).toBe(true);
+  expect(evaluatorLaunches.every(line => line.includes("XDG_STATE_HOME=/tmp/state") &&
+    line.includes("XDG_CONFIG_HOME=/tmp/config") && line.includes("MEKUGI_RUNTIME_DIR=/tmp/runtime"))).toBe(true);
+  expect(judgeLaunches.every(line => line.includes('sandbox_mode="danger-full-access"') && !line.includes('service_tier="fast"'))).toBe(true);
 });
 test("parallel semantic passes preserve the initiating failure", async () => {
   const run = await prepared();

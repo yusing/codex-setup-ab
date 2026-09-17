@@ -8,7 +8,7 @@
     {"id": "replay", "description": "Source calls remain independently deduplicated and router-authored copies can be stripped without losing original history."},
     {"id": "scope-and-tests", "description": "Unsupported displays stay bounded; unrelated behavior is preserved, the owning specification is updated, and focused tests cover the requested behavior."}
   ],
-  "preparation": "bun install --cwd plugins --frozen-lockfile && bun build plugins/tools.ts --outfile ./internal/router/toolplugin/dist/tools.js --production --target node --format esm --external hpatch:core/v1 --external mekugi:core/v1 && go mod download",
+  "preparation": "bun install --cwd plugins --frozen-lockfile && go mod download && go generate ./internal/router/toolplugin",
   "existing_tests": "go test ./internal/router -count=1",
   "qualification": "not-run"
 }

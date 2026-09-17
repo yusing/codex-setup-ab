@@ -16,7 +16,7 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
   const task = await readFile(join(runDir, state.task.path), "utf8");
   const report: JudgeReport = {
     status: "incomplete", started_at: new Date().toISOString(), model: "gpt-5.6-sol",
-    reasoning_effort: "high", service_tier: "priority", passes: [], winner: "none", usage_homes: [], attempts: [],
+    reasoning_effort: "high", service_tier: "default", passes: [], winner: "none", usage_homes: [], attempts: [],
   };
   state.judge = report;
   let stateWrites = Promise.resolve();
@@ -75,7 +75,7 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
                   ...order.flatMap((arm, candidateIndex) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${ids[candidateIndex]}:ro`]),
                   state.image_id ?? state.image, "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check",
                   "--output-schema", "/schema.json", "--model", report.model, "-c", 'model_reasoning_effort="high"',
-                  "-c", 'service_tier="fast"', "-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"', "-"],
+                  "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"],
               }));
             const raw = await readFile(outputPath, "utf8");
             const stderr = await readFile(errorPath, "utf8");

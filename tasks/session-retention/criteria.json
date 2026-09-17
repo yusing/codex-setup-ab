@@ -43,7 +43,7 @@
       "description": "Provider responses, tool results, command execution, replay payloads, routing, and continuation semantics remain compatible; owning user, architecture, router, journal, commentary, and read documentation and focused regression tests are complete, with no new dependencies or unrelated changes."
     }
   ],
-  "preparation": "bun install --cwd plugins --frozen-lockfile && bun build plugins/tools.ts --outfile ./internal/router/toolplugin/dist/tools.js --production --target node --format esm --external hpatch:core/v1 --external mekugi:core/v1 && go mod download",
+  "preparation": "bun install --cwd plugins --frozen-lockfile && go mod download && go generate ./internal/router/toolplugin",
   "existing_tests": "go test ./internal/router -count=1",
   "evaluator_guidance": "Use isolated temporary replay roots and deterministic clocks or timestamps. Exercise public or existing package-level behavior rather than requiring the reference solution's internal types or helper names. Cover the stated concurrency and storage boundaries without reading the excluded solution.",
   "qualification": "not-run"
