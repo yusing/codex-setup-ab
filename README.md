@@ -302,6 +302,7 @@ Use `prepare --criteria FILE` to supply the required task-derived evaluation con
   ],
   "preparation": "command that prepares the pinned baseline dependencies",
   "existing_tests": "command that runs the relevant existing tests",
+  "evaluator_guidance": "optional fixed runtime/setup guidance for adaptive harnesses",
   "qualification": "not-run"
 }
 ```
@@ -321,12 +322,19 @@ candidate source. Sol then reviews the source together with the executed evidenc
 scores, per-criterion decisions, issues, and winner for that pass. The runner rejects harness files
 that overwrite candidate files and detects changes to original files.
 
-A judge may repair a broken harness once per pass, including a failed check whose wiring was wrong. Earlier evidence remains available to the final assessment; real behavior failures must not be weakened into passes. Different names and test wiring are
-allowed; different required outcomes are not. Compilation failures caused by assumed names
-remain **unassessed**, not automatic candidate failures. A missing explicitly required public
-interface can be a source-only defect. Passing requires executed evidence plus the judge's
-assessment that the check actually covers the criterion. Both passes, disagreements, source,
-commands, outputs and repair attempts are retained.
+A judge may repair a broken harness once per pass, including a failed check whose wiring was wrong.
+Harnesses must use the runtime required by the inspected entry point. Evaluator-owned setup mistakes,
+such as a wrong interpreter, invented entry point, or missing harness-only dependency, must be
+reported as `HARNESS_ERROR`; candidate errors reached through documented supported setup remain
+behavioral evidence. Ordinary assertion failures are reserved for checks that reached the target
+behavior.
+Earlier evidence remains available to the final assessment; real behavior failures must not be
+weakened into passes. Different names and test wiring are allowed; different required outcomes are
+not. Compilation or setup failures caused by assumed names, runtimes, or entry points remain
+**unassessed**, not automatic candidate failures. A missing explicitly required public interface
+can be a source-only defect. Passing requires executed evidence plus the judge's assessment that the
+check actually covers the criterion. Both passes, disagreements, source, commands, outputs and
+repair attempts are retained.
 
 Prewritten hidden tests are no longer supported. Supply behavioral criteria, not evaluator source. Semantic assessment requires both arms and cannot restart a started assessment.
 

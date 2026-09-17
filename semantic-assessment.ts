@@ -21,18 +21,22 @@ export const HARNESS_SCHEMA = {
   }])),
 };
 
-export const CRITERION_SCHEMA = {
-  type: "object", additionalProperties: false, required: candidates,
-  properties: Object.fromEntries(candidates.map(id => [id, {
-    type: "array", items: {
-      type: "object", additionalProperties: false, required: ["criterion", "status", "basis", "reasoning"],
-      properties: {
-        criterion: { type: "string" }, status: { enum: ["pass", "fail", "unassessed"] },
-        basis: { enum: ["executed", "source-only"] }, reasoning: { type: "string" },
+export function criterionAssessmentSchema(contract: CriteriaContract): object {
+  const criterionIds = contract.criteria.map(criterion => criterion.id);
+  return {
+    type: "object", additionalProperties: false, required: candidates,
+    properties: Object.fromEntries(candidates.map(id => [id, {
+      type: "array", minItems: criterionIds.length, maxItems: criterionIds.length,
+      items: {
+        type: "object", additionalProperties: false, required: ["criterion", "status", "basis", "reasoning"],
+        properties: {
+          criterion: { enum: criterionIds }, status: { enum: ["pass", "fail", "unassessed"] },
+          basis: { enum: ["executed", "source-only"] }, reasoning: { type: "string" },
+        },
       },
-    },
-  }])),
-};
+    }])),
+  };
+}
 
 export interface SemanticAssessmentEvidence {
   candidates: Record<Candidate, CriterionEvidence[]>;
@@ -97,9 +101,13 @@ Complete evaluator evidence is mounted read-only under /evidence. Prompt output 
 Return check source and argv arrays in the schema. Each check's files are added to an isolated copy of that candidate at their relative paths.
 Do not execute candidate code in this credential-bearing model container. Do not overwrite or modify any existing candidate implementation or tests. The execution service runs checks offline without model authentication.
 Use only available dependencies and relevant checks. Include assertions that execute the criterion; zero exit from a no-op is not evidence.
-Required public interfaces are only those explicitly named by the contract. Different internal names and test wiring are allowed.
-If the previous harness was broken, return only checks whose earlier status was fail or unassessed and whose wiring you can show was wrong. Repair that harness without weakening the contract; leave real behavioral failures intact. Missing coverage remains unassessed.
+Before writing checks, inspect the actual entry point and relevant existing tests. Use the runtime or interpreter they require when loading code; test cross-runtime syntax separately.
+An evaluator-owned setup mistake that prevents the target behavior from running, such as a wrong interpreter, invented entry point, or missing harness-only dependency, is a broken harness. Catch it, print a line beginning with HARNESS_ERROR:, and exit 125.
+A candidate error reached through the documented supported setup is behavioral evidence, even when it occurs during initialization; preserve its ordinary nonzero exit. Use assertion failures only after the criterion is exercised.
+Include exactly the fixed contract criteria in final assessments. Existing tests are separate evidence and must not be added as a criterion.
+If the previous harness was broken, return only checks whose earlier status was fail or unassessed and whose wiring you can show was wrong. Repair interpreter, setup, and target reachability without weakening the contract; leave real behavioral failures intact. Missing coverage remains unassessed.
 Round: ${round}. Fixed contract: ${JSON.stringify(contract)}
+Evaluator guidance fixed before either candidate ran: ${contract.evaluator_guidance ?? "No task-specific evaluator guidance was supplied."}
 Existing and earlier executed evidence: ${JSON.stringify(semanticPromptEvidence(evidence))}`;
     const plan = await options.ask(`harness-${round}`, prompt, HARNESS_SCHEMA);
     if (!plan || typeof plan !== "object" || Array.isArray(plan)) throw new Error("invalid semantic harness response");

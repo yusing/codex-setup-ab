@@ -16,6 +16,7 @@ export interface CriteriaContract {
   preparation: string;
   allowed_paths?: string[];
   existing_tests: string;
+  evaluator_guidance?: string;
   qualification: "not-run";
 }
 
@@ -57,6 +58,7 @@ export function validateCriteria(value: unknown, taskSha256: string): CriteriaCo
     }
     ids.add(criterion.id);
   }
+  if (contract.evaluator_guidance !== undefined && !nonempty(contract.evaluator_guidance)) throw new Error("criteria evaluator_guidance must be a nonempty string");
   if (!nonempty(contract.preparation) || !nonempty(contract.existing_tests)) throw new Error("criteria require dependency preparation and existing test commands");
   if (contract.allowed_paths !== undefined && (!Array.isArray(contract.allowed_paths) || !contract.allowed_paths.length ||
       !contract.allowed_paths.every(path => typeof path === "string" && path.length > 0 && !path.startsWith("/") &&

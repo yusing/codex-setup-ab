@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { checkOutcome, validateCriteria, validateSemanticChecks } from "./semantic";
-import { semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
+import { criterionAssessmentSchema, semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
 import type { CommandEvidence } from "./types";
 
 const contract = validateCriteria({
@@ -14,6 +14,7 @@ test("criteria are pinned before candidate-specific interface adaptation", () =>
   expect(() => validateCriteria({ ...contract, criteria: [contract.criteria[0], contract.criteria[0]] }, "task")).toThrow();
   expect(() => validateCriteria({ ...contract, qualification: "base-and-solution" }, "task")).toThrow();
   expect(() => validateCriteria({ ...contract, black_box: [] }, "task")).toThrow("no longer supported");
+  expect(() => validateCriteria({ ...contract, evaluator_guidance: "" }, "task")).toThrow("nonempty string");
   const check = { criterion: "sum", files: [{ path: "additional.test.js", source: "" }], command: ["node", "--test"], rationale: "Sum is the required behavior." };
   expect(validateSemanticChecks([check], contract)).toHaveLength(1);
   expect(() => validateSemanticChecks([{ ...check, criterion: "weaker-outcome" }], contract)).toThrow();
@@ -22,6 +23,17 @@ test("criteria are pinned before candidate-specific interface adaptation", () =>
   }
 });
 
+
+test("assessment schema requires exactly the fixed criteria and excludes invented IDs", () => {
+  const schema = criterionAssessmentSchema(contract) as {
+    properties: Record<string, { minItems: number; maxItems: number; items: { properties: { criterion: { enum: string[] } } } }>;
+  };
+  for (const candidate of ["candidate-1", "candidate-2"]) {
+    expect(schema.properties[candidate]?.minItems).toBe(1);
+    expect(schema.properties[candidate]?.maxItems).toBe(1);
+    expect(schema.properties[candidate]?.items.properties.criterion.enum).toEqual(["sum"]);
+  }
+});
 test("semantic prompts bound duplicated command output while retaining explicit evidence references", () => {
   const execution: CommandEvidence = {
     command: "test", started_at: "", elapsed_ms: 1, exit_code: 0,
@@ -50,6 +62,8 @@ test("judge harness compilation problems remain unassessed, not candidate failur
   expect(checkOutcome(check, { ...execution, exit_code: 0, stderr: "caught expected Error: no such file or directory" }).status).toBe("pass");
   expect(checkOutcome(check, { ...execution, exit_code: 0, stderr: "" }).status).toBe("pass");
   expect(checkOutcome(check, { ...execution, exit_code: -1, stderr: "" }).status).toBe("unassessed");
+  expect(checkOutcome(check, { ...execution, exit_code: 125, stderr: "HARNESS_ERROR: wrong interpreter" }).status).toBe("unassessed");
+  expect(checkOutcome(check, { ...execution, stderr: "candidate initialization regression" }).status).toBe("fail");
 });
 
 test("a missing explicit public interface is a source-only defect, not a failed invented harness", () => {
