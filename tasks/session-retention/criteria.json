@@ -1,0 +1,50 @@
+{
+  "schema": "codex-ab.criteria.v1",
+  "task_sha256": "82399bf955a1e953d9fa0fcffcdc77ad0baba27563146c7e41872eb64567ccad",
+  "criteria": [
+    {
+      "id": "ownership-and-dependencies",
+      "description": "Stable-thread catalogs retain replay mappings, journals and receipts, read/source records, change/review dependencies, and commentary across workspaces, routing remaps, forks, and restarts; inherited visible dependencies gain ownership and shared records survive removal of one owner."
+    },
+    {
+      "id": "age-and-pressure-retention",
+      "description": "Maintenance expires sessions after 14 inactive days, runs age sweeps at most hourly during preparation, and reclaims least-recently-active inactive sessions under pressure before publishing new durable facts."
+    },
+    {
+      "id": "storage-accounting",
+      "description": "Capacity decisions include catalogs, indexes, and pending replacements while preserving the 1 GiB managed-data, 256 MiB retained-read, 16 MiB commentary, and 32 MiB per-record boundaries."
+    },
+    {
+      "id": "leases-and-atomicity",
+      "description": "Cross-process leases and atomic publication protect active turns, preparation, handoffs, workers, yielded work, and snapshot adoption; terminals release only matching idle leases, stale terminals preserve newer work, and shutdown releases process-owned leases."
+    },
+    {
+      "id": "safe-cleanup",
+      "description": "Cleanup removes only exact Mekugi-managed records, never follows symlinks or removes unknown or user-owned data, preserves leased and shared dependencies, does not alter live process authority, and reports failures without claiming success."
+    },
+    {
+      "id": "legacy-and-missing-data",
+      "description": "Legacy ownership is adopted only from reliable visible replay, journal, read, or change evidence; recent unattributed records stay protected, old unattributed records use modification age, and missing references explain expiry or storage pressure without rerunning operations."
+    },
+    {
+      "id": "changes-and-reads",
+      "description": "Change retirement preserves stream high-water counters, exposes partial retirement, retains dependencies reached through change reads, source records, and duplicate cursors, and pins complete dependency chains for active readers."
+    },
+    {
+      "id": "diagnostics",
+      "description": "Protected-capacity failures identify required bytes, the limiting budget, and a recovery action; read and journal publication retain underlying causes; successful cleanup and auxiliary failures use the existing non-invasive user or worker reporting paths."
+    },
+    {
+      "id": "lifetime-collections",
+      "description": "Lifetime ceilings on thread, source, usage, journal-thread, and mutation-receipt identities are removed while live queues, per-child queues, journal items, response publication, and record sizes remain bounded; queue recovery and token-overflow behavior remain correct."
+    },
+    {
+      "id": "compatibility-and-completion",
+      "description": "Provider responses, tool results, command execution, replay payloads, routing, and continuation semantics remain compatible; owning user, architecture, router, journal, commentary, and read documentation and focused regression tests are complete, with no new dependencies or unrelated changes."
+    }
+  ],
+  "preparation": "bun install --cwd plugins --frozen-lockfile && bun build plugins/tools.ts --outfile ./internal/router/toolplugin/dist/tools.js --production --target node --format esm --external hpatch:core/v1 --external mekugi:core/v1 && go mod download",
+  "existing_tests": "go test ./internal/router -count=1",
+  "evaluator_guidance": "Use isolated temporary replay roots and deterministic clocks or timestamps. Exercise public or existing package-level behavior rather than requiring the reference solution's internal types or helper names. Cover the stated concurrency and storage boundaries without reading the excluded solution.",
+  "qualification": "not-run"
+}
