@@ -48,6 +48,62 @@ async function removeAndVerify(docker: string, name: string, owner: string, cont
   if (!isAbsent) throw new OwnedContainerError(`container cleanup could not verify ${name} is absent`);
 }
 
+export interface OwnedNetwork {
+  name: string;
+  remove(): Promise<void>;
+}
+
+async function inspectNetwork(docker: string, name: string): Promise<{ present: boolean; owner?: string }> {
+  const result = await exec([docker, "network", "inspect", "--format", '{{ index .Labels "codex-ab.owner" }}', name]);
+  if (result.exitCode === 0) return { present: true, owner: result.stdout.trim() };
+  if (/(?:no such network|network .* not found)/i.test(result.stderr)) return { present: false };
+  throw new OwnedContainerError(`cannot verify Docker network ${name}: ${result.stderr.trim() || `inspect exited ${result.exitCode}`}`);
+}
+
+async function removeNetwork(docker: string, name: string, owner: string): Promise<void> {
+  const state = await inspectNetwork(docker, name);
+  if (!state.present) return;
+  if (state.owner !== owner) throw new OwnedContainerError(`refusing to remove unowned Docker network collision: ${name}`);
+  const removed = await exec([docker, "network", "rm", name]);
+  const remaining = await inspectNetwork(docker, name);
+  if (removed.exitCode !== 0 && remaining.present) {
+    throw new OwnedContainerError(`Docker network cleanup failed for ${name}: ${removed.stderr.trim() || `network rm exited ${removed.exitCode}`}`);
+  }
+  if (remaining.present) throw new OwnedContainerError(`Docker network cleanup could not verify ${name} is absent`);
+}
+
+/** Create an IPv6-capable, run-owned provider network and return an idempotent cleanup handle. */
+export async function createOwnedNetwork(docker: string, name: string, signal?: AbortSignal): Promise<OwnedNetwork> {
+  const owner = crypto.randomUUID();
+  if (signal?.aborted) throw new OwnedContainerError(`Docker network ${name} canceled before creation`);
+  if ((await inspectNetwork(docker, name)).present) throw new OwnedContainerError(`Docker network name already exists and is not owned by this attempt: ${name}`);
+  const created = await exec([docker, "network", "create", "--ipv6", "--label", `codex-ab.owner=${owner}`, name], { signal });
+  if (created.exitCode !== 0 || created.canceled || signal?.aborted) {
+    const raced = await inspectNetwork(docker, name);
+    if (raced.present && raced.owner === owner) await removeNetwork(docker, name, owner);
+    else if (raced.present) throw new OwnedContainerError(`refusing to remove unowned Docker network after create failure: ${name}`);
+    throw new OwnedContainerError(`Docker network ${name} was not safely created: ${created.stderr.trim()}`, created);
+  }
+  let removed = false;
+  return {
+    name,
+    async remove(): Promise<void> {
+      if (removed) return;
+      await removeNetwork(docker, name, owner);
+      removed = true;
+    },
+  };
+}
+
+export async function withOwnedNetwork<T>(docker: string, name: string, signal: AbortSignal | undefined, action: (network: string) => Promise<T>): Promise<T> {
+  const network = await createOwnedNetwork(docker, name, signal);
+  try {
+    return await action(network.name);
+  } finally {
+    await network.remove();
+  }
+}
+
 /** Own one named container from creation through verified absence. */
 export async function runOwnedContainer(options: OwnedContainerOptions): Promise<OwnedContainerResult> {
   const { docker, name, signal } = options;

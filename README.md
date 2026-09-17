@@ -59,6 +59,11 @@ Validate the image and snapshotted dependencies without making a model request:
 ./dist/codex-ab preflight --run-dir "$run_dir"
 ```
 
+Preflight verifies provider reachability over the same kind of temporary, IPv6-capable Docker
+network used for inference. Agent pairs and each judge attempt receive run-owned networks that
+are removed after their containers stop; offline preparation and evaluation remain on
+`--network none`. This supports IPv6-only provider endpoints without using host networking.
+
 ## Run and grade both arms
 
 After reviewing `run.json`, start the model runs explicitly:

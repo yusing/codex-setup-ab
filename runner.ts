@@ -1,7 +1,7 @@
 import { chmod, copyFile, cp, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
-import { OwnedContainerError, runOwnedContainer } from "./container";
+import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedNetwork } from "./container";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
 import { executorOwnership, protectedArgs, protectedPreflight } from "./isolation";
@@ -100,6 +100,25 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   if (binaryHash.exitCode !== 0 || hashes[0] !== state.runtime_tools.codex_sha256 || hashes[1] !== state.runtime_tools.codex_code_mode_host_sha256 || (state.protected_runtime && hashes[2] !== state.runtime_tools.codex_sha256)) {
     throw new Error(`container Codex hash differs from prepared source: ${binaryHash.stdout.trim()}`);
   }
+  progress("checking required provider network reachability without model inference");
+  const providerEndpoints = [
+    ["chatgpt", "https://chatgpt.com/"],
+    ...(state.comparison === "codex-mekugi-grok" ? [["grok", "https://cli-chat-proxy.grok.com/"]] : []),
+  ];
+  const networkChecks: Array<{ provider: string; endpoint: string; result: Awaited<ReturnType<typeof runOwnedContainer>> }> = [];
+  await withOwnedNetwork(docker, `${prefix}-provider`, signal, async providerNetwork => {
+    for (const [provider, endpoint] of providerEndpoints) {
+      const result = await runOwnedContainer({ docker, name: `${prefix}-network-${provider}`, signal, timeoutMs: 30_000,
+        createArgs: ["--network", providerNetwork, image, "curl", "--silent", "--show-error", "--output", "/dev/null", "--write-out", "%{http_code}",
+          "--connect-timeout", "10", "--max-time", "20", endpoint] });
+      networkChecks.push({ provider, endpoint, result });
+      if (result.exitCode !== 0 || !/^[1-5][0-9]{2}$/.test(result.stdout.trim())) {
+        await writeFile(join(runDir, "artifacts/preflight-network.json"), JSON.stringify(networkChecks, null, 2));
+        throw new Error(`container cannot reach the ${provider} provider over its isolated Docker network: ${result.stderr.trim() || `curl exited ${result.exitCode}`}. Fix Docker DNS, IPv6, NAT, or firewall forwarding before starting paid inference`);
+      }
+    }
+  });
+  await writeFile(join(runDir, "artifacts/preflight-network.json"), JSON.stringify(networkChecks, null, 2));
   progress("exercising the local code-mode host protocol without model access");
   const toolHost = await runOwnedContainer({ docker, name: `${prefix}-toolhost`, signal, timeoutMs: 15_000, createArgs: ["--network", "none", image, "node", "-e", TOOLHOST_SMOKE_SCRIPT] });
   if (toolHost.exitCode !== 0 || toolHost.stdout.trim() !== "CODEX_AB_TOOL_HOST_OK") throw new Error(`code-mode tool host smoke failed: ${[toolHost.stdout.trim(), toolHost.stderr.trim()].filter(Boolean).join("; ")}`);
@@ -245,7 +264,7 @@ export async function gradeArm(docker: string, runDir: string, state: RunState, 
   return { preparation: ready, router_suite: pending, elapsed_ms: 0, passed: false };
 }
 
-async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, cache: string, moduleCache: string, task: string, signal: AbortSignal): Promise<ArmResult> {
+async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, cache: string, moduleCache: string, providerNetwork: string, task: string, signal: AbortSignal): Promise<ArmResult> {
   const name = `codex-ab-${state.id}-${arm}`;
   const repository = resolve(runDir, state.arms[arm].repository);
   const stdoutPath = join(output, "codex.jsonl");
@@ -275,7 +294,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
-    result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), ...(grokArm ? [] : ["-i"]), ...grokPath,
+    result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, ...(grokArm ? [] : ["-i"]), ...grokPath,
       "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`, ...currentSetupMounts(runDir, state, arm), ...exportMount, ...grokTask,
       ...(protectedArm ? [...protectedArgs(runDir, state, runtime), "-v", `${join(moduleCache, "mod")}:/go/pkg/mod:ro`] : []),
       imageRef(state), ...launcher, ...(grokArm ? [] : ["exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
@@ -348,7 +367,9 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
+  let providerNetwork: OwnedNetwork | undefined;
   try {
+    providerNetwork = await createOwnedNetwork(docker, `codex-ab-${state.id}-provider`, controller.signal);
     const auth = resolve(options.authFile);
     const authMode = (await import("node:fs/promises")).stat(auth).then(s => s.mode & 0o777);
     if ((await authMode) & 0o077) throw new Error("auth file must not be accessible by group or others (expected mode 0600)");
@@ -392,7 +413,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         status: "started",
       };
       await writeState(runDir, state);
-      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, setups[arm]!.cache, setups[arm]!.moduleCache, task, controller.signal)));
+      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, setups[arm]!.cache, setups[arm]!.moduleCache, providerNetwork!.name, task, controller.signal)));
       settled.forEach((item, index) => {
         const arm = batch[index]!;
         const attempt = state.arm_attempts![arm]!;
@@ -439,6 +460,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     await writeState(runDir, state);
     throw error;
   } finally {
+    await providerNetwork?.remove();
     options.signal?.removeEventListener("abort", externalCancel);
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);

@@ -449,6 +449,10 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   expect(log.indexOf("-current-capture")).toBeLessThan(log.indexOf("-judge-1-harness"));
   expect(log.indexOf("-stock-capture")).toBeLessThan(log.indexOf("-judge-1-harness"));
   const modelLaunches = log.split("\n").filter(line => line.includes(" exec --json ") && !line.includes("-judge-"));
+  expect(modelLaunches.every(line => line.includes(`--network codex-ab-${state.id}-provider`))).toBe(true);
+  const judgeLaunches = log.split("\n").filter(line => / create --rm --name codex-ab-.*-judge-[12]-(?:harness-1|assessment)-1 /.test(line));
+  expect(judgeLaunches).toHaveLength(4);
+  expect(judgeLaunches.every(line => line.includes("--network codex-ab-") && line.includes("-judge-provider-"))).toBe(true);
   expect(modelLaunches.every(line => !line.includes("/evaluator/"))).toBe(true);
   const evaluatorLaunches = log.split("\n").filter(line => line.includes("create ") && line.includes("-semantic-"));
   expect(evaluatorLaunches.every(line => line.includes("--network none") && !line.includes("auth.json") && !line.includes("docker.sock"))).toBe(true);
@@ -559,7 +563,7 @@ async function fakeDocker(sleepSeconds: number): Promise<{ path: string; log: st
   return { path, log };
 }
 
-async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = "", wrongProtectedBinary = false): Promise<{ path: string; log: string; stateDir: string }> {
+async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = "", wrongProtectedBinary = false, networkFailure = false): Promise<{ path: string; log: string; stateDir: string }> {
   const path = join(root, `fake-owned-docker-${crypto.randomUUID()}.sh`);
   const log = `${path}.log`;
   const stateDir = `${path}.state`;
@@ -570,6 +574,30 @@ mkdir -p '${stateDir}'
 printf '%s %s\\n' "$(date +%s%N)" "$*" >> '${log}'
 operation="$1"; shift
 case "$operation" in
+  network)
+    action="$1"; shift
+    case "$action" in
+      create)
+        name=; owner=; previous=
+        for argument in "$@"; do
+          [ "$previous" = --label ] && owner="\${argument#codex-ab.owner=}"
+          name="$argument"; previous="$argument"
+        done
+        printf '%s' "$owner" >'${stateDir}/network-'$name
+        echo "network-$name"
+        ;;
+      inspect)
+        name=; for argument in "$@"; do name="$argument"; done
+        if [ ! -f '${stateDir}/network-'$name ]; then echo "Error: No such network: $name" >&2; exit 1; fi
+        cat '${stateDir}/network-'$name
+        ;;
+      rm)
+        name="$1"
+        rm -f '${stateDir}/network-'$name
+        echo "$name"
+        ;;
+    esac
+    ;;
   create)
     name=; previous=
     for argument in "$@"; do
@@ -593,6 +621,7 @@ case "$operation" in
       *-preflight-image) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.154.0' ;;
       *-preflight-identity) printf '%s\\n' '${process.getuid?.()}:${process.getgid?.()}' ;;
       *-preflight-hash) ${missingHost ? `printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex'; status=1` : `printf '%s  %s\\n%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' '${codeModeHostHash}' '/usr/local/bin/codex-code-mode-host'; printf '%s  %s\\n' '${wrongProtectedBinary ? "bad" : codexHash}' '/usr/local/libexec/codex-real'`} ;;
+      *-preflight-network-*) ${networkFailure ? "echo 'curl: (7) Network unreachable' >&2; status=7" : "printf '%s' '403'"} ;;
       *-preflight-toolhost) printf '%s\\n' 'CODEX_AB_TOOL_HOST_OK' ;;
       *-preflight-grok) printf '%s\\n' 'grok 1.0.30' ;;
       *-warm) ${failWarm ? "echo prewarm-failed >&2; status=9" : ":"} ;;
@@ -649,11 +678,28 @@ test("non-paid preflight leaves a prepared run unstarted", async () => {
   const run = await prepared();
   const fake = await fakeOwnedDocker(0);
   await preflightRun(run, fake.path);
-  expect((await readState(run)).status).toBe("prepared");
+  const state = await readState(run);
+  expect(state.status).toBe("prepared");
+  expect(await Bun.file(join(fake.stateDir, `network-codex-ab-${state.id}-preflight-provider`)).exists()).toBe(false);
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain("mise ls --current --missing --no-header");
   expect(log).not.toContain("go generate");
   expect(log).toContain("cd /tmp/preflight && true && git diff --quiet HEAD --");
+});
+
+test("preflight rejects unavailable provider networking before inference", async () => {
+  const run = await prepared();
+  const fake = await fakeOwnedDocker(0, false, false, "", false, true);
+  await expect(preflightRun(run, fake.path)).rejects.toThrow("Fix Docker DNS, IPv6, NAT, or firewall forwarding before starting paid inference");
+  expect((await readState(run)).status).toBe("prepared");
+  const log = await readFile(fake.log, "utf8");
+  expect(log).toContain("network create --ipv6 --label codex-ab.owner=");
+  expect(log).toContain("--network codex-ab-");
+  expect(log).toContain("network rm codex-ab-");
+  expect(log).toContain("-preflight-network-chatgpt");
+  expect(log).not.toMatch(/-(stock|current) /);
+  const evidence = JSON.parse(await readFile(join(run, "artifacts/preflight-network.json"), "utf8"));
+  expect(evidence).toMatchObject([{ provider: "chatgpt", endpoint: "https://chatgpt.com/", result: { exitCode: 7 } }]);
 });
 
 test("preflight reports the missing image and Docker cause", async () => {
@@ -734,6 +780,9 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   const candidateChecks = log.split("\n").filter(line => line.includes(" create ") && line.includes("-grade-verify "));
   expect(candidateChecks).toHaveLength(4);
   expect(candidateChecks.every(line => line.includes("--network none"))).toBe(true);
+  const agentContainers = log.split("\n").filter(line => / create --rm --name codex-ab-.*-(?:stock|current) --label /.test(line));
+  expect(agentContainers).toHaveLength(2);
+  expect(agentContainers.every(line => line.includes(`--network codex-ab-${state.id}-provider`))).toBe(true);
   expect(log.match(/ codex exec /g)?.length).toBe(2);
   const calls = log.split("\n");
   const agentStarted = calls.filter(line => / start --attach --interactive codex-ab-.*-(stock|current)$/.test(line)).map(line => BigInt(line.split(" ")[0]!));

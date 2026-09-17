@@ -1,7 +1,7 @@
 import { chmod, copyFile, cp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { runOwnedContainer } from "./container";
+import { runOwnedContainer, withOwnedNetwork } from "./container";
 import { OUTPUT_SCHEMA, lastAgentMessage, mappedWinner, validateJudgePass } from "./judge";
 import { CRITERION_SCHEMA, prepareSemanticAssessment, semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
 import { verifyPreparedInputs } from "./prepare";
@@ -54,20 +54,28 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
           const outputPath = join(runDir, attempt.stdout_path);
           const errorPath = join(runDir, attempt.stderr_path);
           try {
-            const result = await runOwnedContainer({
-              docker, name: `codex-ab-${state.id}-judge-${pass}-${stage}-${number}`, signal: controller.signal,
-              timeoutMs: state.timeout_seconds * 1000, stdin: prompt, stdoutFile: outputPath, stderrFile: errorPath,
-              createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "-i",
-                "-v", `${home}:/home/ubuntu`, "-v", `${schemaPath}:/schema.json:ro`,
-                "-v", `${join(runDir, "evaluator/semantic", `pass-${pass}`)}:/evidence:ro`,
-                ...order.flatMap((arm, index) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${ids[index]}:ro`]),
-                state.image_id ?? state.image, "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check",
-                "--output-schema", "/schema.json", "--model", report.model, "-c", 'model_reasoning_effort="high"',
-                "-c", 'service_tier="fast"', "-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"', "-"],
-            });
+            const result = await withOwnedNetwork(docker,
+              `codex-ab-${state.id}-judge-provider-${pass}-${stage}-${number}`, controller.signal,
+              providerNetwork => runOwnedContainer({
+                docker, name: `codex-ab-${state.id}-judge-${pass}-${stage}-${number}`, signal: controller.signal,
+                timeoutMs: state.timeout_seconds * 1000, stdin: prompt, stdoutFile: outputPath, stderrFile: errorPath,
+                createArgs: ["--network", providerNetwork, "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "-i",
+                  "-v", `${home}:/home/ubuntu`, "-v", `${schemaPath}:/schema.json:ro`,
+                  "-v", `${join(runDir, "evaluator/semantic", `pass-${pass}`)}:/evidence:ro`,
+                  ...order.flatMap((arm, index) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${ids[index]}:ro`]),
+                  state.image_id ?? state.image, "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check",
+                  "--output-schema", "/schema.json", "--model", report.model, "-c", 'model_reasoning_effort="high"',
+                  "-c", 'service_tier="fast"', "-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"', "-"],
+              }));
             const raw = await readFile(outputPath, "utf8");
             const stderr = await readFile(errorPath, "utf8");
-            if (result.timedOut || result.canceled || controller.signal.aborted) throw new Error("semantic judge timed out or canceled");
+            if (result.timedOut) {
+              const networkFailure = /Network unreachable|waiting for network|Connection failed: error sending request/i.test(`${raw}\n${stderr}`);
+              throw new Error(networkFailure
+                ? "semantic judge could not reach the model provider before its timeout; check Docker DNS, NAT, and firewall forwarding"
+                : `semantic judge timed out after ${state.timeout_seconds} seconds`);
+            }
+            if (result.canceled || controller.signal.aborted) throw new Error("semantic judge canceled");
             if (result.exitCode !== 0) {
               const capacity = stderr.includes("Selected model is at capacity") || raw.split("\n").some(line => {
                 try { const event = JSON.parse(line); return event.type === "error" && String(event.message).includes("Selected model is at capacity"); }
