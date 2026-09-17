@@ -132,15 +132,16 @@ previous reports remain unchanged.
 
 ## Stock Codex versus stock plus Mekugi
 
-For the pinned medium NVM task, the convenience runner builds the CLI and a missing local image,
-prepares the selected comparison, runs model-free preflight, and then starts the paid pair:
+The convenience runner builds the CLI and a missing local image, prepares the selected task and
+comparison, runs model-free preflight, and then starts the paid pair:
 
 ```sh
-scripts/run.sh --preset stock-mekugi
+scripts/run.sh --preset stock-mekugi --task session-retention
 ```
 
-Other presets are `stock-current`, `current-vs-current-mekugi`, and `codex-mekugi-grok`. Run
-`scripts/run.sh --help` for path and image overrides.
+Available tasks are `nvm-download-no-eval` and `session-retention`; omitting `--task` keeps the NVM
+default. Other presets are `stock-current`, `current-vs-current-mekugi`, and
+`codex-mekugi-grok`. Run `scripts/run.sh --help` for path and image overrides.
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable and its matching `shell` helper, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
 

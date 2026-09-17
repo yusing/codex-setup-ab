@@ -3,9 +3,16 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run.sh --preset NAME
+Usage: scripts/run.sh --preset NAME [--task NAME]
 
-Prepare, preflight, and run the pinned medium NVM task with one comparison:
+Prepare, preflight, and run one pinned task with one comparison:
+
+Tasks:
+
+  nvm-download-no-eval  Harden NVM's curl-to-wget argument translation (default)
+  session-retention     Add session-aware Mekugi replay storage retention
+
+Comparisons:
 
   stock-current       Minimal stock Codex vs the current setup
   current-vs-current-mekugi
@@ -33,6 +40,7 @@ die() {
 }
 
 preset=
+task=
 while (($#)); do
   case "$1" in
     --preset)
@@ -46,6 +54,19 @@ while (($#)); do
       preset=${1#*=}
       shift
       ;;
+    --task)
+      (($# >= 2)) || die "--task requires a value"
+      [[ -z "$task" ]] || die "--task may be supplied only once"
+      [[ -n "$2" ]] || die "--task requires a nonempty value"
+      task=$2
+      shift 2
+      ;;
+    --task=*)
+      [[ -z "$task" ]] || die "--task may be supplied only once"
+      task=${1#*=}
+      [[ -n "$task" ]] || die "--task requires a nonempty value"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -56,6 +77,11 @@ while (($#)); do
   esac
 done
 [[ -n "$preset" ]] || { usage >&2; exit 2; }
+task=${task:-nvm-download-no-eval}
+case "$task" in
+  nvm-download-no-eval|session-retention) ;;
+  *) die "unknown task '$task'; run with --help to list tasks" ;;
+esac
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
@@ -78,11 +104,15 @@ case "$preset" in
   *) die "unknown preset '$preset'; run with --help to list presets" ;;
 esac
 
-if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
-  die "source path exists but is not a Git checkout: $source_dir"
-fi
-if [[ ! -d "$source_dir/.git" ]]; then
-  git clone https://github.com/nvm-sh/nvm.git "$source_dir"
+if [[ "$task" == nvm-download-no-eval ]]; then
+  if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
+    die "source path exists but is not a Git checkout: $source_dir"
+  fi
+  if [[ ! -d "$source_dir/.git" ]]; then
+    git clone https://github.com/nvm-sh/nvm.git "$source_dir"
+  fi
+elif ! git -C "$mekugi_source" rev-parse --git-dir >/dev/null 2>&1; then
+  die "Mekugi source is not a Git checkout: $mekugi_source"
 fi
 
 image_build_reason=
@@ -130,13 +160,31 @@ fi
 
 prepare_args=(
   ./dist/codex-ab prepare
-  --task-pack ./tasks/nvm-download-no-eval/manifest.json
-  --source "$source_dir"
   --comparison "$comparison"
-  --reasoning-effort medium
   --codex-bin "$codex_bin"
   --image "$image"
 )
+case "$task" in
+  nvm-download-no-eval)
+    prepare_args+=(
+      --task-pack ./tasks/nvm-download-no-eval/manifest.json
+      --source "$source_dir"
+      --reasoning-effort medium
+    )
+    ;;
+  session-retention)
+    prepare_args+=(
+      --profile mekugi
+      --source "$mekugi_source"
+      --base 302ee2d6691b406f30fcbea38459c6ddc16f6935
+      --forbidden d49862486236d8a507bc0986aa1d543481f8fb61
+      --task ./tasks/session-retention/task.md
+      --criteria ./tasks/session-retention/criteria.json
+      --reasoning-effort xhigh
+      --timeout 3600
+    )
+    ;;
+esac
 run_args=(
   ./dist/codex-ab run
   --auth-file "$auth_file"
