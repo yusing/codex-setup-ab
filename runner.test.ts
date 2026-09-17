@@ -453,12 +453,31 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   expect(modelLaunches.every(line => line.includes(`--network codex-ab-${state.id}-provider`))).toBe(true);
   const judgeLaunches = log.split("\n").filter(line => / create --rm --name codex-ab-.*-judge-[12]-(?:harness-1|assessment)-1 /.test(line));
   expect(judgeLaunches).toHaveLength(4);
+  const firstHarnessFinish = Math.min(
+    log.indexOf(`FINISH codex-ab-${state.id}-judge-1-harness-1-1`),
+    log.indexOf(`FINISH codex-ab-${state.id}-judge-2-harness-1-1`),
+  );
+  expect(log.indexOf(`start --attach codex-ab-${state.id}-judge-1-harness-1-1`)).toBeLessThan(firstHarnessFinish);
+  expect(log.indexOf(`start --attach codex-ab-${state.id}-judge-2-harness-1-1`)).toBeLessThan(firstHarnessFinish);
   expect(judgeLaunches.every(line => line.includes("--network codex-ab-") && line.includes("-judge-provider-"))).toBe(true);
   expect(modelLaunches.every(line => !line.includes("/evaluator/"))).toBe(true);
   const evaluatorLaunches = log.split("\n").filter(line => line.includes("create ") && line.includes("-semantic-"));
   expect(evaluatorLaunches.every(line => line.includes("--network none") && !line.includes("auth.json") && !line.includes("docker.sock"))).toBe(true);
 });
-
+test("parallel semantic passes preserve the initiating failure", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const auth = join(root, "parallel-failure-auth.json"); await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0, false, false, "", false, false, 2);
+  await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("missing per-criterion assessment");
+  const failed = await readState(run);
+  expect(failed.judge?.status).toBe("failed");
+  expect(failed.judge?.failed_pass).toBe(2);
+  expect(failed.judge?.error).toContain("missing per-criterion assessment");
+  expect(failed.judge?.attempts?.find(attempt => attempt.pass === 2 && attempt.stage === "assessment")?.status).toBe("complete");
+});
 test("semantic file boundaries reject unrelated changes", async () => {
   const criteriaPath = join(root, "boundary-criteria.json");
   await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
@@ -564,11 +583,19 @@ async function fakeDocker(sleepSeconds: number): Promise<{ path: string; log: st
   return { path, log };
 }
 
-async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = "", wrongProtectedBinary = false, networkFailure = false): Promise<{ path: string; log: string; stateDir: string }> {
+async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = "", wrongProtectedBinary = false, networkFailure = false,
+  invalidAssessmentPass?: 1 | 2): Promise<{ path: string; log: string; stateDir: string }> {
   const path = join(root, `fake-owned-docker-${crypto.randomUUID()}.sh`);
   const log = `${path}.log`;
   const stateDir = `${path}.state`;
   await file(`${path}.patch`, candidatePatch);
+  const judgeAssessment = (includeCriteria: boolean) => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({
+    scores: { "candidate-1": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 }, "candidate-2": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 } },
+    evidence: ["fixture semantic assessment"], issues: [], winner: "tie", rationale: "Both fixtures meet the criterion.",
+    ...(includeCriteria ? { criteria: Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "fixture", status: "pass", basis: "executed", reasoning: "Executed fixture assertion." }]])) } : {}),
+  }) } });
+  const validAssessment = judgeAssessment(true);
+  const invalidAssessment = judgeAssessment(false);
   await file(path, `#!/bin/sh
 set -u
 mkdir -p '${stateDir}'
@@ -634,11 +661,15 @@ case "$operation" in
         ;;
       *-judge-*-harness-*)
         cat >/dev/null
+        sleep 0.1
         printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked." }]]))) } })}'
         ;;
       *-judge-*-assessment-*)
         cat >/dev/null
-        printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ scores: { "candidate-1": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 }, "candidate-2": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 } }, evidence: ["fixture semantic assessment"], issues: [], winner: "tie", rationale: "Both fixtures meet the criterion.", criteria: Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "fixture", status: "pass", basis: "executed", reasoning: "Executed fixture assertion." }]])) }) } })}'
+        ${invalidAssessmentPass ? `case "$name" in
+          *-judge-${invalidAssessmentPass}-assessment-*) printf '%s\\n' '${invalidAssessment}' ;;
+          *) sleep 0.2; printf '%s\\n' '${validAssessment}' ;;
+        esac` : `printf '%s\\n' '${validAssessment}'`}
         ;;
       *-judge-1|*-judge-2)
         cat >/dev/null

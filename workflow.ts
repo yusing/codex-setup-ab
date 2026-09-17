@@ -43,7 +43,7 @@ async function executeBenchmarkUnlocked(options: RunOptions, mode: "run" | "fini
     await writeState(runDir, state);
     try {
       if (!failure && !controller.signal.aborted && state.status === "complete" && state.selected_arms?.length === 2 && !state.judge) {
-        process.stderr.write("[finish] starting independent reversed-order source assessment\n");
+        process.stderr.write("[finish] starting independent reversed-order source assessment passes in parallel\n");
         await judgeRunUnlocked(runDir, options.authFile, options.dockerBin, controller.signal);
       }
     } catch (error) {

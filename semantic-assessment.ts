@@ -62,12 +62,14 @@ export async function prepareSemanticAssessment(options: {
   runDir: string; state: RunState; contract: CriteriaContract; pass: 1 | 2;
   order: [ArmName, ArmName]; docker: string; signal?: AbortSignal;
   ask: (stage: string, prompt: string, schema: object) => Promise<unknown>;
+  persistState?: () => Promise<void>;
 }): Promise<SemanticAssessmentEvidence> {
   const { state, contract, runDir, pass, order } = options;
   const root = join(runDir, "evaluator/semantic", `pass-${pass}`);
   await mkdir(root, { recursive: true, mode: 0o700 });
   const evidence: SemanticAssessmentEvidence = { candidates: { "candidate-1": [], "candidate-2": [] }, existing_tests: {} as Record<Candidate, CriterionEvidence>,
     history: { "candidate-1": [], "candidate-2": [] } };
+  const persistState = options.persistState ?? (() => writeState(runDir, state));
   const execute = async (id: Candidate, check: SemanticCheck, suffix: string) => {
     const arm = order[candidates.indexOf(id)]!;
     const result = await executeSemanticCheck({ runDir, state,
@@ -78,7 +80,7 @@ export async function prepareSemanticAssessment(options: {
     process.stderr.write(`[grade] semantic pass ${pass}, ${id}, ${suffix}, ${check.criterion}: ${result.status}\n`);
     evidence.history[id].push(result);
     state.results![arm]!.grade!.elapsed_ms += result.execution?.elapsed_ms ?? 0;
-    await writeState(runDir, state);
+    await persistState();
     return result;
   };
   for (const id of candidates) {

@@ -211,13 +211,18 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
 
   let rejectedSourceAssessment: { pass: number; error: string | undefined; response: unknown } | null = null;
   if (state.judge?.status === "failed") {
-    const pass = state.judge.passes.length + 1;
+    const pass = state.judge.failed_pass
+      ?? ([1, 2] as const).find(candidate => !state.judge!.passes.some(completed => completed.pass === candidate))
+      ?? state.judge.passes.length + 1;
     try {
       rejectedSourceAssessment = { pass, error: state.judge.error, response: await readJudgeResponse(runDir, pass) };
     } catch { /* A failed process or malformed response may have no readable assessment. */ }
   }
-  const semanticRows = ARMS.flatMap(arm => Object.entries(state.results?.[arm]?.grade?.semantic ?? {}).flatMap(([pass, criteria]) =>
-    criteria.map(item => `| ${arm} | ${pass} | ${item.criterion} | ${item.status} | ${item.basis} | ${item.reasoning.replaceAll("|", "\\|").replaceAll("\n", " ")} |`)));
+  const semanticPassOrder = ["pass-1-existing", "pass-1", "pass-2-existing", "pass-2"];
+  const semanticRows = ARMS.flatMap(arm => Object.entries(state.results?.[arm]?.grade?.semantic ?? {})
+    .sort(([left], [right]) => semanticPassOrder.indexOf(left) - semanticPassOrder.indexOf(right))
+    .flatMap(([pass, criteria]) =>
+      criteria.map(item => `| ${arm} | ${pass} | ${item.criterion} | ${item.status} | ${item.basis} | ${item.reasoning.replaceAll("|", "\\|").replaceAll("\n", " ")} |`)));
   const semanticMarkdown = state.criteria ? `## Behavioral acceptance criteria\n\nContract SHA-256: ${state.criteria.sha256}. Oracle qualification: ${state.criteria.contract.qualification}. The contract was fixed before model execution. Executed harness source, argv, outputs and each repair are retained in the machine bundle. Source-only reasoning is labeled separately.\n\n| Arm | Pass | Criterion | Result | Evidence | Reasoning |\n| --- | --- | --- | --- | --- | --- |\n${semanticRows.join("\n") || "| Both | None | All | unassessed | none | Semantic assessment has not completed. |"}\n\n` : "";
   const mekugiDiagnostics = state.mekugi_exports ? await validateMekugiExports(runDir, state) : null;
   const report = {

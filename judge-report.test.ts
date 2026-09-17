@@ -328,17 +328,18 @@ test("rejected semantic response remains available without another model request
   const state = await readState(run);
   state.judge = {
     status: "failed", started_at: "2026-09-09T00:00:02.000Z", model: "gpt-5.6-sol",
-    reasoning_effort: "high", passes: [], winner: "none", usage_homes: [],
-    error: "required benchmark gates failed",
-    attempts: [{ pass: 1, stage: "assessment", attempt: 1, status: "complete", started_at: "2026-09-09T00:00:02.000Z",
-      stdout_path: "evaluator/judge/assessment.jsonl", stderr_path: "evaluator/judge/stderr", usage_home: "evaluator/judge/home" }],
+    reasoning_effort: "high", passes: [], winner: "none", usage_homes: [], failed_pass: 2,
+    error: "incomplete per-criterion assessment",
+    attempts: [{ pass: 2, stage: "assessment", attempt: 1, status: "complete", started_at: "2026-09-09T00:00:02.000Z",
+      stdout_path: "evaluator/judge/pass-2-assessment.jsonl", stderr_path: "evaluator/judge/stderr", usage_home: "evaluator/judge/home" }],
   };
-  await file(join(run, "evaluator/judge/assessment.jsonl"), JSON.stringify({ type: "item.completed",
+  await file(join(run, "evaluator/judge/pass-2-assessment.jsonl"), JSON.stringify({ type: "item.completed",
     item: { type: "agent_message", text: JSON.stringify(verdict("candidate-1", "source observations remain useful")) } }));
   await writeState(run, state);
   const { jsonPath } = await buildReport(run);
   const report = JSON.parse(await readFile(jsonPath, "utf8"));
   expect(report.winner).toBe("none");
+  expect(report.rejected_source_assessment.pass).toBe(2);
   expect(report.rejected_source_assessment.response.rationale).toBe("source observations remain useful");
   expect(report.judge_complete).toBe(false);
 });

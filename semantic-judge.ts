@@ -19,17 +19,24 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
     reasoning_effort: "high", service_tier: "priority", passes: [], winner: "none", usage_homes: [], attempts: [],
   };
   state.judge = report;
-  await writeState(runDir, state);
+  let stateWrites = Promise.resolve();
+  const persistState = async (): Promise<void> => {
+    const pending = stateWrites.then(() => writeState(runDir, state));
+    stateWrites = pending.catch(() => {});
+    await pending;
+  };
+  await persistState();
   const controller = new AbortController();
-  const cancel = () => controller.abort();
-  if (signal?.aborted) cancel();
+  let cancellationRequested = signal?.aborted ?? false;
+  const cancel = () => { cancellationRequested = true; controller.abort(); };
+  if (cancellationRequested) controller.abort();
   signal?.addEventListener("abort", cancel, { once: true });
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   const orders: [ArmName, ArmName][] = [["stock", "current"], ["current", "stock"]];
   const gates: Record<ArmName, boolean[]> = { stock: [], current: [] };
   try {
-    for (const [index, order] of orders.entries()) {
+    const runPass = async (order: [ArmName, ArmName], index: number) => {
       const pass = (index + 1) as 1 | 2;
       const ask = async (stage: string, prompt: string, schema: object): Promise<unknown> => {
         if (Buffer.byteLength(prompt) > 2_000_000) throw new Error("semantic evidence exceeds prompt limit; retained without truncation");
@@ -49,8 +56,11 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
           };
           report.attempts!.push(attempt);
           report.usage_homes.push(attempt.usage_home);
-          await writeState(runDir, state);
-          process.stderr.write(`[judge] semantic pass ${pass}, ${stage}, attempt ${number}: started\n`);
+          await persistState();
+          const activity = stage.startsWith("harness")
+            ? "generating candidate-specific executable checks"
+            : "reviewing source and executed evidence";
+          process.stderr.write(`[judge] semantic pass ${pass}, ${stage}, attempt ${number}: started (${activity})\n`);
           const outputPath = join(runDir, attempt.stdout_path);
           const errorPath = join(runDir, attempt.stderr_path);
           try {
@@ -62,7 +72,7 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
                 createArgs: ["--network", providerNetwork, "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "-i",
                   "-v", `${home}:/home/ubuntu`, "-v", `${schemaPath}:/schema.json:ro`,
                   "-v", `${join(runDir, "evaluator/semantic", `pass-${pass}`)}:/evidence:ro`,
-                  ...order.flatMap((arm, index) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${ids[index]}:ro`]),
+                  ...order.flatMap((arm, candidateIndex) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${ids[candidateIndex]}:ro`]),
                   state.image_id ?? state.image, "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check",
                   "--output-schema", "/schema.json", "--model", report.model, "-c", 'model_reasoning_effort="high"',
                   "-c", 'service_tier="fast"', "-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"', "-"],
@@ -87,7 +97,7 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
                 attempt.status = "failed"; attempt.finished_at = new Date().toISOString();
                 attempt.error = "Selected model is at capacity";
                 attempt.retry_delay_ms = number === 1 ? 5000 : 15000;
-                await writeState(runDir, state);
+                await persistState();
                 await delay(attempt.retry_delay_ms, undefined, { signal: controller.signal });
                 continue;
               }
@@ -95,19 +105,19 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
             }
             const value: unknown = JSON.parse(lastAgentMessage(raw));
             attempt.status = "complete"; attempt.finished_at = new Date().toISOString();
-            await writeState(runDir, state);
+            await persistState();
             return value;
           } catch (error) {
             attempt.status = controller.signal.aborted ? "canceled" : "failed";
             attempt.error = String(error); attempt.finished_at = new Date().toISOString();
-            await writeState(runDir, state);
+            await persistState();
             throw error;
           }
         }
         throw new Error("semantic judge capacity retries exhausted");
       };
       const evidence = await prepareSemanticAssessment({ runDir, state, contract, pass, order, docker, signal: controller.signal,
-        ask: (stage, prompt, schema) => ask(stage, `${prompt}\nTask:\n${task}`, schema) });
+        ask: (stage, prompt, schema) => ask(stage, `${prompt}\nTask:\n${task}`, schema), persistState });
       const schema = { ...OUTPUT_SCHEMA, required: [...OUTPUT_SCHEMA.required, "criteria"],
         properties: { ...OUTPUT_SCHEMA.properties, criteria: CRITERION_SCHEMA } };
       const prompt = `You are a blind software-change judge. Inspect both read-only /candidates/candidate-1 and /candidates/candidate-2.
@@ -126,22 +136,46 @@ Return the required JSON schema with scores, evidence, issues, winner, rationale
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid semantic assessment");
       const { criteria: rawCriteria, ...scores } = value as Record<string, unknown>;
       const criteria = validateCriterionAssessments(rawCriteria, contract, evidence);
-      const passing = Object.fromEntries(ids.map((id, i) => [id,
-        state.results![order[i]!]!.grade!.preparation.exit_code === 0 &&
+      const passing = Object.fromEntries(ids.map((id, candidateIndex) => [id,
+        state.results![order[candidateIndex]!]!.grade!.preparation.exit_code === 0 &&
         criteria[id].every(item => item.status === "pass") && evidence.existing_tests[id].status === "pass"])) as Record<typeof ids[number], boolean>;
       const judged = validateJudgePass(scores, pass, order, passing);
       judged.criteria = criteria;
       report.passes.push(judged);
-      for (const [i, arm] of order.entries()) {
-        const id = ids[i]!;
+      report.passes.sort((left, right) => left.pass - right.pass);
+      for (const [candidateIndex, arm] of order.entries()) {
+        const id = ids[candidateIndex]!;
         gates[arm].push(passing[id]);
         const grade = state.results![arm]!.grade!;
         grade.semantic ??= {};
         grade.semantic[`pass-${pass}-existing`] = [evidence.existing_tests[id]];
         grade.semantic[`pass-${pass}`] = criteria[id];
-        if (evidence.existing_tests[id].execution) grade.router_suite = evidence.existing_tests[id].execution;
       }
-      await writeState(runDir, state);
+      await persistState();
+      return { order, evidence };
+    };
+
+    let initiatingFailure: { error: unknown; pass: 1 | 2 } | undefined;
+    process.stderr.write("[judge] running both reversed-order semantic passes in parallel\n");
+    const runs = orders.map((order, index) => runPass(order, index).catch(error => {
+      if (!cancellationRequested && !initiatingFailure) {
+        initiatingFailure = { error, pass: (index + 1) as 1 | 2 };
+        report.failed_pass = initiatingFailure.pass;
+      }
+      controller.abort();
+      throw error;
+    }));
+    const settled = await Promise.allSettled(runs);
+    const failure = settled.find(result => result.status === "rejected");
+    if (failure?.status === "rejected") throw initiatingFailure?.error ?? failure.reason;
+    const completed = settled.map(result => {
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    });
+    const finalPass = completed[1]!;
+    for (const [candidateIndex, arm] of finalPass.order.entries()) {
+      const existing = finalPass.evidence.existing_tests[ids[candidateIndex]!].execution;
+      if (existing) state.results![arm]!.grade!.router_suite = existing;
     }
     for (const arm of ["stock", "current"] as const) state.results![arm]!.grade!.passed = gates[arm].length === 2 && gates[arm].every(Boolean);
     const winners = report.passes.map(mappedWinner);
@@ -151,10 +185,12 @@ Return the required JSON schema with scores, evidence, issues, winner, rationale
     report.status = "complete";
     return report;
   } catch (error) {
-    report.status = controller.signal.aborted ? "canceled" : "failed";
+    report.status = cancellationRequested ? "canceled" : "failed";
     report.error = String(error); report.winner = "none";
     throw error;
   } finally {
+    report.attempts?.sort((left, right) => left.pass - right.pass || left.started_at.localeCompare(right.started_at));
+    report.usage_homes = report.attempts?.map(attempt => attempt.usage_home) ?? [];
     report.finished_at = new Date().toISOString();
     await writeState(runDir, state);
     signal?.removeEventListener("abort", cancel);

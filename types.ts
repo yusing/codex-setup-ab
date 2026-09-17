@@ -163,6 +163,7 @@ export interface JudgeReport {
   agreement?: boolean;
   winner: ArmName | "tie" | "none";
   disagreement?: string;
+  failed_pass?: 1 | 2;
   error?: string;
   attempts?: JudgeAttempt[];
   usage_homes: string[];

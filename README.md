@@ -314,10 +314,12 @@ not on the host. Prepare dependencies without introducing evaluator-only checks 
 workspaces; evaluator build storage stays separate.
 
 After both agents stop and their patches are captured, two blind passes inspect candidates in
-opposite orders. Each pass runs the predetermined existing tests and asks Sol for additional
-checks adapted to the actual candidate interfaces. The runner executes those checks offline,
-without credentials or a Docker socket, against private copies of read-only candidate source.
-It rejects harness files that overwrite candidate files and detects changes to original files.
+opposite orders and run concurrently. Each pass runs the predetermined existing tests, then asks
+Sol to author additional checks adapted to the actual candidate interfaces. The runner executes
+those checks offline, without credentials or a Docker socket, against private copies of read-only
+candidate source. Sol then reviews the source together with the executed evidence and returns the
+scores, per-criterion decisions, issues, and winner for that pass. The runner rejects harness files
+that overwrite candidate files and detects changes to original files.
 
 A judge may repair a broken harness once per pass, including a failed check whose wiring was wrong. Earlier evidence remains available to the final assessment; real behavior failures must not be weakened into passes. Different names and test wiring are
 allowed; different required outcomes are not. Compilation failures caused by assumed names
