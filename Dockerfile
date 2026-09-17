@@ -47,8 +47,8 @@ RUN chmod 0755 /usr/local/bin/codex /usr/local/bin/codex-code-mode-host \
     && install -d /usr/local/libexec /root/.config /benchmark-agent-issue-reports /go/pkg/mod \
     && ln /usr/local/bin/codex /usr/local/libexec/codex-real
 
-ARG BENCH_UID=1001
-ARG BENCH_GID=1001
+ARG BENCH_UID=1000
+ARG BENCH_GID=1000
 RUN if getent group ubuntu >/dev/null; then \
         groupmod --gid "$BENCH_GID" ubuntu; \
     else \

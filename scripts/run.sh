@@ -85,32 +85,41 @@ if [[ ! -d "$source_dir/.git" ]]; then
   git clone https://github.com/nvm-sh/nvm.git "$source_dir"
 fi
 
-inspect_error=
+image_build_reason=
 if ! inspect_error="$("$docker_bin" image inspect --format '{{.Id}}' "$image" 2>&1)"; then
   case "$inspect_error" in
-    *"No such image"*|*"not found"*)
-      requested_codex_bin=$codex_bin
-      codex_bin="$(readlink -f -- "$requested_codex_bin" 2>/dev/null || true)"
-      [[ -n "$codex_bin" && -x "$codex_bin" ]] || die "Codex executable is missing or not executable: $requested_codex_bin"
-      codex_dir="$(dirname -- "$codex_bin")"
-      codex_host="$codex_dir/codex-code-mode-host"
-      [[ -x "$codex_host" ]] || die "Codex code-mode host is missing or not executable: $codex_host"
-      codex_sha="$(sha256sum "$codex_bin" | cut -d' ' -f1)"
-      codex_host_sha="$(sha256sum "$codex_host" | cut -d' ' -f1)"
-      printf 'Building missing image %s\n' "$image" >&2
-      "$docker_bin" build \
-        --build-context "codex_binary=$codex_dir" \
-        --build-arg "CODEX_SHA256=$codex_sha" \
-        --build-arg "CODEX_CODE_MODE_HOST_SHA256=$codex_host_sha" \
-        --build-arg "BENCH_UID=$(id -u)" \
-        --build-arg "BENCH_GID=$(id -g)" \
-        -t "$image" .
-      ;;
+    *"No such image"*|*"not found"*) image_build_reason="missing" ;;
     *)
       printf 'Cannot inspect Docker image %s:\n%s\n' "$image" "$inspect_error" >&2
       exit 1
       ;;
   esac
+else
+  # The command substitutions intentionally run inside the container.
+  # shellcheck disable=SC2016
+  if ! container_identity="$("$docker_bin" run --rm --network none "$image" sh -lc 'printf "%s:%s\n" "$(id -u)" "$(id -g)"' 2>&1)"; then
+    die "cannot verify operator identity in existing image $image: $container_identity"
+  fi
+  [[ "$container_identity" == "1000:1000" ]] || image_build_reason="operator identity is $container_identity"
+fi
+
+if [[ -n "$image_build_reason" ]]; then
+  requested_codex_bin=$codex_bin
+  codex_bin="$(readlink -f -- "$requested_codex_bin" 2>/dev/null || true)"
+  [[ -n "$codex_bin" && -x "$codex_bin" ]] || die "Codex executable is missing or not executable: $requested_codex_bin"
+  codex_dir="$(dirname -- "$codex_bin")"
+  codex_host="$codex_dir/codex-code-mode-host"
+  [[ -x "$codex_host" ]] || die "Codex code-mode host is missing or not executable: $codex_host"
+  codex_sha="$(sha256sum "$codex_bin" | cut -d' ' -f1)"
+  codex_host_sha="$(sha256sum "$codex_host" | cut -d' ' -f1)"
+  printf 'Building image %s (%s)\n' "$image" "$image_build_reason" >&2
+  "$docker_bin" build \
+    --build-context "codex_binary=$codex_dir" \
+    --build-arg "CODEX_SHA256=$codex_sha" \
+    --build-arg "CODEX_CODE_MODE_HOST_SHA256=$codex_host_sha" \
+    --build-arg "BENCH_UID=1000" \
+    --build-arg "BENCH_GID=1000" \
+    -t "$image" .
 fi
 bun run build
 

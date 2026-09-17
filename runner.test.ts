@@ -127,6 +127,7 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
     mekugiFlags: ["--mode=mekugi"], mekugiSource: join(root, "capture-source") });
   expect(await readlink(join(run, "snapshots/current/home/ubuntu/linked-guidance"))).toBe("AGENTS.md");
   const state = await readState(run);
+  expect(state.operator).toEqual({ uid: 1000, gid: 1000 });
   expect(state.execution.current_launcher).toBe("mekugi");
   expect(state.arms.stock.home_template).toBe(state.arms.current.home_template);
   expect(state.mekugi_flags).toEqual(["--mode=mekugi"]);
@@ -559,7 +560,7 @@ test("prepare clones configuration and preserves tracked changes without a guida
 async function fakeDocker(sleepSeconds: number): Promise<{ path: string; log: string }> {
   const path = join(root, `fake-docker-${sleepSeconds}.sh`);
   const log = join(root, `fake-docker-${sleepSeconds}.log`);
-  await file(path, `#!/bin/sh\nset -eu\nprintf '%s %s\\n' \"$(date +%s%N)\" \"$*\" >> '${log}'\ncase \" $* \" in\n  *' image inspect '*) printf '%s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n  *' codex exec '*) trap 'exit 143' TERM INT; sleep ${sleepSeconds}; printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}' ;;\n  *'id -u'*) printf '%s\\n' '${process.getuid?.()}:${process.getgid?.()}' ;;\n  *' sha256sum /usr/local/bin/codex '*) printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' ;;\n  *' sh -lc '*) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.154.0' ;;\nesac\n`, 0o755);
+  await file(path, `#!/bin/sh\nset -eu\nprintf '%s %s\\n' \"$(date +%s%N)\" \"$*\" >> '${log}'\ncase \" $* \" in\n  *' image inspect '*) printf '%s\\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;\n  *' codex exec '*) trap 'exit 143' TERM INT; sleep ${sleepSeconds}; printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}' ;;\n  *'id -u'*) printf '%s\\n' '1000:1000' ;;\n  *' sha256sum /usr/local/bin/codex '*) printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' ;;\n  *' sh -lc '*) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.154.0' ;;\nesac\n`, 0o755);
   return { path, log };
 }
 
@@ -619,7 +620,7 @@ case "$operation" in
       *-isolation-codex) printf '%s\\n' 'codex-cli 0.154.0' ;;
       *-isolation-probe) printf '%s\\n' CODEX_AB_PROTECTED_RUNTIME_OK ;;
       *-preflight-image) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.154.0' ;;
-      *-preflight-identity) printf '%s\\n' '${process.getuid?.()}:${process.getgid?.()}' ;;
+      *-preflight-identity) printf '%s\\n' '1000:1000' ;;
       *-preflight-hash) ${missingHost ? `printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex'; status=1` : `printf '%s  %s\\n%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' '${codeModeHostHash}' '/usr/local/bin/codex-code-mode-host'; printf '%s  %s\\n' '${wrongProtectedBinary ? "bad" : codexHash}' '/usr/local/libexec/codex-real'`} ;;
       *-preflight-network-*) ${networkFailure ? "echo 'curl: (7) Network unreachable' >&2; status=7" : "printf '%s' '403'"} ;;
       *-preflight-toolhost) printf '%s\\n' 'CODEX_AB_TOOL_HOST_OK' ;;

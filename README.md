@@ -20,11 +20,13 @@ docker build \
   --build-context "codex_binary=$codex_dir" \
   --build-arg "CODEX_SHA256=$codex_sha" \
   --build-arg "CODEX_CODE_MODE_HOST_SHA256=$codex_host_sha" \
-  --build-arg "BENCH_UID=$(id -u)" \
-  --build-arg "BENCH_GID=$(id -g)" \
+  --build-arg "BENCH_UID=1000" \
+  --build-arg "BENCH_GID=1000" \
   -t codex-ab:0.1.0 .
 ./dist/codex-ab --version
 ```
+
+The container operator is always `1000:1000`. The preset runner checks an existing image before use and rebuilds it when its operator identity differs, so a tag created under another host group cannot leak a stale GID into a run.
 
 No model request occurs during the build or `prepare`. The `run` command includes two independent source-assessment passes after a completed pair. Each pass has two stages when the first harness succeeds, or three when one repair stage is needed; every stage allows at most three Sol launches on capacity errors. `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
 

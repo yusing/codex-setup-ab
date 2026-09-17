@@ -462,9 +462,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     throw new Error("godoxy-icons benchmark identity mismatch");
   }
   if (!options.criteriaPath && !pack) throw new Error("prepare requires predetermined --criteria or --task-pack");
-  const uid = process.getuid?.();
-  const gid = process.getgid?.();
-  if (uid === undefined || gid === undefined || uid <= 0 || gid <= 0) throw new Error("prepare requires a non-root POSIX operator identity");
+  const hostUid = process.getuid?.();
+  const hostGid = process.getgid?.();
+  if (hostUid === undefined || hostGid === undefined || hostUid <= 0 || hostGid <= 0) throw new Error("prepare requires a non-root POSIX operator identity");
   const reviewTreatment = options.reviewTreatment ? await realpath(options.reviewTreatment) : undefined;
   if (reviewTreatment) {
     for (const [source] of REVIEW_TREATMENT_FILES) {
@@ -752,7 +752,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       grok_source: grokBinary, grok_sha256: grokSha256, grok_version: grokVersion,
       codex_code_mode_host_size: codeModeHostStat.size,
     },
-    operator: { uid, gid },
+    operator: { uid: 1000, gid: 1000 },
     arms: {
       stock: { repository: "arms/stock/repo", home_template: comparison === "same-setup" ? "snapshots/current/home/ubuntu" : grokComparison ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/stock/home/ubuntu" },
       current: { repository: "arms/current/repo", home_template: grokComparison ? "snapshots/stock-grok/home/ubuntu" : comparison === "stock-mekugi" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu" },
