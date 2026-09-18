@@ -793,6 +793,18 @@ test("preflight pins shared dependencies and compiles offline without cache moun
   expect(compile).not.toContain("preflight-cache");
 });
 
+test("preflight reports expected and actual Codex versions with a rebuild action", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  state.runtime_tools.codex_version = "codex-cli 0.155.0";
+  await writeState(run, state);
+  const fake = await fakeOwnedDocker(0);
+  await expect(preflightRun(run, fake.path)).rejects.toThrow(
+    "expected codex-cli 0.155.0, got codex-cli 0.154.0. Rebuild fixture-image",
+  );
+  expect((await readFile(fake.log, "utf8"))).not.toContain(" codex exec ");
+});
+
 test("preflight rejects an image missing the recorded code-mode host", async () => {
   const run = await prepared();
   const fake = await fakeOwnedDocker(0, false, true);

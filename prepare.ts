@@ -587,9 +587,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     progress("omitting the unused current-home tool store from isolated launcher snapshots");
     await mkdir(currentSetupInstalls, { recursive: true });
   } else {
-    progress(`recording installed tools for read-only mount: ${currentSetupInstalls}`);
+    progress(`recording tool metadata for read-only mount (no content reads): ${currentSetupInstalls}`);
     setupFiles = await recordToolStore(currentSetupInstalls);
-    progress(`recorded ${setupFiles.length} tool-store entries; no installed tools copied`);
+    progress(`recorded metadata for ${setupFiles.length} tool-store entries; no installed tools read or copied`);
   }
   const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json");
   await writeFile(currentSetupFiles, `${JSON.stringify({ files: setupFiles }, null, 2)}\n`);

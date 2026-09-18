@@ -133,15 +133,24 @@ else
   [[ "$container_identity" == "1000:1000" ]] || image_build_reason="operator identity is $container_identity"
 fi
 
+requested_codex_bin=$codex_bin
+codex_bin="$(readlink -f -- "$requested_codex_bin" 2>/dev/null || true)"
+[[ -n "$codex_bin" && -x "$codex_bin" ]] || die "Codex executable is missing or not executable: $requested_codex_bin"
+codex_dir="$(dirname -- "$codex_bin")"
+codex_host="$codex_dir/codex-code-mode-host"
+[[ -x "$codex_host" ]] || die "Codex code-mode host is missing or not executable: $codex_host"
+codex_sha="$(sha256sum "$codex_bin" | cut -d' ' -f1)"
+codex_host_sha="$(sha256sum "$codex_host" | cut -d' ' -f1)"
+
+if [[ -z "$image_build_reason" ]]; then
+  if ! container_hashes="$("$docker_bin" run --rm --network none "$image" sha256sum /usr/local/bin/codex /usr/local/bin/codex-code-mode-host 2>&1)"; then
+    die "cannot verify Codex binaries in existing image $image: $container_hashes"
+  fi
+  expected_hashes="$(printf '%s  %s\n%s  %s\n' "$codex_sha" /usr/local/bin/codex "$codex_host_sha" /usr/local/bin/codex-code-mode-host)"
+  [[ "$container_hashes" == "$expected_hashes" ]] || image_build_reason="Codex binaries differ from the selected host pair"
+fi
+
 if [[ -n "$image_build_reason" ]]; then
-  requested_codex_bin=$codex_bin
-  codex_bin="$(readlink -f -- "$requested_codex_bin" 2>/dev/null || true)"
-  [[ -n "$codex_bin" && -x "$codex_bin" ]] || die "Codex executable is missing or not executable: $requested_codex_bin"
-  codex_dir="$(dirname -- "$codex_bin")"
-  codex_host="$codex_dir/codex-code-mode-host"
-  [[ -x "$codex_host" ]] || die "Codex code-mode host is missing or not executable: $codex_host"
-  codex_sha="$(sha256sum "$codex_bin" | cut -d' ' -f1)"
-  codex_host_sha="$(sha256sum "$codex_host" | cut -d' ' -f1)"
   printf 'Building image %s (%s)\n' "$image" "$image_build_reason" >&2
   "$docker_bin" build \
     --build-context "codex_binary=$codex_dir" \

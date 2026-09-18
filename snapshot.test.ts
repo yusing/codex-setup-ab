@@ -1,19 +1,32 @@
 import { expect, test } from "bun:test";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readlink, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recordToolStore, verifySnapshotIdentities } from "./snapshot";
 
-test("records a sorted manifest without creating a destination", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-record-"));
+async function createStore(root: string): Promise<string> {
+  const store = join(root, "store");
+  await mkdir(join(store, "nested"), { recursive: true });
+  await writeFile(join(store, "z-tool"), "z payload");
+  await writeFile(join(store, "nested", "a-tool"), "a payload");
+  await chmod(join(store, "z-tool"), 0o644);
+  await symlink("nested/a-tool", join(store, "alias"));
+  return store;
+}
+
+async function withTemporaryRoot<T>(prefix: string, callback: (root: string) => Promise<T>): Promise<T> {
+  const root = await mkdtemp(join(tmpdir(), prefix));
   try {
-    const store = join(root, "store");
+    return await callback(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("records sorted metadata without creating a destination or hashing payloads", async () => {
+  await withTemporaryRoot("codex-ab-snapshot-record-", async root => {
+    const store = await createStore(root);
     const destination = join(root, "destination-must-not-exist");
-    await mkdir(join(store, "nested"), { recursive: true });
-    await writeFile(join(store, "z-tool"), "z payload");
-    await writeFile(join(store, "nested", "a-tool"), "a payload");
-    await chmod(join(store, "z-tool"), 0o644);
-    await symlink("nested/a-tool", join(store, "alias"));
 
     const files = await recordToolStore(store);
     expect(files.map(file => file.path)).toEqual(["alias", "nested/a-tool", "z-tool"]);
@@ -21,101 +34,114 @@ test("records a sorted manifest without creating a destination", async () => {
       type: "symlink",
       target: "nested/a-tool",
     });
+
     const recorded = files.find(file => file.path === "nested/a-tool");
-    expect(recorded).toMatchObject({ type: "file" });
-    expect(recorded?.sha256).toBe(
-      new Bun.CryptoHasher("sha256").update(await readFile(join(store, "nested/a-tool"))).digest("hex"),
-    );
+    expect(recorded).toMatchObject({ type: "file", identity: expect.any(Object) });
+    expect(recorded?.sha256).toBeUndefined();
     const actual = await lstat(join(store, "nested/a-tool"), { bigint: true });
-    expect(recorded?.identity?.ino).toBe(String(actual.ino));
-    expect(recorded?.identity?.mode).toBe(String(actual.mode));
+    expect(recorded?.identity).toEqual({
+      dev: String(actual.dev),
+      ino: String(actual.ino),
+      size: String(actual.size),
+      mode: String(actual.mode),
+      mtime_ns: String(actual.mtimeNs),
+      ctime_ns: String(actual.ctimeNs),
+    });
     expect(await Bun.file(destination).exists()).toBe(false);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  });
 });
 
-test("verification detects content, additions, deletions, modes, and literal symlink changes", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-verify-"));
-  try {
+test("records a sparse large regular file without a payload hash", async () => {
+  await withTemporaryRoot("codex-ab-snapshot-sparse-", async root => {
     const store = join(root, "store");
+    const sparse = join(store, "sparse-tool");
+    const sparseSize = 8 * 1024 * 1024 * 1024;
     await mkdir(store);
-    await writeFile(join(store, "tool"), "payload");
-    await chmod(join(store, "tool"), 0o644);
-    await symlink("tool", join(store, "alias"));
+    await writeFile(sparse, "");
+    await truncate(sparse, sparseSize);
+
+    const [recorded] = await recordToolStore(store);
+    expect(recorded).toMatchObject({ path: "sparse-tool", type: "file" });
+    expect(recorded?.sha256).toBeUndefined();
+    expect(recorded?.identity?.size).toBe(String(sparseSize));
+  });
+});
+
+test("unchanged metadata verifies and same-size rewrites remain rejected after restoring mtime", async () => {
+  await withTemporaryRoot("codex-ab-snapshot-verify-", async root => {
+    const store = await createStore(root);
+    const tool = join(store, "z-tool");
+    const restoredMtime = new Date("2000-01-01T00:00:00.000Z");
+    await utimes(tool, restoredMtime, restoredMtime);
+
     const files = await recordToolStore(store);
-
     expect(await verifySnapshotIdentities(store, files)).toBe(true);
 
-    await writeFile(join(store, "tool"), "changed payload");
+    const recorded = files.find(file => file.path === "z-tool");
+    expect(recorded?.sha256).toBeUndefined();
+    await Bun.sleep(2);
+    await writeFile(tool, "x payload");
+    await utimes(tool, restoredMtime, restoredMtime);
+
+    const actual = await lstat(tool, { bigint: true });
+    expect(String(actual.mtimeNs)).toBe(recorded?.identity?.mtime_ns);
+    expect(String(actual.ctimeNs)).not.toBe(recorded?.identity?.ctime_ns);
     expect(await verifySnapshotIdentities(store, files)).toBe(false);
-    await writeFile(join(store, "tool"), "payload");
-    expect(await verifySnapshotIdentities(store, files)).toBe(true);
+  });
+});
 
-    await chmod(join(store, "tool"), 0o755);
-    expect(await verifySnapshotIdentities(store, files)).toBe(false);
-    await chmod(join(store, "tool"), 0o644);
-    expect(await verifySnapshotIdentities(store, files)).toBe(true);
-
+test("verification rejects additions, deletions, mode changes, and changed symlink literals", async () => {
+  await withTemporaryRoot("codex-ab-snapshot-addition-", async root => {
+    const store = await createStore(root);
+    const files = await recordToolStore(store);
     await writeFile(join(store, "added"), "new");
     expect(await verifySnapshotIdentities(store, files)).toBe(false);
-    await rm(join(store, "added"));
-    expect(await verifySnapshotIdentities(store, files)).toBe(true);
+  });
 
-    await rm(join(store, "tool"));
+  await withTemporaryRoot("codex-ab-snapshot-deletion-", async root => {
+    const store = await createStore(root);
+    const files = await recordToolStore(store);
+    await rm(join(store, "z-tool"));
     expect(await verifySnapshotIdentities(store, files)).toBe(false);
-    await writeFile(join(store, "tool"), "payload");
-    await chmod(join(store, "tool"), 0o644);
-    expect(await verifySnapshotIdentities(store, files)).toBe(true);
+  });
 
-    await rm(join(store, "alias"));
-    await symlink("missing", join(store, "alias"));
+  await withTemporaryRoot("codex-ab-snapshot-mode-", async root => {
+    const store = await createStore(root);
+    const files = await recordToolStore(store);
+    await chmod(join(store, "z-tool"), 0o755);
     expect(await verifySnapshotIdentities(store, files)).toBe(false);
+  });
+
+  await withTemporaryRoot("codex-ab-snapshot-symlink-", async root => {
+    const store = await createStore(root);
+    const files = await recordToolStore(store);
     await rm(join(store, "alias"));
-    await symlink("tool", join(store, "alias"));
-    expect(await verifySnapshotIdentities(store, files)).toBe(true);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+    await symlink("z-tool", join(store, "alias"));
+    expect(await verifySnapshotIdentities(store, files)).toBe(false);
+    expect(await readlink(join(store, "alias"))).toBe("z-tool");
+  });
 });
 
-test("verification accepts copied files and symlinks with the recorded literals", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-copy-"));
-  try {
-    const store = join(root, "store");
+test("rejects copied regular-file stores even when symlink literals are preserved", async () => {
+  await withTemporaryRoot("codex-ab-snapshot-copy-", async root => {
+    const store = await createStore(root);
     const copy = join(root, "copy");
-    await mkdir(store);
-    await writeFile(join(store, "tool"), "trusted");
-    await symlink("./tool", join(store, "alias"));
     const files = await recordToolStore(store);
-
     await cp(store, copy, { recursive: true, verbatimSymlinks: true });
-    expect(await verifySnapshotIdentities(copy, files)).toBe(true);
 
-    await writeFile(join(copy, "tool"), "altered");
+    expect(await verifySnapshotIdentities(store, files)).toBe(true);
     expect(await verifySnapshotIdentities(copy, files)).toBe(false);
-    await writeFile(join(copy, "tool"), "trusted");
-    expect(await verifySnapshotIdentities(copy, files)).toBe(true);
-
-    await rm(join(copy, "alias"));
-    await symlink("other", join(copy, "alias"));
-    expect(await verifySnapshotIdentities(copy, files)).toBe(false);
-    expect(await readlink(join(copy, "alias"))).toBe("other");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+    expect(await readlink(join(copy, "alias"))).toBe("nested/a-tool");
+  });
 });
 
 test("rejects unsupported tool-store entries", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-entry-"));
-  try {
+  await withTemporaryRoot("codex-ab-snapshot-entry-", async root => {
     const store = join(root, "store");
     await mkdir(store);
     const pipe = join(store, "unsupported");
     const result = Bun.spawnSync(["mkfifo", pipe]);
     expect(result.exitCode).toBe(0);
     await expect(recordToolStore(store)).rejects.toThrow("unsupported tool-store entry");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  });
 });

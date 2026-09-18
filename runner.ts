@@ -88,7 +88,10 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   const check = await runOwnedContainer({ docker, name: `${prefix}-image`, signal, createArgs: [image, "sh", "-lc", "printf 'codex_path=%s\\n' \"$(command -v codex || true)\"; if command -v hpatch >/dev/null || command -v mekugi >/dev/null; then printf 'mekugi_path=%s\\n' \"$(command -v mekugi)\"; exit 8; fi; codex --version"] });
   if (check.exitCode !== 0) throw new Error(`image is not a bare Codex image (${check.exitCode}): ${[check.stdout.trim(), check.stderr.trim()].filter(Boolean).join("; ")}`);
   if (!check.stdout.includes("codex_path=/usr/local/bin/codex")) throw new Error(`image Codex is not the direct /usr/local/bin/codex entry: ${check.stdout.trim()}`);
-  if (!check.stdout.includes(state.runtime_tools.codex_version)) throw new Error(`unexpected container Codex version: ${check.stdout.trim()}`);
+  const containerVersion = check.stdout.split("\n").map(line => line.trim()).find(line => line.startsWith("codex-cli "));
+  if (containerVersion !== state.runtime_tools.codex_version) {
+    throw new Error(`unexpected container Codex version: expected ${state.runtime_tools.codex_version}, got ${containerVersion ?? check.stdout.trim()}. Rebuild ${state.image} from the selected host Codex and prepare a new run; the preset runner does this automatically`);
+  }
   const identity = await runOwnedContainer({ docker, name: `${prefix}-identity`, signal, createArgs: [image, "sh", "-lc", "printf '%s:%s\\n' \"$(id -u)\" \"$(id -g)\""] });
   const expectedIdentity = `${state.operator.uid}:${state.operator.gid}`;
   if (identity.exitCode !== 0 || identity.stdout.trim() !== expectedIdentity) throw new Error(`container operator identity must be ${expectedIdentity}, got ${identity.stdout.trim()}`);

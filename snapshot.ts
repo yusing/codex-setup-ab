@@ -60,11 +60,11 @@ export async function verifySnapshotIdentities(root: string, expected: SnapshotF
 }
 
 /**
- * Record a sorted, content-addressed manifest of a live tool store without copying
- * or linking any entries.
+ * Record metadata for a read-only host mount without reading tool payloads.
  */
 export async function recordToolStore(source: string): Promise<SnapshotFile[]> {
   const files: SnapshotFile[] = [];
+  let lastProgress = performance.now();
   async function walk(directory: string): Promise<void> {
     const entries = await readdir(directory, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name));
@@ -82,15 +82,14 @@ export async function recordToolStore(source: string): Promise<SnapshotFile[]> {
         if (!sameIdentity(before, after)) throw new Error(`tool-store entry changed while recording: ${input}`);
         files.push({ path: name, type: "symlink", target, identity: after });
       } else if (entry.isFile()) {
-        const before = await identity(input);
-        const digest = await sha256(input);
-        const after = await identity(input);
-        if (!sameIdentity(before, after)) throw new Error(`tool-store file changed while recording: ${input}`);
-        files.push({ path: name, type: "file", sha256: digest, identity: after });
+        files.push({ path: name, type: "file", identity: await identity(input) });
       } else {
         throw new Error(`unsupported tool-store entry: ${input}`);
       }
-      if (files.length % 1000 === 0) process.stderr.write(`[prepare] recorded ${files.length} tool-store files\n`);
+      if (performance.now() - lastProgress >= 5000) {
+        process.stderr.write(`[prepare] recorded metadata for ${files.length} tool-store files (no content reads)\n`);
+        lastProgress = performance.now();
+      }
     }
   }
   await walk(source);
