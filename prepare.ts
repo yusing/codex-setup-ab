@@ -243,8 +243,13 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   // Runtime materializations are not authored configuration. Keep these
   // supplements separate from the Git-owned instructions, roles and skills.
   if (includeRuntimeSupplements) {
-    for (const item of [".codex/hooks", ".codex/.tmp/bundled-marketplaces/openai-bundled", ".agents/skills"]) {
+    for (const item of [".codex/hooks", ".agents/skills"]) {
       await copyRequired(join(home, item), join(destination, item));
+    }
+    // This disposable cache is not materialized in every current setup.
+    const bundledMarketplace = ".codex/.tmp/bundled-marketplaces/openai-bundled";
+    if (await exists(join(home, bundledMarketplace))) {
+      await copyRequired(join(home, bundledMarketplace), join(destination, bundledMarketplace));
     }
     if (await exists(join(home, ".codex/herdr-agent-state.sh"))) {
       await copyRequired(join(home, ".codex/herdr-agent-state.sh"), join(destination, ".codex/herdr-agent-state.sh"));

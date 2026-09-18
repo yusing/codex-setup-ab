@@ -188,6 +188,27 @@ test("stock-mekugi isolates the launcher without current-home guidance", async (
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
     reviewTreatment: join(root, "unused-treatment"), mekugiSource: captureSource })).rejects.toThrow("does not accept");
 });
+for (const comparison of ["stock-current", "same-setup"] as const) {
+  for (const cachePresent of [false, true]) {
+    test(`${comparison} prepares with bundled marketplace cache ${cachePresent ? "present" : "absent"}`, async () => {
+      const isolatedHome = await mkdtemp(join(root, "marketplace-home-"));
+      await cp(home, isolatedHome, { recursive: true });
+      const marketplace = ".codex/.tmp/bundled-marketplaces/openai-bundled";
+      if (!cachePresent) await rm(join(isolatedHome, marketplace), { recursive: true });
+      const captureSource = join(root, "marketplace-capture-source");
+      await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
+      await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+      const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+        criteriaPath: fixtureCriteria, outputParent: root, currentHome: isolatedHome, image: "fixture-image",
+        cpus: "2", memory: "4g", timeoutSeconds: 30, comparison, mekugiSource: captureSource });
+      const marker = join(run, "snapshots/current/home/ubuntu", marketplace, ".materialization-key");
+      expect(await Bun.file(marker).exists()).toBe(cachePresent);
+      if (cachePresent) expect(await readFile(marker, "utf8")).toBe("fixture\n");
+      await verifyPreparedInputs(run, await readState(run));
+    });
+  }
+}
+
 test("stock-mekugi does not require unused current-home runtime supplements", async () => {
   const isolatedHome = join(root, "stock-mekugi-minimal-home");
   await cp(home, isolatedHome, { recursive: true });
