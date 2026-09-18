@@ -1,9 +1,9 @@
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { checked, exec } from "./process";
-import { snapshotToolStore, verifySnapshotIdentities, type PreviousSnapshot, type SnapshotFile, type SnapshotStats } from "./snapshot";
+import { recordToolStore, verifySnapshotIdentities, type SnapshotFile } from "./snapshot";
 import { ISOLATION_SCRIPTS } from "./isolation";
 import { readMekugiBuild } from "./provenance";
 import { loadTaskPack } from "./task-pack";
@@ -21,7 +21,6 @@ export interface PrepareOptions {
   mekugiBuild?: string;
   mekugiSource?: string;
   mekugiFlags?: string[];
-  snapshotBase?: string;
   profile?: BenchmarkProfile;
   reasoningEffort?: ReasoningEffort;
   source: string;
@@ -184,7 +183,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
       await sha256(join(currentTemplate, ".local/bin/mise")) !== state.runtime_tools.current_setup_mise_sha256) {
     throw new Error("snapshotted current setup runtime changed");
   }
-  const setupInstalls = join(runDir, state.runtime_tools.current_setup_installs);
+  const setupInstalls = resolve(runDir, state.runtime_tools.current_setup_installs);
   const setupFilesPath = join(runDir, state.runtime_tools.current_setup_files);
   if (await sha256(setupFilesPath) !== state.runtime_tools.current_setup_files_sha256) {
     throw new Error("snapshotted current setup file manifest changed");
@@ -195,7 +194,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     ? await verifySnapshotIdentities(setupInstalls, setupFiles.files)
     : JSON.stringify(await manifest(setupInstalls)) === JSON.stringify(setupFiles.files);
   if (!setupIsUnchanged) {
-    throw new Error("snapshotted current setup installations changed");
+    throw new Error("current setup installations changed");
   }
   const mekugiTemplate = state.comparison === "codex-mekugi-grok" ? join(runDir, state.arms.stock.home_template) : join(runDir, state.arms.current.home_template);
   if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
@@ -299,7 +298,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     "project trust entries replaced with /workspace",
     ...(includeRuntimeSupplements ? [
       "untracked home files excluded except explicit runtime supplements; no host auth, session history or Mekugi state copied",
-      "mise copied to /home/ubuntu/.local/bin with its migration completion records; its complete installed tool store captured separately",
+      "mise copied to /home/ubuntu/.local/bin with its migration completion records; its existing installed tool store recorded separately and mounted read-only without copying",
       ...(mekugiBinary ? ["Mekugi launcher and matching shell helper copied to /home/ubuntu/.local/bin without host Mekugi state"] : []),
       "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
       "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
@@ -580,45 +579,20 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate,
     isolatedFromCurrentTools ? undefined : mekugiBinary, isolatedFromCurrentTools ? undefined : mekugiShellBinary,
     miseBinary, !isolatedFromCurrentTools, reviewTreatment);
-  const currentSetupInstalls = join(runDir, "snapshots/current/mise/installs");
-  let previousSnapshot: PreviousSnapshot | undefined;
-  if (options.snapshotBase) {
-    const previousRun = await realpath(options.snapshotBase);
-    const previousState = JSON.parse(await readFile(join(previousRun, "run.json"), "utf8")) as RunState;
-    if (previousState.status !== "complete") throw new Error("snapshot base must be a completed benchmark");
-    const previousManifestPath = join(previousRun, previousState.snapshot_manifest);
-    if (await sha256(previousManifestPath) !== previousState.current_snapshot.manifest_sha256) {
-      throw new Error("snapshot base current-home manifest changed");
-    }
-    const previousManifest = JSON.parse(await readFile(previousManifestPath, "utf8")) as { source_home?: unknown };
-    if (typeof previousManifest.source_home !== "string") throw new Error("snapshot base has no source home");
-    const previousFilesPath = join(previousRun, previousState.runtime_tools.current_setup_files);
-    if (await sha256(previousFilesPath) !== previousState.runtime_tools.current_setup_files_sha256) {
-      throw new Error("snapshot base tool manifest changed");
-    }
-    const previousFiles = JSON.parse(await readFile(previousFilesPath, "utf8")) as { files?: unknown };
-    if (!Array.isArray(previousFiles.files)) throw new Error("snapshot base tool manifest has no files");
-    previousSnapshot = {
-      root: join(previousRun, previousState.runtime_tools.current_setup_installs),
-      files: previousFiles.files as SnapshotFile[],
-      sourceRoot: join(previousManifest.source_home, ".local/share/mise/installs"),
-      capturedAt: previousState.current_snapshot.captured_at,
-    };
-
-  }
+  const currentSetupInstalls = isolatedFromCurrentTools
+    ? join(runDir, "snapshots/current/mise/installs")
+    : await realpath(join(options.currentHome, ".local/share/mise/installs"));
   let setupFiles: SnapshotFile[] = [];
-  let snapshotStats: SnapshotStats = { copied: 0, linked: 0, copiedBytes: 0, linkedBytes: 0 };
   if (isolatedFromCurrentTools) {
     progress("omitting the unused current-home tool store from isolated launcher snapshots");
     await mkdir(currentSetupInstalls, { recursive: true });
   } else {
-    progress("snapshotting installed tools incrementally");
-    ({ files: setupFiles, ...snapshotStats } = await snapshotToolStore(join(options.currentHome, ".local/share/mise/installs"), currentSetupInstalls, previousSnapshot));
-    progress(`tool snapshot: reused ${snapshotStats.linked} files (${snapshotStats.linkedBytes} bytes), copied ${snapshotStats.copied} files (${snapshotStats.copiedBytes} bytes)`);
+    progress(`recording installed tools for read-only mount: ${currentSetupInstalls}`);
+    setupFiles = await recordToolStore(currentSetupInstalls);
+    progress(`recorded ${setupFiles.length} tool-store entries; no installed tools copied`);
   }
   const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json");
   await writeFile(currentSetupFiles, `${JSON.stringify({ files: setupFiles }, null, 2)}\n`);
-  await writeFile(join(runDir, "snapshots/current/incremental.json"), `${JSON.stringify({ base: options.snapshotBase ?? null, omitted: isolatedFromCurrentTools || undefined, ...snapshotStats }, null, 2)}\n`);
 
   const snapshotDocument = JSON.parse(await readFile(snapshotManifest, "utf8")) as { created_at?: unknown };
   if (typeof snapshotDocument.created_at !== "string") throw new Error("current snapshot manifest has no capture timestamp");
@@ -696,7 +670,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       bun: relative(runDir, bunTarget), bun_sha256: await sha256(bunTarget),
       codex_source: codexBinary, codex_version: codexVersion, codex_sha256: codexSha256,
       codex_code_mode_host_source: codeModeHost,
-      current_setup_installs: relative(runDir, currentSetupInstalls),
+      current_setup_installs: isolatedFromCurrentTools ? relative(runDir, currentSetupInstalls) : currentSetupInstalls,
       current_setup_files: relative(runDir, currentSetupFiles), current_setup_files_sha256: await sha256(currentSetupFiles),
       current_setup_mise_sha256: miseSha256,
       codex_code_mode_host_sha256: codeModeHostSha256,

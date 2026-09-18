@@ -1,6 +1,6 @@
 import { dependencyImage } from "./dependencies";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { runOwnedContainer } from "./container";
 import type { RunState } from "./types";
@@ -65,7 +65,7 @@ print('CODEX_AB_PROTECTED_RUNTIME_OK')
     const common = [...protectedArgs(runDir, state, runtime), "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
         "-v", `${workspace}:/workspace`, "-v", `${home}:/home/ubuntu`,
         "-v", `${exports}:/mekugi-exports`, "-v", `${join(directory, "modules")}:/go/pkg/mod:ro`,
-        "-v", `${join(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
+        "-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
     const command = [dependencyImage(state), "mise", "exec", "--", "mekugi", ...(state.mekugi_flags ?? []),
       "--capture-output=/mekugi-exports/capture.jsonl", "--metrics-output=/mekugi-exports/metrics.json", "codex", "--version"];
     const result = await runOwnedContainer({ docker, name: `${state.id}-isolation-probe`, signal, timeoutMs: 180000,

@@ -26,7 +26,6 @@ Use current home plus the original v3 overlay and the current installed matching
   --current-launcher mekugi \
   --mekugi-bin /home/ubuntu/go/bin/mekugi \
   --mekugi-shell-bin /home/ubuntu/go/bin/shell \
-  --snapshot-base /tmp/codex-ab-jGXnG1 \
   --reasoning-effort medium \
   --image codex-ab:0.154.0
 ```

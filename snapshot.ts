@@ -1,8 +1,7 @@
-import { copyFile, link, lstat, mkdir, readdir, readlink, realpath, symlink } from "node:fs/promises";
+import { lstat, readdir, readlink } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { sha256 } from "./state";
 
-export interface SnapshotStats { copied: number; linked: number; copiedBytes: number; linkedBytes: number }
 export interface SnapshotIdentity {
   dev: string;
   ino: string;
@@ -12,12 +11,6 @@ export interface SnapshotIdentity {
   ctime_ns: string;
 }
 export interface SnapshotFile { path: string; type: string; sha256?: string; target?: string; identity?: SnapshotIdentity }
-export interface PreviousSnapshot {
-  root: string;
-  files: SnapshotFile[];
-  sourceRoot: string;
-  capturedAt: string;
-}
 
 async function identity(path: string): Promise<SnapshotIdentity> {
   const value = await lstat(path, { bigint: true });
@@ -66,75 +59,41 @@ export async function verifySnapshotIdentities(root: string, expected: SnapshotF
   return valid && seen === expected.length;
 }
 
-/** Reuse only isolated snapshot inodes, never files from the live tool store. */
-export async function snapshotToolStore(source: string, destination: string, previous?: PreviousSnapshot): Promise<SnapshotStats & { files: SnapshotFile[] }> {
-  const sourceRoot = await realpath(source);
-  const previousRoot = previous ? await realpath(previous.root) : undefined;
-  if (previousRoot && (previousRoot === sourceRoot || previousRoot.startsWith(`${sourceRoot}/`) || sourceRoot.startsWith(`${previousRoot}/`))) {
-    throw new Error("incremental snapshot base must be independent of the live tool store");
-  }
-  const previousFiles = previous ? new Map(previous.files.map(file => [file.path, file])) : undefined;
-  const previousSourceRoot = previous
-    ? await realpath(previous.sourceRoot).catch(error => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw error;
-    })
-    : undefined;
-  const unchangedBefore = previous && previousSourceRoot === sourceRoot
-    ? Date.parse(previous.capturedAt)
-    : Number.NaN;
+/**
+ * Record a sorted, content-addressed manifest of a live tool store without copying
+ * or linking any entries.
+ */
+export async function recordToolStore(source: string): Promise<SnapshotFile[]> {
   const files: SnapshotFile[] = [];
-  const stats: SnapshotStats = { copied: 0, linked: 0, copiedBytes: 0, linkedBytes: 0 };
   async function walk(directory: string): Promise<void> {
-    const suffix = relative(source, directory);
-    await mkdir(join(destination, suffix), { recursive: true });
     const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((a, b) => a.name.localeCompare(b.name));
+    entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       const input = join(directory, entry.name);
-      const output = join(destination, suffix, entry.name);
-      if (entry.isDirectory()) { await walk(input); continue; }
-      if (entry.isSymbolicLink()) {
-        const target = await readlink(input);
-        await symlink(target, output);
-        files.push({ path: relative(source, input), type: "symlink", target, identity: await identity(output) });
+      const name = relative(source, input);
+      if (entry.isDirectory()) {
+        await walk(input);
         continue;
       }
-      if (!entry.isFile()) throw new Error(`unsupported tool-store entry: ${input}`);
-      const current = await lstat(input);
-      const old = previousRoot ? join(previousRoot, suffix, entry.name) : undefined;
-      const name = relative(source, input);
-      const recorded = previousFiles?.get(name);
-      let digest: string | undefined;
-      let reused = false;
-      if (old) {
-        const prior = await lstat(old).catch(error => {
-          if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined;
-          throw error;
-        });
-        // Resolve parents too: a symlink in the old tree must not lead into the live home.
-        const resolved = prior?.isFile() ? await realpath(old) : undefined;
-        const eligibleBaseFile = prior?.isFile() && resolved?.startsWith(`${previousRoot}/`) &&
-            prior.size === current.size && prior.mode === current.mode &&
-            (prior.dev !== current.dev || prior.ino !== current.ino);
-        const recordedSnapshotIsUnchanged = eligibleBaseFile && recorded?.sha256 !== undefined && recorded.identity !== undefined &&
-          sameIdentity(await identity(old), recorded.identity);
-        const liveFilePredatesSnapshot = recordedSnapshotIsUnchanged && Number.isFinite(unchangedBefore) && current.ctimeMs <= unchangedBefore;
-        const contentsMatch = eligibleBaseFile && (liveFilePredatesSnapshot
-          ? (digest = recorded!.sha256)
-          : await sha256(old!) === (digest = await sha256(input)));
-        if (eligibleBaseFile && contentsMatch) {
-          try { await link(old, output); reused = true; }
-          catch (error) { if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error; }
-        }
+      if (entry.isSymbolicLink()) {
+        const before = await identity(input);
+        const target = await readlink(input);
+        const after = await identity(input);
+        if (!sameIdentity(before, after)) throw new Error(`tool-store entry changed while recording: ${input}`);
+        files.push({ path: name, type: "symlink", target, identity: after });
+      } else if (entry.isFile()) {
+        const before = await identity(input);
+        const digest = await sha256(input);
+        const after = await identity(input);
+        if (!sameIdentity(before, after)) throw new Error(`tool-store file changed while recording: ${input}`);
+        files.push({ path: name, type: "file", sha256: digest, identity: after });
+      } else {
+        throw new Error(`unsupported tool-store entry: ${input}`);
       }
-      if (reused) { stats.linked++; stats.linkedBytes += current.size; }
-      else { await copyFile(input, output); stats.copied++; stats.copiedBytes += current.size; }
-      // Carry verified digests into the manifest instead of rereading the store.
-      digest = reused ? digest : await sha256(output);
-      files.push({ path: name, type: "file", sha256: digest, identity: await identity(output) });
+      if (files.length % 1000 === 0) process.stderr.write(`[prepare] recorded ${files.length} tool-store files\n`);
     }
   }
   await walk(source);
-  return { ...stats, files };
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return files;
 }

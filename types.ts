@@ -83,6 +83,7 @@ export interface RunState {
     codex_version: string;
     codex_sha256: string;
     codex_code_mode_host_source: string;
+    /** Absolute host tool-store mount source, or a run-relative empty store for isolated comparisons. */
     current_setup_installs: string;
     current_setup_files: string;
     current_setup_files_sha256: string;

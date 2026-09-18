@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { prepare, verifyPreparedInputs, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { prepareTrials, readTrialSet, reportTrials, runTrials } from "./trials";
@@ -111,11 +111,11 @@ beforeAll(async () => {
 
 afterAll(async () => { await rm(root, { recursive: true, force: true }); });
 
-async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi" = "codex"): Promise<string> {
+async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi" = "codex", currentHome = home): Promise<string> {
   return prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
-    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds,
-    codexBinary: join(home, ".local/bin/codex"), currentLauncher,
-    mekugiBinary: currentLauncher === "mekugi" ? join(home, "go/bin/mekugi") : undefined });
+    outputParent: root, currentHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds,
+    codexBinary: join(currentHome, ".local/bin/codex"), currentLauncher,
+    mekugiBinary: currentLauncher === "mekugi" ? join(currentHome, "go/bin/mekugi") : undefined });
 }
 
 test("same-setup uses one immutable configuration for both arms and rejects drift", async () => {
@@ -140,7 +140,7 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   expect(launches).toHaveLength(2);
   expect(launches.some(line => line.includes(" mise exec -- codex exec "))).toBe(true);
   expect(launches.some(line => line.includes(" mise exec -- mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec "))).toBe(true);
-  expect(launches.every(line => line.includes("/home/ubuntu/.local/share/mise/installs:ro"))).toBe(true);
+  expect(launches.every(line => line.includes(`${state.runtime_tools.current_setup_installs}:/home/ubuntu/.local/share/mise/installs:ro`))).toBe(true);
   expect(await readlink(join(run, "arms/current/home/ubuntu/linked-guidance"))).toBe("AGENTS.md");
   await file(join(run, "reports/report.json"), "{}");
   await file(join(run, "reports/report.md"), "fixture report");
@@ -172,6 +172,9 @@ test("stock-mekugi isolates the launcher without current-home guidance", async (
   expect(state.execution).toMatchObject({ current_launcher: "mekugi", service_tier: "default" });
   expect(state.arms.stock.home_template).toBe("snapshots/stock/home/ubuntu");
   expect(state.arms.current.home_template).toBe("snapshots/stock-mekugi/home/ubuntu");
+  expect(state.runtime_tools.current_setup_installs).toBe("snapshots/current/mise/installs");
+  expect((await stat(join(run, state.runtime_tools.current_setup_installs))).isDirectory()).toBe(true);
+  await expect(stat(join(run, state.runtime_tools.current_setup_installs, "fixture-runner"))).rejects.toMatchObject({ code: "ENOENT" });
   await verifyPreparedInputs(run, state);
 
   const auth = join(root, "stock-mekugi-auth.json");
@@ -289,7 +292,10 @@ test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
   expect(state.execution).toMatchObject({ current_launcher: "grok", model: "grok:grok-4.6", service_tier: "default" });
   expect(state.arms.stock.home_template).toBe("snapshots/stock-mekugi/home/ubuntu");
   expect(state.arms.current.home_template).toBe("snapshots/stock-grok/home/ubuntu");
-  expect(JSON.parse(await readFile(join(run, "snapshots/current/incremental.json"), "utf8"))).toMatchObject({ omitted: true, copied: 0, linked: 0 });
+  expect(state.runtime_tools.current_setup_installs).toBe("snapshots/current/mise/installs");
+  expect((await stat(join(run, state.runtime_tools.current_setup_installs))).isDirectory()).toBe(true);
+  await expect(stat(join(run, state.runtime_tools.current_setup_installs, "fixture-runner"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(join(run, "snapshots/current/incremental.json"))).rejects.toMatchObject({ code: "ENOENT" });
   await verifyPreparedInputs(run, state);
 
   const auth = join(root, "codex-mekugi-grok-auth.json");
@@ -559,9 +565,12 @@ test("prepare makes base-only independent clones and an audited secret-free snap
   expect(await readFile(join(run, "snapshots/current/home/ubuntu/new-guidance/committed.md"), "utf8")).toBe("automatically cloned guidance\n");
   expect(await readFile(join(run, "snapshots/current/home/ubuntu/.local/share/mise/migrations/runtime-symlink-dirs-v2"), "utf8")).toBe("ok\n");
   expect(manifest).toContain(".local/share/mise/migrations/runtime-symlink-dirs-v2");
+  expect(state.runtime_tools.current_setup_installs).toBe(await realpath(join(home, ".local/share/mise/installs")));
+  await expect(stat(join(run, "snapshots/current/mise/installs"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(join(run, "snapshots/current/incremental.json"))).rejects.toMatchObject({ code: "ENOENT" });
   expect(state.runtime_tools.current_setup_mise_sha256).toMatch(/^[0-9a-f]{64}$/);
   expect(state.runtime_tools.current_setup_files_sha256).toMatch(/^[0-9a-f]{64}$/);
-  expect(await Bun.file(join(run, state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner")).exists()).toBe(true);
+  expect(await Bun.file(resolve(run, state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner")).exists()).toBe(true);
   expect(await Bun.file(join(run, state.criteria!.path)).exists()).toBe(true);
   expect(await Bun.file(join(run, "arms/stock/repo/criteria.json")).exists()).toBe(false);
 });
@@ -792,10 +801,12 @@ test("preflight rejects an image missing the recorded code-mode host", async () 
 });
 
 
-test("preflight rejects changes inside the snapshotted current setup tool store", async () => {
-  const run = await prepared();
+test("preflight rejects changes inside the current setup tool store", async () => {
+  const privateHome = join(root, "mutation-home");
+  await cp(home, privateHome, { recursive: true });
+  const run = await prepared(30, "codex", privateHome);
   const state = await readState(run);
-  await file(join(run, state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner"), "changed after preparation\n", 0o755);
+  await file(resolve(run, state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner"), "changed after preparation\n", 0o755);
   await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("current setup installations changed");
 });
 test("Mekugi rejects changed controls and snapshot files before Docker is invoked", async () => {
@@ -816,7 +827,7 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   expect(state.results?.current?.grade?.passed).toBe(false);
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain(" mise exec -- codex exec ");
-  expect(log).toContain("snapshots/current/mise/installs:/home/ubuntu/.local/share/mise/installs:ro");
+  expect(log).toContain(`${state.runtime_tools.current_setup_installs}:/home/ubuntu/.local/share/mise/installs:ro`);
   const agentWarmCalls = log.split("\n").filter(line => /-agent-warm /.test(line));
   expect(agentWarmCalls).toHaveLength(2);
   expect(agentWarmCalls.every(line => line.includes("--network none") && !line.includes("go-pkg-cache"))).toBe(true);
@@ -1167,8 +1178,14 @@ test("trial CLI pins fresh pairs, alternates launches, and retains self-containe
   expect(set.controls.image_id).toBe(`sha256:${"a".repeat(64)}`);
   const first = join(directory, set.trials[0]!.run_dir);
   const second = join(directory, set.trials[1]!.run_dir);
-  expect(await readlink(join(first, initial.runtime_tools.current_setup_installs, "fixture-runner/latest"))).toBe("./1");
-  expect(await readFile(join(first, initial.runtime_tools.current_setup_installs, "fixture-runner/1/bin/alias"), "utf8")).toContain("exit 0");
+  const firstState = await readState(first);
+  const secondState = await readState(second);
+  expect(firstState.runtime_tools.current_setup_installs).toBe(initial.runtime_tools.current_setup_installs);
+  expect(secondState.runtime_tools.current_setup_installs).toBe(initial.runtime_tools.current_setup_installs);
+  expect(await readlink(resolve(first, firstState.runtime_tools.current_setup_installs, "fixture-runner/latest"))).toBe("./1");
+  expect(await readFile(resolve(first, firstState.runtime_tools.current_setup_installs, "fixture-runner/1/bin/alias"), "utf8")).toContain("exit 0");
+  await expect(stat(join(first, "snapshots/current/mise/installs"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(stat(join(second, "snapshots/current/mise/installs"))).rejects.toMatchObject({ code: "ENOENT" });
   const snapshot = initial.arms.current.home_template;
   const original = await stat(join(prototype, snapshot, ".codex/AGENTS.md"));
   expect((await stat(join(first, snapshot, ".codex/AGENTS.md"))).ino).not.toBe(original.ino);

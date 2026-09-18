@@ -1,128 +1,121 @@
 import { expect, test } from "bun:test";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { snapshotToolStore, verifySnapshotIdentities } from "./snapshot";
+import { recordToolStore, verifySnapshotIdentities } from "./snapshot";
 
-test("incremental snapshots reuse old copies, isolate live edits, and survive base cleanup", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-test-"));
+test("records a sorted manifest without creating a destination", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-record-"));
   try {
-    const live = join(root, "live"), first = join(root, "first"), second = join(root, "second");
-    await mkdir(live);
-    await writeFile(join(live, "same"), "same");
-    await writeFile(join(live, "changed"), "before");
-    await writeFile(join(live, "removed"), "old");
-    await symlink("same", join(live, "alias"));
-    const initial = await snapshotToolStore(live, first);
-    await writeFile(join(live, "changed"), "after!");
-    await writeFile(join(live, "added"), "new");
-    await rm(join(live, "removed"));
-    const stats = await snapshotToolStore(live, second, { root: first, files: initial.files, sourceRoot: live, capturedAt: new Date(0).toISOString() });
-    expect(stats.linked).toBe(1);
-    expect(stats.files.map(file => file.path)).toEqual(["added", "alias", "changed", "same"]);
-    for (const entry of stats.files.filter(file => file.type === "file")) {
-      expect(entry.sha256).toBe(new Bun.CryptoHasher("sha256").update(await readFile(join(second, entry.path))).digest("hex"));
-    }
-    expect(stats.copied).toBe(2);
-    expect((await lstat(join(first, "same"))).ino).toBe((await lstat(join(second, "same"))).ino);
-    expect((await lstat(join(live, "same"))).ino).not.toBe((await lstat(join(second, "same"))).ino);
-    expect(await readFile(join(first, "changed"), "utf8")).toBe("before");
-    expect(await Bun.file(join(second, "removed")).exists()).toBe(false);
-    await writeFile(join(live, "same"), "live edit");
-    await rm(first, { recursive: true });
-    expect(await readFile(join(second, "alias"), "utf8")).toBe("same");
-    expect(await readFile(join(second, "changed"), "utf8")).toBe("after!");
-    await expect(snapshotToolStore(live, join(root, "bad"), { root: live, files: initial.files, sourceRoot: live, capturedAt: new Date(0).toISOString() })).rejects.toThrow("independent");
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
+    const store = join(root, "store");
+    const destination = join(root, "destination-must-not-exist");
+    await mkdir(join(store, "nested"), { recursive: true });
+    await writeFile(join(store, "z-tool"), "z payload");
+    await writeFile(join(store, "nested", "a-tool"), "a payload");
+    await chmod(join(store, "z-tool"), 0o644);
+    await symlink("nested/a-tool", join(store, "alias"));
 
-test("old parent symlinks cannot cause live files to be linked", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-test-"));
-  try {
-    const live = join(root, "live"), old = join(root, "old"), next = join(root, "next");
-    await mkdir(join(live, "nested"), { recursive: true });
-    await mkdir(old);
-    await writeFile(join(live, "nested/file"), "data");
-    await symlink(join(live, "nested"), join(old, "nested"));
-    expect((await snapshotToolStore(live, next, { root: old, files: [], sourceRoot: live, capturedAt: new Date(0).toISOString() })).linked).toBe(0);
-    expect((await lstat(join(live, "nested/file"))).ino).not.toBe((await lstat(join(next, "nested/file"))).ino);
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
-
-test("incremental metadata reuse remains isolated and detects restored-timestamp edits", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-test-"));
-  try {
-    const live = join(root, "live"), first = join(root, "first"), second = join(root, "second");
-    await mkdir(live);
-    await writeFile(join(live, "large"), "unchanged payload");
-    const initial = await snapshotToolStore(live, first);
-    const capturedAt = new Date(Date.now() + 1_000).toISOString();
-    const next = await snapshotToolStore(live, second, { root: first, files: initial.files, sourceRoot: live, capturedAt });
-    expect(next.linked).toBe(1);
-    expect(await verifySnapshotIdentities(second, next.files)).toBe(true);
-    await rm(first, { recursive: true });
-    expect(await verifySnapshotIdentities(second, next.files)).toBe(true);
-
-    const before = await lstat(join(second, "large"));
-    await writeFile(join(second, "large"), "modified payload!");
-    await utimes(join(second, "large"), before.atime, before.mtime);
-    expect(await verifySnapshotIdentities(second, next.files)).toBe(false);
-    await writeFile(join(second, "large"), "unchanged payload");
-    await chmod(join(second, "large"), 0o755);
-    expect(await verifySnapshotIdentities(second, next.files)).toBe(false);
-    expect(await readFile(join(live, "large"), "utf8")).toBe("unchanged payload");
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
-
-test("legacy manifests cannot authorize corrupted base content", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-test-"));
-  try {
-    const live = join(root, "live"), first = join(root, "first"), second = join(root, "second");
-    await mkdir(live);
-    await writeFile(join(live, "tool"), "trusted");
-    const initial = await snapshotToolStore(live, first);
-    await writeFile(join(first, "tool"), "altered");
-    const legacyFiles = initial.files.map(({ identity: _identity, ...file }) => file);
-    const next = await snapshotToolStore(live, second, {
-      root: first, files: legacyFiles, sourceRoot: live, capturedAt: new Date(Date.now() + 1_000).toISOString(),
+    const files = await recordToolStore(store);
+    expect(files.map(file => file.path)).toEqual(["alias", "nested/a-tool", "z-tool"]);
+    expect(files.find(file => file.path === "alias")).toMatchObject({
+      type: "symlink",
+      target: "nested/a-tool",
     });
-    expect(next.linked).toBe(0);
-    expect(next.copied).toBe(1);
-    expect(await readFile(join(second, "tool"), "utf8")).toBe("trusted");
-  } finally { await rm(root, { recursive: true, force: true }); }
+    const recorded = files.find(file => file.path === "nested/a-tool");
+    expect(recorded).toMatchObject({ type: "file" });
+    expect(recorded?.sha256).toBe(
+      new Bun.CryptoHasher("sha256").update(await readFile(join(store, "nested/a-tool"))).digest("hex"),
+    );
+    const actual = await lstat(join(store, "nested/a-tool"), { bigint: true });
+    expect(recorded?.identity?.ino).toBe(String(actual.ino));
+    expect(recorded?.identity?.mode).toBe(String(actual.mode));
+    expect(await Bun.file(destination).exists()).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
-test("a retained base remains reusable after its original live store is removed", async () => {
-  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-test-"));
+test("verification detects content, additions, deletions, modes, and literal symlink changes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-verify-"));
   try {
-    const original = join(root, "original"), replacement = join(root, "replacement");
-    const first = join(root, "first"), second = join(root, "second");
-    await mkdir(original);
-    await mkdir(replacement);
-    await writeFile(join(original, "tool"), "payload");
-    await writeFile(join(replacement, "tool"), "payload");
-    const initial = await snapshotToolStore(original, first);
-    await rm(original, { recursive: true });
-    const next = await snapshotToolStore(replacement, second, {
-      root: first, files: initial.files, sourceRoot: original, capturedAt: new Date().toISOString(),
-    });
-    expect(next.linked).toBe(1);
-    expect(await readFile(join(second, "tool"), "utf8")).toBe("payload");
-  } finally { await rm(root, { recursive: true, force: true }); }
+    const store = join(root, "store");
+    await mkdir(store);
+    await writeFile(join(store, "tool"), "payload");
+    await chmod(join(store, "tool"), 0o644);
+    await symlink("tool", join(store, "alias"));
+    const files = await recordToolStore(store);
+
+    expect(await verifySnapshotIdentities(store, files)).toBe(true);
+
+    await writeFile(join(store, "tool"), "changed payload");
+    expect(await verifySnapshotIdentities(store, files)).toBe(false);
+    await writeFile(join(store, "tool"), "payload");
+    expect(await verifySnapshotIdentities(store, files)).toBe(true);
+
+    await chmod(join(store, "tool"), 0o755);
+    expect(await verifySnapshotIdentities(store, files)).toBe(false);
+    await chmod(join(store, "tool"), 0o644);
+    expect(await verifySnapshotIdentities(store, files)).toBe(true);
+
+    await writeFile(join(store, "added"), "new");
+    expect(await verifySnapshotIdentities(store, files)).toBe(false);
+    await rm(join(store, "added"));
+    expect(await verifySnapshotIdentities(store, files)).toBe(true);
+
+    await rm(join(store, "tool"));
+    expect(await verifySnapshotIdentities(store, files)).toBe(false);
+    await writeFile(join(store, "tool"), "payload");
+    await chmod(join(store, "tool"), 0o644);
+    expect(await verifySnapshotIdentities(store, files)).toBe(true);
+
+    await rm(join(store, "alias"));
+    await symlink("missing", join(store, "alias"));
+    expect(await verifySnapshotIdentities(store, files)).toBe(false);
+    await rm(join(store, "alias"));
+    await symlink("tool", join(store, "alias"));
+    expect(await verifySnapshotIdentities(store, files)).toBe(true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
-test("fresh copied snapshots verify literal symlink targets rather than original inodes", async () => {
+test("verification accepts copied files and symlinks with the recorded literals", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-copy-"));
   try {
-    const live = join(root, "live"), first = join(root, "first"), second = join(root, "second");
-    await mkdir(live);
-    await writeFile(join(live, "tool"), "trusted");
-    await symlink("./tool", join(live, "alias"));
-    const initial = await snapshotToolStore(live, first);
-    await cp(first, second, { recursive: true, verbatimSymlinks: true });
-    expect(await verifySnapshotIdentities(second, initial.files)).toBe(true);
-    await rm(join(second, "alias"));
-    await symlink("other", join(second, "alias"));
-    expect(await verifySnapshotIdentities(second, initial.files)).toBe(false);
-  } finally { await rm(root, { recursive: true, force: true }); }
+    const store = join(root, "store");
+    const copy = join(root, "copy");
+    await mkdir(store);
+    await writeFile(join(store, "tool"), "trusted");
+    await symlink("./tool", join(store, "alias"));
+    const files = await recordToolStore(store);
+
+    await cp(store, copy, { recursive: true, verbatimSymlinks: true });
+    expect(await verifySnapshotIdentities(copy, files)).toBe(true);
+
+    await writeFile(join(copy, "tool"), "altered");
+    expect(await verifySnapshotIdentities(copy, files)).toBe(false);
+    await writeFile(join(copy, "tool"), "trusted");
+    expect(await verifySnapshotIdentities(copy, files)).toBe(true);
+
+    await rm(join(copy, "alias"));
+    await symlink("other", join(copy, "alias"));
+    expect(await verifySnapshotIdentities(copy, files)).toBe(false);
+    expect(await readlink(join(copy, "alias"))).toBe("other");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects unsupported tool-store entries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codex-ab-snapshot-entry-"));
+  try {
+    const store = join(root, "store");
+    await mkdir(store);
+    const pipe = join(store, "unsupported");
+    const result = Bun.spawnSync(["mkfifo", pipe]);
+    expect(result.exitCode).toBe(0);
+    await expect(recordToolStore(store)).rejects.toThrow("unsupported tool-store entry");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
