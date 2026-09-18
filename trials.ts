@@ -48,7 +48,7 @@ export function trialControls(state: RunState) {
     profile: state.profile, source: state.source, submodules: state.submodules,
     task: state.task, task_pack: state.task_pack, criteria: state.criteria,
     comparison: state.comparison ?? "stock-current", execution: state.execution,
-    image_id: state.image_id, resource_limits: state.resource_limits, timeout_seconds: state.timeout_seconds,
+    image_id: state.image_id, dependency_image: state.dependency_image, resource_limits: state.resource_limits, timeout_seconds: state.timeout_seconds,
     current_snapshot: state.current_snapshot, snapshot_manifest: state.snapshot_manifest,
     runtime_tools: state.runtime_tools, operator: state.operator, arms: state.arms,
     protected_runtime: state.protected_runtime, mekugi_flags: state.mekugi_flags,
@@ -126,7 +126,7 @@ export async function prepareTrials(options: {
         // Never copy executed arm homes, auth, reports, probe state or operation locks.
         const paths = ["seed.git", "control", "evaluator", "snapshots", "arms/stock/repo", "arms/current/repo",
           ...(state.mekugi_build?.files.map(file => file.path) ?? []),
-          ...(state.runtime_tools.preflight_cache ? ["artifacts/preflight-cache"] : [])];
+          ...(!state.dependency_image && state.runtime_tools.preflight_cache ? ["artifacts/preflight-cache"] : [])];
         for (const path of paths) {
           const destination = join(target, path);
           await mkdir(dirname(destination), { recursive: true });

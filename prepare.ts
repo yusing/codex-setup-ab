@@ -48,31 +48,6 @@ function progress(message: string): void { process.stderr.write(`[prepare] ${mes
 
 async function exists(path: string): Promise<boolean> { try { await lstat(path); return true; } catch { return false; } }
 
-async function makeDirectoriesWritable(root: string): Promise<void> {
-  const pending = [root];
-  while (pending.length) {
-    const directory = pending.pop()!;
-    const info = await lstat(directory);
-    await chmod(directory, info.mode | 0o200);
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (entry.isDirectory()) pending.push(join(directory, entry.name));
-    }
-  }
-}
-
-async function copyCacheTree(source: string, destination: string): Promise<void> {
-  await mkdir(destination, { recursive: true });
-  try {
-    await checked(["cp", "-al", `${source}/.`, destination]);
-  } catch {
-    await makeDirectoriesWritable(destination);
-    await rm(destination, { recursive: true, force: true });
-    await mkdir(destination, { recursive: true });
-    await checked(["cp", "-a", `${source}/.`, destination]);
-  }
-  await makeDirectoriesWritable(destination);
-}
-
 async function copyRequired(source: string, target: string): Promise<void> {
   if (!(await exists(source))) throw new Error(`current setup dependency is missing: ${source}`);
   await mkdir(dirname(target), { recursive: true });
@@ -602,7 +577,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     miseBinary, !isolatedFromCurrentTools, reviewTreatment);
   const currentSetupInstalls = join(runDir, "snapshots/current/mise/installs");
   let previousSnapshot: PreviousSnapshot | undefined;
-  let preflightCache: NonNullable<RunState["runtime_tools"]["preflight_cache"]> | undefined;
   if (options.snapshotBase) {
     const previousRun = await realpath(options.snapshotBase);
     const previousState = JSON.parse(await readFile(join(previousRun, "run.json"), "utf8")) as RunState;
@@ -625,32 +599,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       sourceRoot: join(previousManifest.source_home, ".local/share/mise/installs"),
       capturedAt: previousState.current_snapshot.captured_at,
     };
-    const matchingRuntime = previousState.source.base_commit === base && previousState.source.base_tree === tree &&
-      previousState.runtime_tools.codex_sha256 === codexSha256;
-    let cacheArm: "stock" | "current" | undefined;
-    for (const arm of ["stock", "current"] as const) {
-      if (previousState.results?.[arm] &&
-          await exists(join(previousRun, "arms", arm, "grader-go-cache")) &&
-          await exists(join(previousRun, "arms", arm, "grader-go-pkg-cache"))) {
-        cacheArm = arm;
-        break;
-      }
-    }
-    if (matchingRuntime && cacheArm) {
-      const goBuild = join(runDir, "artifacts/preflight-cache/go-build");
-      const goPkg = join(runDir, "artifacts/preflight-cache/go-pkg");
-      const previousBun = join(previousRun, "arms", cacheArm, "grader-bun-cache");
-      const bun = await exists(previousBun) ? join(runDir, "artifacts/preflight-cache/bun") : undefined;
-      await Promise.all([
-        copyCacheTree(join(previousRun, "arms", cacheArm, "grader-go-cache"), goBuild),
-        copyCacheTree(join(previousRun, "arms", cacheArm, "grader-go-pkg-cache"), goPkg),
-        ...(bun ? [copyCacheTree(previousBun, bun)] : []),
-      ]);
-      preflightCache = {
-        go_build: relative(runDir, goBuild), go_pkg: relative(runDir, goPkg),
-        bun: bun ? relative(runDir, bun) : undefined, source_run: previousRun,
-      };
-    }
+
   }
   let setupFiles: SnapshotFile[] = [];
   let snapshotStats: SnapshotStats = { copied: 0, linked: 0, copiedBytes: 0, linkedBytes: 0 };
@@ -745,7 +694,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       current_setup_installs: relative(runDir, currentSetupInstalls),
       current_setup_files: relative(runDir, currentSetupFiles), current_setup_files_sha256: await sha256(currentSetupFiles),
       current_setup_mise_sha256: miseSha256,
-      preflight_cache: preflightCache,
       codex_code_mode_host_sha256: codeModeHostSha256,
       mekugi_source: mekugiBinary, mekugi_sha256: mekugiSha256,
       mekugi_shell_source: mekugiShellBinary, mekugi_shell_sha256: mekugiShellSha256,

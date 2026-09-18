@@ -63,6 +63,7 @@ export interface RunState {
   criteria?: { path: string; sha256: string; contract: import("./semantic").CriteriaContract };
   image: string;
   image_id?: string;
+  dependency_image?: { key: string; base_image: string; image_id: string };
   comparison?: Comparison;
   arm_order?: ArmOrder;
   trial?: { set_id: string; index: number; controls_sha256: string; plan_sha256: string };

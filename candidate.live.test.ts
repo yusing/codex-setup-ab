@@ -31,11 +31,11 @@ beforeEach(async () => {
 });
 afterEach(async () => { if (root) await rm(root, { recursive: true, force: true }); });
 
-async function inspect(mode: "verify" | "capture", baseline = false): Promise<Awaited<ReturnType<typeof runOwnedContainer>>> {
+async function inspect(mode: "verify" | "capture", baseline = false, discardDependencies: string[] = []): Promise<Awaited<ReturnType<typeof runOwnedContainer>>> {
   return runOwnedContainer({ docker, name: `codex-ab-candidate-${crypto.randomUUID()}`, timeoutMs: 30_000,
     createArgs: ["--network", "none", "-e", "GIT_OPTIONAL_LOCKS=0", "-v", `${repo}:/workspace`, "-v", `${capture}:/capture`,
       "-v", `${process.execPath}:/usr/local/bin/bun:ro`, image, "bun", "-e", source,
-      JSON.stringify({ mode, baseline, clean: baseline, base, tree, forbidden: "f".repeat(40), icons: false, submodules: [] })] });
+      JSON.stringify({ mode, baseline, discardDependencies, clean: baseline, base, tree, forbidden: "f".repeat(40), icons: false, submodules: [] })] });
 }
 
 liveTest("live capture preserves commits and exact unusual filenames without executing Git hooks on the host", async () => {
@@ -44,16 +44,21 @@ liveTest("live capture preserves commits and exact unusual filenames without exe
   await checked(["git", "-C", repo, "commit", "-m", "candidate"]);
   const unusual = "雪\tline\nbreak.txt";
   await writeFile(join(repo, unusual), "untracked change\n");
+  await writeFile(join(repo, ".gitignore"), "node_modules/\n");
+  await mkdir(join(repo, "plugins/node_modules"), { recursive: true });
+  await writeFile(join(repo, "plugins/node_modules/package"), "regenerable");
   const victim = join(root, "host-victim");
   await writeFile(victim, "untouched");
   const hook = join(repo, ".git/fsmonitor");
   await writeFile(hook, `#!/bin/sh\nprintf compromised >'${victim}' 2>/dev/null || true\nprintf invoked >/workspace/hook-ran\nprintf '\\0'\n`);
   await chmod(hook, 0o755);
   await checked(["git", "-C", repo, "config", "core.fsmonitor", ".git/fsmonitor"]);
-  const result = await inspect("capture");
+  const result = await inspect("capture", false, ["plugins/node_modules/"]);
   expect(result.stderr).not.toContain("SyntaxError");
   expect(result.exitCode).toBe(0);
   expect(await readFile(victim, "utf8")).toBe("untouched");
+  expect(await Bun.file(join(capture, "discarded-dependencies.json")).json()).toEqual(["plugins/node_modules/"]);
+  expect(await Bun.file(join(repo, "plugins/node_modules/package")).exists()).toBe(false);
   expect(await readFile(join(repo, "hook-ran"), "utf8")).toBe("invoked");
   const metadata = await Bun.file(join(capture, "result.json")).json();
   expect(metadata.changed_files).toContain(unusual);
@@ -77,4 +82,21 @@ liveTest("live capture never follows an output symlink into the host filesystem"
   await symlink(victim, join(capture, "changes.patch"));
   expect((await inspect("capture")).exitCode).not.toBe(0);
   expect(await readFile(victim, "utf8")).toBe("untouched");
+}, 30_000);
+
+
+liveTest("live dependency cleanup preserves tracked packages and redirected directories", async () => {
+  await writeFile(join(repo, ".gitignore"), "node_modules/\n");
+  await mkdir(join(repo, "tracked/node_modules"), { recursive: true });
+  await writeFile(join(repo, "tracked/node_modules/source"), "keep");
+  await checked(["git", "-C", repo, "add", "-f", "tracked/node_modules/source"]);
+  await mkdir(join(repo, "redirected"));
+  await mkdir(join(repo, "outside/node_modules"), { recursive: true });
+  await writeFile(join(repo, "outside/node_modules/package"), "keep");
+  await symlink("../outside/node_modules", join(repo, "redirected/node_modules"));
+  const result = await inspect("capture", false, ["tracked/node_modules/", "redirected/node_modules/", "../../node_modules/"]);
+  expect(result.exitCode, result.stderr).toBe(0);
+  expect(await Bun.file(join(capture, "discarded-dependencies.json")).json()).toEqual([]);
+  expect(await Bun.file(join(repo, "tracked/node_modules/source")).text()).toBe("keep");
+  expect(await Bun.file(join(repo, "outside/node_modules/package")).text()).toBe("keep");
 }, 30_000);

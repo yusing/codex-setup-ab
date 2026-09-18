@@ -752,26 +752,15 @@ test("an externally canceled pair stops before Docker preflight", async () => {
   expect(await Bun.file(fake.log).exists()).toBe(false);
 });
 
-test("cached preflight mounts Go and Bun dependency caches before disabling networking", async () => {
+test("preflight pins shared dependencies and compiles offline without cache mounts", async () => {
   const run = await prepared();
-  const state = await readState(run);
-  for (const path of ["artifacts/preflight-cache/go-build", "artifacts/preflight-cache/go-pkg", "artifacts/preflight-cache/bun"]) {
-    await mkdir(join(run, path), { recursive: true });
-  }
-  state.runtime_tools.preflight_cache = {
-    go_build: "artifacts/preflight-cache/go-build",
-    go_pkg: "artifacts/preflight-cache/go-pkg",
-    bun: "artifacts/preflight-cache/bun",
-    source_run: "/fixture/base",
-  };
-  await writeState(run, state);
   const fake = await fakeOwnedDocker(0);
   await preflightRun(run, fake.path);
+  const state = await readState(run);
+  expect(state.dependency_image?.image_id).toBe(`sha256:${"a".repeat(64)}`);
   const compile = (await readFile(fake.log, "utf8")).split("\n").find(line => line.includes("-preflight-compile "))!;
   expect(compile).toContain("--network none");
-  expect(compile).toContain("/artifacts/preflight-cache/go-build:/home/ubuntu/.cache/go-build");
-  expect(compile).toContain("/artifacts/preflight-cache/go-pkg:/home/ubuntu/go/pkg");
-  expect(compile).toContain("/artifacts/preflight-cache/bun:/home/ubuntu/.bun/install/cache");
+  expect(compile).not.toContain("preflight-cache");
 });
 
 test("preflight rejects an image missing the recorded code-mode host", async () => {
@@ -809,7 +798,9 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   expect(log).toContain("snapshots/current/mise/installs:/home/ubuntu/.local/share/mise/installs:ro");
   const agentWarmCalls = log.split("\n").filter(line => /-agent-warm /.test(line));
   expect(agentWarmCalls).toHaveLength(2);
-  expect(agentWarmCalls.every(line => line.includes("/go-pkg-cache:/home/ubuntu/go/pkg"))).toBe(true);
+  expect(agentWarmCalls.every(line => line.includes("--network none") && !line.includes("go-pkg-cache"))).toBe(true);
+  expect(log).not.toContain("grader-go-pkg-cache");
+  expect(log).not.toContain("grader-bun-cache");
   expect(agentWarmCalls.every(line => line.includes("/repo:/workspace"))).toBe(true);
   expect(log).not.toContain("-evaluator-warm ");
   const candidateChecks = log.split("\n").filter(line => line.includes(" create ") && line.includes("-grade-verify "));

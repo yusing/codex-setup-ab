@@ -1,3 +1,4 @@
+import { dependencyImage } from "./dependencies";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
@@ -14,7 +15,7 @@ export function protectedArgs(runDir: string, state: RunState, runtime: string):
     "--tmpfs", "/tmp:exec,size=4g,mode=1777",
     "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin:/usr/sbin:/sbin",
     "-e", "MEKUGI_RUNTIME_DIR=/mekugi-runtime", "-e", "XDG_STATE_HOME=/mekugi-runtime/state",
-    "-e", "BENCH_ARTIFACT_DIR=/mekugi-exports", "-e", "GOCACHE=/home/ubuntu/.cache/go-build",
+    "-e", "BENCH_ARTIFACT_DIR=/mekugi-exports", "-e", "GOCACHE=/tmp/go-build",
     "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
     "-v", `${runtime}:/mekugi-runtime`,
     ...state.protected_runtime.scripts.flatMap((file, index) => ["-v", `${join(runDir, file.path)}:${destinations[index]}:ro`])];
@@ -25,7 +26,7 @@ export async function executorOwnership(docker: string, state: RunState, name: s
   const result = await runOwnedContainer({ docker, name, timeoutMs: 120000,
     createArgs: ["--network", "none", "--user", "0:0",
       ...paths.flatMap((path, index) => ["-v", `${path}:/owned/${index}`]),
-      state.image_id ?? state.image, "chown", "-hR", `${restore ? state.operator.uid : 0}:${state.operator.gid}`,
+      dependencyImage(state), "chown", "-hR", `${restore ? state.operator.uid : 0}:${state.operator.gid}`,
       ...paths.map((_, index) => `/owned/${index}`)] });
   if (result.exitCode !== 0) throw new Error(`protected executor ownership ${restore ? "restore" : "setup"} failed: ${result.stderr}`);
 }
@@ -65,7 +66,7 @@ print('CODEX_AB_PROTECTED_RUNTIME_OK')
         "-v", `${workspace}:/workspace`, "-v", `${home}:/home/ubuntu`,
         "-v", `${exports}:/mekugi-exports`, "-v", `${join(directory, "modules")}:/go/pkg/mod:ro`,
         "-v", `${join(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
-    const command = [state.image_id ?? state.image, "mise", "exec", "--", "mekugi", ...(state.mekugi_flags ?? []),
+    const command = [dependencyImage(state), "mise", "exec", "--", "mekugi", ...(state.mekugi_flags ?? []),
       "--capture-output=/mekugi-exports/capture.jsonl", "--metrics-output=/mekugi-exports/metrics.json", "codex", "--version"];
     const result = await runOwnedContainer({ docker, name: `${state.id}-isolation-probe`, signal, timeoutMs: 180000,
       createArgs: [...common, "-v", `${join(directory, "toolhost.js")}:/probe-toolhost.js:ro`, "-v", `${join(directory, "probe.go")}:/probe.go:ro`,

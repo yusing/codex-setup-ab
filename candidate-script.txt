@@ -1,12 +1,13 @@
 // Embedded as source text in the compiled CLI and executed only inside Docker.
 // Never run Git on an agent-controlled checkout on the host: Git configuration
 // can execute fsmonitor hooks, filters and other arbitrary commands.
-import { lstat, readdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 
 interface CandidateSpec {
   mode: "verify" | "capture";
   baseline: boolean;
+  discardDependencies?: string[];
   clean: boolean;
   base: string;
   tree: string;
@@ -62,4 +63,15 @@ if (spec.mode === "capture") {
   const [code, stderr] = await Promise.all([patch.exited, new Response(patch.stderr).text()]);
   if (code !== 0) throw new Error(`patch capture failed: ${stderr}`);
   await writeFile("/capture/result.json", JSON.stringify({ changed_files: changedFiles, head_after_agent: head }));
+  const discarded: string[] = [];
+  for (const path of spec.discardDependencies ?? []) {
+    const target = resolve("/workspace", path);
+    if (!target.startsWith("/workspace/") || !path.endsWith("node_modules/")) continue;
+    if (!(await exists(target)) || !(await lstat(target)).isDirectory() || await realpath(target) !== target) continue;
+    if (await git(["ls-files", "-z", "--", path])) continue;
+    await rm(target, { recursive: true });
+    discarded.push(path);
+  }
+  await writeFile("/capture/discarded-dependencies.json", JSON.stringify(discarded));
+
 }

@@ -1,3 +1,4 @@
+import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories } from "./dependencies";
 import { chmod, copyFile, cp, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
@@ -29,11 +30,11 @@ function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "cur
   return ["-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
 }
 
-function imageRef(state: RunState): string { return state.image_id ?? state.image; }
+function imageRef(state: RunState): string { return dependencyImage(state); }
 
 async function inspectCandidate(docker: string, runDir: string, state: RunState, repository: string, label: string,
-  signal: AbortSignal, baseline: boolean, clean: boolean, capture?: string): Promise<void> {
-  const spec = { mode: capture ? "capture" : "verify", baseline, clean, base: state.source.base_commit,
+  signal: AbortSignal, baseline: boolean, clean: boolean, capture?: string, discardDependencies?: string[]): Promise<void> {
+  const spec = { mode: capture ? "capture" : "verify", baseline, clean, discardDependencies, base: state.source.base_commit,
     tree: state.source.base_tree, forbidden: state.source.forbidden_commit, icons: state.profile === "godoxy-icons", submodules: state.submodules ?? [] };
   const result = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${label}`, signal, timeoutMs: 60_000,
     createArgs: [...containerArgs(state), "--network", "none", "-e", "GIT_OPTIONAL_LOCKS=0", "-v", `${repository}:/workspace${capture ? "" : ":ro"}`,
@@ -42,12 +43,10 @@ async function inspectCandidate(docker: string, runDir: string, state: RunState,
   if (result.exitCode !== 0 || result.timedOut || result.canceled) throw new Error(`candidate ${label} verification failed: ${result.stderr.trim()}`);
 }
 
-async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string, grokAuthFile?: string): Promise<{ home: string; output: string; cache: string; moduleCache: string }> {
+async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string, grokAuthFile?: string): Promise<{ home: string; output: string }> {
   const armRoot = join(runDir, "arms", arm);
   const home = join(armRoot, "home/ubuntu");
   const output = join(runDir, "artifacts", arm);
-  const moduleCache = join(armRoot, "go-pkg-cache");
-  const cache = join(armRoot, "go-cache");
   await cp(join(runDir, state.arms[arm].home_template), home, { recursive: true, force: false, verbatimSymlinks: true });
   await mkdir(join(home, ".codex"), { recursive: true, mode: 0o700 });
   await copyFile(authFile, join(home, ".codex/auth.json"));
@@ -64,9 +63,7 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
   }
   await chmod(join(home, ".codex/auth.json"), 0o600);
   await mkdir(output, { recursive: true });
-  await mkdir(moduleCache, { recursive: true });
-  await mkdir(cache, { recursive: true });
-  return { home, output, cache, moduleCache };
+  return { home, output };
 }
 
 async function preflightChecks(docker: string, state: RunState, runDir: string, signal: AbortSignal): Promise<string> {
@@ -74,7 +71,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   if (state.profile === "godoxy-icons") verifyGodoxyIdentity(state.source, state.submodules);
   // Resolve the mutable tag before any checks, so every check and launch uses
   // the same image even if another process retags the operator's image.
-  const reference = imageRef(state);
+  const reference = state.image_id ?? state.image;
   const inspected = await exec([docker, "image", "inspect", "--format", "{{.Id}}", reference], { signal });
   const image = inspected.stdout.trim();
   if (inspected.exitCode !== 0) {
@@ -165,24 +162,20 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     await writeFile(join(runDir, "artifacts/preflight-mekugi.json"), JSON.stringify(launch, null, 2));
     if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
   }
+  await ensureDependencyImage(docker, runDir, state, signal);
+  const dependencyBase = dependencyImage(state);
   if (state.profile !== "godoxy-icons") {
     progress("compiling the exact base and task dependencies in an ephemeral container");
     const bun = resolve(runDir, state.runtime_tools.bun);
-    const preflightCache = state.runtime_tools.preflight_cache;
-    const cacheArgs = preflightCache ? [
-      ...(state.profile === "skills-mgr-bundle" || preflightCache.bun ? ["--network", "none"] : []),
-      "-v", `${resolve(runDir, preflightCache.go_build)}:/home/ubuntu/.cache/go-build`,
-      "-v", `${resolve(runDir, preflightCache.go_pkg)}:/home/ubuntu/go/pkg`,
-      ...(preflightCache.bun ? ["-v", `${resolve(runDir, preflightCache.bun)}:/home/ubuntu/.bun/install/cache`] : []),
-    ] : [];
+    const cacheArgs = ["--network", "none"];
     const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, ...cacheArgs,
-      "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, "-v", `${bun}:/usr/local/bin/bun:ro`, image, "sh", "-lc",
+      "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, "-v", `${bun}:/usr/local/bin/bun:ro`, dependencyBase, "sh", "-lc",
       `git clone --no-hardlinks /seed /tmp/preflight >/dev/null && git -C /tmp/preflight checkout ${state.source.base_commit} >/dev/null && cd /tmp/preflight && ${prepareAssets(state)} && git diff --quiet HEAD --`] });
     if (compile.exitCode !== 0) throw new Error(`base dependency/compile preflight failed: ${compile.stderr.trim()}`);
   } else {
     const repository = resolve(runDir, state.arms.stock.repository);
     const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000,
-      createArgs: [...containerArgs(state), "-v", `${repository}:/baseline:ro`, image, "sh", "-lc",
+      createArgs: [...containerArgs(state), "--network", "none", "-v", `${repository}:/baseline:ro`, dependencyBase, "sh", "-lc",
         `cp -a /baseline /tmp/preflight && cd /tmp/preflight && ${prepareAssets(state)} && ${state.criteria!.contract.existing_tests} && git diff --exit-code HEAD -- && test "$(git rev-parse HEAD)" = ${state.source.base_commit} && test -z "$(git remote)" && ! git config --get submodule.webui.url && test "$(git submodule status -- webui | cut -c1)" = - && test -z "$(ls -A webui)" && ${state.submodules!.map(sub => `test -z "$(git -C ${sub.path} remote)" && test "$(git submodule status -- ${sub.path} | cut -c1)" = ' ' && test -z "$(git -C ${sub.path} status --porcelain --untracked-files=all)" && test "$(git -C ${sub.path} rev-parse HEAD)" = ${sub.sha}`).join(" && ")}`] });
     await writeFile(join(runDir, "artifacts/preflight-icons.json"), JSON.stringify(compile, null, 2));
     if (compile.exitCode !== 0) throw new Error(`icons preflight failed: ${compile.stdout.trim()} ${compile.stderr.trim()}`);
@@ -220,31 +213,18 @@ export async function preflightRunUnlocked(runDirectory: string, dockerBin = pro
   await writeState(runDir, state);
 }
 
-async function prewarm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, cache: string, moduleCache: string, signal: AbortSignal): Promise<void> {
+async function prewarm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, signal: AbortSignal): Promise<void> {
   const name = `codex-ab-${state.id}-${arm}-agent-warm`;
   const repo = resolve(runDir, state.arms[arm].repository);
   const bun = resolve(runDir, state.runtime_tools.bun);
   const command = prepareAssets(state);
   const result = await runOwnedContainer({ docker, name, signal, createArgs: [...containerArgs(state),
     "-v", `${repo}:/workspace`, "-v", `${home}:/home/ubuntu`,
-    "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`,
+    "--network", "none",
     "-v", `${bun}:/usr/local/bin/bun:ro`, imageRef(state), "sh", "-lc", command] });
   if (result.exitCode !== 0) throw new Error(`${arm} cache prewarm failed: ${result.stderr.trim()}`);
   await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true);
 }
-async function freezeGraderCaches(runDir: string, state: RunState, arm: ArmName,
-  home: string, cache: string, moduleCache: string): Promise<void> {
-  const armRoot = join(runDir, "arms", arm);
-  await Promise.all([
-    cp(cache, join(armRoot, "grader-go-cache"), { recursive: true, force: false, verbatimSymlinks: true }),
-    cp(moduleCache, join(armRoot, "grader-go-pkg-cache"), { recursive: true, force: false, verbatimSymlinks: true }),
-    ...(state.profile === "godoxy-icons"
-      ? []
-      : [cp(join(home, ".bun/install/cache"), join(armRoot, "grader-bun-cache"), { recursive: true, force: false, verbatimSymlinks: true })]),
-  ]);
-}
-
-
 export async function gradeArm(docker: string, runDir: string, state: RunState, arm: ArmName, patchPath: string, signal: AbortSignal): Promise<ArmResult["grade"]> {
   if (!state.criteria) throw new Error("run requires task-derived semantic criteria");
   const evaluator = join(runDir, "evaluator", arm);
@@ -264,7 +244,7 @@ export async function gradeArm(docker: string, runDir: string, state: RunState, 
   return { preparation: ready, router_suite: pending, elapsed_ms: 0, passed: false };
 }
 
-async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, cache: string, moduleCache: string, providerNetwork: string, task: string, signal: AbortSignal): Promise<ArmResult> {
+async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, providerNetwork: string, task: string, signal: AbortSignal): Promise<ArmResult> {
   const name = `codex-ab-${state.id}-${arm}`;
   const repository = resolve(runDir, state.arms[arm].repository);
   const stdoutPath = join(output, "codex.jsonl");
@@ -281,7 +261,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   if (exportArgs.length) await mkdir(join(output, "mekugi"), { recursive: true, mode: 0o700 });
   const protectedArm = arm === "current" && state.protected_runtime;
   const runtime = join(output, "runtime");
-  const ownedPaths = [repository, home, cache, moduleCache, join(output, "mekugi"), runtime];
+  const ownedPaths = [repository, home, join(output, "mekugi"), runtime];
   if (protectedArm) await mkdir(runtime, { recursive: true });
   const grokArm = state.comparison === "codex-mekugi-grok" && arm === "current";
   const mekugiArm = state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi";
@@ -295,8 +275,8 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
     result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, ...(grokArm ? [] : ["-i"]), ...grokPath,
-      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, "-v", `${cache}:/home/ubuntu/.cache/go-build`, "-v", `${moduleCache}:/home/ubuntu/go/pkg`, ...currentSetupMounts(runDir, state, arm), ...exportMount, ...grokTask,
-      ...(protectedArm ? [...protectedArgs(runDir, state, runtime), "-v", `${join(moduleCache, "mod")}:/go/pkg/mod:ro`] : []),
+      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, ...currentSetupMounts(runDir, state, arm), ...exportMount, ...grokTask,
+      ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
       imageRef(state), ...launcher, ...(grokArm ? [] : ["exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
       "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"])] });
   } catch (error) {
@@ -328,13 +308,13 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   };
 }
 
-async function collectArm(docker: string, runDir: string, state: RunState, arm: ArmName, result: ArmResult): Promise<void> {
+async function collectArm(docker: string, runDir: string, state: RunState, arm: ArmName, result: ArmResult, discardDependencies?: string[]): Promise<void> {
   const repository = resolve(runDir, state.arms[arm].repository);
   const patchPath = join(runDir, result.patch_path);
   try {
     // Cleanup has completed before collection. Use a fresh signal so canceled
     // inference can still preserve its available patch without launching models.
-    await inspectCandidate(docker, runDir, state, repository, `${arm}-capture`, new AbortController().signal, false, false, dirname(patchPath));
+    await inspectCandidate(docker, runDir, state, repository, `${arm}-capture`, new AbortController().signal, false, false, dirname(patchPath), discardDependencies);
     for (const path of [patchPath, join(dirname(patchPath), "result.json")]) {
       if (!(await lstat(path)).isFile()) throw new Error("capture artifact must be a regular file");
     }
@@ -383,13 +363,12 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     state.selected_arms = selectedArms;
     await writeState(runDir, state);
     progress("preparing identical task dependencies for both arms");
-    const warmed = await Promise.allSettled(selectedArms.map(arm => prewarm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.cache, setups[arm]!.moduleCache, controller.signal)));
+    const warmed = await Promise.allSettled(selectedArms.map(arm => prewarm(docker, runDir, state, arm, setups[arm]!.home, controller.signal)));
     const warmFailure = warmed.find(result => result.status === "rejected");
     if (warmFailure?.status === "rejected") throw warmFailure.reason;
     if (controller.signal.aborted) throw new Error("canceled during dependency prewarm; no agent was launched");
-    progress("preparing evaluator-only dependency caches before inference");
-    await Promise.all(selectedArms.map(arm => freezeGraderCaches(runDir, state, arm,
-      setups[arm]!.home, setups[arm]!.cache, setups[arm]!.moduleCache)));
+    const generatedDependencies = Object.fromEntries(await Promise.all(selectedArms.map(async arm =>
+      [arm, await generatedDependencyDirectories(resolve(runDir, state.arms[arm].repository))] as const)));
     await verifyPreparedInputs(runDir, state);
     const task = await readFile(join(runDir, state.task.path), "utf8");
     if (controller.signal.aborted) throw new Error("canceled while reading the task; no agent was launched");
@@ -413,7 +392,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         status: "started",
       };
       await writeState(runDir, state);
-      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, setups[arm]!.cache, setups[arm]!.moduleCache, providerNetwork!.name, task, controller.signal)));
+      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, providerNetwork!.name, task, controller.signal)));
       settled.forEach((item, index) => {
         const arm = batch[index]!;
         const attempt = state.arm_attempts![arm]!;
@@ -433,7 +412,9 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     }
     const collected = await Promise.allSettled(selectedArms.map(async arm => {
       const result = state.results?.[arm];
-      if (result && !result.lifecycle_error) await collectArm(docker, runDir, state, arm, result);
+      if (result && !result.lifecycle_error) {
+        await collectArm(docker, runDir, state, arm, result, generatedDependencies[arm]);
+      }
     }));
     const collectionFailure = collected.find(result => result.status === "rejected");
     if (collectionFailure?.status === "rejected") state.error = String(collectionFailure.reason);
