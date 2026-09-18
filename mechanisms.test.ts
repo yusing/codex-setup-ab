@@ -133,3 +133,45 @@ test("quoted commands, heredocs and conditional code are not execution evidence"
     expect(trace.events.filter(event => event.kind !== "command")).toEqual([]);
   }
 });
+
+test("request accounting explains token and cost deltas without claiming causality", () => {
+  const stock = meter([]);
+  const current = meter([]);
+  stock.agents = [{
+    model: "gpt-6-astra", thread_id: "root", method: "token_usage_record",
+    usage: { input_tokens: 12_014_814, cached_input_tokens: 11_797_632, cache_write_input_tokens: 0,
+      output_tokens: 80_754, reasoning_output_tokens: 37_750, total_tokens: 12_095_568 },
+    estimated_api_usd: 18.007152, request_count: 81, mean_input_tokens: 148_331.037, max_input_tokens: 222_598,
+    cost_components: { uncached_input_usd: 2.171820, cached_input_usd: 11.797632, cache_write_input_usd: 0, output_usd: 4.037700 },
+  }];
+  current.agents = [{
+    model: "gpt-6-astra", thread_id: "root", method: "token_usage_record",
+    usage: { input_tokens: 15_880_034, cached_input_tokens: 15_542_784, cache_write_input_tokens: 0,
+      output_tokens: 75_737, reasoning_output_tokens: 36_828, total_tokens: 15_955_771 },
+    estimated_api_usd: 22.702134, request_count: 100, mean_input_tokens: 158_800.34, max_input_tokens: 237_947,
+    cost_components: { uncached_input_usd: 3.372500, cached_input_usd: 15.542784, cache_write_input_usd: 0, output_usd: 3.786850 },
+  }];
+  const finding = explainMechanisms([{ arm: "stock", usage: stock }, { arm: "current", usage: current }]).findings
+    .find(item => item.mechanism === "Extra workflow turns repeatedly process accumulated context");
+  expect(finding?.explanation).toContain("a difference of 3,865,220");
+  expect(finding?.explanation).toContain("75.5%");
+  expect(finding?.explanation).toContain("+$3.745152 cached input");
+  expect(finding?.explanation).toContain("-$0.250850 output");
+  expect(finding?.limitation).toContain("not a causal counterfactual");
+
+  stock.agents[0]!.usage.input_tokens = 100;
+  stock.agents[0]!.request_count = 1;
+  current.agents[0]!.usage.input_tokens = 100;
+  current.agents[0]!.request_count = 2;
+  current.agents[0]!.cost_components.cache_write_input_usd = 5;
+  const equalInput = explainMechanisms([{ arm: "stock", usage: stock }, { arm: "current", usage: current }]).findings.at(-1)!;
+  expect(equalInput.explanation).toContain("components cancel");
+  expect(equalInput.explanation).not.toContain("Infinity");
+  expect(equalInput.explanation).toContain("+$5.000000 cache writes");
+
+  current.agents[0]!.usage.input_tokens = 150;
+  const lowerMean = explainMechanisms([{ arm: "stock", usage: stock }, { arm: "current", usage: current }]).findings.at(-1)!;
+  expect(lowerMean.explanation).toContain("approximately 87.5 tokens");
+  expect(lowerMean.explanation).toContain("-37.5 tokens");
+  expect(lowerMean.explanation).not.toContain("higher mean");
+});

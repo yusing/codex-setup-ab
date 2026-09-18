@@ -263,12 +263,47 @@ export function explainMechanisms(arms: MechanismArm[]): MechanismReport {
     const a = roots(stock), b = roots(current);
     if (a.length && b.length && [...a, ...b].every(agent => agent.request_count !== null)) {
       const requestsA = a.reduce((sum, agent) => sum + agent.request_count!, 0), requestsB = b.reduce((sum, agent) => sum + agent.request_count!, 0);
-      if (requestsB > requestsA) findings.push({
-        mechanism: "Extra workflow turns repeatedly process accumulated context",
-        explanation: `The current parent made ${requestsB} model requests versus ${requestsA} for stock. Every request processes its input context again, including history retained from earlier tool results and coordination. Cached input reduces the price, not the token count or all input cost. This explains how extra workflow steps can increase tokens and cost without proportionately more generated code.`,
-        evidence: ["Deduplicated per-root model request counts and input/cached/output accounting in the tables below."],
-        limitation: "Counts alone do not explain why a step was taken. The event-backed mechanisms above identify recognized workflow steps; cache-miss reasons and exact counterfactual savings remain unknown.",
-      });
+      if (requestsA > 0 && requestsB > requestsA) {
+        const inputA = a.reduce((sum, agent) => sum + agent.usage.input_tokens, 0);
+        const inputB = b.reduce((sum, agent) => sum + agent.usage.input_tokens, 0);
+        const meanA = inputA / requestsA, meanB = inputB / requestsB;
+        const deltaInput = inputB - inputA;
+        const countComponent = (requestsB - requestsA) * (meanA + meanB) / 2;
+        const contextComponent = (meanB - meanA) * (requestsA + requestsB) / 2;
+        const tokens = (value: number): string => value.toLocaleString("en-US", { maximumFractionDigits: 1 });
+        const componentDetail = deltaInput > 0
+          ? `A symmetric algebraic decomposition associates approximately ${tokens(countComponent)} tokens (${(countComponent / deltaInput * 100).toFixed(1)}%) with the request-count difference and ${tokens(contextComponent)} tokens (${(contextComponent / deltaInput * 100).toFixed(1)}%) with the difference in mean input per request.`
+          : deltaInput === 0
+            ? `The request-count and mean-input components cancel: approximately ${tokens(countComponent)} and ${tokens(contextComponent)} tokens respectively.`
+            : `The ${tokens(deltaInput)}-token difference is the sum of an approximately ${tokens(countComponent)}-token request-count component and ${tokens(contextComponent)}-token mean-input component.`;
+        const cachedCostA = a.every(agent => agent.cost_components.cached_input_usd !== null)
+          ? a.reduce((sum, agent) => sum + agent.cost_components.cached_input_usd!, 0) : null;
+        const cachedCostB = b.every(agent => agent.cost_components.cached_input_usd !== null)
+          ? b.reduce((sum, agent) => sum + agent.cost_components.cached_input_usd!, 0) : null;
+        const uncachedCostA = a.every(agent => agent.cost_components.uncached_input_usd !== null)
+          ? a.reduce((sum, agent) => sum + agent.cost_components.uncached_input_usd!, 0) : null;
+        const uncachedCostB = b.every(agent => agent.cost_components.uncached_input_usd !== null)
+          ? b.reduce((sum, agent) => sum + agent.cost_components.uncached_input_usd!, 0) : null;
+        const cacheWriteCostA = a.every(agent => agent.cost_components.cache_write_input_usd !== null)
+          ? a.reduce((sum, agent) => sum + agent.cost_components.cache_write_input_usd!, 0) : null;
+        const cacheWriteCostB = b.every(agent => agent.cost_components.cache_write_input_usd !== null)
+          ? b.reduce((sum, agent) => sum + agent.cost_components.cache_write_input_usd!, 0) : null;
+        const outputCostA = a.every(agent => agent.cost_components.output_usd !== null)
+          ? a.reduce((sum, agent) => sum + agent.cost_components.output_usd!, 0) : null;
+        const outputCostB = b.every(agent => agent.cost_components.output_usd !== null)
+          ? b.reduce((sum, agent) => sum + agent.cost_components.output_usd!, 0) : null;
+        const signedUsd = (value: number): string => `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(6)}`;
+        const costDetail = cachedCostA !== null && cachedCostB !== null && uncachedCostA !== null && uncachedCostB !== null
+          && cacheWriteCostA !== null && cacheWriteCostB !== null && outputCostA !== null && outputCostB !== null
+          ? ` The model-priced cost components differ by ${signedUsd(cachedCostB - cachedCostA)} cached input, ${signedUsd(uncachedCostB - uncachedCostA)} uncached input, ${signedUsd(cacheWriteCostB - cacheWriteCostA)} cache writes, and ${signedUsd(outputCostB - outputCostA)} output.`
+          : "";
+        findings.push({
+          mechanism: "Extra workflow turns repeatedly process accumulated context",
+          explanation: `The current parent made ${requestsB} model requests versus ${requestsA} for stock and processed ${inputB.toLocaleString("en-US")} versus ${inputA.toLocaleString("en-US")} input tokens, a difference of ${deltaInput.toLocaleString("en-US")}. ${componentDetail} Every request processes accumulated history again; caching reduces its price but not its token count.${costDetail}`,
+          evidence: ["Deduplicated per-root token usage, request counts, and model-specific cost components in the tables below."],
+          limitation: "This symmetric accounting decomposition is not a causal counterfactual. It shows where the measured delta sits; visible workflow events are needed to explain why each additional request occurred, and provider cache-key decisions remain unknown.",
+        });
+      }
     }
   }
   unknowns.add("Unrecognized command forms and opaque messages are not classified. No rule infers a general causal effect from this single pair, or explains cache misses from token counts alone.");
