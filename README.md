@@ -49,7 +49,7 @@ The current setup starts with a shallow, independent clone of the configuration 
 
 To apply a benchmark-only reviewer overlay, add `--review-treatment DIR` with `parent-agents.md`, `review-correctness.toml`, `review-simplify.toml`, and `web-reviewer.toml`. Preparation applies them to the isolated current snapshot after copying the live home, records before/after hashes in the manifest, and leaves active guidance untouched. Omit this option to benchmark the current home without a treatment. Use `--current-launcher codex` to run bare Codex without Mekugi.
 
-Runtime supplements are copied separately: installed hooks, materialized skills, bundled plugins when their temporary cache exists, the referenced remote-skill cache generations, and the existing Modern Go Guidelines provider. Preparation copies mise's migration completion records but does not copy or hard-link its installed tools. Containers use the shared base/dependency image plus a read-only bind mount of the existing host mise tool store. Preparation records its absolute path and file metadata (device, inode, size, mode, and nanosecond modification/change times), without reading or hashing installed-tool contents. Preflight and the final launch check reject changed metadata, including same-size rewrites. This checks that the same host installation is still in place, rather than accepting replacement files with matching contents. Keep that host path available and do not update or remove installed tools while a run or trial set is in use: a read-only container mount does not prevent host-side changes. Trial pairs reuse the same mount without duplicating the store. The obsolete `--snapshot-base` option has been removed. Task dependency caches remain in the shared Docker dependency image. Preflight rejects mise migration failures before agent execution; the tool store stays read-only. The current arm starts Codex through that setup, so every tool declared by the active user configuration is available without network access. `--current-launcher mekugi` additionally copies the executable selected by `--mekugi-bin` (default `~/go/bin/mekugi`) and its matching `shell` helper into the audited snapshot, without copying Mekugi state. The helper defaults to `shell` beside the resolved Mekugi executable; use `--mekugi-shell-bin` when storing the pair separately. Install or build both from the same Mekugi revision. Their paths and hashes are recorded and checked before launch. Other untracked home files, including authentication and session history, are not copied. The source repository is expected to contain only configuration suitable for the benchmark, not tracked credentials or task solutions.
+Runtime supplements are copied separately: installed hooks, materialized skills, bundled plugins when their temporary cache exists, the referenced remote-skill cache generations, and the existing Modern Go Guidelines provider. Preparation copies mise's migration completion records and the pipx lock sidecars referenced by its lockfile, but does not copy or hard-link its installed tools. Containers use the shared base/dependency image plus a read-only bind mount of the existing host mise tool store. Preparation records its absolute path and file metadata (device, inode, size, mode, and nanosecond modification/change times), without reading or hashing installed-tool contents. Preflight and the final launch check reject changed metadata, including same-size rewrites. This checks that the same host installation is still in place, rather than accepting replacement files with matching contents. Keep that host path available and do not update or remove installed tools while a run or trial set is in use: a read-only container mount does not prevent host-side changes. Trial pairs reuse the same mount without duplicating the store. The obsolete `--snapshot-base` option has been removed. Task dependency caches remain in the shared Docker dependency image. Preflight rejects mise migration failures before agent execution; the tool store stays read-only. The current arm starts Codex through that setup, so every tool declared by the active user configuration is available without network access. `--current-launcher mekugi` additionally copies the executable selected by `--mekugi-bin` (default `~/go/bin/mekugi`) and its matching `shell` helper into the audited snapshot, without copying Mekugi state. The helper defaults to `shell` beside the resolved Mekugi executable; use `--mekugi-shell-bin` when storing the pair separately. Install or build both from the same Mekugi revision. Their paths and hashes are recorded and checked before launch. Other untracked home files, including authentication and session history, are not copied. The source repository is expected to contain only configuration suitable for the benchmark, not tracked credentials or task solutions.
 
 The clone preserves absolute `/home/ubuntu` paths inside its container. `snapshot-manifest.json` records the configuration commit and tree, overlaid tracked paths, a SHA-256 for every regular setup file (excluding Git metadata), literal symlink targets, and portability adaptations. The installed-tool metadata manifest and copied setup manager are also verified before launch. Preflight requires every configured tool to be present, then runs a referenced remote skill and the registered Go-guidelines hook with networking disabled. For Mekugi, it also resolves `shell` on the executor's PATH and executes its missing-thread diagnostic, catching absent or non-runnable helpers before inference. This checks helper startup, not a complete model-to-tool request. An incomplete setup fails before inference instead of being silently bypassed.
 
@@ -272,6 +272,44 @@ contents and hashes. No original pack directory is needed after preparation. A f
 identifies the supplied content; it is not a signature of upstream authenticity.
 
 Nvm needs no downloaded dependencies. Its pinned installer requires Bash to be sourced, so its existing checks run with Bash; the changed function must remain POSIX-compatible. Gin prepares pinned Go modules before inference and reuses separate evaluator caches offline. Nvm's existing tests exercise installer source selection, not network-dependent downloads. Adaptive semantic checks cover the task's remaining outcomes. Pack contracts record `qualification: "not-run"`; preparing a pack does not authorize inference or claim oracle qualification.
+
+## Diverse task suite and mentor matrix
+
+`tasks/diverse-suite.json` selects four pinned task packs: Gin, Flask, Express, and nvm. Supply a JSON object mapping each task ID to a local checkout of its source repository. The suite checks each checkout against its pack's base and forbidden commits, prepares at least two fresh pairs per task/setup, and runs model-free preflight before allowing inference. The new Flask and Express packs use adaptive grading, not prequalified hidden-test oracles. Their selected existing tests passed on the pinned baseline (Flask: 9; Express: 71).
+
+```sh
+cat > /tmp/codex-ab-sources.json <<'JSON'
+{
+  "gin-context-copy": "/path/to/gin",
+  "flask-ipv6-server-name": "/path/to/flask",
+  "express-transfer-encoding": "/path/to/express",
+  "nvm-download-no-eval": "/path/to/nvm"
+}
+JSON
+suite_run="$(./dist/codex-ab prepare-suite \
+  --suite ./tasks/diverse-suite.json --sources-file /tmp/codex-ab-sources.json \
+  --comparison stock-current --count 2 --order alternating \
+  --image codex-ab:0.1.0)"
+./dist/codex-ab run-suite --suite-run "$suite_run" --confirm-paid-inference
+./dist/codex-ab report-suite --suite-run "$suite_run"
+```
+
+Use `--comparison mentor-matrix --mekugi-source /path/to/matching/mekugi` instead to prepare four Mekugi cells per task: stock setup × mentor off/on and current setup × mentor off/on. Each off/on pair uses the *same* setup and launcher. The fixed parent is gpt-6-sol at high reasoning; its one `benchmark_worker` child is configured as gpt-6-luna at medium reasoning. Mekugi's mentor flag changes only the child routing in the on arm. Per-arm Mekugi captures and metrics are validated against the snapshotted analyzer, Codex rollout lineage, and provider models; incomplete diagnostics suppress a complete measurement. Mentor cost estimates price provider attempts using their actual models, not the child's configured rollout model. If capture usage, model prices, or cache-write accounting is missing, cost remains unknown. These captures are still writable from the ordinary agent container, so they are consistency checks rather than tamper-proof provenance. `--protect-mekugi` is not supported for the matrix. The existing direct-Codex `stock-current` comparison is unchanged.
+
+The suite report gives task-level counts and B-minus-A time and estimated cost effects only for complete pairs where **both** candidates pass. Its macro mean weights each eligible task once; unknown cost is not zero-filled. `stock` and `current` arm labels mean mentor off and on within a mentor-matrix setup, not stock versus current setup. The suite executes trial sets sequentially, does not resume interrupted runs, and retains partial reports. It is descriptive rather than a randomized causal estimate.
+
+## Reuse a completed stock control
+
+For a matched direct-Codex comparison, run a fresh stock-only control with `run --arm stock --confirm-paid-inference`. Its finished bundle must be complete and valid. Prepare a second run with identical task, setup, model, Codex/image, dependency image, resources, and timeout, then run it with `--control-run` and the SHA-256 of the published control bundle's `MANIFEST.sha256` file:
+
+```sh
+control_sha="$(sha256sum "$control_run/reports/bundle/MANIFEST.sha256" | cut -d' ' -f1)"
+./dist/codex-ab run --run-dir "$treatment_run" \
+  --control-run "$control_run" --control-bundle-sha256 "$control_sha" \
+  --confirm-paid-inference
+```
+
+Only the treatment arm starts a new agent. The control bundle, state, rollout bytes, and usage totals must match, and both captured patches are graded against the new run's evaluator. A mismatched or altered control fails before treatment inference. This path does not support the mentor or Grok comparisons and cannot be used to reuse an arbitrary single-arm result.
 
 ## Skills manager bundle profile
 
