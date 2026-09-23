@@ -1,0 +1,9 @@
+{
+  "schema": "codex-ab.suite.v1",
+  "tasks": [
+    { "id": "gin-context-copy", "pack": "gin-context-copy/manifest.json" },
+    { "id": "flask-ipv6-server-name", "pack": "flask-ipv6-server-name/manifest.json" },
+    { "id": "express-transfer-encoding", "pack": "express-transfer-encoding/manifest.json" },
+    { "id": "nvm-download-no-eval", "pack": "nvm-download-no-eval/manifest.json" }
+  ]
+}

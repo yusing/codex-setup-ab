@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { validateMekugiFlags } from "./mekugi";
 import { buildMekugi } from "./provenance";
 import { prepareTrials, reportTrials, runTrials } from "./trials";
+import { prepareSuite, reportSuite, runSuite } from "./suite";
 import { prepare } from "./prepare";
 import { preflightRun } from "./runner";
 import { remeterRun } from "./remeter";
@@ -23,6 +24,9 @@ Usage:
   codex-ab build-mekugi --source DIR --image NAME [--output-parent DIR] [--docker-bin FILE]
   codex-ab prepare [options]
   codex-ab prepare-trials --run-dir DIR --count N [--order concurrent|alternating] [--output-parent DIR] [--docker-bin FILE]
+  codex-ab prepare-suite --suite FILE --sources-file FILE --count N [--comparison stock-current|mentor-matrix] [options]
+  codex-ab run-suite --suite-run DIR --confirm-paid-inference [--auth-file FILE]
+  codex-ab report-suite --suite-run DIR
   codex-ab run-trials --trial-set DIR --confirm-paid-inference [--auth-file FILE] [--docker-bin FILE]
   codex-ab report-trials --trial-set DIR
   codex-ab preflight --run-dir DIR [--docker-bin FILE]
@@ -35,7 +39,7 @@ Usage:
 
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
-  --reasoning-effort N   medium (default) or xhigh
+  --reasoning-effort N   medium (default), high, or xhigh; mentor-handoff uses high
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
@@ -45,7 +49,8 @@ Prepare options:
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --current-home DIR    configuration Git repository root (default current home)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
-  --comparison NAME    stock-current (default), same-setup, stock-mekugi, or codex-mekugi-grok
+  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, or mentor-handoff
+  --mentor-setup NAME  stock or current; required for mentor-handoff
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
   --mekugi-build DIR    captured build bundle; selects its matching binaries and source
@@ -66,6 +71,8 @@ Run/judge options (run includes automatic source assessment and reporting):
   --auth-file FILE      auth copied privately into isolated homes
   --docker-bin FILE     Docker-compatible fixture or executable
   --arm NAME            run only stock or current (run only; default is both)
+  --control-run DIR     reuse a completed stock-only run; execute only current
+  --control-bundle-sha256 HEX  required published SHA-256 of control bundle/MANIFEST.sha256
 
 Report options:
   --output-dir DIR      export outside the source run without changing its reports or state
@@ -80,12 +87,15 @@ Run and judge require the explicit model-execution confirmation flag.
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mentor-setup", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
     "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
+    "prepare-suite": ["suite", "sources-file", "count", "comparison", "order", "output-parent", "current-home", "review-treatment", "mekugi-flags", "mekugi-source", "mekugi-build", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory", "docker-bin"],
+    "run-suite": ["suite-run", "auth-file", "docker-bin", "confirm-paid-inference"],
+    "report-suite": ["suite-run"],
     "run-trials": ["trial-set", "auth-file", "grok-auth-file", "docker-bin", "confirm-paid-inference"],
     "report-trials": ["trial-set"],
     preflight: ["run-dir", "docker-bin"],
-    run: ["run-dir", "auth-file", "grok-auth-file", "docker-bin", "arm", "confirm-paid-inference"],
+    run: ["run-dir", "auth-file", "grok-auth-file", "docker-bin", "arm", "control-run", "control-bundle-sha256", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     remeter: ["run-dir", "exclusions"],
@@ -148,7 +158,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
     const runDir = await prepare({
       profile: string(o, "profile", o.criteria ? "task" : "mekugi") as import("./types").BenchmarkProfile,
-      reasoningEffort: string(o, "reasoning-effort", "medium") as import("./types").ReasoningEffort,
+      reasoningEffort: string(o, "reasoning-effort", o.comparison === "mentor-handoff" ? "high" : "medium") as import("./types").ReasoningEffort,
       source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
       taskPackPath: o["task-pack"] as string | undefined,
@@ -156,6 +166,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       outputParent: o["output-parent"] as string | undefined,
       reviewTreatment: o["review-treatment"] as string | undefined,
       comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,
+      mentorSetup: o["mentor-setup"] as import("./types").ArmName | undefined,
       mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
       currentLauncher: o["current-launcher"] as import("./types").CodexLauncher | undefined,
       protectMekugi: o["protect-mekugi"] === true,
@@ -179,6 +190,39 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       schedule: order, outputParent: o["output-parent"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined })}\n`);
     return 0;
   }
+  if (command === "prepare-suite") {
+    const comparison = string(o, "comparison", "stock-current");
+    const order = string(o, "order", "alternating");
+    if (comparison !== "stock-current" && comparison !== "mentor-matrix") throw new Error("suite comparison must be stock-current or mentor-matrix");
+    if (order !== "concurrent" && order !== "alternating") throw new Error("suite order must be concurrent or alternating");
+    const count = Number(string(o, "count"));
+    const timeout = Number(string(o, "timeout", "1800"));
+    if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("suite timeout must be a positive integer");
+    process.stdout.write(`${await prepareSuite({ manifestPath: string(o, "suite"), sourcesPath: string(o, "sources-file"),
+      comparison, count, schedule: order, outputParent: o["output-parent"] as string | undefined,
+      dockerBin: o["docker-bin"] as string | undefined,
+      common: { currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),
+        cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
+        reasoningEffort: comparison === "mentor-matrix" ? "high" : "medium",
+        reviewTreatment: o["review-treatment"] as string | undefined,
+        mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
+        mekugiSource: o["mekugi-source"] as string | undefined, mekugiBuild: o["mekugi-build"] as string | undefined,
+        mekugiBinary: o["mekugi-bin"] as string | undefined, mekugiShellBinary: o["mekugi-shell-bin"] as string | undefined,
+        codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),
+        bunBinary: o["bun-bin"] as string | undefined } })}\n`);
+    return 0;
+  }
+  if (command === "run-suite") {
+    if (o["confirm-paid-inference"] !== true) throw new Error("run-suite launches model inference; pass --confirm-paid-inference");
+    process.stdout.write(`${await runSuite({ directory: string(o, "suite-run"),
+      authFile: string(o, "auth-file", join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json")),
+      dockerBin: o["docker-bin"] as string | undefined })}\n`);
+    return 0;
+  }
+  if (command === "report-suite") {
+    process.stdout.write(`${await reportSuite(string(o, "suite-run"))}\n`);
+    return 0;
+  }
   if (command === "run-trials") {
     if (o["confirm-paid-inference"] !== true) throw new Error("run-trials launches model inference; pass --confirm-paid-inference to confirm intentional execution");
     process.stdout.write(`${await runTrials({ directory: string(o, "trial-set"),
@@ -198,7 +242,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (command === "run") {
       const arm = o.arm;
       if (arm !== undefined && arm !== "current" && arm !== "stock") throw new Error("--arm must be stock or current");
-      await runBenchmark({ runDir, authFile: auth, grokAuthFile: o["grok-auth-file"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined, arm });
+      await runBenchmark({ runDir, authFile: auth, grokAuthFile: o["grok-auth-file"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined, arm,
+        controlRun: o["control-run"] as string | undefined, controlBundleSha256: o["control-bundle-sha256"] as string | undefined });
     }
     else if (command === "finish") await finishBenchmark({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined });
     else await judgeRun(runDir, auth, o["docker-bin"] as string | undefined);
