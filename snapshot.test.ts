@@ -79,7 +79,8 @@ test("unchanged metadata verifies and same-size rewrites remain rejected after r
 
     const recorded = files.find(file => file.path === "z-tool");
     expect(recorded?.sha256).toBeUndefined();
-    await Bun.sleep(2);
+    // Some host filesystems expose millisecond-granularity change times.
+    await Bun.sleep(20);
     await writeFile(tool, "x payload");
     await utimes(tool, restoredMtime, restoredMtime);
 

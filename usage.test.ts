@@ -6,6 +6,7 @@ import {
   fetchPricing,
   meterGrokHome,
   meterRollouts,
+  priceProviderAttempts,
   type ModelPricing,
   type PricingSnapshot,
   type Usage,
@@ -28,6 +29,20 @@ function usage(overrides: Partial<Usage> = {}): Usage {
     ...overrides,
   };
 }
+
+test("provider-attempt pricing uses actual mentor models and withholds incomplete cost", () => {
+  const prices = pricing({
+    "gpt-6-sol": rate({ model_id: "gpt-6-sol", prompt: 0.01, completion: 0.1 }),
+    "gpt-6-luna": rate({ model_id: "gpt-6-luna", prompt: 0.001, completion: 0.01 }),
+  });
+  const attempts = { exchanges: [{ provider_attempts: [
+    { model: "gpt-6-sol", usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 2, reasoning_tokens: 1 } },
+    { model: "gpt-6-luna", usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 2, reasoning_tokens: 1 } },
+  ] }] };
+  expect(priceProviderAttempts(attempts, prices)).toBeCloseTo(0.33);
+  expect(priceProviderAttempts({ exchanges: [{ provider_attempts: [{ model: "gpt-6-sol", usage: null }] }] }, prices)).toBeNull();
+  expect(priceProviderAttempts({ exchanges: [{ provider_attempts: [{ model: "unknown", usage: attempts.exchanges[0]!.provider_attempts[0]!.usage }] }] }, prices)).toBeNull();
+});
 
 function rate(overrides: Partial<ModelPricing> = {}): ModelPricing {
   return {

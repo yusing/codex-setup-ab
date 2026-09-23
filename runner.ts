@@ -8,9 +8,10 @@ import candidateSource from "./candidate-script.txt" with { type: "text" };
 import { executorOwnership, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { readState, writeState, withRunLock } from "./state";
+import { importControl } from "./control";
 import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
 
-export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; signal?: AbortSignal }
+export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; signal?: AbortSignal }
 
 const arms: ArmName[] = ["stock", "current"];
 function progress(message: string): void { process.stderr.write(`[run] ${message}\n`); }
@@ -25,7 +26,8 @@ function containerArgs(state: RunState): string[] {
 }
 
 function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current"): string[] {
-  const usesCurrentSetup = state.comparison === "same-setup" || (arm === "current" && state.comparison !== "stock-mekugi" && state.comparison !== "codex-mekugi-grok");
+  const usesCurrentSetup = state.comparison === "same-setup" || (state.mentor?.setup === "current")
+    || (arm === "current" && state.comparison !== "stock-mekugi" && state.comparison !== "codex-mekugi-grok" && state.mentor?.setup !== "stock");
   if (!usesCurrentSetup) return [];
   return ["-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
 }
@@ -124,7 +126,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   if (toolHost.exitCode !== 0 || toolHost.stdout.trim() !== "CODEX_AB_TOOL_HOST_OK") throw new Error(`code-mode tool host smoke failed: ${[toolHost.stdout.trim(), toolHost.stderr.trim()].filter(Boolean).join("; ")}`);
   const currentHome = resolve(runDir, state.arms.current.home_template);
   const workspace = resolve(runDir, state.arms.current.repository);
-  if (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok") {
+  if (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok" || state.mentor?.setup === "stock") {
     const mekugiHome = resolve(runDir, state.comparison === "codex-mekugi-grok" ? state.arms.stock.home_template : state.arms.current.home_template);
     progress(state.comparison === "codex-mekugi-grok" ? "checking the isolated Codex+Mekugi and Grok setups offline" : "checking the minimal stock-plus-Mekugi setup offline");
     const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none",
@@ -150,7 +152,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
       : "";
     const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none", "-e", `CODEX_AB_HOOK_EVENT=${hookEvent}`,
       "-v", `${currentHome}:/setup:ro`, "-v", `${workspace}:/workspace:ro`, ...currentSetupMounts(runDir, state), image, "sh", "-lc",
-      `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && test -z "$(mise ls --current --missing --no-header)" && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go && if test -f /workspace/go.mod; then printf "%s\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="; fi'${mekugiCheck}`] });
+      `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && missing_tools="$(mise ls --current --missing --no-header)" && if test -n "$missing_tools"; then printf "missing current setup tools: %s\n" "$missing_tools" >&2; exit 1; fi && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go && if test -f /workspace/go.mod; then printf "%s\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="; fi'${mekugiCheck}`] });
     if (/\[WARN\] migrate:/.test(`${dependencies.stdout}\n${dependencies.stderr}`)) {
       throw new Error("current setup mise migration failed against the read-only tool snapshot; prepare again from a home with completed mise migrations");
     }
@@ -258,7 +260,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
-  const exportArgs = arm === exportArm && state.mekugi_exports
+  const exportArgs = state.mekugi_exports_by_arm?.[arm] || (arm === exportArm && state.mekugi_exports)
     ? ["--capture-output=/mekugi-exports/capture.jsonl", "--metrics-output=/mekugi-exports/metrics.json"] : [];
   const exportMount = exportArgs.length ? ["-v", `${join(output, "mekugi")}:/mekugi-exports`] : [];
   if (exportArgs.length) await mkdir(join(output, "mekugi"), { recursive: true, mode: 0o700 });
@@ -267,21 +269,25 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const ownedPaths = [repository, home, join(output, "mekugi"), runtime];
   if (protectedArm) await mkdir(runtime, { recursive: true });
   const grokArm = state.comparison === "codex-mekugi-grok" && arm === "current";
-  const mekugiArm = state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi";
+  const mekugiArm = state.comparison === "mentor-handoff" || (state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi");
   const grokCommand = grokArm
     ? ["grok", "--prompt-file", "/control/task.md", "--cwd", "/workspace", "-m", "grok-4.6", "--reasoning-effort", state.execution.reasoning_effort, "--always-approve", "--sandbox", "off", "--output-format", "json", "--disable-web-search"]
     : undefined;
-  const codexLauncher = mekugiArm ? ["mekugi", ...(state.mekugi_flags ?? []), ...exportArgs, "codex"] : ["codex"];
-  const launcher = grokCommand ?? (mekugiArm && (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok") ? codexLauncher : arm === "current" || state.comparison === "same-setup" ? ["mise", "exec", "--", ...codexLauncher] : ["codex"]);
+  const mentorFlags = state.mentor ? ["--main-mentor-handoff=false", `--mentor-handoff=${arm === "current"}`] : [];
+  const codexLauncher = mekugiArm ? ["mekugi", ...(state.mekugi_flags ?? []), ...mentorFlags, ...exportArgs, "codex"] : ["codex"];
+  const launcher = grokCommand ?? (mekugiArm && (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok" || state.mentor?.setup === "stock") ? codexLauncher : arm === "current" || state.comparison === "same-setup" || state.mentor?.setup === "current" ? ["mise", "exec", "--", ...codexLauncher] : ["codex"]);
   const grokPath = grokArm ? ["-e", "PATH=/home/ubuntu/.grok/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin"];
   const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
     result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, ...(grokArm ? [] : ["-i"]), ...grokPath,
       "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, ...currentSetupMounts(runDir, state, arm), ...exportMount, ...grokTask,
+      ...(state.mentor ? ["-v", `${join(runDir, "control")}:/benchmark-control:ro`] : []),
       ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
       imageRef(state), ...launcher, ...(grokArm ? [] : ["exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
-      "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"])] });
+      "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"',
+      ...(state.mentor ? ["-c", 'features.multi_agent_v2=true', "-c", 'agents.benchmark_worker.description="Fixed benchmark implementation role"', "-c", 'agents.benchmark_worker.config_file="/benchmark-control/mentor-child.toml"', "-c", 'model_instructions_file="/benchmark-control/mentor-parent.md"'] : []),
+      "-"])] });
   } catch (error) {
     lifecycleError = error instanceof Error ? error.message : String(error);
     if (error instanceof OwnedContainerError && error.result) result = error.result;
@@ -338,15 +344,19 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`run is ${state.status}; prepare a new run instead of resuming or restarting it`);
   if (!state.criteria) throw new Error("run has no evaluator contract; prepare with --criteria");
-  if (options.arm) throw new Error("semantic grading requires both arms for independent reversed-order assessment");
+  if (options.arm && options.arm !== "stock") throw new Error("single-arm runs support stock controls only");
+  if (options.controlRun && options.arm) throw new Error("--control-run selects the current treatment arm; do not pass --arm");
+  if (Boolean(options.controlRun) !== Boolean(options.controlBundleSha256)) throw new Error("--control-run requires --control-bundle-sha256 and vice versa");
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
   state.image_id = await preflight(docker, state, runDir, options.signal);
+  const imported = options.controlRun ? await importControl(runDir, state, options.controlRun, options.controlBundleSha256!) : undefined;
   await writeState(runDir, state);
   const controller = new AbortController();
   if (options.signal?.aborted) controller.abort();
   const externalCancel = () => controller.abort();
   options.signal?.addEventListener("abort", externalCancel, { once: true });
-  const selectedArms: ArmName[] = options.arm ? [options.arm] : arms;
+  const activeArms: ArmName[] = imported ? ["current"] : options.arm ? [options.arm] : arms;
+  const selectedArms: ArmName[] = imported ? arms : activeArms;
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
@@ -356,35 +366,36 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     const auth = resolve(options.authFile);
     const authMode = (await import("node:fs/promises")).stat(auth).then(s => s.mode & 0o777);
     if ((await authMode) & 0o077) throw new Error("auth file must not be accessible by group or others (expected mode 0600)");
-    const setupResults = await Promise.allSettled(selectedArms.map(async arm => [arm, await setupArm(runDir, state, arm, auth, options.grokAuthFile)] as const));
+    const setupResults = await Promise.allSettled(activeArms.map(async arm => [arm, await setupArm(runDir, state, arm, auth, options.grokAuthFile)] as const));
     const setupFailure = setupResults.find(result => result.status === "rejected");
     if (setupFailure?.status === "rejected") throw setupFailure.reason;
     const setups = Object.fromEntries(setupResults.map(result => (result as PromiseFulfilledResult<readonly [ArmName, Awaited<ReturnType<typeof setupArm>>]>).value)) as Partial<Record<ArmName, Awaited<ReturnType<typeof setupArm>>>>;
     if (controller.signal.aborted) throw new Error("canceled during private arm setup; no model was launched");
     state.status = "running";
-    state.results = {};
+    state.results = imported ? { stock: imported } : {};
     state.selected_arms = selectedArms;
     await writeState(runDir, state);
     progress("preparing identical task dependencies for both arms");
-    const warmed = await Promise.allSettled(selectedArms.map(arm => prewarm(docker, runDir, state, arm, setups[arm]!.home, controller.signal)));
+    const warmed = await Promise.allSettled(activeArms.map(arm => prewarm(docker, runDir, state, arm, setups[arm]!.home, controller.signal)));
     const warmFailure = warmed.find(result => result.status === "rejected");
     if (warmFailure?.status === "rejected") throw warmFailure.reason;
     if (controller.signal.aborted) throw new Error("canceled during dependency prewarm; no agent was launched");
-    const generatedDependencies = Object.fromEntries(await Promise.all(selectedArms.map(async arm =>
+    const generatedDependencies = Object.fromEntries(await Promise.all(activeArms.map(async arm =>
       [arm, await generatedDependencyDirectories(resolve(runDir, state.arms[arm].repository))] as const)));
     await verifyPreparedInputs(runDir, state);
     const task = await readFile(join(runDir, state.task.path), "utf8");
     if (controller.signal.aborted) throw new Error("canceled while reading the task; no agent was launched");
-    for (const arm of selectedArms) {
+    for (const arm of activeArms) {
       const repo = resolve(runDir, state.arms[arm].repository);
       await inspectCandidate(docker, runDir, state, repo, `${arm}-launch-verify`, controller.signal, true, true);
     }
     const order = state.arm_order ?? "concurrent";
     if (!["concurrent", "stock-first", "current-first"].includes(order)) throw new Error("invalid arm execution order");
     progress(`agent execution order: ${order}`);
-    state.arm_attempts = {};
-    const batches: ArmName[][] = order === "concurrent" ? [selectedArms]
-      : (order === "stock-first" ? arms : [...arms].reverse()).filter(arm => selectedArms.includes(arm)).map(arm => [arm]);
+    state.arm_attempts = imported ? { stock: { codex_home: "arms/stock/home/ubuntu/.codex", container: imported.container,
+      started_at: imported.started_at, finished_at: imported.finished_at, status: "stopped" } } : {};
+    const batches: ArmName[][] = order === "concurrent" ? [activeArms]
+      : (order === "stock-first" ? arms : [...arms].reverse()).filter(arm => activeArms.includes(arm)).map(arm => [arm]);
     for (const batch of batches) {
       if (controller.signal.aborted) break;
       for (const arm of batch) state.arm_attempts[arm] = {
@@ -413,7 +424,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
       });
       await writeState(runDir, state);
     }
-    const collected = await Promise.allSettled(selectedArms.map(async arm => {
+    const collected = await Promise.allSettled(activeArms.map(async arm => {
       const result = state.results?.[arm];
       if (result && !result.lifecycle_error) {
         await collectArm(docker, runDir, state, arm, result, generatedDependencies[arm]);

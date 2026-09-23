@@ -114,6 +114,28 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       }
     }
   }
+  for (const [arm, files] of Object.entries(state.mekugi_exports_by_arm ?? {})) {
+    if (!files) continue;
+    for (const [source, target] of [[files.capture, `${arm}-mekugi-capture.jsonl`],
+      [files.metrics, `${arm}-mekugi-metrics.json`]]) {
+      try { await copy(source, target); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        await rm(join(destination, target), { force: true });
+      }
+    }
+  }
+  if (state.mekugi_exports_by_arm) {
+    const files = state.mekugi_exports_by_arm.stock ?? state.mekugi_exports_by_arm.current;
+    if (files) {
+      await copy(files.validator.path, "analyze_capture.py");
+      await copy(files.reader.path, "benchmark_jsonl.py");
+    }
+  }
+  if (state.mentor) {
+    await copy(state.mentor.parent_prompt.path, "mentor-parent.md");
+    await copy(state.mentor.child_config.path, "mentor-child.toml");
+  }
   if (state.protected_runtime) {
     await mkdir(join(destination, "isolation"), { recursive: true });
     for (const file of state.protected_runtime.scripts) await copy(file.path, `isolation/${file.path.split("/").at(-1)}`);
@@ -122,6 +144,10 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   if (state.mekugi_build) await mkdir(join(destination, "mekugi-build"), { recursive: true });
   for (const file of state.mekugi_build?.files ?? []) await copy(file.path, `mekugi-build/${file.path.split("/").at(-1)}`);
   if (state.task_pack) await copy(state.task_pack.path, "task-pack.json");
+  if (state.imported_control) {
+    await mkdir(join(destination, "imported-control"), { recursive: true });
+    for (const name of ["MANIFEST.sha256", "report.json"]) await copy(`evaluator/imported-control/${name}`, `imported-control/${name}`);
+  }
   if (state.criteria) {
     await copy(state.criteria.path, "criteria.json");
     const semanticRoot = join(runDir, "evaluator/semantic");
@@ -139,6 +165,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     }
   }
   const sessions: Partial<Record<ArmName, SessionAudit[]>> = {};
+  const rolloutFiles: Partial<Record<ArmName, Array<{ path: string; sha256: string }>>> = {};
   const integrity: Array<{ path: string; sha256: string; expected_sha256: string; matches: boolean }> = [];
   for (const [path, expected] of [
     [state.snapshot_manifest, state.current_snapshot.manifest_sha256],
@@ -147,6 +174,9 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     ...(state.mekugi_build?.files.map(file => [file.path, file.sha256]) ?? []),
     ...(state.task_pack ? [[state.task_pack.path, state.task_pack.sha256]] : []),
     ...(state.criteria ? [[state.criteria.path, state.criteria.sha256]] : []),
+    ...(state.imported_control ? [["evaluator/imported-control/MANIFEST.sha256", state.imported_control.bundle_sha256]] : []),
+    ...(state.imported_control ? [["artifacts/stock/codex.jsonl", state.imported_control.stdout_sha256],
+      ["artifacts/stock/codex.stderr", state.imported_control.stderr_sha256]] : []),
     [state.runtime_tools.current_setup_files, state.runtime_tools.current_setup_files_sha256],
   ] as Array<[string, string]>) {
     const actual = await sha256(within(runDir, path));
@@ -174,7 +204,9 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     for (const file of files.filter(path => path.endsWith(".jsonl"))) {
       sessions[arm]!.push(auditSession(await readFile(file, "utf8")));
     }
+    rolloutFiles[arm] = await Promise.all(files.map(async file => ({ path: relative(directory, file), sha256: await sha256(file) })));
   }
+  await write("rollout-files.json", rolloutFiles);
   const audit = Object.fromEntries(Object.entries(sessions).map(([arm, entries]) => [arm, entries.map(session => {
     const names = session.calls.flatMap(call => [call.name.split(".").at(-1)!, ...call.nested_tools]);
     return {

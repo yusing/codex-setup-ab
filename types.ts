@@ -2,9 +2,9 @@ import type { CriterionEvidence } from "./semantic";
 
 export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" | "task";
 export type CodexLauncher = "codex" | "mekugi" | "grok";
-export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok";
-export type ReasoningEffort = "medium" | "xhigh";
-export type BenchmarkModel = "gpt-6-astra" | "grok:grok-4.6";
+export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "mentor-handoff";
+export type ReasoningEffort = "medium" | "high" | "xhigh";
+export type BenchmarkModel = "gpt-6-astra" | "gpt-6-sol" | "grok:grok-4.6";
 
 export type ArmOrder = "concurrent" | "stock-first" | "current-first";
 
@@ -70,7 +70,10 @@ export interface RunState {
   protected_runtime?: { boundary: "direct-egress-vs-router-only"; scripts: Array<{ path: string; sha256: string }> };
   mekugi_build?: { identity: import("./provenance").MekugiBuild; files: Array<{ path: string; sha256: string }> };
   mekugi_exports?: { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } };
+  mekugi_exports_by_arm?: Partial<Record<ArmName, { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } }>>;
   mekugi_flags?: string[];
+  mentor?: { setup: ArmName; child_model: "gpt-6-luna"; child_effort: "medium"; parent_prompt: { path: string; sha256: string }; child_config: { path: string; sha256: string } };
+  imported_control?: { source_run_id: string; bundle_sha256: string; controls_sha256: string; stdout_sha256: string; stderr_sha256: string };
   execution: { model: BenchmarkModel; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;

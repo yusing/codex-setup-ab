@@ -20,6 +20,7 @@ let source: string;
 let home: string;
 let task: string;
 let fixtureCriteria: string;
+let mentorMekugiSource: string;
 let base: string;
 let future: string;
 let codexHash: string;
@@ -102,6 +103,9 @@ beforeAll(async () => {
   await checked(["git", "-C", source, "commit", "-m", "future"]);
   future = (await checked(["git", "-C", source, "rev-parse", "HEAD"])).stdout.trim();
   task = join(root, "task.md"); fixtureCriteria = join(root, "fixture-criteria.json");
+  mentorMekugiSource = join(root, "mentor-mekugi-source");
+  await file(join(mentorMekugiSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
+  await file(join(mentorMekugiSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
   await file(task, "Make the fixture better.\n");
   await file(fixtureCriteria, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
     criteria: [{ id: "fixture", description: "Make the fixture better." }],
@@ -116,6 +120,12 @@ async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi"
     outputParent: root, currentHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds,
     codexBinary: join(currentHome, ".local/bin/codex"), currentLauncher,
     mekugiBinary: currentLauncher === "mekugi" ? join(currentHome, "go/bin/mekugi") : undefined });
+}
+
+async function mentorPrepared(setup: "stock" | "current"): Promise<string> {
+  return prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    comparison: "mentor-handoff", mentorSetup: setup, reasoningEffort: "high", mekugiSource: mentorMekugiSource });
 }
 
 test("same-setup uses one immutable configuration for both arms and rejects drift", async () => {
@@ -191,6 +201,102 @@ test("stock-mekugi isolates the launcher without current-home guidance", async (
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
     reviewTreatment: join(root, "unused-treatment"), mekugiSource: captureSource })).rejects.toThrow("does not accept");
 });
+
+for (const setup of ["stock", "current"] as const) {
+  test(`mentor-handoff uses the same ${setup} setup and launches Mekugi mentor-off/on with dual exports`, async () => {
+    const run = await mentorPrepared(setup);
+    const state = await readState(run);
+    const selectedHome = setup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu";
+    expect(state.comparison).toBe("mentor-handoff");
+    expect(state.mentor).toMatchObject({ setup, child_model: "gpt-6-luna", child_effort: "medium" });
+    expect(state.execution).toMatchObject({ model: "gpt-6-sol", reasoning_effort: "high", current_launcher: "mekugi" });
+    expect(state.arms.stock.home_template).toBe(selectedHome);
+    expect(state.arms.current.home_template).toBe(selectedHome);
+    expect(state.mekugi_exports).toBeUndefined();
+    expect(state.mekugi_exports_by_arm?.stock).toMatchObject({
+      capture: "artifacts/stock/mekugi/capture.jsonl", metrics: "artifacts/stock/mekugi/metrics.json",
+    });
+    expect(state.mekugi_exports_by_arm?.current).toMatchObject({
+      capture: "artifacts/current/mekugi/capture.jsonl", metrics: "artifacts/current/mekugi/metrics.json",
+    });
+    expect(state.mentor?.parent_prompt.path).toBe("control/mentor-parent.md");
+    expect(state.mentor?.child_config.path).toBe("control/mentor-child.toml");
+    const parent = await readFile(join(run, state.mentor!.parent_prompt.path), "utf8");
+    const child = await readFile(join(run, state.mentor!.child_config.path), "utf8");
+    expect(parent).toContain("Spawn exactly one subagent");
+    expect(child).toContain('model = "gpt-6-luna"');
+    expect(child).toContain('model_reasoning_effort = "medium"');
+    await verifyPreparedInputs(run, state);
+
+    const auth = join(root, `mentor-${setup}-auth.json`);
+    await file(auth, "{}\n", 0o600);
+    const fake = await fakeOwnedDocker(0);
+    expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
+    const creates = (await readFile(fake.log, "utf8")).split("\n")
+      .filter(line => / create --rm --name codex-ab-.*-(?:stock|current) --label /.test(line));
+    expect(creates).toHaveLength(2);
+    const stock = creates.find(line => line.includes(`codex-ab-${state.id}-stock --label`))!;
+    const current = creates.find(line => line.includes(`codex-ab-${state.id}-current --label`))!;
+    expect(stock).toContain("mekugi --main-mentor-handoff=false --mentor-handoff=false --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec --json");
+    expect(current).toContain("mekugi --main-mentor-handoff=false --mentor-handoff=true --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec --json");
+    expect(stock).toContain(`${join(run, "artifacts/stock/mekugi")}:/mekugi-exports`);
+    expect(current).toContain(`${join(run, "artifacts/current/mekugi")}:/mekugi-exports`);
+    expect(stock).toContain('agents.benchmark_worker.config_file="/benchmark-control/mentor-child.toml"');
+    expect(current).toContain('model_instructions_file="/benchmark-control/mentor-parent.md"');
+    expect(stock).toContain("--model gpt-6-sol");
+    expect(current).toContain('model_reasoning_effort="high"');
+    if (setup === "current") {
+      expect(stock).toContain("mise exec -- mekugi");
+      expect(current).toContain("mise exec -- mekugi");
+    } else {
+      expect(stock).not.toContain("mise exec -- mekugi");
+      expect(current).not.toContain("mise exec -- mekugi");
+    }
+    await file(join(run, "reports/report.json"), "{}\n");
+    await file(join(run, "reports/report.md"), "fixture report\n");
+    await bundles.collectBundle(run);
+    expect(await readFile(join(run, "reports/bundle/analyze_capture.py"), "utf8")).toBe("# fixture analyzer\n");
+    expect(await readFile(join(run, "reports/bundle/benchmark_jsonl.py"), "utf8")).toBe("# fixture reader\n");
+  }, 30_000);
+}
+
+test("mentor-handoff rejects prepared matrix identity drift", async () => {
+  const run = await mentorPrepared("current");
+  const original = await readState(run);
+  await verifyPreparedInputs(run, original);
+  const tamperers: Array<(state: typeof original) => void> = [
+    state => { state.mentor!.setup = "stock"; },
+    state => { state.arms.stock.home_template = "snapshots/stock/home/ubuntu"; },
+    state => { state.arms.current.home_template = "snapshots/stock/home/ubuntu"; },
+    state => { state.execution.current_launcher = "codex"; },
+    state => { state.execution.model = "gpt-6-astra"; },
+    state => { state.execution.reasoning_effort = "medium"; },
+    state => { state.mentor!.child_model = "gpt-6-sol" as never; },
+    state => { state.mentor!.child_effort = "high" as never; },
+    state => { state.mekugi_exports_by_arm!.stock = undefined; },
+    state => { state.mekugi_exports_by_arm!.current = undefined; },
+    state => { state.mekugi_exports_by_arm!.current!.capture = "artifacts/stock/mekugi/capture.jsonl"; },
+    state => { state.mekugi_exports_by_arm!.current!.metrics = "artifacts/stock/mekugi/metrics.json"; },
+  ];
+  for (const tamper of tamperers) {
+    const changed = structuredClone(original);
+    tamper(changed);
+    await expect(verifyPreparedInputs(run, changed)).rejects.toThrow("mentor matrix identity changed");
+  }
+});
+
+test("mentor-handoff task and handoff controls are checked before Docker is invoked", async () => {
+  const paths = ["control/task.md", "control/mentor-parent.md", "control/mentor-child.toml"];
+  for (const path of paths) {
+    const run = await mentorPrepared("stock");
+    await file(join(run, path), "tampered task control\n");
+    const fake = await fakeOwnedDocker(0);
+    await expect(preflightRun(run, fake.path)).rejects.toThrow(path === "control/mentor-parent.md" || path === "control/mentor-child.toml"
+      ? "mentor control changed" : "copied benchmark control changed");
+    expect(await Bun.file(fake.log).exists()).toBe(false);
+  }
+}, 30_000);
+
 for (const comparison of ["stock-current", "same-setup"] as const) {
   for (const cachePresent of [false, true]) {
     test(`${comparison} prepares with bundled marketplace cache ${cachePresent ? "present" : "absent"}`, async () => {
@@ -870,10 +976,10 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   expect(await readFile(paths.markdownPath, "utf8")).toContain("does not establish a causal");
 });
 
-test("semantic grading rejects single-arm execution before launch", async () => {
+test("runner rejects current-only single-arm execution before launch", async () => {
   const run = await prepared();
   await expect(runPair({ runDir: run, authFile: "/must-not-read", dockerBin: "/must-not-launch", arm: "current" }))
-    .rejects.toThrow("semantic grading requires both arms");
+    .rejects.toThrow("single-arm runs support stock controls only");
 });
 test("current arm can launch through the snapshotted Mekugi wrapper", async () => {
   const run = await prepared(30, "mekugi");

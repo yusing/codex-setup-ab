@@ -371,6 +371,34 @@ function requestCost(usage: Usage, rates: ModelPricing): CostComponents {
   };
 }
 
+/** Price validated Mekugi provider attempts by the model that actually handled each attempt. */
+export function priceProviderAttempts(metrics: unknown, pricing: PricingSnapshot): number | null {
+  if (!isObject(metrics) || !Array.isArray(metrics.exchanges)) return null;
+  let total = 0;
+  let observed = 0;
+  for (const exchange of metrics.exchanges) {
+    if (!isObject(exchange) || !Array.isArray(exchange.provider_attempts)) return null;
+    for (const attempt of exchange.provider_attempts) {
+      if (!isObject(attempt) || typeof attempt.model !== "string" || !isObject(attempt.usage)) return null;
+      const input = attempt.usage.input_tokens;
+      const cached = attempt.usage.cached_input_tokens;
+      const output = attempt.usage.output_tokens;
+      const reasoning = attempt.usage.reasoning_tokens;
+      if (![input, cached, output, reasoning].every(value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+        || (cached as number) > (input as number) || (reasoning as number) > (output as number)) return null;
+      const rates = ratesFor(pricing, attempt.model);
+      if (!rates) return null;
+      const costs = requestCost({ input_tokens: input as number, cached_input_tokens: cached as number,
+        cache_write_input_tokens: 0, output_tokens: output as number,
+        reasoning_output_tokens: reasoning as number, total_tokens: (input as number) + (output as number) }, rates);
+      if (Object.values(costs).some(value => value === null)) return null;
+      total += Object.values(costs).reduce<number>((sum, value) => sum + value!, 0);
+      observed++;
+    }
+  }
+  return observed ? total : null;
+}
+
 export interface MeterExclusions {
   response_ids: string[];
   command_ids: string[];
