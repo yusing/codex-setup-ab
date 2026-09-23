@@ -1,0 +1,22 @@
+{
+  "schema": "codex-ab.task-pack.v1",
+  "id": "flask-ipv6-server-name",
+  "source": {
+    "repository": "https://github.com/pallets/flask.git",
+    "base_commit": "de8429ffda8cfb54db175529e2bae72a24e1fa7e",
+    "forbidden_commit": "7203feabf723edae0286ae5dc64fec8ac4c91735"
+  },
+  "prompt": "task.md",
+  "criteria": {
+    "schema": "codex-ab.criteria.v1",
+    "criteria": [
+      {"id": "ipv6-server-name", "description": "Flask.run parses bracketed IPv6 SERVER_NAME with and without an explicit port, keeping the IPv6 host intact.", "required_interface": "Flask.run and SERVER_NAME"},
+      {"id": "existing-address-selection", "description": "DNS and IPv4 SERVER_NAME parsing, explicit host and port overrides including port zero, debug behavior, and server cleanup remain unchanged."}
+    ],
+    "allowed_paths": ["src/flask/app.py"],
+    "preparation": "if test ! -x /opt/codex-ab-deps/python/bin/pytest; then python3 -m venv /opt/codex-ab-deps/python && /opt/codex-ab-deps/python/bin/pip install 'blinker>=1.9.0' 'click>=8.1.3' 'itsdangerous>=2.2.0' 'jinja2>=3.1.2' 'markupsafe>=2.1.1' 'werkzeug>=3.1.0' asgiref pytest python-dotenv; fi",
+    "existing_tests": "PYTHONPATH=src /opt/codex-ab-deps/python/bin/python -m pytest -p no:cacheprovider -q tests/test_basic.py -k 'test_run_from_config or test_run_server_port or test_run_defaults'",
+    "evaluator_guidance": "Use /opt/codex-ab-deps/python/bin/python with PYTHONPATH=src when importing the candidate Flask source. Pytest must use -p no:cacheprovider because candidate files are read-only. Dependencies are preinstalled in the immutable dependency image; do not install packages during offline checks.",
+    "qualification": "not-run"
+  }
+}

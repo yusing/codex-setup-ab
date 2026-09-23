@@ -1,0 +1,22 @@
+{
+  "schema": "codex-ab.task-pack.v1",
+  "id": "express-transfer-encoding",
+  "source": {
+    "repository": "https://github.com/expressjs/express.git",
+    "base_commit": "59e205a57a04fced6bb7b8ec0b5dec29461a9996",
+    "forbidden_commit": "18e5985b8a9d5e8423db0a9121f22bdaecd5b120"
+  },
+  "prompt": "task.md",
+  "criteria": {
+    "schema": "codex-ab.criteria.v1",
+    "criteria": [
+      {"id": "transfer-encoding-length", "description": "res.send does not generate Content-Length when the application has set any Transfer-Encoding value.", "required_interface": "Express res.send"},
+      {"id": "send-regressions", "description": "Body conversion, content type, ETag, freshness, status-specific header removal, HEAD handling, and response completion retain existing behavior."}
+    ],
+    "allowed_paths": ["lib/response.js"],
+    "preparation": "if test -f /opt/codex-ab-deps/express-prepared; then bun install --offline --no-save; else bun install --no-save && touch /opt/codex-ab-deps/express-prepared; fi",
+    "existing_tests": "bun x mocha --require test/support/env --reporter dot --check-leaks test/res.send.js",
+    "evaluator_guidance": "The dependency image contains the resolved Bun cache. Run bun install --offline --no-save in the candidate copy before invoking Express or Mocha; never use the network during grading.",
+    "qualification": "not-run"
+  }
+}

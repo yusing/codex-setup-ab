@@ -24,6 +24,7 @@ RUN apt-get update \
         make \
         pkg-config \
         python3 \
+        python3-venv \
         ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && go version \

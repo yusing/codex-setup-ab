@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { loadTaskPack } from "./task-pack";
 
 test("portable packs pin source, task boundaries and fingerprint their controls", async () => {
-  for (const id of ["gin-context-copy", "nvm-download-no-eval"]) {
+  for (const id of ["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding", "nvm-download-no-eval"]) {
     const pack = await loadTaskPack(join(import.meta.dir, "tasks", id, "manifest.json"));
     expect(pack.manifest.id).toBe(id);
     expect(pack.manifest.source.base_commit).toHaveLength(40);
