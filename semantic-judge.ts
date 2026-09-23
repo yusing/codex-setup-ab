@@ -9,13 +9,14 @@ import { writeState } from "./state";
 import type { ArmName, JudgeAttempt, JudgeReport, RunState } from "./types";
 
 const ids = ["candidate-1", "candidate-2"] as const;
+export const JUDGE_MODEL = "gpt-6-sol" as const;
 
 export async function runSemanticJudge(runDir: string, state: RunState, auth: string, docker: string, signal?: AbortSignal): Promise<JudgeReport> {
   await verifyPreparedInputs(runDir, state);
   const contract = state.criteria!.contract;
   const task = await readFile(join(runDir, state.task.path), "utf8");
   const report: JudgeReport = {
-    status: "incomplete", started_at: new Date().toISOString(), model: "gpt-5.6-sol",
+    status: "incomplete", started_at: new Date().toISOString(), model: JUDGE_MODEL,
     reasoning_effort: "high", service_tier: "default", passes: [], winner: "none", usage_homes: [], attempts: [],
   };
   state.judge = report;

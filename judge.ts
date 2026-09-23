@@ -1,7 +1,8 @@
 import { readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { runSemanticJudge } from "./semantic-judge";
-import { readState, withRunLock } from "./state";
+import { JUDGE_MODEL, runSemanticJudge } from "./semantic-judge";
+import { readState, withRunLock, writeState } from "./state";
+import { embeddedFallbackPricing, fetchPricing, type PricingSnapshot } from "./usage";
 import type { ArmName, CommandEvidence, JudgePass, JudgeReport } from "./types";
 
 const CANDIDATES = ["candidate-1", "candidate-2"] as const;
@@ -147,6 +148,12 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
   if (((await stat(auth)).mode & 0o777) & 0o077) throw new Error("auth file must be mode 0600");
 
   if (!state.criteria) throw new Error("judge requires task-derived criteria");
+  const pricing = (state.pricing ?? await fetchPricing()) as PricingSnapshot;
+  if (!state.pricing) state.pricing = pricing;
+  if (!pricing.models[JUDGE_MODEL]) state.judge_pricing = {
+    captured_at: new Date().toISOString(), rate: embeddedFallbackPricing(JUDGE_MODEL),
+  };
+  await writeState(runDir, state);
   return runSemanticJudge(runDir, state, auth, dockerBin, signal);
 }
 

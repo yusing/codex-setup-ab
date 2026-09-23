@@ -268,6 +268,11 @@ test("fetchPricing falls back with exact stock rates and serializable provenance
     const snapshot = await fetchPricing();
     expect(snapshot.source).toBe("fallback");
     expect(snapshot.models["gpt-6-astra"].prompt).toBe(10 / 1_000_000);
+    expect(snapshot.models["gpt-6-sol"].completion).toBe(10 / 1_000_000);
+    expect(snapshot.models["gpt-6-sol"].overrides[0].completion).toBe(15 / 1_000_000);
+    expect(snapshot.models["gpt-6-luna"].input_cache_write).toBe(0.125 / 1_000_000);
+    expect(snapshot.models["gpt-6-luna"].overrides[0].input_cache_write).toBe(0.25 / 1_000_000);
+    // Retain older list rates for pricing historical runs with recorded models.
     expect(snapshot.models["gpt-5.6-sol"].completion).toBe(20 / 1_000_000);
     expect(snapshot.models["gpt-5.6-terra"].overrides[0].min_prompt_tokens).toBe(272_000);
     expect(snapshot.models["gpt-5.6-luna"].input_cache_write).toBe(0.25 / 1_000_000);

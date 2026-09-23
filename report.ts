@@ -157,8 +157,14 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
   const reports = outputDirectory ? await exportDirectory(runDir, outputDirectory) : join(runDir, "reports");
   const state = await readState(runDir);
   if (outputDirectory && !state.pricing) throw new Error("export requires recorded pricing; the source run will not be modified");
-  const pricing = (state.pricing ?? await fetchPricing()) as PricingSnapshot;
-  if (!state.pricing) { state.pricing = pricing; await writeState(runDir, state); }
+  const recordedPricing = (state.pricing ?? await fetchPricing()) as PricingSnapshot;
+  if (!state.pricing) { state.pricing = recordedPricing; await writeState(runDir, state); }
+  const pricing: PricingSnapshot = state.judge_pricing ? {
+    ...recordedPricing,
+    models: { ...recordedPricing.models, [state.judge_pricing.rate.model_id]: state.judge_pricing.rate },
+    assumptions: [...recordedPricing.assumptions,
+      `Judge ${state.judge_pricing.rate.model_id} embedded list-price fallback captured on ${state.judge_pricing.captured_at}; original run pricing is unchanged.`],
+  } : recordedPricing;
 
   const usage: Partial<Record<ArmName, MeteredRollouts>> = {};
   for (const arm of ARMS) {

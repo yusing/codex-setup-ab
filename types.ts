@@ -106,6 +106,8 @@ export interface RunState {
   selected_arms?: ArmName[];
   arms: Record<ArmName, { repository: string; home_template: string }>;
   pricing?: unknown;
+  /** New judge rate kept separate so historical trial pricing controls stay immutable. */
+  judge_pricing?: { captured_at: string; rate: import("./usage").ModelPricing };
   results?: Partial<Record<ArmName, ArmResult>>;
   arm_attempts?: Partial<Record<ArmName, {
     codex_home: string;
@@ -156,7 +158,8 @@ export interface JudgeReport {
   status: "incomplete" | "complete" | "failed" | "canceled";
   started_at: string;
   finished_at?: string;
-  model: "gpt-5.6-sol";
+  /** Older completed reports retain their original judge model. */
+  model: "gpt-6-sol" | "gpt-5.6-sol";
   /** Medium is retained for completed reports created before high became the judge default. */
   reasoning_effort: "medium" | "high";
   /** Optional because completed medium/default reports predate persisted judge-tier metadata. */

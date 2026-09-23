@@ -1146,7 +1146,10 @@ test("finish recovers pre-judge reporting failure without restarting candidates"
   await file(auth, "{}\n", 0o600);
   const fake = await fakeOwnedDocker(0);
   const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
-  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture://pricing", assumptions: [], warnings: [], models: {} };
+  const oldSolRate = { model_id: "gpt-5.6-sol", source: "fixture:old-sol", prompt: 4 / 1_000_000,
+    completion: 20 / 1_000_000, input_cache_read: 0.4 / 1_000_000, input_cache_write: 5 / 1_000_000, overrides: [] };
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture://pricing",
+    assumptions: [], warnings: [], models: { "gpt-5.6-sol": oldSolRate } };
   state.finishing = { status: "failed", started_at: new Date().toISOString(), bundle_path: "reports/bundle", error: "evidence pack too large before any judge request" };
   state.judge = { status: "failed", started_at: new Date().toISOString(), model: "gpt-5.6-sol", reasoning_effort: "high", service_tier: "priority", passes: [], winner: "none", usage_homes: [], attempts: [], error: "prompt preparation failed before launch" };
   await writeState(run, state);
@@ -1155,10 +1158,20 @@ test("finish recovers pre-judge reporting failure without restarting candidates"
   await finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
   const finished = await readState(run);
   expect(finished.finishing?.status).toBe("complete");
+  expect(finished.judge?.model).toBe("gpt-6-sol");
   expect(finished.judge?.passes).toHaveLength(2);
+  const savedPricing = finished.pricing as PricingSnapshot;
+  expect(savedPricing.models["gpt-5.6-sol"]).toEqual(oldSolRate);
+  expect(savedPricing.models["gpt-6-sol"]).toBeUndefined();
+  expect(finished.judge_pricing?.rate.source).toBe("fallback:gpt-6-sol");
+  expect(finished.judge_pricing?.rate.completion).toBe(10 / 1_000_000);
+  const report = await Bun.file(join(run, "reports/report.json")).json();
+  expect(report.pricing.models["gpt-6-sol"].completion).toBe(10 / 1_000_000);
+  expect(report.pricing.assumptions).toContainEqual(expect.stringContaining("original run pricing is unchanged"));
   expect(finished.finishing_history).toHaveLength(1);
   expect(await readFile(join(run, finished.finishing_history![0]!.bundle_path, "prior-failure.txt"), "utf8")).toBe("preserve this failure");
   const additional = (await readFile(fake.log, "utf8")).slice(before.length);
+  expect(additional).toContain("--model gpt-6-sol");
   expect(additional).not.toContain("-stock ");
   expect(additional).not.toContain("-current ");
   await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("failed finishing");
