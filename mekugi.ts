@@ -26,7 +26,7 @@ export function mekugiIdentity(flags: string[]): { mode: string; model_protocol:
   };
 }
 
-/** Validation and metric definitions remain in the snapshotted Mekugi analyzer. */
+/** Validate Mekugi exports with the runner-bundled analyzer snapshotted for this run. */
 export async function validateMekugiExports(runDir: string, state: RunState, arm?: ArmName): Promise<{
   status: "valid" | "unavailable"; reason?: string; metrics?: unknown; model_schedule?: { root: string[]; child: string[] };
 }> {

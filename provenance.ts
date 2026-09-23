@@ -1,9 +1,10 @@
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { checked } from "./process";
 import { runOwnedContainer } from "./container";
 import { sha256 } from "./state";
+import { MEKUGI_BUILD_INPUTS } from "./support/mekugi";
 
 export interface MekugiBuild {
   schema: "codex-ab.mekugi-build.v1";
@@ -21,8 +22,7 @@ export async function buildMekugi(options: { source: string; image: string; outp
   if (parent === source || relative(source, parent).split("/")[0] !== "..") throw new Error("build output must be outside the source tree");
   const directory = await mkdtemp(join(parent, "codex-ab-build-"));
   await mkdir(join(directory, "source"));
-  const archiver = join(source, "benchmarks/build_inputs.py");
-  await copyFile(archiver, join(directory, "build_inputs.py"));
+  await writeFile(join(directory, "build_inputs.py"), MEKUGI_BUILD_INPUTS);
   const archiverHash = await sha256(join(directory, "build_inputs.py"));
   process.stderr.write(`[build] freezing Mekugi source, including dirty files and compiled guidance: ${directory}\n`);
   await checked(["python3", join(directory, "build_inputs.py"), source, join(directory, "source.tar"), join(directory, "source")], { signal: options.signal });

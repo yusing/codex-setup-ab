@@ -9,6 +9,7 @@ import { prepareTrials, readTrialSet, reportTrials, runTrials } from "./trials";
 import { main, parseMekugiFlags } from "./cli";
 import { checked } from "./process";
 import { readState, writeState, sha256 } from "./state";
+import { MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import { gradeArm, preflightRun, runPair } from "./runner";
 import { prepareSemanticAssessment } from "./semantic-assessment";
 import * as bundles from "./bundle";
@@ -104,8 +105,8 @@ beforeAll(async () => {
   future = (await checked(["git", "-C", source, "rev-parse", "HEAD"])).stdout.trim();
   task = join(root, "task.md"); fixtureCriteria = join(root, "fixture-criteria.json");
   mentorMekugiSource = join(root, "mentor-mekugi-source");
-  await file(join(mentorMekugiSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
-  await file(join(mentorMekugiSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  await mkdir(mentorMekugiSource, { recursive: true });
+
   await file(task, "Make the fixture better.\n");
   await file(fixtureCriteria, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
     criteria: [{ id: "fixture", description: "Make the fixture better." }],
@@ -129,8 +130,8 @@ async function mentorPrepared(setup: "stock" | "current"): Promise<string> {
 }
 
 test("same-setup uses one immutable configuration for both arms and rejects drift", async () => {
-  await file(join(root, "capture-source/benchmarks/analyze_capture.py"), "# fixture analyzer\n");
-  await file(join(root, "capture-source/benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  await mkdir(join(root, "capture-source"), { recursive: true });
+
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "same-setup",
@@ -172,8 +173,8 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
 
 test("stock-mekugi isolates the launcher without current-home guidance", async () => {
   const captureSource = join(root, "stock-mekugi-capture-source");
-  await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
-  await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  await mkdir(captureSource, { recursive: true });
+
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
@@ -255,8 +256,8 @@ for (const setup of ["stock", "current"] as const) {
     await file(join(run, "reports/report.json"), "{}\n");
     await file(join(run, "reports/report.md"), "fixture report\n");
     await bundles.collectBundle(run);
-    expect(await readFile(join(run, "reports/bundle/analyze_capture.py"), "utf8")).toBe("# fixture analyzer\n");
-    expect(await readFile(join(run, "reports/bundle/benchmark_jsonl.py"), "utf8")).toBe("# fixture reader\n");
+    expect(await readFile(join(run, "reports/bundle/analyze_capture.py"), "utf8")).toBe(MEKUGI_EXPORT_SCRIPTS["analyze_capture.py"]);
+    expect(await readFile(join(run, "reports/bundle/benchmark_jsonl.py"), "utf8")).toBe(MEKUGI_EXPORT_SCRIPTS["benchmark_jsonl.py"]);
   }, 30_000);
 }
 
@@ -305,8 +306,8 @@ for (const comparison of ["stock-current", "same-setup"] as const) {
       const marketplace = ".codex/.tmp/bundled-marketplaces/openai-bundled";
       if (!cachePresent) await rm(join(isolatedHome, marketplace), { recursive: true });
       const captureSource = join(root, "marketplace-capture-source");
-      await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
-      await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+      await mkdir(captureSource, { recursive: true });
+
       const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
         criteriaPath: fixtureCriteria, outputParent: root, currentHome: isolatedHome, image: "fixture-image",
         cpus: "2", memory: "4g", timeoutSeconds: 30, comparison, mekugiSource: captureSource });
@@ -326,8 +327,8 @@ test("stock-mekugi does not require unused current-home runtime supplements", as
   await rm(join(isolatedHome, ".local/bin/mise"));
   await writeFile(join(isolatedHome, ".codex/config.toml"), 'model = "some-other-model"\nmodel_reasoning_effort = "xhigh"\nservice_tier = "default"\n');
   const captureSource = join(root, "stock-mekugi-minimal-capture-source");
-  await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
-  await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  await mkdir(captureSource, { recursive: true });
+
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: isolatedHome, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
@@ -365,8 +366,8 @@ test("current snapshot overlays exact tracked worktree state across renames, ind
   await rm(join(overlayHome, "RENAMED.md"));
   await file(join(overlayHome, "RENAMED.md/private.txt"), "must not enter snapshot\n");
   const captureSource = join(root, "overlay-capture-source");
-  await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
-  await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  await mkdir(captureSource, { recursive: true });
+
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: overlayHome, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
@@ -384,8 +385,8 @@ test("current snapshot overlays exact tracked worktree state across renames, ind
 
 test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
   const captureSource = join(root, "grok-capture-source");
-  await file(join(captureSource, "benchmarks/analyze_capture.py"), "# fixture analyzer\n");
-  await file(join(captureSource, "benchmarks/benchmark_jsonl.py"), "# fixture reader\n");
+  await mkdir(captureSource, { recursive: true });
+
   const grokBin = join(root, "grok-bin");
   await file(grokBin, "#!/bin/sh\necho grok 1.0.30\n", 0o755);
   const grokAuth = join(root, "grok-auth.json");
@@ -427,14 +428,12 @@ test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
 }, 60_000);
 
 test("protected runtime snapshots owner scripts without changing the direct arm", async () => {
-  const owner = join(root, "isolation-owner/benchmarks");
-  for (const name of ["analyze_capture.py", "benchmark_jsonl.py", "isolated-codex.sh", "agent-mounts.sh", "agent-check.py"]) {
-    await file(join(owner, name), "#!/bin/sh\nexit 0\n", 0o755);
-  }
+  const owner = join(root, "isolation-owner");
+  await mkdir(owner, { recursive: true });
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "same-setup",
-    protectMekugi: true, mekugiSource: join(owner, "..") });
+    protectMekugi: true, mekugiSource: owner });
   const state = await readState(run);
   expect(state.protected_runtime?.boundary).toBe("direct-egress-vs-router-only");
   expect(state.protected_runtime?.scripts).toHaveLength(3);
@@ -458,8 +457,6 @@ test("protected runtime snapshots owner scripts without changing the direct arm"
 test("Mekugi build inputs are pinned, bundled and independent of the live checkout", async () => {
   const build = join(root, "mekugi-build");
   const context = join(root, "build-context");
-  await file(join(context, "benchmarks/analyze_capture.py"), "# frozen analyzer\n");
-  await file(join(context, "benchmarks/benchmark_jsonl.py"), "# frozen reader\n");
   await file(join(context, "dirty-guidance.md"), "uncommitted compiled guidance\n");
   await mkdir(build);
   await checked(["tar", "-cf", join(build, "source.tar"), "-C", context, "."]);

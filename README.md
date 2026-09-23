@@ -146,7 +146,7 @@ default. Other presets are `stock-current`, `current-vs-current-mekugi`, and
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable and its matching `shell` helper, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
 
-Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated against `--mekugi-source`. The current-home Git snapshot is retained for configuration provenance, while selected executables and analyzer sources are captured separately; unused current-home executables, runtime supplements, and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
+Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated with the runner-bundled analyzer; `--mekugi-source` remains the required export-validation selector, not proof that the binaries came from that checkout. The current-home Git snapshot is retained for configuration provenance, while selected executables and runner-owned analyzer sources are captured separately; unused current-home executables, runtime supplements, and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
 
 ## Stock Codex plus Mekugi versus Grok CLI
@@ -188,9 +188,9 @@ subcommand. Export destinations and runtime configuration are benchmark-owned an
 overridden through this option. The selected arguments and comparison identity appear in the
 machine state and consolidated report. Preparation and preflight make no model requests.
 
-Supply `--mekugi-source DIR` from the matching Mekugi checkout (required for `same-setup`) to enable its `--capture-output`
-and `--metrics-output` exports and snapshot its analyzer. The report validates the capturer's
-schema, treatment identity and raw-record consistency with that analyzer, retaining missing or
+Supply `--mekugi-source DIR` (required for `same-setup`) to enable `--capture-output`
+and `--metrics-output` exports. The checkout is not read for validation scripts or binary provenance; use `--mekugi-build` for recorded source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and its hash.
+The report validates the capturer's schema, treatment identity and raw-record consistency with that analyzer, retaining missing or
 invalid telemetry explicitly. Capture calculations remain owned by Mekugi. The exports are
 within-arm diagnostics, not measured savings against A. Consistency checks alone do not protect
 exports from executor writes; the optional protected runtime below supplies that boundary.
@@ -198,7 +198,7 @@ exports from executor writes; the optional protected runtime below supplies that
 ## Protected Mekugi runtime
 
 Add `--protect-mekugi` to preparation with `--mekugi-source` or `--mekugi-build`, and use an image
-rebuilt from the current Dockerfile. Preflight reuses Mekugi's snapshotted isolation scripts:
+rebuilt from the current Dockerfile. Preflight uses the runner-bundled isolation scripts snapshotted into the run:
 a real router starts, its executor can reach only that listener, capture/runtime mounts are
 read-only, and private Go compilation and Code Mode execution must work without inference.
 The check copies the captured B home and workspace, mounts its exact mise tool store, and uses
@@ -226,15 +226,15 @@ build_dir="$(./dist/codex-ab build-mekugi \
   --source /home/ubuntu/projects/mekugi --image codex-ab:0.1.0)"
 ```
 
-This model-free command uses Mekugi's own `benchmarks/build_inputs.py` exclusion rules. It
+This model-free command uses the comparison runner's bundled Mekugi source-exclusion rules. It
 retains a source archive, the archiver, build command/logs, immutable builder-image identity,
 and both executable hashes in a private temporary directory. Compilation consumes the archive
 inside a container without host credentials. Dependency downloads are allowed during this build;
 no model request is made. Failed builds retain their available evidence.
 
 Use `prepare --mekugi-build "$build_dir"` instead of `--mekugi-bin`, `--mekugi-shell-bin` and
-`--mekugi-source`. Preparation takes its analyzer/runtime sources from the retained archive,
-checks the binaries, and copies provenance into the existing result bundle. No live source
+`--mekugi-source`. Preparation snapshots the runner-bundled analyzer and isolation scripts,
+checks the binaries, and copies source provenance into the existing result bundle. No live source
 checkout or original build directory is needed after preparation. The run image is still
 selected independently and verified normally. This is locally recorded build provenance,
 not a signed third-party attestation. Supplying binaries without a build bundle remains
@@ -294,7 +294,7 @@ suite_run="$(./dist/codex-ab prepare-suite \
 ./dist/codex-ab report-suite --suite-run "$suite_run"
 ```
 
-Use `--comparison mentor-matrix --mekugi-source /path/to/matching/mekugi` instead to prepare four Mekugi cells per task: stock setup × mentor off/on and current setup × mentor off/on. Each off/on pair uses the *same* setup and launcher. The fixed parent is gpt-6-sol at high reasoning; its one `benchmark_worker` child is configured as gpt-6-luna at medium reasoning. Mekugi's mentor flag changes only the child routing in the on arm. Per-arm Mekugi captures and metrics are validated against the snapshotted analyzer, Codex rollout lineage, and provider models; incomplete diagnostics suppress a complete measurement. Mentor cost estimates price provider attempts using their actual models, not the child's configured rollout model. If capture usage, model prices, or cache-write accounting is missing, cost remains unknown. These captures are still writable from the ordinary agent container, so they are consistency checks rather than tamper-proof provenance. `--protect-mekugi` is not supported for the matrix. The existing direct-Codex `stock-current` comparison is unchanged.
+Use `--comparison mentor-matrix --mekugi-source /path/to/matching/mekugi` instead to prepare four Mekugi cells per task: stock setup × mentor off/on and current setup × mentor off/on. Each off/on pair uses the *same* setup and launcher. The fixed parent is gpt-6-sol at high reasoning; its one `benchmark_worker` child is configured as gpt-6-luna at medium reasoning. Mekugi's mentor flag changes only the child routing in the on arm. Per-arm Mekugi captures and metrics are validated against the snapshotted runner-bundled analyzer, Codex rollout lineage, and provider models; incomplete diagnostics suppress a complete measurement. Mentor cost estimates price provider attempts using their actual models, not the child's configured rollout model. If capture usage, model prices, or cache-write accounting is missing, cost remains unknown. These captures are still writable from the ordinary agent container, so they are consistency checks rather than tamper-proof provenance. `--protect-mekugi` is not supported for the matrix. The existing direct-Codex `stock-current` comparison is unchanged.
 
 The suite report gives task-level counts and B-minus-A time and estimated cost effects only for complete pairs where **both** candidates pass. Its macro mean weights each eligible task once; unknown cost is not zero-filled. `stock` and `current` arm labels mean mentor off and on within a mentor-matrix setup, not stock versus current setup. The suite executes trial sets sequentially, does not resume interrupted runs, and retains partial reports. It is descriptive rather than a randomized causal estimate.
 

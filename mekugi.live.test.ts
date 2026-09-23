@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runOwnedContainer } from "./container";
 import { validateMekugiExports } from "./mekugi";
 import { sha256 } from "./state";
+import { MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import type { RunState } from "./types";
 
 const liveTest = process.env.CODEX_AB_LIVE_MEKUGI === "1" ? test : test.skip;
@@ -12,9 +13,8 @@ const liveTest = process.env.CODEX_AB_LIVE_MEKUGI === "1" ? test : test.skip;
 liveTest("real Mekugi exports start without inference and empty capture stays unassessed", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-mekugi-export-"));
   try {
-    const source = process.env.CODEX_AB_MEKUGI_SOURCE ?? "/home/ubuntu/projects/mekugi";
-    for (const name of ["analyze_capture.py", "benchmark_jsonl.py"]) {
-      await copyFile(join(source, "benchmarks", name), join(root, name));
+    for (const name of ["analyze_capture.py", "benchmark_jsonl.py"] as const) {
+      await writeFile(join(root, name), MEKUGI_EXPORT_SCRIPTS[name]);
     }
     await mkdir(join(root, "exports"));
     const result = await runOwnedContainer({
@@ -29,7 +29,7 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("codex-cli");
     const metrics = JSON.parse(await readFile(join(root, "exports/metrics.json"), "utf8"));
-    expect(metrics.schema).toBe("mekugi.capture.metrics.v4");
+    expect(metrics.schema).toBe("mekugi.capture.metrics.v6");
     expect(metrics.requests.logical).toBe(0);
     const state = { mekugi_flags: ["--mode=mekugi"], mekugi_exports: {
       metrics: "exports/metrics.json", capture: "exports/capture.jsonl",

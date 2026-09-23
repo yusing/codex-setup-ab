@@ -54,7 +54,7 @@ Prepare options:
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
   --mekugi-build DIR    captured build bundle; selects its matching binaries and source
-  --mekugi-source DIR   matching Mekugi source for its capture validator
+  --mekugi-source DIR   select Mekugi export validation; runner bundles validators
   --current-launcher N  codex (default; same-setup uses mekugi) or mekugi
   --mekugi-bin FILE     Mekugi executable used by --current-launcher mekugi
   --grok-bin FILE       Grok executable used by --comparison codex-mekugi-grok

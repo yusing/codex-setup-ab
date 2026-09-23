@@ -10,6 +10,7 @@ import { loadTaskPack } from "./task-pack";
 import { validateCriteria } from "./semantic";
 import type { BenchmarkModel } from "./types";
 import { validateMekugiFlags } from "./mekugi";
+import { MEKUGI_EXPORT_SCRIPTS, MEKUGI_ISOLATION_SCRIPTS } from "./support/mekugi";
 import { sha256, writeState } from "./state";
 import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort, ArmName } from "./types";
 
@@ -467,7 +468,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const isolatedFromCurrentTools = comparison === "stock-mekugi" || grokComparison || (mentorComparison && options.mentorSetup === "stock");
   const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi" || mentorComparison;
   const currentLauncher = options.currentLauncher ?? (grokComparison ? "grok" : launcherComparison ? "mekugi" : "codex");
-  if ((launcherComparison || grokComparison) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source for capturer-owned export validation`);
+  if ((launcherComparison || grokComparison) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source to select export validation`);
   if (launcherComparison && currentLauncher !== "mekugi") throw new Error(`${comparison} requires the Mekugi launcher`);
   if (grokComparison && currentLauncher !== "grok") throw new Error("codex-mekugi-grok requires the Grok launcher");
   if ((comparison === "stock-mekugi" || grokComparison) && options.reviewTreatment) throw new Error(`${comparison} does not accept a current-home review treatment`);
@@ -683,8 +684,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (mekugiBinary && options.mekugiSource) {
     const validatorPath = "snapshots/runtime/analyze_capture.py";
     const readerPath = "snapshots/runtime/benchmark_jsonl.py";
-    await copyRequired(join(options.mekugiSource, "benchmarks/benchmark_jsonl.py"), join(runDir, readerPath));
-    await copyRequired(join(options.mekugiSource, "benchmarks/analyze_capture.py"), join(runDir, validatorPath));
+    await writeFile(join(runDir, readerPath), MEKUGI_EXPORT_SCRIPTS["benchmark_jsonl.py"]);
+    await writeFile(join(runDir, validatorPath), MEKUGI_EXPORT_SCRIPTS["analyze_capture.py"]);
     mekugiExports = { capture: grokComparison ? "artifacts/stock/mekugi/capture.jsonl" : "artifacts/current/mekugi/capture.jsonl", metrics: grokComparison ? "artifacts/stock/mekugi/metrics.json" : "artifacts/current/mekugi/metrics.json",
       validator: { path: validatorPath, sha256: await sha256(join(runDir, validatorPath)) },
       reader: { path: readerPath, sha256: await sha256(join(runDir, readerPath)) } };
@@ -698,9 +699,10 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   let protectedRuntime: RunState["protected_runtime"];
   if (options.protectMekugi) {
     const scripts = [];
+    await mkdir(join(runDir, "snapshots/runtime/isolation"), { recursive: true });
     for (const name of ISOLATION_SCRIPTS) {
       const path = `snapshots/runtime/isolation/${name}`;
-      await copyRequired(join(options.mekugiSource!, "benchmarks", name), join(runDir, path));
+      await writeFile(join(runDir, path), MEKUGI_ISOLATION_SCRIPTS[name]);
       await chmod(join(runDir, path), 0o755);
       scripts.push({ path, sha256: await sha256(join(runDir, path)) });
     }
