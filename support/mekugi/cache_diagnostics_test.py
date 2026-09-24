@@ -108,6 +108,26 @@ class CacheDiagnosticsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_fingerprint(unsafe)
 
+    def test_incremental_suffix_does_not_claim_prefix_reuse(self):
+        previous = fingerprint(["d" * 32])
+        current = fingerprint(["e" * 32])
+        current["incremental"] = True
+        current["fields"]["other"] = "a" * 32
+        expected = {"status": "unavailable", "common_items": 0, "changed_fields": ["other"]}
+        self.assertEqual(compare_prefix(previous, current), expected)
+        diagnosis = {"previous_sequence": 0, "client": {"status": "unavailable", "common_items": 0, "changed_fields": []},
+                     "projected": {"status": "unavailable", "common_items": 0, "changed_fields": []},
+                     "provider": {"status": "unavailable", "common_items": 0, "changed_fields": []},
+                     "routing": "unavailable", "request_key": "unavailable"}
+        second = {"previous_sequence": 1, "client": expected, "projected": expected,
+                  "provider": expected, "routing": "stable", "request_key": "stable"}
+        validate_cache_diagnostics([exchange(1, previous, diagnosis), exchange(2, current, second)])
+        for invalid in (False, "true", 1):
+            malformed = copy.deepcopy(current)
+            malformed["incremental"] = invalid
+            with self.assertRaises(ValueError):
+                validate_fingerprint(malformed)
+
 
 if __name__ == "__main__":
     unittest.main()

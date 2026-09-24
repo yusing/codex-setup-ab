@@ -79,7 +79,8 @@ def validate_fingerprint(value):
         or not isinstance(items, list) or len(items) > 128 or any(not digest(v) for v in items)
         or type(count) is not int or count < 0 or len(items) != min(count, 128) or type(value.get("complete")) is not bool
         or value["complete"] != (count == len(items))
-        or value.get("input_kind") not in {"array", "string", "other", "absent"}):
+        or value.get("input_kind") not in {"array", "string", "other", "absent"}
+        or ("incremental" in value and value["incremental"] is not True)):
         raise ValueError("invalid private cache fingerprint shape")
     if (value["input_kind"] == "absent" and count != 0) or (value["input_kind"] in {"string", "other"} and count != 1):
         raise ValueError("cache fingerprint item count disagrees with input kind")
@@ -109,6 +110,8 @@ def compare_prefix(previous, current):
         or previous["scope"] != current["scope"]):
         return result
     result["changed_fields"] = [k for k in FINGERPRINT_FIELDS if previous["fields"].get(k) != current["fields"].get(k)]
+    if previous.get("incremental") or current.get("incremental"):
+        return result
     for left, right in zip(previous["items"], current["items"]):
         if left != right:
             break
