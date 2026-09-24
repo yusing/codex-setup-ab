@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run.sh --preset NAME [--task NAME]
+Usage: scripts/run.sh --preset NAME [--task NAME] [--model NAME] [--reasoning-effort LEVEL]
 
 Prepare, preflight, and run one pinned task with one comparison:
 
@@ -19,6 +19,11 @@ Comparisons:
                       Direct Codex vs Mekugi with the same current setup
   stock-mekugi        Minimal stock Codex vs minimal stock Codex plus Mekugi
   codex-mekugi-grok   Stock Codex plus Mekugi vs the Grok CLI
+
+Model options:
+  --model NAME          gpt-6-astra or gpt-6-sol (Codex comparisons; default gpt-6-astra)
+  --reasoning-effort LEVEL
+                        medium, high, or xhigh (default: medium for NVM, xhigh for session retention)
 
 Optional environment overrides:
   CODEX_AB_SOURCE_DIR        NVM checkout (default: /tmp/codex-ab-nvm-source)
@@ -41,6 +46,8 @@ die() {
 
 preset=
 task=
+model=
+reasoning_effort=
 while (($#)); do
   case "$1" in
     --preset)
@@ -65,6 +72,32 @@ while (($#)); do
       [[ -z "$task" ]] || die "--task may be supplied only once"
       task=${1#*=}
       [[ -n "$task" ]] || die "--task requires a nonempty value"
+      shift
+      ;;
+    --model)
+      (($# >= 2)) || die "--model requires a value"
+      [[ -z "$model" ]] || die "--model may be supplied only once"
+      [[ -n "$2" ]] || die "--model requires a nonempty value"
+      model=$2
+      shift 2
+      ;;
+    --model=*)
+      [[ -z "$model" ]] || die "--model may be supplied only once"
+      model=${1#*=}
+      [[ -n "$model" ]] || die "--model requires a nonempty value"
+      shift
+      ;;
+    --reasoning-effort)
+      (($# >= 2)) || die "--reasoning-effort requires a value"
+      [[ -z "$reasoning_effort" ]] || die "--reasoning-effort may be supplied only once"
+      [[ -n "$2" ]] || die "--reasoning-effort requires a nonempty value"
+      reasoning_effort=$2
+      shift 2
+      ;;
+    --reasoning-effort=*)
+      [[ -z "$reasoning_effort" ]] || die "--reasoning-effort may be supplied only once"
+      reasoning_effort=${1#*=}
+      [[ -n "$reasoning_effort" ]] || die "--reasoning-effort requires a nonempty value"
       shift
       ;;
     -h|--help)
@@ -173,12 +206,15 @@ prepare_args=(
   --codex-bin "$codex_bin"
   --image "$image"
 )
+if [[ -n "$model" ]]; then
+  prepare_args+=(--model "$model")
+fi
 case "$task" in
   nvm-download-no-eval)
     prepare_args+=(
       --task-pack ./tasks/nvm-download-no-eval/manifest.json
       --source "$source_dir"
-      --reasoning-effort medium
+      --reasoning-effort "${reasoning_effort:-medium}"
     )
     ;;
   session-retention)
@@ -189,7 +225,7 @@ case "$task" in
       --forbidden d49862486236d8a507bc0986aa1d543481f8fb61
       --task ./tasks/session-retention/task.md
       --criteria ./tasks/session-retention/criteria.json
-      --reasoning-effort xhigh
+      --reasoning-effort "${reasoning_effort:-xhigh}"
       --timeout 3600
     )
     ;;
