@@ -32,7 +32,6 @@ Optional environment overrides:
   CODEX_AB_CODEX_BIN         Standalone Codex executable (default: $HOME/.local/bin/codex)
   CODEX_AB_MEKUGI_SOURCE     Mekugi checkout (default: $HOME/projects/mekugi)
   CODEX_AB_MEKUGI_BIN        Mekugi executable (default: $HOME/go/bin/mekugi)
-  CODEX_AB_MEKUGI_SHELL_BIN  Shell helper (default: $HOME/go/bin/shell)
   CODEX_AB_GROK_BIN          Grok executable (default: $HOME/.grok/bin/grok)
   CODEX_AB_AUTH_FILE         Codex auth file (default: $HOME/.codex/auth.json)
   CODEX_AB_GROK_AUTH_FILE    Grok auth file (default: $HOME/.grok/auth.json)
@@ -127,7 +126,6 @@ docker_bin=${CODEX_AB_DOCKER_BIN:-docker}
 codex_bin=${CODEX_AB_CODEX_BIN:-$user_home/.local/bin/codex}
 mekugi_source=${CODEX_AB_MEKUGI_SOURCE:-$user_home/projects/mekugi}
 mekugi_bin=${CODEX_AB_MEKUGI_BIN:-$user_home/go/bin/mekugi}
-mekugi_shell_bin=${CODEX_AB_MEKUGI_SHELL_BIN:-$user_home/go/bin/shell}
 grok_bin=${CODEX_AB_GROK_BIN:-$user_home/.grok/bin/grok}
 auth_file=${CODEX_AB_AUTH_FILE:-$user_home/.codex/auth.json}
 grok_auth_file=${CODEX_AB_GROK_AUTH_FILE:-$user_home/.grok/auth.json}
@@ -242,14 +240,12 @@ case "$preset" in
     prepare_args+=(
       --mekugi-source "$mekugi_source"
       --mekugi-bin "$mekugi_bin"
-      --mekugi-shell-bin "$mekugi_shell_bin"
     )
     ;;
   codex-mekugi-grok)
     prepare_args+=(
       --mekugi-source "$mekugi_source"
       --mekugi-bin "$mekugi_bin"
-      --mekugi-shell-bin "$mekugi_shell_bin"
       --mekugi-flags '["--mode=mekugi","--model-protocol=native","--grok"]'
       --grok-bin "$grok_bin"
     )

@@ -69,7 +69,6 @@ esac
   await file(join(h, ".local/share/mise/installs/bun/1.4.2/bin/bun"), "#!/bin/sh\nprintf '1.4.2\\n'\n", 0o755);
   const codex = join(h, ".local/bin/codex");
   await file(join(h, "go/bin/mekugi"), "#!/bin/sh\nexec \"$@\"\n", 0o755);
-  await file(join(h, "go/bin/shell"), "#!/bin/sh\necho 'shell: CODEX_THREAD_ID is unavailable' >&2\nexit 1\n", 0o755);
   await file(codex, "#!/bin/sh\necho codex-cli 0.154.0\n", 0o755);
   codexHash = (await checked(["sha256sum", codex])).stdout.split(/\s+/)[0]!;
   const codeModeHost = join(h, ".local/bin/codex-code-mode-host");
@@ -484,12 +483,11 @@ test("Mekugi build inputs are pinned, bundled and independent of the live checko
   await checked(["tar", "-cf", join(build, "source.tar"), "-C", context, "."]);
   await file(join(build, "build_inputs.py"), "# archive owner\n");
   await file(join(build, "bin/mekugi"), "#!/bin/sh\nexec \"$@\"\n", 0o755);
-  await file(join(build, "bin/shell"), "#!/bin/sh\nexit 1\n", 0o755);
   for (const name of ["build.stdout", "build.stderr", "build-result.json"]) await file(join(build, name), "fixture\n");
   await file(join(build, "build.json"), JSON.stringify({ schema: "codex-ab.mekugi-build.v1",
     image_id: `sha256:${"a".repeat(64)}`, source_archive_sha256: await sha256(join(build, "source.tar")),
     archiver_sha256: await sha256(join(build, "build_inputs.py")), command: ["go", "build"],
-    binaries: { mekugi: await sha256(join(build, "bin/mekugi")), shell: await sha256(join(build, "bin/shell")) } }));
+    binaries: { mekugi: await sha256(join(build, "bin/mekugi")) } }));
   const buildOptions = { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "same-setup" as const, mekugiBuild: build };
@@ -1004,62 +1002,55 @@ test("current arm can launch through the snapshotted Mekugi wrapper", async () =
   const run = await prepared(30, "mekugi");
   const stateBefore = await readState(run);
   expect(stateBefore.execution.current_launcher).toBe("mekugi");
-  expect(stateBefore.runtime_tools.mekugi_sha256).toMatch(/^[0-9a-f]{64}$/);
-  expect(await Bun.file(join(run, "snapshots/current/home/ubuntu/.local/bin/mekugi")).exists()).toBe(true);
-  expect(stateBefore.runtime_tools.mekugi_shell_sha256).toMatch(/^[0-9a-f]{64}$/);
-  expect(await readFile(join(run, "snapshots/current/home/ubuntu/.local/bin/shell"), "utf8"))
-    .toBe(await readFile(join(home, "go/bin/shell"), "utf8"));
-  expect(stateBefore.runtime_tools.mekugi_shell_source).toBe(join(home, "go/bin/shell"));
+  expect(stateBefore.runtime_tools.mekugi_sha256).toBe(await sha256(join(home, "go/bin/mekugi")));
+  expect(await sha256(join(run, "snapshots/current/home/ubuntu/.local/bin/mekugi")))
+    .toBe(stateBefore.runtime_tools.mekugi_sha256);
+  expect(await Bun.file(join(run, "snapshots/current/home/ubuntu/.local/bin/shell")).exists()).toBe(false);
   const auth = join(root, "mekugi-auth.json"); await file(auth, "{}\n", 0o600); await chmod(auth, 0o600);
   const fake = await fakeOwnedDocker(0);
   const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
   expect(state.status).toBe("complete");
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain(" mise exec -- mekugi codex exec ");
-  expect(log).toContain("command -v shell");
-  expect(log).toContain("shell: CODEX_THREAD_ID is unavailable");
 });
 
-test("Mekugi helper absence and tampering fail before any container or inference", async () => {
+test("Mekugi executable absence and tampering fail before any container or inference", async () => {
   const run = await prepared(30, "mekugi");
-  await rm(join(run, "snapshots/current/home/ubuntu/.local/bin/shell"));
+  await rm(join(run, "snapshots/current/home/ubuntu/.local/bin/mekugi"));
   await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("current setup snapshot changed");
 
   const changedRun = await prepared(30, "mekugi");
-  await file(join(changedRun, "snapshots/current/home/ubuntu/.local/bin/shell"), "#!/bin/sh\nexit 0\n", 0o755);
+  await file(join(changedRun, "snapshots/current/home/ubuntu/.local/bin/mekugi"), "#!/bin/sh\nexit 0\n", 0o755);
   await expect(preflightRun(changedRun, "/must-not-be-launched")).rejects.toThrow("current setup snapshot changed");
 
   const missingHashRun = await prepared(30, "mekugi");
   const state = await readState(missingHashRun);
-  delete state.runtime_tools.mekugi_shell_sha256;
+  delete state.runtime_tools.mekugi_sha256;
   await writeState(missingHashRun, state);
-  await expect(preflightRun(missingHashRun, "/must-not-be-launched"))
-    .rejects.toThrow("snapshotted Mekugi shell helper changed or is missing");
+  await expect(preflightRun(missingHashRun, "/must-not-be-launched")).rejects.toThrow("snapshotted Mekugi changed");
 });
 
-test("prepare validates and snapshots an explicit Mekugi helper", async () => {
+test("prepare requires an executable Mekugi launcher, but no companion helper", async () => {
   const options = {
     source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
     codexBinary: join(home, ".local/bin/codex"), currentLauncher: "mekugi" as const,
-    mekugiBinary: join(home, "go/bin/mekugi"), mekugiShellBinary: join(root, "missing-shell"),
+    mekugiBinary: join(root, "missing-mekugi"),
   };
   await expect(prepare(options)).rejects.toThrow("ENOENT");
-  const helper = join(root, "non-executable-shell");
-  await file(helper, "fixture\n", 0o644);
-  await expect(prepare({ ...options, mekugiShellBinary: helper })).rejects.toThrow("Mekugi shell helper is not executable");
-  await expect(prepare({ ...options, currentLauncher: "codex", mekugiBinary: undefined }))
-    .rejects.toThrow("--mekugi-shell-bin requires a Mekugi launcher treatment");
+  const nonExecutable = join(root, "non-executable-mekugi");
+  await file(nonExecutable, "fixture\n", 0o644);
+  await expect(prepare({ ...options, mekugiBinary: nonExecutable })).rejects.toThrow("Mekugi launcher is not executable");
 
-  const selectedHelper = join(root, "separate-bin/helper");
-  const selectedContent = "#!/bin/sh\n# Explicitly selected helper.\necho 'shell: CODEX_THREAD_ID is unavailable' >&2\nexit 1\n";
-  await file(selectedHelper, selectedContent, 0o755);
-  const run = await prepare({ ...options, mekugiShellBinary: selectedHelper });
+  const selectedMekugi = join(root, "separate-bin/mekugi");
+  const selectedContent = "#!/bin/sh\nexec \"$@\"\n";
+  await file(selectedMekugi, selectedContent, 0o755);
+  const run = await prepare({ ...options, mekugiBinary: selectedMekugi });
   const state = await readState(run);
-  expect(state.runtime_tools.mekugi_shell_source).toBe(selectedHelper);
-  expect(state.runtime_tools.mekugi_shell_sha256)
-    .toBe((await checked(["sha256sum", selectedHelper])).stdout.split(/\s+/)[0]!);
-  expect(await readFile(join(run, "snapshots/current/home/ubuntu/.local/bin/shell"), "utf8")).toBe(selectedContent);
+  expect(state.runtime_tools.mekugi_source).toBe(selectedMekugi);
+  expect(state.runtime_tools.mekugi_sha256).toBe(await sha256(selectedMekugi));
+  expect(await readFile(join(run, "snapshots/current/home/ubuntu/.local/bin/mekugi"), "utf8")).toBe(selectedContent);
+  await verifyPreparedInputs(run, state);
 });
 
 test("runner records timeouts and stops its exact session containers", async () => {

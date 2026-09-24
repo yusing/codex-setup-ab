@@ -21,7 +21,6 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
       docker: "docker", name: `codex-ab-export-smoke-${process.pid}`, timeoutMs: 30000,
       createArgs: ["--network", "none", "-v", `${root}/exports:/exports`,
         "-v", `${process.env.CODEX_AB_MEKUGI_BIN ?? "/home/ubuntu/go/bin/mekugi"}:/usr/local/bin/mekugi:ro`,
-        "-v", `${process.env.CODEX_AB_MEKUGI_SHELL ?? "/home/ubuntu/go/bin/shell"}:/usr/local/bin/shell:ro`,
         process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery",
         "mekugi", "--mode=mekugi", "--model-protocol=native",
         "--capture-output=/exports/capture.jsonl", "--metrics-output=/exports/metrics.json", "codex", "--version"],

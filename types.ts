@@ -95,8 +95,6 @@ export interface RunState {
     codex_code_mode_host_sha256: string;
     mekugi_source?: string;
     mekugi_sha256?: string;
-    mekugi_shell_source?: string;
-    mekugi_shell_sha256?: string;
     grok_source?: string;
     grok_sha256?: string;
     grok_version?: string;

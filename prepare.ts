@@ -40,7 +40,6 @@ export interface PrepareOptions {
   timeoutSeconds: number;
   currentLauncher?: CodexLauncher;
   mekugiBinary?: string;
-  mekugiShellBinary?: string;
   bunBinary?: string;
   codexBinary?: string;
 }
@@ -149,10 +148,9 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     const grokHome = join(runDir, state.arms.current.home_template);
     const mekugiFiles = await manifest(mekugiHome);
     const grokFiles = await manifest(grokHome);
-    if (mekugiFiles.length !== 3
+    if (mekugiFiles.length !== 2
       || await readFile(join(mekugiHome, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)
-      || await sha256(join(mekugiHome, ".local/bin/mekugi")) !== state.runtime_tools.mekugi_sha256
-      || await sha256(join(mekugiHome, ".local/bin/shell")) !== state.runtime_tools.mekugi_shell_sha256) {
+      || await sha256(join(mekugiHome, ".local/bin/mekugi")) !== state.runtime_tools.mekugi_sha256) {
       throw new Error("codex-mekugi-grok Codex+Mekugi setup snapshot changed");
     }
     if (grokFiles.length !== 2
@@ -168,10 +166,9 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     if (stockMekugi || (mentor && state.mentor?.setup === "stock")) {
       const treated = join(runDir, stockMekugi ? state.arms.current.home_template : state.arms.stock.home_template);
       const treatedFiles = await manifest(treated);
-      if (treatedFiles.length !== 3
+      if (treatedFiles.length !== 2
         || await readFile(join(treated, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)
-        || await sha256(join(treated, ".local/bin/mekugi")) !== state.runtime_tools.mekugi_sha256
-        || await sha256(join(treated, ".local/bin/shell")) !== state.runtime_tools.mekugi_shell_sha256) {
+        || await sha256(join(treated, ".local/bin/mekugi")) !== state.runtime_tools.mekugi_sha256) {
         throw new Error("stock-mekugi setup snapshot changed");
       }
     }
@@ -226,8 +223,6 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
     const mekugi = state.runtime_tools.mekugi_sha256;
     if (!mekugi || await sha256(join(mekugiTemplate, ".local/bin/mekugi")) !== mekugi) throw new Error("snapshotted Mekugi changed");
-    const shell = state.runtime_tools.mekugi_shell_sha256;
-    if (!shell || await sha256(join(mekugiTemplate, ".local/bin/shell")) !== shell) throw new Error("snapshotted Mekugi shell helper changed or is missing");
   }
   if (state.comparison === "codex-mekugi-grok") {
     const grok = state.runtime_tools.grok_sha256;
@@ -244,7 +239,7 @@ function replaceProjectTrust(config: string): string {
 }
 
 
-async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, mekugiShellBinary: string | undefined, miseBinary: string | undefined, includeRuntimeSupplements: boolean, reviewTreatment?: string): Promise<string> {
+async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, miseBinary: string | undefined, includeRuntimeSupplements: boolean, reviewTreatment?: string): Promise<string> {
   const repository = (await checked(["git", "-C", home, "rev-parse", "--show-toplevel"])).stdout.trim();
   if (await realpath(repository) !== await realpath(home)) throw new Error("--current-home must be the configuration repository root");
   await checked(["git", "clone", "--depth=1", "--no-local", "--no-hardlinks", pathToFileURL(repository).href, destination]);
@@ -310,10 +305,6 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     await copyRequired(mekugiBinary, join(destination, ".local/bin/mekugi"));
     await chmod(join(destination, ".local/bin/mekugi"), 0o755);
   }
-  if (mekugiShellBinary) {
-    await copyRequired(mekugiShellBinary, join(destination, ".local/bin/shell"));
-    await chmod(join(destination, ".local/bin/shell"), 0o755);
-  }
   const treatmentFiles: Array<{ source: string; destination: string; before_sha256: string; after_sha256: string }> = [];
   if (reviewTreatment) {
     for (const path of [".codex", ".codex/agents"]) {
@@ -339,7 +330,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     ...(includeRuntimeSupplements ? [
       "untracked home files excluded except explicit runtime supplements; no host auth, session history or Mekugi state copied",
       "mise copied to /home/ubuntu/.local/bin with its migration completion records and referenced pipx lock sidecars; its existing installed tool store recorded separately and mounted read-only without copying",
-      ...(mekugiBinary ? ["Mekugi launcher and matching shell helper copied to /home/ubuntu/.local/bin without host Mekugi state"] : []),
+      ...(mekugiBinary ? ["Mekugi launcher copied to /home/ubuntu/.local/bin without host Mekugi state"] : []),
       "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
       "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
     ] : [
@@ -451,7 +442,7 @@ const REVIEW_TREATMENT_FILES = [
 export async function prepare(options: PrepareOptions): Promise<string> {
   const build = options.mekugiBuild ? await readMekugiBuild(options.mekugiBuild) : undefined;
   if (build) options = { ...options, currentLauncher: options.comparison === "codex-mekugi-grok" ? "grok" : "mekugi",
-    mekugiBinary: join(options.mekugiBuild!, "bin/mekugi"), mekugiShellBinary: join(options.mekugiBuild!, "bin/shell"),
+    mekugiBinary: join(options.mekugiBuild!, "bin/mekugi"),
     mekugiSource: join(options.mekugiBuild!, "source") };
   const pack = options.taskPackPath ? await loadTaskPack(options.taskPackPath) : undefined;
   if (pack) options = { ...options, profile: "task", baseCommit: pack.manifest.source.base_commit,
@@ -527,18 +518,12 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const miseStat = miseBinary ? await stat(miseBinary) : undefined;
   if (miseStat && (!miseStat.isFile() || (miseStat.mode & 0o111) === 0)) throw new Error(`current setup manager is not executable: ${miseBinary}`);
   const miseSha256 = miseBinary ? await sha256(miseBinary) : undefined;
-  if (options.mekugiShellBinary && !needsMekugi) throw new Error("--mekugi-shell-bin requires a Mekugi launcher treatment");
   const mekugiBinary = needsMekugi
     ? await realpath(options.mekugiBinary ?? join(options.currentHome, "go/bin/mekugi"))
     : undefined;
   const mekugiStat = mekugiBinary ? await stat(mekugiBinary) : undefined;
   if (mekugiStat && (!mekugiStat.isFile() || (mekugiStat.mode & 0o111) === 0)) throw new Error(`Mekugi launcher is not executable: ${mekugiBinary}`);
   const mekugiSha256 = mekugiBinary ? await sha256(mekugiBinary) : undefined;
-  const mekugiShellBinary = mekugiBinary
-    ? await realpath(options.mekugiShellBinary ?? join(dirname(mekugiBinary), "shell"))
-    : undefined;
-  const mekugiShellStat = mekugiShellBinary ? await stat(mekugiShellBinary) : undefined;
-  if (mekugiShellStat && (!mekugiShellStat.isFile() || (mekugiShellStat.mode & 0o111) === 0)) throw new Error(`Mekugi shell helper is not executable: ${mekugiShellBinary}`);
   const grokBinary = grokComparison ? await realpath(options.grokBinary ?? join(options.currentHome, ".grok/bin/grok")) : undefined;
   const grokStat = grokBinary ? await stat(grokBinary) : undefined;
   if (grokStat && (!grokStat.isFile() || (grokStat.mode & 0o111) === 0)) throw new Error(`Grok executable is not executable: ${grokBinary}`);
@@ -551,7 +536,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (options.model && !["gpt-6-astra", "gpt-6-sol"].includes(options.model) && !(grokComparison && options.model === "grok:grok-4.6")) throw new Error("unsupported benchmark model");
   const model: BenchmarkModel = grokComparison ? "grok:grok-4.6" : mentorComparison ? "gpt-6-sol" : options.model ?? "gpt-6-astra";
   if (options.model && (grokComparison || mentorComparison) && options.model !== model) throw new Error(`${comparison} uses ${model}`);
-  const mekugiShellSha256 = mekugiShellBinary ? await sha256(mekugiShellBinary) : undefined;
   const codeModeHostSha256 = await sha256(codeModeHost);
   const currentConfig = Bun.TOML.parse(await readFile(join(options.currentHome, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
   const configured = (key: string): string | undefined =>
@@ -595,7 +579,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     if (await sha256(join(directory, "source.tar")) !== build.source_archive_sha256 ||
         await sha256(join(directory, "build_inputs.py")) !== build.archiver_sha256 ||
         JSON.stringify(JSON.parse(await readFile(join(directory, "build.json"), "utf8"))) !== JSON.stringify(build) ||
-        mekugiSha256 !== build.binaries.mekugi || mekugiShellSha256 !== build.binaries.shell) throw new Error("build inputs changed during preparation");
+        mekugiSha256 !== build.binaries.mekugi) throw new Error("build inputs changed during preparation");
     options.mekugiSource = join(directory, "source");
     await mkdir(options.mekugiSource);
     await checked(["python3", "-c",
@@ -636,7 +620,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
   const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate,
-    isolatedFromCurrentTools ? undefined : mekugiBinary, isolatedFromCurrentTools ? undefined : mekugiShellBinary,
+    isolatedFromCurrentTools ? undefined : mekugiBinary,
     miseBinary, !isolatedFromCurrentTools, reviewTreatment);
   const currentSetupInstalls = isolatedFromCurrentTools
     ? join(runDir, "snapshots/current/mise/installs")
@@ -663,9 +647,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     await mkdir(join(stockMekugiTemplate, ".local/bin"), { recursive: true });
     await writeFile(join(stockMekugiTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
     await copyRequired(mekugiBinary!, join(stockMekugiTemplate, ".local/bin/mekugi"));
-    await copyRequired(mekugiShellBinary!, join(stockMekugiTemplate, ".local/bin/shell"));
     await chmod(join(stockMekugiTemplate, ".local/bin/mekugi"), 0o755);
-    await chmod(join(stockMekugiTemplate, ".local/bin/shell"), 0o755);
   }
   if (grokComparison) {
     const grokTemplate = join(runDir, "snapshots/stock-grok/home/ubuntu");
@@ -742,7 +724,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       current_setup_mise_sha256: miseSha256,
       codex_code_mode_host_sha256: codeModeHostSha256,
       mekugi_source: mekugiBinary, mekugi_sha256: mekugiSha256,
-      mekugi_shell_source: mekugiShellBinary, mekugi_shell_sha256: mekugiShellSha256,
       grok_source: grokBinary, grok_sha256: grokSha256, grok_version: grokVersion,
       codex_code_mode_host_size: codeModeHostStat.size,
     },

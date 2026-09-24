@@ -54,12 +54,11 @@ Prepare options:
   --mentor-setup NAME  stock or current; required for mentor-handoff
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
-  --mekugi-build DIR    captured build bundle; selects its matching binaries and source
+  --mekugi-build DIR    captured build bundle; selects its Mekugi executable and source
   --mekugi-source DIR   select Mekugi export validation; runner bundles validators
   --current-launcher N  codex (default; same-setup uses mekugi) or mekugi
   --mekugi-bin FILE     Mekugi executable used by --current-launcher mekugi
   --grok-bin FILE       Grok executable used by --comparison codex-mekugi-grok
-  --mekugi-shell-bin FILE  matching shell helper (default shell beside Mekugi)
   --bun-bin FILE        Bun 1.4+ executable copied for isolated preparation
   --codex-bin FILE      standalone Codex executable used to build the image
   --image NAME          prebuilt bare-Codex image (default codex-ab:0.1.0)
@@ -88,9 +87,9 @@ Run and judge require the explicit model-execution confirmation flag.
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["profile", "model", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mentor-setup", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "model", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mentor-setup", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
     "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
-    "prepare-suite": ["suite", "sources-file", "count", "comparison", "order", "output-parent", "current-home", "review-treatment", "mekugi-flags", "mekugi-source", "mekugi-build", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory", "docker-bin"],
+    "prepare-suite": ["suite", "sources-file", "count", "comparison", "order", "output-parent", "current-home", "review-treatment", "mekugi-flags", "mekugi-source", "mekugi-build", "mekugi-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory", "docker-bin"],
     "run-suite": ["suite-run", "auth-file", "docker-bin", "confirm-paid-inference"],
     "report-suite": ["suite-run"],
     "run-trials": ["trial-set", "auth-file", "grok-auth-file", "docker-bin", "confirm-paid-inference"],
@@ -152,8 +151,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         ["base", "forbidden", "task", "criteria", "profile"].some(key => o[key] !== undefined))) {
       throw new Error("--task-pack requires --source and cannot override its base, forbidden, task, criteria, or profile");
     }
-    if (o["mekugi-build"] && ["mekugi-bin", "mekugi-shell-bin", "mekugi-source"].some(key => o[key] !== undefined)) {
-      throw new Error("--mekugi-build owns its binaries and source; do not override them");
+    if (o["mekugi-build"] && ["mekugi-bin", "mekugi-source"].some(key => o[key] !== undefined)) {
+      throw new Error("--mekugi-build owns its executable and source; do not override them");
     }
     const timeout = Number(string(o, "timeout", "1800"));
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
@@ -176,7 +175,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       mekugiSource: o["mekugi-source"] as string | undefined,
       mekugiBinary: o["mekugi-bin"] as string | undefined,
       grokBinary: o["grok-bin"] as string | undefined,
-      mekugiShellBinary: o["mekugi-shell-bin"] as string | undefined,
       currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),
       cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
       codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),
@@ -209,7 +207,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         reviewTreatment: o["review-treatment"] as string | undefined,
         mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
         mekugiSource: o["mekugi-source"] as string | undefined, mekugiBuild: o["mekugi-build"] as string | undefined,
-        mekugiBinary: o["mekugi-bin"] as string | undefined, mekugiShellBinary: o["mekugi-shell-bin"] as string | undefined,
+        mekugiBinary: o["mekugi-bin"] as string | undefined,
         codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),
         bunBinary: o["bun-bin"] as string | undefined } })}\n`);
     return 0;

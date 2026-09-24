@@ -11,7 +11,7 @@ A new task in skills-mgr, replacing the rejected info-command task. The user-app
 
 ## Stock A versus v3 B
 
-Use current home plus the original v3 overlay and the current installed matching Mekugi/shell pair. Active home guidance and source repositories remain unchanged.
+Use current home plus the original v3 overlay and the current installed Mekugi executable. Active home guidance and source repositories remain unchanged.
 
 ```sh
 ./dist/codex-ab prepare \
@@ -25,7 +25,6 @@ Use current home plus the original v3 overlay and the current installed matching
   --review-treatment treatments/continuous-review-v3 \
   --current-launcher mekugi \
   --mekugi-bin /home/ubuntu/go/bin/mekugi \
-  --mekugi-shell-bin /home/ubuntu/go/bin/shell \
   --reasoning-effort medium \
   --image codex-ab:0.154.0
 ```

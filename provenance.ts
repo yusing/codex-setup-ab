@@ -12,7 +12,7 @@ export interface MekugiBuild {
   source_archive_sha256: string;
   archiver_sha256: string;
   command: string[];
-  binaries: { mekugi: string; shell: string };
+  binaries: { mekugi: string };
 }
 
 export async function buildMekugi(options: { source: string; image: string; outputParent?: string; docker?: string; signal?: AbortSignal }): Promise<string> {
@@ -31,8 +31,8 @@ export async function buildMekugi(options: { source: string; image: string; outp
   const imageId = (await checked([docker, "image", "inspect", "--format", "{{.Id}}", options.image], { signal: options.signal })).stdout.trim();
   if (!/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new Error("build requires an immutable container image");
   await mkdir(join(directory, "bin"));
-  const command = ["sh", "-lc", "mkdir /tmp/build && python3 -c 'import tarfile; tarfile.open(\"/source.tar\").extractall(\"/tmp/build\", filter=\"data\")' && cd /tmp/build && go version && go build -trimpath -buildvcs=false -o /output/mekugi ./cmd/mekugi && go build -trimpath -buildvcs=false -o /output/shell ./cmd/shell"];
-  process.stderr.write(`[build] compiling both executables from frozen inputs with ${imageId}\n`);
+  const command = ["sh", "-lc", "mkdir /tmp/build && python3 -c 'import tarfile; tarfile.open(\"/source.tar\").extractall(\"/tmp/build\", filter=\"data\")' && cd /tmp/build && go version && go build -trimpath -buildvcs=false -o /output/mekugi ./cmd/mekugi"];
+  process.stderr.write(`[build] compiling Mekugi from frozen inputs with ${imageId}\n`);
   const result = await runOwnedContainer({
     docker, name: `codex-ab-build-${directory.split("/").at(-1)}`, signal: options.signal, timeoutMs: 900000,
     stdoutFile: join(directory, "build.stdout"), stderrFile: join(directory, "build.stderr"),
@@ -44,7 +44,7 @@ export async function buildMekugi(options: { source: string; image: string; outp
   if (await sha256(join(directory, "source.tar")) !== sourceHash) throw new Error("source archive changed during build");
   const manifest: MekugiBuild = { schema: "codex-ab.mekugi-build.v1", image_id: imageId,
     source_archive_sha256: sourceHash, archiver_sha256: archiverHash, command,
-    binaries: { mekugi: await sha256(join(directory, "bin/mekugi")), shell: await sha256(join(directory, "bin/shell")) } };
+    binaries: { mekugi: await sha256(join(directory, "bin/mekugi")) } };
   await writeFile(join(directory, "build.json"), JSON.stringify(manifest, null, 2));
   process.stderr.write("[build] captured source and executable identities; no model inference\n");
   return directory;
@@ -56,7 +56,6 @@ export async function readMekugiBuild(directory: string): Promise<MekugiBuild> {
   if (manifest.schema !== "codex-ab.mekugi-build.v1" || !/^sha256:[a-f0-9]{64}$/.test(manifest.image_id) ||
       manifest.source_archive_sha256 !== await sha256(join(root, "source.tar")) ||
       manifest.archiver_sha256 !== await sha256(join(root, "build_inputs.py")) ||
-      manifest.binaries?.mekugi !== await sha256(join(root, "bin/mekugi")) ||
-      manifest.binaries?.shell !== await sha256(join(root, "bin/shell"))) throw new Error("Mekugi build provenance changed");
+      manifest.binaries?.mekugi !== await sha256(join(root, "bin/mekugi"))) throw new Error("Mekugi build provenance changed");
   return manifest;
 }

@@ -131,7 +131,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     progress(state.comparison === "codex-mekugi-grok" ? "checking the isolated Codex+Mekugi and Grok setups offline" : "checking the minimal stock-plus-Mekugi setup offline");
     const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none",
       "-v", `${mekugiHome}:/setup:ro`, image, "sh", "-lc",
-      "cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && test -x /home/ubuntu/.local/bin/mekugi && test \"$(command -v shell)\" = /home/ubuntu/.local/bin/shell && (env -u MEKUGI_RUNTIME_DIR -u CODEX_THREAD_ID shell >/tmp/codex-ab-shell.stdout 2>/tmp/codex-ab-shell.stderr; test \"$?\" = 1) && grep -Fxq 'shell: CODEX_THREAD_ID is unavailable' /tmp/codex-ab-shell.stderr"] });
+      "cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && test -x /home/ubuntu/.local/bin/mekugi"] });
     if (dependencies.exitCode !== 0) throw new Error(`stock-plus-Mekugi setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
     if (state.comparison === "codex-mekugi-grok") {
       const grokHome = resolve(runDir, state.arms.current.home_template);
@@ -148,7 +148,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     progress("checking the complete current setup and registered Go hook offline");
     const hookEvent = JSON.stringify({ hook_event_name: "PostToolUse", cwd: "/workspace", tool_input: { cmd: "skills-mgr get golang-best-practices" }, tool_response: { exit_code: 0 } });
     const mekugiCheck = state.execution.current_launcher === "mekugi"
-      ? " && test -x /home/ubuntu/.local/bin/mekugi && test \"$(command -v shell)\" = /home/ubuntu/.local/bin/shell && (env -u MEKUGI_RUNTIME_DIR -u CODEX_THREAD_ID shell >/tmp/codex-ab-shell.stdout 2>/tmp/codex-ab-shell.stderr; test \"$?\" = 1) && grep -Fxq 'shell: CODEX_THREAD_ID is unavailable' /tmp/codex-ab-shell.stderr"
+      ? " && test -x /home/ubuntu/.local/bin/mekugi"
       : "";
     const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none", "-e", `CODEX_AB_HOOK_EVENT=${hookEvent}`,
       "-v", `${currentHome}:/setup:ro`, "-v", `${workspace}:/workspace:ro`, ...currentSetupMounts(runDir, state), image, "sh", "-lc",

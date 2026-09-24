@@ -13,12 +13,11 @@ The task covers the ownership, retention, lease, legacy-record, change-ID, capac
 
 ## Prepare an isolated launcher comparison
 
-Use `stock-mekugi` to isolate the Mekugi launcher and tool treatment. Both arms receive the same minimal generated Codex configuration; the stock arm launches Codex directly and the current arm launches it through the selected Mekugi and `shell` pair.
+Use `stock-mekugi` to isolate the Mekugi launcher and tool treatment. Both arms receive the same minimal generated Codex configuration; the stock arm launches Codex directly and the current arm launches it through the selected Mekugi executable.
 
 ```sh
 mekugi_source="${MEKUGI_SOURCE:-$HOME/projects/mekugi}"
 mekugi_bin="${MEKUGI_BIN:-$HOME/go/bin/mekugi}"
-mekugi_shell_bin="${MEKUGI_SHELL_BIN:-$HOME/go/bin/shell}"
 
 run_dir="$(./dist/codex-ab prepare \
   --profile mekugi \
@@ -31,7 +30,6 @@ run_dir="$(./dist/codex-ab prepare \
   --mekugi-source "$mekugi_source" \
   --current-launcher mekugi \
   --mekugi-bin "$mekugi_bin" \
-  --mekugi-shell-bin "$mekugi_shell_bin" \
   --reasoning-effort xhigh \
   --timeout 3600 \
   --image codex-ab:0.154.0)"
