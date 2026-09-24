@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { writeState } from "./state";
 import { executeSemanticCheck, validateSemanticChecks, type CriteriaContract, type CriterionEvidence, type SemanticCheck } from "./semantic";
 import type { ArmName, RunState } from "./types";
@@ -71,6 +71,7 @@ export async function prepareSemanticAssessment(options: {
   order: [ArmName, ArmName]; docker: string; signal?: AbortSignal;
   ask: (stage: string, prompt: string, schema: object) => Promise<unknown>;
   persistState?: () => Promise<void>;
+  reuseExisting?: boolean;
 }): Promise<SemanticAssessmentEvidence> {
   const { state, contract, runDir, pass, order } = options;
   const root = join(runDir, "evaluator/semantic", `pass-${pass}`);
@@ -92,7 +93,7 @@ export async function prepareSemanticAssessment(options: {
     return result;
   };
   for (const id of candidates) {
-    evidence.existing_tests[id] = await execute(id, {
+    evidence.existing_tests[id] = options.reuseExisting ? JSON.parse(await readFile(join(root, "existing", id, "__existing_tests", "evidence.json"), "utf8")) as CriterionEvidence : await execute(id, {
       criterion: "__existing_tests", files: [], command: ["sh", "-lc", contract.existing_tests],
       rationale: "Predetermined relevant existing tests, executed in an isolated evaluator.",
     }, "existing");
@@ -147,7 +148,10 @@ export function validateCriterionAssessments(value: unknown, contract: CriteriaC
       if (!["pass", "fail", "unassessed"].includes(item.status) || !["executed", "source-only"].includes(item.basis)) throw new Error("invalid criterion status or basis");
       if (item.status === "pass" && (item.basis !== "executed" || executed.status !== "pass")) throw new Error("source-only or broken harness cannot establish a pass");
       if (item.status === "fail" && item.basis === "executed" && executed.status !== "fail") throw new Error("harness error is not an executed candidate failure");
-      if (item.status === "fail" && item.basis === "source-only" && !criterion.required_interface) throw new Error("source-only failure requires an explicitly required public interface");
+      if (item.status === "fail" && item.basis === "source-only" && !criterion.required_interface) {
+        return { ...executed, status: "unassessed", basis: "source-only",
+          reasoning: `Source-only failure is not conclusive without an explicitly required public interface. Judge observation: ${item.reasoning}` } as CriterionEvidence;
+      }
       return { ...executed, status: item.status, basis: item.basis, reasoning: item.reasoning } as CriterionEvidence;
     })];
   })) as Record<Candidate, CriterionEvidence[]>;

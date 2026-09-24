@@ -31,7 +31,7 @@ Usage:
   codex-ab report-trials --trial-set DIR
   codex-ab preflight --run-dir DIR [--docker-bin FILE]
   codex-ab run --run-dir DIR --confirm-paid-inference [options]
-  codex-ab finish --run-dir DIR --confirm-paid-inference [options]
+  codex-ab finish --run-dir DIR --confirm-paid-inference [--recover-judge] [options]
   codex-ab judge --run-dir DIR --confirm-paid-inference [options]
   codex-ab remeter --run-dir DIR --exclusions FILE
   codex-ab report --run-dir DIR [--output-dir DIR]
@@ -78,7 +78,7 @@ Report options:
   --output-dir DIR      export outside the source run without changing its reports or state
   --source-assessments FILE  include recorded supplemental assessments inline; never reruns judging
 
-Started or finished commands are never resumed or restarted; prepare a new experiment to rerun.
+Started or finished commands are never resumed or restarted except for the explicit, audited source-only judge recovery.
 Within an active judge command, Sol capacity errors retry twice (5s, 15s), preserving all attempts.
 Test execution and accounting are programmatic; semantic harness authors and source judges use additional model calls.
 Run and judge require the explicit model-execution confirmation flag.
@@ -96,7 +96,7 @@ function options(command: string, args: string[]): Record<string, string | boole
     "report-trials": ["trial-set"],
     preflight: ["run-dir", "docker-bin"],
     run: ["run-dir", "auth-file", "grok-auth-file", "docker-bin", "arm", "control-run", "control-bundle-sha256", "confirm-paid-inference"],
-    finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
+    finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference", "recover-judge"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     remeter: ["run-dir", "exclusions"],
     report: ["run-dir", "output-dir", "source-assessments"],
@@ -110,7 +110,7 @@ function options(command: string, args: string[]): Record<string, string | boole
     const key = item.slice(2);
     if (!allowed[command].includes(key)) throw new Error(`unknown option for ${command}: ${item}`);
     if (Object.hasOwn(parsed, key)) throw new Error(`duplicate option: ${item}`);
-    if (key === "confirm-paid-inference" || key === "protect-mekugi") { parsed[key] = true; continue; }
+    if (key === "confirm-paid-inference" || key === "protect-mekugi" || key === "recover-judge") { parsed[key] = true; continue; }
     const value = args[++i];
     if (!value || value.startsWith("--")) throw new Error(`${item} requires a value`);
     parsed[key] = value;
@@ -245,7 +245,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       await runBenchmark({ runDir, authFile: auth, grokAuthFile: o["grok-auth-file"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined, arm,
         controlRun: o["control-run"] as string | undefined, controlBundleSha256: o["control-bundle-sha256"] as string | undefined });
     }
-    else if (command === "finish") await finishBenchmark({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined });
+    else if (command === "finish") await finishBenchmark({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined, recoverJudge: o["recover-judge"] === true });
     else await judgeRun(runDir, auth, o["docker-bin"] as string | undefined);
     process.stdout.write(`${resolve(runDir)}\n`);
     return 0;

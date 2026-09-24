@@ -373,7 +373,7 @@ Earlier evidence remains available to the final assessment; real behavior failur
 weakened into passes. Different names and test wiring are allowed; different required outcomes are
 not. Compilation or setup failures caused by assumed names, runtimes, or entry points remain
 **unassessed**, not automatic candidate failures. A missing explicitly required public interface
-can be a source-only defect. Passing requires executed evidence plus the judge's assessment that the
+can be a source-only defect. An unsupported source-only failure becomes unassessed instead of aborting judgment. Passing requires executed evidence plus the judge's assessment that the
 check actually covers the criterion. Both passes, disagreements, source, commands, outputs and
 repair attempts are retained.
 
@@ -398,7 +398,7 @@ Capacity errors retry automatically within the active judge command, with at mos
 Cancellation interrupts the delay and prevents another launch. Other failures, timeouts, invalid
 verdicts, and exhausted retries stop with the available evidence preserved. There is no automatic
 model substitution or conversational-agent fallback. Once the command exits, it cannot restart a
-judge attempt; historical failed attempts remain unchanged.
+judge attempt; historical failed attempts remain unchanged. The exception is an explicit `finish --recover-judge` for a saved pass-1 source-only validation failure when pass 2 finished existing tests but was interrupted during its first harness, before behavioral checks. It archives the failed bundle, revalidates the saved pass-1 response against its final evidence round, reuses completed existing-test evidence, and launches only the incomplete second pass. Prior attempts remain recorded.
 
 ## Report
 
@@ -451,7 +451,7 @@ causal blame for a specific instruction or launcher, decode encrypted messages, 
 source-quality inspection. Missing judge-attempt usage remains unknown even if a later attempt
 succeeds; the report never fabricates a complete cost or overall winner.
 
-If execution completed but finishing failed before a judge request, fix the reported issue and use `finish --run-dir DIR --confirm-paid-inference`. It archives the failed bundle, preserves the same candidates and grades, runs only a not-yet-started judge, and regenerates the report bundle. It never restarts either A/B agent or a started judge attempt. A completed judge can be reused when only artifact generation failed.
+If execution completed but finishing failed before a judge request, fix the reported issue and use `finish --run-dir DIR --confirm-paid-inference`. It archives the failed bundle, preserves the same candidates and grades, runs only a not-yet-started judge, and regenerates the report bundle. It never restarts either A/B agent. A completed judge can be reused when only artifact generation failed. For the narrowly supported saved pass-1 validation failure, add `--recover-judge` to continue the incomplete judge as described above.
 
 For post-hoc troubleshooting deductions, use `remeter --run-dir DIR --exclusions FILE`. The JSON file contains `arm` (`stock` or `current`), `rationale`, and `responses` and `commands` arrays of `{ "id": "...", "reason": "..." }`. IDs must match recorded response and command IDs. The command writes a separate `reports/remeter-*/` accounting report using the recorded pricing, retaining the original run and reports. It does not rerun agents, rewrite later context usage, or claim an adjusted wall time.
 

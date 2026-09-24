@@ -173,4 +173,5 @@ export interface JudgeReport {
   error?: string;
   attempts?: JudgeAttempt[];
   usage_homes: string[];
+  recovery?: { started_at: string; previous_error: string; reused_passes: number[] };
 }

@@ -1,9 +1,9 @@
-import { readFile, stat } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { JUDGE_MODEL, runSemanticJudge } from "./semantic-judge";
 import { readState, withRunLock, writeState } from "./state";
 import { embeddedFallbackPricing, fetchPricing, type PricingSnapshot } from "./usage";
-import type { ArmName, CommandEvidence, JudgePass, JudgeReport } from "./types";
+import type { ArmName, CommandEvidence, JudgePass, JudgeReport, RunState } from "./types";
 
 const CANDIDATES = ["candidate-1", "candidate-2"] as const;
 const SCORE_KEYS = ["correctness", "completeness", "maintainability", "test_quality"] as const;
@@ -138,12 +138,29 @@ export function summarizeCheck(check: CommandEvidence): Record<string, unknown> 
   };
 }
 
-export async function judgeRunUnlocked(runDirectory: string, authFile: string, dockerBin = process.env.CODEX_AB_DOCKER_BIN ?? "docker", signal?: AbortSignal): Promise<JudgeReport> {
+export async function assertRecoverableJudge(runDir: string, state: RunState): Promise<void> {
+  const prior = state.judge;
+  if (prior?.status !== "failed" || prior.error !== "Error: source-only failure requires an explicitly required public interface" ||
+      prior.failed_pass !== 1 || prior.passes.length ||
+      prior.attempts?.filter(item => item.pass === 1 && item.stage === "assessment" && item.status === "complete").length !== 1 ||
+      prior.attempts?.some(item => item.pass === 2 && (item.stage !== "harness-1" || item.status !== "canceled"))) {
+    throw new Error("recovery requires the saved pass-1 source-only validation failure and an interrupted first pass-2 harness");
+  }
+  const exists = async (path: string) => access(path).then(() => true, () => false);
+  if (await exists(join(runDir, "evaluator/semantic/pass-2/round-1")) ||
+      await exists(join(runDir, "evaluator/semantic/pass-2/round-2")) ||
+      !(await Promise.all(CANDIDATES.map(id => exists(join(runDir, "evaluator/semantic/pass-2/existing", id, "__existing_tests/evidence.json"))))).every(Boolean)) {
+    throw new Error("recovery requires completed existing tests and no started pass-2 behavioral checks");
+  }
+}
+
+export async function judgeRunUnlocked(runDirectory: string, authFile: string, dockerBin = process.env.CODEX_AB_DOCKER_BIN ?? "docker", signal?: AbortSignal, recover = false): Promise<JudgeReport> {
   const runDir = resolve(runDirectory);
   const state = await readState(runDir);
   if (state.invalidity_reasons?.length) throw new Error(`judge refuses an infrastructure-invalid run: ${state.invalidity_reasons.join("; ")}`);
   if (state.status !== "complete" || !state.results?.stock || !state.results.current) throw new Error("judge requires a complete pair");
-  if (state.judge) throw new Error("judge already started for this immutable run; it cannot be resumed or retried");
+  if (recover) await assertRecoverableJudge(runDir, state);
+  else if (state.judge) throw new Error("judge already started for this immutable run; it cannot be resumed or retried");
   const auth = resolve(authFile);
   if (((await stat(auth)).mode & 0o777) & 0o077) throw new Error("auth file must be mode 0600");
 
@@ -154,7 +171,7 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
     captured_at: new Date().toISOString(), rate: embeddedFallbackPricing(JUDGE_MODEL),
   };
   await writeState(runDir, state);
-  return runSemanticJudge(runDir, state, auth, dockerBin, signal);
+  return runSemanticJudge(runDir, state, auth, dockerBin, signal, recover);
 }
 
 export async function judgeRun(runDirectory: string, authFile: string, dockerBin = process.env.CODEX_AB_DOCKER_BIN ?? "docker"): Promise<JudgeReport> {

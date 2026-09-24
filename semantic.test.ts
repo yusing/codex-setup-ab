@@ -84,7 +84,9 @@ test("a missing explicit public interface is a source-only defect, not a failed 
   const assessments = Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [
     { criterion: "sum", status: "fail", basis: "source-only", reasoning: "The required exported add interface is absent from math.cjs." },
   ]]));
-  expect(() => validateCriterionAssessments(assessments, contract, evidence)).toThrow("explicitly required");
+  const inconclusive = validateCriterionAssessments(assessments, contract, evidence)["candidate-1"][0]!;
+  expect(inconclusive.status).toBe("unassessed");
+  expect(inconclusive.reasoning).toContain("Judge observation:");
   const explicit = { ...contract, criteria: [{ ...contract.criteria[0]!, required_interface: "export add(a, b)" }] };
   expect(validateCriterionAssessments(assessments, explicit, evidence)["candidate-1"][0]!.status).toBe("fail");
   assessments["candidate-1"]![0]!.status = "pass";
