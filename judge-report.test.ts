@@ -91,6 +91,30 @@ async function fixtureRun(stockPassed = true, currentPassed = true): Promise<{ r
   return { run, auth };
 }
 
+test("Mekugi native cost replaces only cost, including mentor arms", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.execution.current_launcher = "mekugi";
+  delete (state.pricing as PricingSnapshot).models["gpt-6-sol"];
+  await writeState(run, state);
+  await usageSession(join(run, "arms/current/home/ubuntu/.codex"), "current-agent", "gpt-6-sol", 30);
+  await file(join(run, state.results!.current!.stdout_path), `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Router session usage · Main turn: 30 in / 4 out, $0.1234 · Total: 30 in / 4 out, $0.1234" } })}\n`);
+  const direct = (await Bun.file((await buildReport(run)).jsonPath).json()).arms;
+  expect(direct.current.usage.totals.estimated_api_usd).toBe(0.1234);
+  expect(direct.current.usage.totals.total_tokens).toBe(34);
+  expect(direct.current.usage.complete).toBe(true);
+  expect(direct.current.usage.agents[0].estimated_api_usd).toBeNull();
+  expect(direct.stock.usage.totals.estimated_api_usd).not.toBeNull();
+
+  state.mentor = { setup: "stock", child_model: "gpt-6-luna", child_effort: "medium", parent_prompt: { path: "fixture", sha256: "fixture" }, child_config: { path: "fixture", sha256: "fixture" } };
+  await writeState(run, state);
+  const mentor = (await Bun.file((await buildReport(run)).jsonPath).json()).arms;
+  expect(mentor.current.usage.totals.estimated_api_usd).toBe(0.1234);
+  expect(mentor.stock.usage.totals.estimated_api_usd).toBeNull();
+  expect(mentor.stock.usage.complete).toBe(false);
+  expect(mentor.stock.usage.totals.total_tokens).toBe(24);
+});
+
 function verdict(winner: "candidate-1" | "candidate-2" | "tie" | "none", rationale: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     scores: {

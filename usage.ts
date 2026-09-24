@@ -371,32 +371,27 @@ function requestCost(usage: Usage, rates: ModelPricing): CostComponents {
   };
 }
 
-/** Price validated Mekugi provider attempts by the model that actually handled each attempt. */
-export function priceProviderAttempts(metrics: unknown, pricing: PricingSnapshot): number | null {
-  if (!isObject(metrics) || !Array.isArray(metrics.exchanges)) return null;
-  let total = 0;
-  let observed = 0;
-  for (const exchange of metrics.exchanges) {
-    if (!isObject(exchange) || !Array.isArray(exchange.provider_attempts)) return null;
-    for (const attempt of exchange.provider_attempts) {
-      if (!isObject(attempt) || typeof attempt.model !== "string" || !isObject(attempt.usage)) return null;
-      const input = attempt.usage.input_tokens;
-      const cached = attempt.usage.cached_input_tokens;
-      const output = attempt.usage.output_tokens;
-      const reasoning = attempt.usage.reasoning_tokens;
-      if (![input, cached, output, reasoning].every(value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
-        || (cached as number) > (input as number) || (reasoning as number) > (output as number)) return null;
-      const rates = ratesFor(pricing, attempt.model);
-      if (!rates) return null;
-      const costs = requestCost({ input_tokens: input as number, cached_input_tokens: cached as number,
-        cache_write_input_tokens: 0, output_tokens: output as number,
-        reasoning_output_tokens: reasoning as number, total_tokens: (input as number) + (output as number) }, rates);
-      if (Object.values(costs).some(value => value === null)) return null;
-      total += Object.values(costs).reduce<number>((sum, value) => sum + value!, 0);
-      observed++;
-    }
+/** Read Mekugi's own four-decimal API estimate, rather than repricing its provider attempts. */
+export async function readMekugiNativeCost(stdoutPath: string): Promise<number | null> {
+  const contents = await readFile(stdoutPath, "utf8").catch(() => null);
+  if (contents === null) return null;
+  let cost: number | null = null;
+  for (const line of contents.split("\n")) {
+    let event: unknown;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (!isObject(event) || event.type !== "item.completed" || !isObject(event.item) ||
+        event.item.type !== "agent_message" || typeof event.item.text !== "string" ||
+        !event.item.text.startsWith("Router session usage")) continue;
+    const report = event.item.text;
+    const compact = /^Router session usage · Main turn: [^\n]+ · Total: [\d.]+[KMB]? in \/ [\d.]+[KMB]? out, \$([\d]+\.[\d]{4})(?: · [^\n]*)?$/.exec(report);
+    if (compact) { cost = Number(compact[1]); continue; }
+    const totalRow = report.startsWith("Router session usage\n\n| Agent |")
+      ? report.split("\n").find(row => row.startsWith("| Total |")) : undefined;
+    const cells = totalRow?.split("|").slice(1, -1).map(cell => cell.trim());
+    cost = cells?.length === 11 && cells[0] === "Total" && cells[10] === "0" && /^\$[\d]+\.[\d]{4}$/.test(cells[9] ?? "")
+      ? Number(cells[9]!.slice(1)) : null;
   }
-  return observed ? total : null;
+  return cost;
 }
 
 export interface MeterExclusions {
@@ -405,7 +400,7 @@ export interface MeterExclusions {
 }
 
 /** Meter every rollout in a dedicated per-arm Codex home. */
-export async function meterRollouts(codexHome: string, pricing: PricingSnapshot, exclusions?: MeterExclusions): Promise<MeteredRollouts> {
+export async function meterRollouts(codexHome: string, pricing: PricingSnapshot, exclusions?: MeterExclusions, costSource: "rollout" | "native" = "rollout"): Promise<MeteredRollouts> {
   const warnings = [...pricing.warnings];
   let complete = true;
   const files: SessionFile[] = [];
@@ -588,7 +583,10 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
     const rates = ratesFor(pricing, group.model);
     let estimated: number | null = 0;
     const costs: CostComponents = { uncached_input_usd: 0, cached_input_usd: 0, cache_write_input_usd: 0, output_usd: 0 };
-    if (!rates) {
+    if (costSource === "native") {
+      for (const key of Object.keys(costs) as Array<keyof CostComponents>) costs[key] = null;
+      estimated = null;
+    } else if (!rates) {
       for (const key of Object.keys(costs) as Array<keyof CostComponents>) costs[key] = null;
       estimated = null;
       warnings.push(`${group.threadId}/${group.model}: no API price for model`);

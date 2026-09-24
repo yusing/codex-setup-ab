@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 
 type ImageState = "matching" | "stale-codex" | "stale-host" | "wrong-operator" | "missing" | "inspect-error" | "identity-error" | "hash-error";
 
-async function runPreset(state: ImageState, options: string[] = []) {
+async function runPreset(state: ImageState, options: string[] = [], preset = "stock-current") {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-preset-"));
   try {
     await Promise.all(["scripts", "dist", "bin", "selected", "source/.git"].map(path => mkdir(join(root, path), { recursive: true })));
@@ -47,7 +47,7 @@ esac
     await writeFile(join(root, "dist/codex-ab"), '#!/bin/sh\nprintf "cli %s\\n" "$*" >> "$PRESET_LOG"\n[ "$1" != prepare ] || printf "%s/run\\n" "$PRESET_ROOT"\n', { mode: 0o755 });
     const codexHash = createHash("sha256").update(codex).digest("hex");
     const hostHash = createHash("sha256").update(host).digest("hex");
-    const child = Bun.spawn(["bash", join(root, "scripts/run.sh"), "--preset", "stock-current", ...options], {
+    const child = Bun.spawn(["bash", join(root, "scripts/run.sh"), "--preset", preset, ...options], {
       env: {
         ...process.env,
         PATH: `${join(root, "bin")}:${process.env.PATH}`,
@@ -65,7 +65,7 @@ esac
       stderr: "pipe",
     });
     const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text(), new Response(child.stdout).text()]);
-    return { exitCode, stderr, calls: await readFile(join(root, "calls.log"), "utf8"), codexHash, hostHash, root };
+    return { exitCode, stderr, calls: await readFile(join(root, "calls.log"), "utf8").catch(() => ""), codexHash, hostHash, root };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -89,6 +89,23 @@ test("preset forwards explicit model and reasoning effort to prepare", async () 
   expect(result.calls).toContain("cli prepare --comparison stock-current");
   expect(result.calls).toContain("--model gpt-6-sol");
   expect(result.calls).toContain("--reasoning-effort high");
+});
+
+for (const preset of ["stock-mekugi", "current-vs-current-mekugi", "codex-mekugi-grok"]) {
+  test(`${preset} defaults both mentor handoffs off and enables both with one flag`, async () => {
+    const disabled = await runPreset("matching", [], preset);
+    expect(disabled.exitCode).toBe(0);
+    expect(disabled.calls).toContain('"--main-mentor-handoff=false","--mentor-handoff=false"');
+    const enabled = await runPreset("matching", ["--mentor-handoff"], preset);
+    expect(enabled.exitCode).toBe(0);
+    expect(enabled.calls).toContain('"--main-mentor-handoff=true","--mentor-handoff=true"');
+  });
+}
+
+test("mentor flag is rejected without a Mekugi arm", async () => {
+  const result = await runPreset("matching", ["--mentor-handoff"]);
+  expect(result.exitCode).toBe(2);
+  expect(result.stderr).toContain("requires a Mekugi preset");
 });
 
 for (const state of ["stale-codex", "stale-host", "wrong-operator", "missing"] as const) {

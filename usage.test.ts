@@ -6,7 +6,7 @@ import {
   fetchPricing,
   meterGrokHome,
   meterRollouts,
-  priceProviderAttempts,
+  readMekugiNativeCost,
   type ModelPricing,
   type PricingSnapshot,
   type Usage,
@@ -30,18 +30,20 @@ function usage(overrides: Partial<Usage> = {}): Usage {
   };
 }
 
-test("provider-attempt pricing uses actual mentor models and withholds incomplete cost", () => {
-  const prices = pricing({
-    "gpt-6-sol": rate({ model_id: "gpt-6-sol", prompt: 0.01, completion: 0.1 }),
-    "gpt-6-luna": rate({ model_id: "gpt-6-luna", prompt: 0.001, completion: 0.01 }),
-  });
-  const attempts = { exchanges: [{ provider_attempts: [
-    { model: "gpt-6-sol", usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 2, reasoning_tokens: 1 } },
-    { model: "gpt-6-luna", usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 2, reasoning_tokens: 1 } },
-  ] }] };
-  expect(priceProviderAttempts(attempts, prices)).toBeCloseTo(0.33);
-  expect(priceProviderAttempts({ exchanges: [{ provider_attempts: [{ model: "gpt-6-sol", usage: null }] }] }, prices)).toBeNull();
-  expect(priceProviderAttempts({ exchanges: [{ provider_attempts: [{ model: "unknown", usage: attempts.exchanges[0]!.provider_attempts[0]!.usage }] }] }, prices)).toBeNull();
+test("native Mekugi cost reads compact and table reports but not incomplete usage", async () => {
+  const home = await mkdtemp(join(tmpdir(), "mekugi-cost-test-"));
+  temporaryHomes.push(home);
+  const path = join(home, "codex.jsonl");
+  const event = (text: string) => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text } });
+  await writeFile(path, `${event("ordinary agent answer")}\n${event("Router session usage · Main turn: 356.2K in / 3.9K out, $0.4987 · Total: 356.2K in / 3.9K out, $0.4987 · Mentor gpt-6-astra → gpt-6-sol")}\n`);
+  expect(await readMekugiNativeCost(path)).toBe(0.4987);
+  const table = "Router session usage\n\n| Agent | Role | Model | Input (cache hit) | Cache write | Output | Reasoning | Input cost (cached + uncached) | Output cost | Total cost | Missing usage |\n| Total | — | — | 356.2K (80.0%) | 0 | 3.9K | 1.4K | $0.3000+$0.1000=$0.4000 | $0.0987 | $0.4987 | 0 |\n\nRouter session API estimates since router startup; reasoning is included in output, and cache writes are included in input.";
+  await writeFile(path, `${event(table)}\n`);
+  expect(await readMekugiNativeCost(path)).toBe(0.4987);
+  await writeFile(path, `${event("Router session usage · Main turn: 10 in / 2 out, cost n/a · Total: 10 in / 2 out, cost n/a")}\n`);
+  expect(await readMekugiNativeCost(path)).toBeNull();
+  await writeFile(path, `${event(table.replace("$0.4987 | 0 |", "cost n/a | 1 |"))}\n`);
+  expect(await readMekugiNativeCost(path)).toBeNull();
 });
 
 function rate(overrides: Partial<ModelPricing> = {}): ModelPricing {
