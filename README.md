@@ -146,6 +146,8 @@ default. Other presets are `stock-current`, `current-vs-current-mekugi`, and
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable and its matching `shell` helper, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
 
+Use `--model gpt-6-sol --reasoning-effort high` with `prepare` to run a Sol/high stock-Mekugi pair without mentor handoff. The default remains Astra/medium. The selected image must contain the matching host Codex and code-mode-host binaries; the runner checks their versions and hashes before inference.
+
 Select the executable pair with `--mekugi-bin` and `--mekugi-shell-bin`, and optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated with the runner-bundled analyzer; `--mekugi-source` remains the required export-validation selector, not proof that the binaries came from that checkout. The current-home Git snapshot is retained for configuration provenance, while selected executables and runner-owned analyzer sources are captured separately; unused current-home executables, runtime supplements, and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
 

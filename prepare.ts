@@ -548,8 +548,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (grokComparison && !mekugiFlags.some(flag => flag === "--grok" || flag.startsWith("--grok="))) {
     throw new Error("codex-mekugi-grok requires --grok in --mekugi-flags");
   }
-  const model: BenchmarkModel = grokComparison ? "grok:grok-4.6" : mentorComparison ? "gpt-6-sol" : "gpt-6-astra";
-  if (options.model && options.model !== model) throw new Error(`${comparison} uses ${model}`);
+  if (options.model && !["gpt-6-astra", "gpt-6-sol"].includes(options.model) && !(grokComparison && options.model === "grok:grok-4.6")) throw new Error("unsupported benchmark model");
+  const model: BenchmarkModel = grokComparison ? "grok:grok-4.6" : mentorComparison ? "gpt-6-sol" : options.model ?? "gpt-6-astra";
+  if (options.model && (grokComparison || mentorComparison) && options.model !== model) throw new Error(`${comparison} uses ${model}`);
   const mekugiShellSha256 = mekugiShellBinary ? await sha256(mekugiShellBinary) : undefined;
   const codeModeHostSha256 = await sha256(codeModeHost);
   const currentConfig = Bun.TOML.parse(await readFile(join(options.currentHome, ".codex/config.toml"), "utf8")) as Record<string, unknown>;

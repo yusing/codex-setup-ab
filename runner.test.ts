@@ -203,6 +203,28 @@ test("stock-mekugi isolates the launcher without current-home guidance", async (
     reviewTreatment: join(root, "unused-treatment"), mekugiSource: captureSource })).rejects.toThrow("does not accept");
 });
 
+test("stock-mekugi accepts an explicit Sol/high pair without mentor handoff", async () => {
+  const captureSource = join(root, "sol-stock-mekugi-capture-source");
+  await mkdir(captureSource, { recursive: true });
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
+    model: "gpt-6-sol", reasoningEffort: "high", mekugiSource: captureSource });
+  const state = await readState(run);
+  expect(state.execution).toMatchObject({ model: "gpt-6-sol", reasoning_effort: "high", current_launcher: "mekugi" });
+  expect(state.mentor).toBeUndefined();
+  for (const template of [state.arms.stock.home_template, state.arms.current.home_template]) {
+    const config = await readFile(join(run, template, ".codex/config.toml"), "utf8");
+    expect(config).toContain('model = "gpt-6-sol"');
+    expect(config).toContain('model_reasoning_effort = "high"');
+  }
+  await verifyPreparedInputs(run, state);
+  await expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
+    model: "grok:grok-4.6", mekugiSource: captureSource })).rejects.toThrow("unsupported benchmark model");
+});
+
 for (const setup of ["stock", "current"] as const) {
   test(`mentor-handoff uses the same ${setup} setup and launches Mekugi mentor-off/on with dual exports`, async () => {
     const run = await mentorPrepared(setup);

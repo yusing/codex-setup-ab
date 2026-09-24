@@ -39,6 +39,7 @@ Usage:
 
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
+  --model NAME          gpt-6-astra (default) or gpt-6-sol for Codex comparisons
   --reasoning-effort N   medium (default), high, or xhigh; mentor-handoff uses high
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit
@@ -87,7 +88,7 @@ Run and judge require the explicit model-execution confirmation flag.
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["profile", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mentor-setup", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["profile", "model", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mentor-setup", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "mekugi-shell-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
     "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
     "prepare-suite": ["suite", "sources-file", "count", "comparison", "order", "output-parent", "current-home", "review-treatment", "mekugi-flags", "mekugi-source", "mekugi-build", "mekugi-bin", "mekugi-shell-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory", "docker-bin"],
     "run-suite": ["suite-run", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -158,6 +159,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
     const runDir = await prepare({
       profile: string(o, "profile", o.criteria ? "task" : "mekugi") as import("./types").BenchmarkProfile,
+      model: o.model as import("./types").BenchmarkModel | undefined,
       reasoningEffort: string(o, "reasoning-effort", o.comparison === "mentor-handoff" ? "high" : "medium") as import("./types").ReasoningEffort,
       source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
