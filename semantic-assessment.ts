@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { writeState } from "./state";
 import { executeSemanticCheck, validateSemanticChecks, type CriteriaContract, type CriterionEvidence, type SemanticCheck } from "./semantic";
+import { armLabels } from "./arm-labels";
 import type { ArmName, RunState } from "./types";
 
 type Candidate = "candidate-1" | "candidate-2";
@@ -79,6 +80,8 @@ export async function prepareSemanticAssessment(options: {
   reuseSaved?: boolean;
 }): Promise<SemanticAssessmentEvidence> {
   const { state, contract, runDir, pass, order } = options;
+  const labels = armLabels(state);
+  const displayCandidate = (id: Candidate): string => `${id === "candidate-1" ? "A" : "B"} / ${labels[order[candidates.indexOf(id)]!]}`;
   const root = join(runDir, "evaluator/semantic", `pass-${pass}`);
   await mkdir(root, { recursive: true, mode: 0o700 });
   const evidence: SemanticAssessmentEvidence = { candidates: { "candidate-1": [], "candidate-2": [] }, existing_tests: {} as Record<Candidate, CriterionEvidence>,
@@ -91,7 +94,7 @@ export async function prepareSemanticAssessment(options: {
       output: join(root, suffix, id, check.criterion),
       name: `codex-ab-${state.id}-semantic-${pass}-${suffix}-${id}-${check.criterion}`,
       check, docker: options.docker, signal: options.signal, arm });
-    process.stderr.write(`[grade] semantic pass ${pass}, ${id}, ${suffix}, ${check.criterion}: ${result.status}\n`);
+    process.stderr.write(`[grade] semantic pass ${pass}, ${displayCandidate(id)}, ${suffix}, ${check.criterion}: ${result.status}\n`);
     evidence.history[id].push(result);
     state.results![arm]!.grade!.elapsed_ms += result.execution?.elapsed_ms ?? 0;
     await persistState();
@@ -137,7 +140,7 @@ Existing and earlier executed evidence: ${JSON.stringify(semanticPromptEvidence(
       const results = new Map(evidence.candidates[id].map(item => [item.criterion, item]));
       for (const check of checks) {
         if (repairable && !repairable[id].includes(check.criterion)) {
-          process.stderr.write(`[grade] semantic pass ${pass}, ${id}, round-${round}, ${check.criterion}: ignored repair of a successful check\n`);
+          process.stderr.write(`[grade] semantic pass ${pass}, ${displayCandidate(id)}, round-${round}, ${check.criterion}: ignored repair of a successful check\n`);
           continue;
         }
         results.set(check.criterion, await execute(id, check, `round-${round}`));

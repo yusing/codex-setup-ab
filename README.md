@@ -2,7 +2,7 @@
 
 `codex-ab` runs controlled, descriptive comparisons of the same Codex model on the same repository task. The **stock** arm receives only a minimal model, service-tier, permission, and workspace-trust configuration. The **current** arm receives an audited snapshot of the user's instructions, skills, hooks, roles, and supporting tools. Codex runs directly by default; the current arm can explicitly use a snapshotted Mekugi launcher.
 
-Reports name arms by their actual launcher and setup (for example, `Codex (minimal setup)` versus `Codex + Mekugi (minimal setup)`). Mentor comparisons include off/on labels. `candidate-N` is reserved for blinded judge/grader evidence; report mappings reveal the actual arm afterward. CLI selectors, storage paths, and machine evidence retain `stock`/`current` keys; report JSON includes `arm_labels` for display. Regenerate a report to apply these names to an existing run.
+Reports and operator progress name arms by their actual launcher and setup (for example, `Codex (minimal setup)` versus `Codex + Mekugi (minimal setup)`). Mentor comparisons include off/on labels. Operator progress reveals the A/B mapping for each reversed-order judge pass; blinded judge/grader inputs still use `candidate-N`, and machine evidence retains those IDs. CLI selectors and storage paths retain `stock`/`current` keys; report JSON includes `arm_labels` for display. Regenerate a report to apply these names to an existing run.
 
 
 This is designed for a careful pilot, not a claim that one setup causes better results. A single pair does not support causal or general conclusions.
@@ -156,7 +156,7 @@ Select the executable with `--mekugi-bin`, and optionally add `--mekugi-flags` a
 
 ## Stock Codex plus Mekugi versus Grok CLI
 
-Use `--comparison codex-mekugi-grok` to compare stock Codex launched through Mekugi on `grok:grok-4.6` against the Grok CLI on `grok-4.6`. A receives the generated stock Codex configuration plus Mekugi and launches `mekugi --grok codex`. B receives a generated Grok configuration plus the selected Grok executable and launches `grok` headlessly. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier and the selected reasoning effort.
+Use `--comparison codex-mekugi-grok` to compare stock Codex launched through Mekugi on `grok:grok-4.7` against the Grok CLI on `grok-4.7`. A receives the generated stock Codex configuration plus Mekugi and launches `mekugi --grok codex`. B receives a generated Grok configuration plus the selected Grok executable and launches `grok` headlessly. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier and high reasoning unless `--reasoning-effort` selects another effort.
 
 ```sh
 run_dir="$(./dist/codex-ab prepare \
@@ -167,7 +167,7 @@ run_dir="$(./dist/codex-ab prepare \
   --mekugi-bin /home/ubuntu/go/bin/mekugi \
   --mekugi-flags '["--mode=mekugi","--grok"]' \
   --grok-bin /home/ubuntu/.grok/bin/grok \
-  --image codex-ab:0.154.0)"
+  --image codex-ab:0.1.0)"
 ./dist/codex-ab preflight --run-dir "$run_dir"
 ./dist/codex-ab run --run-dir "$run_dir" \
   --auth-file /home/ubuntu/.codex/auth.json \

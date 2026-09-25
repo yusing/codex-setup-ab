@@ -418,7 +418,11 @@ test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "codex-mekugi-grok",
     mekugiFlags: ["--mode=mekugi", "--grok"], mekugiSource: captureSource, grokBinary: grokBin });
   const state = await readState(run);
-  expect(state.execution).toMatchObject({ current_launcher: "grok", model: "grok:grok-4.6", service_tier: "default" });
+  expect(state.execution).toMatchObject({ current_launcher: "grok", model: "grok:grok-4.7", reasoning_effort: "high", service_tier: "default" });
+  expect(await readFile(join(run, "snapshots/stock-mekugi/home/ubuntu/.codex/config.toml"), "utf8"))
+    .toContain('model_reasoning_effort = "high"');
+  expect(await readFile(join(run, "snapshots/stock-grok/home/ubuntu/.grok/config.toml"), "utf8"))
+    .toContain('default_reasoning_effort = "high"');
   expect(state.arms.stock.home_template).toBe("snapshots/stock-mekugi/home/ubuntu");
   expect(state.arms.current.home_template).toBe("snapshots/stock-grok/home/ubuntu");
   expect(state.runtime_tools.current_setup_installs).toBe("snapshots/current/mise/installs");
@@ -440,8 +444,8 @@ test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
   await runBenchmark({ runDir: run, authFile: auth, grokAuthFile: grokAuth, dockerBin: fake.path });
   expect((await readState(run)).status).toBe("complete");
   const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json ") || line.includes(" grok --prompt-file "));
-  expect(launches.some(line => line.includes(" mekugi --mode=mekugi --grok --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json ") && line.includes(" --model grok:grok-4.6 "))).toBe(true);
-  expect(launches.some(line => line.includes(" grok --prompt-file /control/task.md --cwd /workspace -m grok-4.6 ") && line.includes("GROK_HOME=/home/ubuntu/.grok"))).toBe(true);
+  expect(launches.some(line => line.includes(" mekugi --mode=mekugi --grok --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json ") && line.includes(" --model grok:grok-4.7 ") && line.includes('model_reasoning_effort="high"'))).toBe(true);
+  expect(launches.some(line => line.includes(" grok --prompt-file /control/task.md --cwd /workspace -m grok-4.7 --reasoning-effort high ") && line.includes("GROK_HOME=/home/ubuntu/.grok"))).toBe(true);
   expect(launches.every(line => !line.includes(" mise exec "))).toBe(true);
   const comparison = JSON.parse(await readFile(join(run, "reports/bundle/setup-comparison.json"), "utf8"));
   expect(comparison.stock).toContain("Mekugi");
@@ -640,6 +644,17 @@ test("parallel semantic passes preserve the initiating failure", async () => {
   expect(failed.judge?.error).toContain("missing per-criterion assessment");
   expect(failed.judge?.attempts?.find(attempt => attempt.pass === 2 && attempt.stage === "assessment")?.status).toBe("complete");
 });
+test("judge executable-check failures use operator-facing stage names", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const auth = join(root, "harness-failure-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, 1);
+  await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("semantic judge pass 1, executable checks, round 1 failed (9)");
+  expect((await readState(run)).judge?.status).toBe("failed");
+});
 test("semantic file boundaries reject unrelated changes", async () => {
   const criteriaPath = join(root, "boundary-criteria.json");
   await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
@@ -789,7 +804,7 @@ async function fakeDocker(sleepSeconds: number): Promise<{ path: string; log: st
 }
 
 async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = "", wrongProtectedBinary = false, networkFailure = false,
-  invalidAssessmentPass?: 1 | 2): Promise<{ path: string; log: string; stateDir: string }> {
+  invalidAssessmentPass?: 1 | 2, failHarnessPass?: 1 | 2): Promise<{ path: string; log: string; stateDir: string }> {
   const path = join(root, `fake-owned-docker-${crypto.randomUUID()}.sh`);
   const log = `${path}.log`;
   const stateDir = `${path}.state`;
@@ -868,6 +883,7 @@ case "$operation" in
         cat >/dev/null
         sleep 0.1
         printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked." }]]))) } })}'
+        ${failHarnessPass ? `case "$name" in *-judge-${failHarnessPass}-harness-*) status=9 ;; esac` : ":"}
         ;;
       *-judge-*-assessment-*)
         cat >/dev/null
@@ -1215,7 +1231,23 @@ test("benchmark owns semantic judging, audit and checksummed bundle", async () =
   const auth = join(root, "workflow-auth.json");
   await file(auth, "{}\n", 0o600);
   const fake = await fakeOwnedDocker(0);
-  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const originalWrite = process.stderr.write;
+  let operatorLog = "";
+  process.stderr.write = function (...args: Parameters<typeof originalWrite>) {
+    operatorLog += String(args[0]);
+    return originalWrite.apply(process.stderr, args);
+  } as typeof originalWrite;
+  try {
+    await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+  expect(operatorLog).toContain("A / Codex (minimal setup): agent started");
+  expect(operatorLog).toContain("B / Codex (current-home setup): agent started");
+  expect(operatorLog).toContain("semantic pass 2: A / Codex (current-home setup); B / Codex (minimal setup)");
+  expect(operatorLog).toContain("semantic pass 1, executable checks, round 1");
+  expect(operatorLog).toContain("[grade] semantic pass 2, A / Codex (current-home setup)");
+  expect(operatorLog).not.toMatch(/\[run\] (?:stock|current):|agent execution order: (?:stock|current)-first|\[(?:judge|grade)\].*(?:candidate-\d|harness-\d)/);
   const finished = await readState(run);
   expect(finished.finishing?.status).toBe("complete");
   expect(finished.judge?.passes).toHaveLength(2);

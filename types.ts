@@ -4,7 +4,7 @@ export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" |
 export type CodexLauncher = "codex" | "mekugi" | "grok";
 export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "mentor-handoff";
 export type ReasoningEffort = "medium" | "high" | "xhigh";
-export type BenchmarkModel = "gpt-6-astra" | "gpt-6-sol" | "grok:grok-4.6";
+export type BenchmarkModel = "gpt-6-astra" | "gpt-6-sol" | "grok:grok-4.7";
 
 export type ArmOrder = "concurrent" | "stock-first" | "current-first";
 

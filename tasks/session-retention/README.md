@@ -32,7 +32,7 @@ run_dir="$(./dist/codex-ab prepare \
   --mekugi-bin "$mekugi_bin" \
   --reasoning-effort xhigh \
   --timeout 3600 \
-  --image codex-ab:0.154.0)"
+  --image codex-ab:0.1.0)"
 ./dist/codex-ab preflight --run-dir "$run_dir"
 ```
 

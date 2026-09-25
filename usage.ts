@@ -125,6 +125,8 @@ const FALLBACK_USD_PER_MILLION: Record<string, {
   "gpt-5.6-luna": { prompt: 0.2, completion: 1.2, input_cache_read: 0.02, input_cache_write: 0.25, long_prompt: 0.4, long_completion: 1.8, long_input_cache_read: 0.04, long_input_cache_write: 0.5 },
   "grok-4.6": { prompt: 2, completion: 6, input_cache_read: 0.5, long_prompt: 4, long_completion: 12, long_input_cache_read: 1 },
   "grok:grok-4.6": { prompt: 2, completion: 6, input_cache_read: 0.5, long_prompt: 4, long_completion: 12, long_input_cache_read: 1 },
+  "grok-4.7": { prompt: 1.6, completion: 4.8, input_cache_read: 0.4, long_prompt: 3.2, long_completion: 9.6, long_input_cache_read: 0.8 },
+  "grok:grok-4.7": { prompt: 1.6, completion: 4.8, input_cache_read: 0.4, long_prompt: 3.2, long_completion: 9.6, long_input_cache_read: 0.8 },
 };
 
 function emptyUsage(): Usage {
@@ -174,8 +176,8 @@ function fallbackPricing(model: string, rates: (typeof FALLBACK_USD_PER_MILLION)
   const overrides: PriceOverride[] = [];
   if (rates.long_prompt !== undefined) {
     overrides.push({
-      min_prompt_tokens: model.includes("grok-4.6") ? GROK_LONG_CONTEXT_TOKENS : LONG_CONTEXT_TOKENS,
-      min_prompt_tokens_exclusive: !model.includes("grok-4.6"),
+      min_prompt_tokens: model.includes("grok-4.") ? GROK_LONG_CONTEXT_TOKENS : LONG_CONTEXT_TOKENS,
+      min_prompt_tokens_exclusive: !model.includes("grok-4."),
       prompt: perToken(rates.long_prompt),
       completion: perToken(rates.long_completion!),
       input_cache_read: perToken(rates.long_input_cache_read!),
@@ -342,7 +344,7 @@ function durationSeconds(value: unknown): number | null {
 function ratesFor(pricing: PricingSnapshot, model: string): ModelPricing | null {
   const normalized = model.trim().toLowerCase();
   const withoutProvider = normalized.replace(/^grok:/, "");
-  const withoutBuildAlias = withoutProvider.replace(/^(grok-4\.6)-build$/, "$1");
+  const withoutBuildAlias = withoutProvider.replace(/^(grok-4\.[67])-build$/, "$1");
   return pricing.models[normalized] ?? pricing.models[modelSlug(normalized)]
     ?? pricing.models[withoutProvider] ?? pricing.models[withoutBuildAlias] ?? null;
 }
@@ -765,7 +767,7 @@ export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot):
           continue;
         }
         const session = parsed.session;
-        const model = typeof session.primaryModelId === "string" ? session.primaryModelId : "grok-4.6";
+        const model = typeof session.primaryModelId === "string" ? session.primaryModelId : "grok-4.7";
         const usage: Usage = {
           input_tokens: typeof session.inputTokens === "number" ? session.inputTokens : 0,
           cached_input_tokens: typeof session.cachedReadTokens === "number" ? session.cachedReadTokens : 0,

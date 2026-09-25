@@ -303,6 +303,12 @@ test("fetchPricing falls back with exact stock rates and serializable provenance
     expect(snapshot.models["gpt-5.6-sol"].completion).toBe(20 / 1_000_000);
     expect(snapshot.models["gpt-5.6-terra"].overrides[0].min_prompt_tokens).toBe(272_000);
     expect(snapshot.models["gpt-5.6-luna"].input_cache_write).toBe(0.25 / 1_000_000);
+    expect(snapshot.models["grok-4.7"].prompt).toBe(1.6 / 1_000_000);
+    expect(snapshot.models["grok:grok-4.7"].completion).toBe(4.8 / 1_000_000);
+    expect(snapshot.models["grok-4.7"].overrides[0]).toMatchObject({
+      min_prompt_tokens: 200_000, min_prompt_tokens_exclusive: false,
+      prompt: 3.2 / 1_000_000, completion: 9.6 / 1_000_000, input_cache_read: 0.8 / 1_000_000,
+    });
     expect(snapshot.warnings.join("\n")).toContain("offline for test");
     expect(() => JSON.stringify(snapshot)).not.toThrow();
   } finally {
@@ -310,24 +316,24 @@ test("fetchPricing falls back with exact stock rates and serializable provenance
   }
 });
 
-test("meterGrokHome prices the Grok build alias from aggregate usage", async () => {
+test("meterGrokHome prices the current Grok build alias from aggregate usage", async () => {
   const home = await mkdtemp(join(tmpdir(), "codex-ab-grok-usage-"));
   await mkdir(join(home, "sessions/workspace/session"), { recursive: true });
   await writeFile(join(home, "sessions/workspace/session/usage.json"), JSON.stringify({
     sessionId: "grok-session",
-    session: { inputTokens: 100, outputTokens: 20, cachedReadTokens: 10, cacheCreationTokens: 0, reasoningTokens: 5, totalTokens: 120, modelCalls: 2, primaryModelId: "grok-4.6-build" },
+    session: { inputTokens: 100, outputTokens: 20, cachedReadTokens: 10, cacheCreationTokens: 0, reasoningTokens: 5, totalTokens: 120, modelCalls: 2, primaryModelId: "grok-4.7-build" },
   }));
-  const result = await meterGrokHome(home, pricing({ "grok-4.6": {
-    model_id: "grok-4.6", source: "fallback:grok-4.6", prompt: 2 / 1_000_000, completion: 6 / 1_000_000, input_cache_read: 0.5 / 1_000_000, input_cache_write: null, overrides: [],
+  const result = await meterGrokHome(home, pricing({ "grok-4.7": {
+    model_id: "grok-4.7", source: "fallback:grok-4.7", prompt: 1.6 / 1_000_000, completion: 4.8 / 1_000_000, input_cache_read: 0.4 / 1_000_000, input_cache_write: null, overrides: [],
   } }));
   expect(result.complete).toBe(true);
   expect(result.totals.input_tokens).toBe(100);
   expect(result.totals.cached_input_tokens).toBe(10);
   expect(result.totals.output_tokens).toBe(20);
-  expect(result.agents[0]?.model).toBe("grok-4.6-build");
+  expect(result.agents[0]?.model).toBe("grok-4.7-build");
   expect(result.agents[0]?.max_input_tokens).toBeNull();
   expect(result.agents[0]?.method).toBe("grok_usage.session (list-price estimate)");
-  expect(result.totals.estimated_api_usd).toBeCloseTo((90 * 2 + 10 * 0.5 + 20 * 6) / 1_000_000);
+  expect(result.totals.estimated_api_usd).toBeCloseTo((90 * 1.6 + 10 * 0.4 + 20 * 4.8) / 1_000_000);
 });
 
 test("meterGrokHome uses complete provider cost instead of applying tiers to session totals", async () => {

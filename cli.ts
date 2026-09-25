@@ -40,7 +40,7 @@ Usage:
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
   --model NAME          gpt-6-astra (default) or gpt-6-sol for Codex comparisons
-  --reasoning-effort N   medium (default), high, or xhigh; mentor-handoff uses high
+  --reasoning-effort N   medium, high, or xhigh; Grok and mentor-handoff default to high, others to medium
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
@@ -159,7 +159,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const runDir = await prepare({
       profile: string(o, "profile", o.criteria ? "task" : "mekugi") as import("./types").BenchmarkProfile,
       model: o.model as import("./types").BenchmarkModel | undefined,
-      reasoningEffort: string(o, "reasoning-effort", o.comparison === "mentor-handoff" ? "high" : "medium") as import("./types").ReasoningEffort,
+      reasoningEffort: string(o, "reasoning-effort", o.comparison === "mentor-handoff" || o.comparison === "codex-mekugi-grok" ? "high" : "medium") as import("./types").ReasoningEffort,
       source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
       taskPackPath: o["task-pack"] as string | undefined,

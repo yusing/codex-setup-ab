@@ -23,7 +23,7 @@ Comparisons:
 Model options:
   --model NAME          gpt-6-astra or gpt-6-sol (Codex comparisons; default gpt-6-astra)
   --reasoning-effort LEVEL
-                        medium, high, or xhigh (default: medium for NVM, xhigh for session retention)
+                        medium, high, or xhigh (default: high for Grok; otherwise medium for NVM, xhigh for session retention)
   --mentor-handoff      Enable both Mekugi main-thread and subagent mentor handoff (default: off)
 
 Optional environment overrides:
@@ -206,6 +206,9 @@ bun run build
 comparison=$preset
 if [[ "$preset" == current-vs-current-mekugi ]]; then
   comparison=same-setup
+fi
+if [[ "$preset" == codex-mekugi-grok && -z "$reasoning_effort" ]]; then
+  reasoning_effort=high
 fi
 
 prepare_args=(

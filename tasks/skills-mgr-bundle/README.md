@@ -26,7 +26,7 @@ Use current home plus the original v3 overlay and the current installed Mekugi e
   --current-launcher mekugi \
   --mekugi-bin /home/ubuntu/go/bin/mekugi \
   --reasoning-effort medium \
-  --image codex-ab:0.154.0
+  --image codex-ab:0.1.0
 ```
 
 Use the returned directory for `preflight`, then `run --confirm-paid-inference`. A uses stock Codex; B uses current home plus v3 through `mekugi codex`. Both receive the same short task and start concurrently after non-inference checks pass. The finishing bundle records checks, usage, timing, list-price cost estimates, patches, identities, and reviewer/interaction audits. Prior v3 measurements remain descriptive only because the task and launcher differ.

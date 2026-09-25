@@ -6,6 +6,7 @@ import { OUTPUT_SCHEMA, lastAgentMessage, mappedWinner, validateJudgePass } from
 import { criterionAssessmentSchema, prepareSemanticAssessment, semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
 import { verifyPreparedInputs } from "./prepare";
 import { writeState } from "./state";
+import { armLabels } from "./arm-labels";
 import type { ArmName, JudgeAttempt, JudgeReport, RunState } from "./types";
 
 const ids = ["candidate-1", "candidate-2"] as const;
@@ -43,16 +44,19 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   const orders: [ArmName, ArmName][] = [["stock", "current"], ["current", "stock"]];
+  const labels = armLabels(state);
   const gates: Record<ArmName, boolean[]> = { stock: [], current: [] };
   try {
     const runPass = async (order: [ArmName, ArmName], index: number) => {
       const pass = (index + 1) as 1 | 2;
+      const stageLabel = (stage: string): string => stage.startsWith("harness-") ? `executable checks, round ${stage.slice("harness-".length)}` : "source assessment";
+      process.stderr.write(`[judge] semantic pass ${pass}: A / ${labels[order[0]]}; B / ${labels[order[1]]}\n`);
       const ask = async (stage: string, prompt: string, schema: object): Promise<unknown> => {
         if (Buffer.byteLength(prompt) > 2_000_000) throw new Error("semantic evidence exceeds prompt limit; retained without truncation");
         // Recovery replays a completed stage's recorded response instead of paying for it again.
         const saved = recover ? report.attempts!.filter(item => item.pass === pass && item.stage === stage && item.status === "complete").at(-1) : undefined;
         if (saved) {
-          process.stderr.write(`[judge] semantic pass ${pass}, ${stage}: reusing completed attempt ${saved.attempt}\n`);
+          process.stderr.write(`[judge] semantic pass ${pass}, ${stageLabel(stage)}: reusing completed attempt ${saved.attempt}\n`);
           return JSON.parse(lastAgentMessage(await readFile(join(runDir, saved.stdout_path), "utf8"))) as unknown;
         }
         const previous = Math.max(0, ...report.attempts!.filter(item => item.pass === pass && item.stage === stage).map(item => item.attempt));
@@ -75,9 +79,9 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
           report.usage_homes.push(attempt.usage_home);
           await persistState();
           const activity = stage.startsWith("harness")
-            ? "generating candidate-specific executable checks"
+            ? "generating tailored executable checks"
             : "reviewing source and executed evidence";
-          process.stderr.write(`[judge] semantic pass ${pass}, ${stage}, attempt ${number}: started (${activity})\n`);
+          process.stderr.write(`[judge] semantic pass ${pass}, ${stageLabel(stage)}, attempt ${number}: started (${activity})\n`);
           const outputPath = join(runDir, attempt.stdout_path);
           const errorPath = join(runDir, attempt.stderr_path);
           try {
@@ -118,7 +122,7 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
                 await delay(attempt.retry_delay_ms, undefined, { signal: controller.signal });
                 continue;
               }
-              throw new Error(`semantic judge ${stage} failed (${result.exitCode})`);
+              throw new Error(`semantic judge pass ${pass}, ${stageLabel(stage)} failed (${result.exitCode})`);
             }
             const value: unknown = JSON.parse(lastAgentMessage(raw));
             attempt.status = "complete"; attempt.finished_at = new Date().toISOString();

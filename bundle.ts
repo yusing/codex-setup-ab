@@ -254,8 +254,8 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   }
   const setupDescriptions = state.comparison === "codex-mekugi-grok"
     ? {
-      stock: "Minimal generated Codex configuration plus the Mekugi launcher on grok:grok-4.6; no current-home guidance overlay.",
-      current: "Minimal generated Grok configuration plus the Grok CLI on grok-4.6; no current-home guidance overlay.",
+      stock: "Minimal generated Codex configuration plus the Mekugi launcher on grok:grok-4.7; no current-home guidance overlay.",
+      current: "Minimal generated Grok configuration plus the Grok CLI on grok-4.7; no current-home guidance overlay.",
     }
     : state.comparison === "stock-mekugi"
       ? {

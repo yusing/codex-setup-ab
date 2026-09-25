@@ -105,7 +105,7 @@ function stockConfig(model: BenchmarkModel, reasoningEffort: ReasoningEffort): s
 
 function grokStockConfig(reasoningEffort: ReasoningEffort): string {
   return [
-    "[models]", 'default = "grok-4.6"', `default_reasoning_effort = "${reasoningEffort}"`,
+    "[models]", 'default = "grok-4.7"', `default_reasoning_effort = "${reasoningEffort}"`,
     "", "[features]", "telemetry = false", "",
     "[ui]", 'permission_mode = "always-approve"', "",
   ].join("\n");
@@ -140,7 +140,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     }
   }
   if (stockMekugi && (state.arms.current.home_template !== "snapshots/stock-mekugi/home/ubuntu" || state.execution.current_launcher !== "mekugi")) throw new Error("stock-mekugi treatment identity changed");
-  if (grokComparison && (state.arms.stock.home_template !== "snapshots/stock-mekugi/home/ubuntu" || state.arms.current.home_template !== "snapshots/stock-grok/home/ubuntu" || state.execution.current_launcher !== "grok" || state.execution.model !== "grok:grok-4.6")) {
+  if (grokComparison && (state.arms.stock.home_template !== "snapshots/stock-mekugi/home/ubuntu" || state.arms.current.home_template !== "snapshots/stock-grok/home/ubuntu" || state.execution.current_launcher !== "grok" || state.execution.model !== "grok:grok-4.7")) {
     throw new Error("codex-mekugi-grok treatment identity changed");
   }
   if (grokComparison) {
@@ -469,7 +469,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (mentorComparison && mekugiFlags.includes("--mode=passthrough")) throw new Error("mentor matrix requires Mekugi routing in both arms");
   if (options.protectMekugi && (currentLauncher !== "mekugi" || !options.mekugiSource)) throw new Error("protected runtime requires Mekugi and matching --mekugi-source or --mekugi-build");
   if (options.mekugiFlags?.length && currentLauncher !== "mekugi" && !grokComparison) throw new Error("Mekugi flags require the Mekugi launcher");
-  const reasoningEffort = options.reasoningEffort ?? "medium";
+  const reasoningEffort = options.reasoningEffort ?? (grokComparison ? "high" : "medium");
   if (!["mekugi", "godoxy-icons", "skills-mgr-bundle", "task"].includes(profile)) throw new Error("unknown benchmark profile");
   if (!["codex", "mekugi", "grok"].includes(currentLauncher)) throw new Error("current launcher must be codex, mekugi, or grok");
   const needsMekugi = currentLauncher === "mekugi" || grokComparison;
@@ -533,8 +533,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (grokComparison && !mekugiFlags.some(flag => flag === "--grok" || flag.startsWith("--grok="))) {
     throw new Error("codex-mekugi-grok requires --grok in --mekugi-flags");
   }
-  if (options.model && !["gpt-6-astra", "gpt-6-sol"].includes(options.model) && !(grokComparison && options.model === "grok:grok-4.6")) throw new Error("unsupported benchmark model");
-  const model: BenchmarkModel = grokComparison ? "grok:grok-4.6" : mentorComparison ? "gpt-6-sol" : options.model ?? "gpt-6-astra";
+  if (options.model && !["gpt-6-astra", "gpt-6-sol"].includes(options.model) && !(grokComparison && options.model === "grok:grok-4.7")) throw new Error("unsupported benchmark model");
+  const model: BenchmarkModel = grokComparison ? "grok:grok-4.7" : mentorComparison ? "gpt-6-sol" : options.model ?? "gpt-6-astra";
   if (options.model && (grokComparison || mentorComparison) && options.model !== model) throw new Error(`${comparison} uses ${model}`);
   const codeModeHostSha256 = await sha256(codeModeHost);
   const currentConfig = Bun.TOML.parse(await readFile(join(options.currentHome, ".codex/config.toml"), "utf8")) as Record<string, unknown>;

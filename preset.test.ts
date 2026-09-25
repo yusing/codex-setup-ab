@@ -104,6 +104,13 @@ for (const preset of ["stock-mekugi", "current-vs-current-mekugi", "codex-mekugi
   });
 }
 
+test("Grok preset uses high reasoning unless explicitly overridden", async () => {
+  const defaultRun = await runPreset("matching", [], "codex-mekugi-grok");
+  expect(defaultRun.calls).toContain("--reasoning-effort high");
+  const override = await runPreset("matching", ["--reasoning-effort", "medium"], "codex-mekugi-grok");
+  expect(override.calls).toContain("--reasoning-effort medium");
+});
+
 test("mentor flag is rejected without a Mekugi arm", async () => {
   const result = await runPreset("matching", ["--mentor-handoff"]);
   expect(result.exitCode).toBe(2);

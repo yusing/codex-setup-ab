@@ -10,6 +10,7 @@ import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { readState, writeState, withRunLock } from "./state";
 import { MEKUGI_METRICS_WRAPPER } from "./mekugi";
 import { importControl } from "./control";
+import { armLabels } from "./arm-labels";
 import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
 
 export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; signal?: AbortSignal }
@@ -228,7 +229,7 @@ async function prewarm(docker: string, runDir: string, state: RunState, arm: Arm
     "-v", `${repo}:/workspace`, "-v", `${home}:/home/ubuntu`,
     "--network", "none",
     "-v", `${bun}:/usr/local/bin/bun:ro`, imageRef(state), "sh", "-lc", command] });
-  if (result.exitCode !== 0) throw new Error(`${arm} cache prewarm failed: ${result.stderr.trim()}`);
+  if (result.exitCode !== 0) throw new Error(`${arm === "stock" ? "A" : "B"} / ${armLabels(state)[arm]} cache prewarm failed: ${result.stderr.trim()}`);
   await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true);
 }
 export async function gradeArm(docker: string, runDir: string, state: RunState, arm: ArmName, patchPath: string, signal: AbortSignal): Promise<ArmResult["grade"]> {
@@ -257,7 +258,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const stderrPath = join(output, "codex.stderr");
   const patchPath = join(output, "changes.patch");
   const started = new Date();
-  progress(`${arm}: agent started`);
+  progress(`${arm === "stock" ? "A" : "B"} / ${armLabels(state)[arm]}: agent started`);
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
@@ -272,7 +273,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const grokArm = state.comparison === "codex-mekugi-grok" && arm === "current";
   const mekugiArm = state.comparison === "mentor-handoff" || (state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi");
   const grokCommand = grokArm
-    ? ["grok", "--prompt-file", "/control/task.md", "--cwd", "/workspace", "-m", "grok-4.6", "--reasoning-effort", state.execution.reasoning_effort, "--always-approve", "--sandbox", "off", "--output-format", "json", "--disable-web-search"]
+    ? ["grok", "--prompt-file", "/control/task.md", "--cwd", "/workspace", "-m", "grok-4.7", "--reasoning-effort", state.execution.reasoning_effort, "--always-approve", "--sandbox", "off", "--output-format", "json", "--disable-web-search"]
     : undefined;
   const mentorFlags = state.mentor ? ["--main-mentor-handoff=false", `--mentor-handoff=${arm === "current"}`] : [];
   const codexLauncher = mekugiArm ? ["mekugi", ...(state.mekugi_flags ?? []), ...mentorFlags, ...exportArgs, "codex"] : ["codex"];
@@ -299,7 +300,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     catch (error) { lifecycleError = `${lifecycleError ?? ""} ${String(error)}`.trim(); }
   }
   const finishedAt = new Date().toISOString();
-  progress(`${arm}: agent stopped after ${Math.round((result?.elapsedMs ?? 0) / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
+  progress(`${arm === "stock" ? "A" : "B"} / ${armLabels(state)[arm]}: agent stopped after ${Math.round((result?.elapsedMs ?? 0) / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
   return {
     arm,
     anonymous_id: arm === "stock" ? "candidate-1" : "candidate-2",
@@ -337,7 +338,7 @@ async function collectArm(docker: string, runDir: string, state: RunState, arm: 
   } catch (error) {
     result.collection_error = error instanceof Error ? error.message : String(error);
     // Do not follow or overwrite a candidate-created capture symlink on failure.
-    progress(`${arm}: inference evidence persisted but patch collection failed: ${result.collection_error}`);
+    progress(`${arm === "stock" ? "A" : "B"} / ${armLabels(state)[arm]}: inference evidence persisted but patch collection failed: ${result.collection_error}`);
   }
 }
 
@@ -359,6 +360,8 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   options.signal?.addEventListener("abort", externalCancel, { once: true });
   const activeArms: ArmName[] = imported ? ["current"] : options.arm ? [options.arm] : arms;
   const selectedArms: ArmName[] = imported ? arms : activeArms;
+  const labels = armLabels(state);
+  const displayArm = (arm: ArmName): string => `${arm === "stock" ? "A" : "B"} / ${labels[arm]}`;
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
@@ -393,7 +396,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     }
     const order = state.arm_order ?? "concurrent";
     if (!["concurrent", "stock-first", "current-first"].includes(order)) throw new Error("invalid arm execution order");
-    progress(`agent execution order: ${order}`);
+    progress(`agent execution order: ${order === "concurrent" ? "concurrent" : order === "stock-first" ? `${displayArm("stock")} first` : `${displayArm("current")} first`}`);
     state.arm_attempts = imported ? { stock: { codex_home: "arms/stock/home/ubuntu/.codex", container: imported.container,
       started_at: imported.started_at, finished_at: imported.finished_at, status: "stopped" } } : {};
     const batches: ArmName[][] = order === "concurrent" ? [activeArms]
@@ -419,7 +422,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         } else {
           attempt.status = "failed";
           attempt.error = String(item.reason);
-          const message = `${arm}: failed to collect result: ${String(item.reason)}`;
+          const message = `${displayArm(arm)}: failed to collect result: ${String(item.reason)}`;
           state.error = state.error ? `${state.error}; ${message}` : message;
           progress(message);
         }
@@ -440,7 +443,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
       const graded = await Promise.allSettled(selectedArms.map(async arm => {
         const result = state.results![arm]!;
         result.grade = await gradeArm(docker, runDir, state, arm, join(runDir, result.patch_path), controller.signal);
-        progress(`${arm}: prepared for independent semantic assessment`);
+        progress(`${displayArm(arm)}: prepared for independent semantic assessment`);
       }));
       const gradeFailure = graded.find(result => result.status === "rejected");
       if (gradeFailure?.status === "rejected") throw gradeFailure.reason;
