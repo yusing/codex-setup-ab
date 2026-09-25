@@ -436,7 +436,7 @@ recalculates weighted scores, records the input hash, and shows agreement or dis
 Imported assessments do not restart inference, replace the official judge, supply missing usage,
 or change overall winner eligibility. They are supplied evidence, not an operational fallback.
 
-The runner automatically writes `reports/report.md`, `reports/report.json`, and a checksummed `reports/bundle/` after execution, including partial runs. The bundle contains setup identities, task and evaluator controls, captured patches, interaction and role audits, source assessment, paired comparison, semantic check results, and integrity checks. Encrypted interaction content remains unknown; command waits are counted separately from reviewer-status polling. The standalone `report` command refreshes the standard report and an existing finishing bundle without starting inference. Readable rejected judge responses are retained separately as unvalidated evidence, never as an eligible winner. It includes raw, cached, cache-write, output, reasoning-output, and total tokens for root and child agents; estimated public-list API cost; command time; agent and grader wall time; gate status; B-minus-A percentages; both raw judge passes; and a separate judge cost. Pricing is fetched and snapshotted once per run, with source, timestamp, assumptions, and warnings. If usage or required checks are incomplete, the report shows no overall winner. When both candidates fail, neither wins; the report explains why and separately identifies the faster and lower-estimated-cost arms without declaring a quality winner.
+The runner automatically writes `reports/report.md`, `reports/report.json`, and a checksummed `reports/bundle/` after execution, including partial runs. The bundle contains setup identities, task and evaluator controls, captured patches, interaction and role audits, source assessment, paired comparison, semantic check results, and integrity checks. Encrypted interaction content remains unknown; command waits are counted separately from reviewer-status polling. The standalone `report` command refreshes the standard report and an existing finishing bundle without starting inference. Readable rejected judge responses are retained separately as unvalidated evidence, never as an eligible winner. It includes raw, uncached, cached, cache-write, output, reasoning-output, and total tokens for root and child agents; estimated public-list API cost; command time; agent and grader wall time; gate status; B-minus-A percentages; both raw judge passes; and a separate judge cost. Pricing is fetched and snapshotted once per run, with source, timestamp, assumptions, and warnings. If usage or required checks are incomplete, the report shows no overall winner. When both candidates fail, neither wins; the report explains why and separately identifies the faster and lower-estimated-cost arms without declaring a quality winner.
 
 The behavioral explanation matches captured review instructions against visible execution events.
 It recognizes isolated reviewer preparation, review gated until after validation,
@@ -453,7 +453,13 @@ The programmatic performance section separates root and child usage, model-reque
 mean and peak input context, uncached/cached/output cost components, and matched outer-tool
 blocking spans. JSON includes these diagnostics and current-minus-stock role/cost differences.
 Request IDs are deduplicated before accounting; cumulative-only usage leaves request counts
-unknown. Tool intervals end at the first matched output and are unioned within each session,
+unknown. Cache diagnostics split the first metered request per thread from later requests,
+including captured retries, and show their contributions to the uncached-input gap. Model
+switches do not restart that split. Captured prewarm usage and cost appear separately from
+paired task totals; direct Codex prewarm remains unknown, not zero. These are task-only costs,
+not startup-inclusive session costs. Cache counts locate a difference but cannot prove its
+cause or validate a transport fix without a fresh controlled run.
+Tool intervals end at the first matched output and are unioned within each session,
 not added across overlapping agents. Additional or unmatched outputs mark timing partial.
 A report refresh requires no model calls. The numbers locate observed overhead, but do not infer
 causal blame for a specific instruction or launcher, decode encrypted messages, or replace

@@ -205,6 +205,8 @@ describe("report completion and winner eligibility", () => {
     const markdown = await readFile(paths.markdownPath, "utf8");
     expect(markdown).toContain("Winner explanation: Neither candidate passed the required checks.");
     expect(markdown).toContain("Lower estimated list-price cost: **Codex (minimal setup)**");
+    expect(markdown).toContain("| input | uncached input | cached input | cache write input |");
+    expect(markdown).toContain("minus Codex (minimal setup): 10 total input tokens, but 10 uncached input tokens");
     expect(markdown).toContain("descriptive only, not a quality winner");
   });
 

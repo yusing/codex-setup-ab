@@ -82,6 +82,12 @@ export interface MeteredRollouts {
   /** Present when validated Mekugi provider attempts replaced rollout usage: Codex-recorded requests per thread. */
   recorded_api_usd?: number | null;
   codex_visible_requests?: Record<string, number | null>;
+  /** Ordered within each thread; null means request-level evidence is unavailable. */
+  cache_usage?: {
+    requests: Array<{ thread_id: string; model: string; usage: Usage }> | null;
+    /** Observed startup usage only, excluded from paired task totals. */
+    prewarm: { usage: Usage; request_count: number; estimated_api_usd: number | null } | null;
+  };
 }
 
 type JsonObject = Record<string, unknown>;
@@ -99,6 +105,7 @@ interface UsageCandidate {
   ownerThreadId: string;
   model: string;
   usage: Usage;
+  position: number;
 }
 
 interface RequestUsage {
@@ -435,11 +442,19 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
   const exchanges = isObject(metrics) && Array.isArray(metrics.exchanges) ? metrics.exchanges : null;
   if (!exchanges) return "validated metrics have no provider exchanges";
   const groups = new Map<string, { threadId: string; model: string; requests: Usage[] }>();
-  for (const exchange of exchanges) {
+  const cacheRequests: NonNullable<MeteredRollouts["cache_usage"]>["requests"] = [];
+  const prewarm = { usage: emptyUsage(), request_count: 0, estimated_api_usd: pricing ? 0 as number | null : null };
+  let kindsKnown = true;
+  // Snapshots retain completion order, which can differ from request order.
+  const orderKnown = exchanges.every(exchange => isObject(exchange) && Number.isSafeInteger(exchange.sequence) && Number(exchange.sequence) >= 0)
+    && new Set(exchanges.map(exchange => exchange.sequence)).size === exchanges.length;
+  const ordered = orderKnown ? [...exchanges].sort((a, b) => a.sequence - b.sequence) : exchanges;
+  for (const exchange of ordered) {
     if (!isObject(exchange)) return "a provider exchange is not an object";
-    if (exchange.request_kind === "prewarm") continue;
+    const warming = exchange.request_kind === "prewarm";
+    if (!["prewarm", "turn", "compaction"].includes(String(exchange.request_kind))) kindsKnown = false;
     const label = `exchange ${String(exchange.sequence)}`;
-    if (typeof exchange.thread_id !== "string" || !exchange.thread_id) return `${label} has no thread id`;
+    if (!warming && (typeof exchange.thread_id !== "string" || !exchange.thread_id)) return `${label} has no thread id`;
     if (!Array.isArray(exchange.provider_attempts)) return `${label} has no provider attempts`;
     for (const attempt of exchange.provider_attempts) {
       if (!isObject(attempt)) return `${label} has an invalid provider attempt`;
@@ -453,13 +468,24 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
       const [input, cached, output, reasoning] = counts as number[];
       const model = typeof attempt.model === "string" && attempt.model ? attempt.model : null;
       if (!model) return `${label} has a provider attempt without a model`;
-      const key = `${exchange.thread_id}\u0000${model}`;
-      let group = groups.get(key);
-      if (!group) groups.set(key, group = { threadId: exchange.thread_id, model, requests: [] });
-      group.requests.push({
+      const usage: Usage = {
         input_tokens: input!, cached_input_tokens: cached!, cache_write_input_tokens: 0,
         output_tokens: output!, reasoning_output_tokens: reasoning!, total_tokens: input! + output!,
-      });
+      };
+      if (warming) {
+        addUsage(prewarm.usage, usage);
+        prewarm.request_count++;
+        const rates = pricing ? ratesFor(pricing, model) : null;
+        const cost = rates ? totalCost(requestCost(usage, rates)) : null;
+        prewarm.estimated_api_usd = prewarm.estimated_api_usd === null || cost === null ? null : prewarm.estimated_api_usd + cost;
+        continue;
+      }
+      const threadId = exchange.thread_id as string;
+      const key = `${threadId}\u0000${model}`;
+      let group = groups.get(key);
+      if (!group) groups.set(key, group = { threadId, model, requests: [] });
+      group.requests.push(usage);
+      cacheRequests.push({ thread_id: threadId, model, usage });
     }
   }
   const captured = new Set([...groups.values()].map(group => group.threadId));
@@ -504,6 +530,7 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
     metered.warnings.push("Mekugi provider attempts have missing list-price rates");
   }
   metered.codex_visible_requests = visible;
+  metered.cache_usage = { requests: orderKnown ? cacheRequests : null, prewarm: kindsKnown ? prewarm : null };
   const attempts = metered.agents.reduce((sum, agent) => sum + agent.request_count!, 0);
   metered.warnings.push(`Mekugi tokens and requests use ${attempts} validated provider attempts, excluding prewarm; the Codex rollout recorded ${rolloutRequests ?? "unknown"} requests and ${rolloutInput} input tokens`);
   return null;
@@ -576,7 +603,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
 
   for (const file of files) {
     let currentModel = "unknown";
-    for (const event of file.events) {
+    for (const [position, event] of file.events.entries()) {
       const payload = isObject(event.payload) ? event.payload : {};
       if (event.type === "turn_context" && typeof payload.model === "string") currentModel = payload.model;
       if (event.type === "world_state" && isObject(payload.state) && typeof payload.state.model === "string") currentModel = payload.state.model;
@@ -599,7 +626,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
           warnings.push(`${file.path}: token_usage_record has no usable response_id; cross-rollout deduplication is not guaranteed`);
           complete = false;
         }
-        candidates.push({ key, fileThreadId: file.threadId, ownerThreadId, model: currentModel, usage });
+        candidates.push({ key, fileThreadId: file.threadId, ownerThreadId, model: currentModel, usage, position });
       }
 
       if (event.type === "event_msg" && payload.type === "token_count" && isObject(payload.info)) {
@@ -642,7 +669,8 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
       complete = false;
     }
     if (candidateDirect > priorDirect || (candidateDirect === priorDirect && candidate.usage.total_tokens >= prior.usage.total_tokens)) {
-      chosen.set(candidate.key, candidate);
+      chosen.set(candidate.key, { ...candidate, position: candidate.fileThreadId === prior.fileThreadId
+        ? Math.min(candidate.position, prior.position) : candidate.position });
     }
   }
   for (const id of exclusions?.response_ids ?? []) {
@@ -748,6 +776,16 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
 
   return {
     agents,
+    cache_usage: {
+      requests: complete && files.length === knownThreads.size && candidates.every(candidate => candidate.key) &&
+        [...chosen.values()].every(candidate => candidate.fileThreadId === candidate.ownerThreadId) &&
+        [...meteredThreads].every(thread => threadsWithRecords.has(thread))
+        ? [...chosen.values()].filter(candidate => !exclusions?.response_ids.includes(candidate.key!))
+          .sort((a, b) => a.position - b.position)
+          .map(candidate => ({ thread_id: candidate.ownerThreadId, model: candidate.model, usage: candidate.usage }))
+        : null,
+      prewarm: null,
+    },
     sessions: files.map(file => sessionDiagnostics(file.threadId, file.events, file.path, file.lines)),
     totals: { ...usageTotals, estimated_api_usd: estimatedTotal, command_seconds: commandSeconds },
     warnings: [...new Set(warnings)],

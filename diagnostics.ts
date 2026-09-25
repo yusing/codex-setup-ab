@@ -88,7 +88,26 @@ export interface PerformanceComparison {
   current_minus_stock: UsageDifference & {
     cost_components: CostComponents;
     by_role: Record<"root" | "children", UsageDifference>;
+    uncached_input_by_phase: { first_requests: number | null; later_requests: number | null };
   };
+}
+
+function cachePhases(usage: MeteredRollouts) {
+  const requests = usage.cache_usage?.requests;
+  if (!usage.complete || !requests?.length) return null;
+  const first = { requests: 0, input: 0, cached: 0, uncached: 0 };
+  const later = { ...first };
+  const seen = new Set<string>();
+  for (const request of requests) {
+    const phase = seen.has(request.thread_id) ? later : first;
+    seen.add(request.thread_id);
+    phase.requests++;
+    phase.input += request.usage.input_tokens;
+    phase.cached += request.usage.cached_input_tokens;
+    phase.uncached += request.usage.input_tokens - request.usage.cached_input_tokens;
+  }
+  if (first.input + later.input !== usage.totals.input_tokens || first.cached + later.cached !== usage.totals.cached_input_tokens) return null;
+  return { first_requests: first, later_requests: later };
 }
 
 export function performanceComparison(arms: Array<{ arm: string; usage: MeteredRollouts }>): PerformanceComparison | null {
@@ -103,6 +122,8 @@ export function performanceComparison(arms: Array<{ arm: string; usage: MeteredR
     Boolean(usage.sessions.find(session => session.thread_id === agent.thread_id)?.parent_thread_id) === child);
   const delta = (a: number | null, b: number | null) => a === null || b === null ? null : b - a;
   const componentDelta = (key: keyof CostComponents): number | null => delta(sumCost(stock, key), sumCost(current, key));
+  const stockCache = cachePhases(stock);
+  const currentCache = cachePhases(current);
   return {
     scope: "Observed accounting differences, not causal attribution; root and child time can overlap.",
     current_minus_stock: {
@@ -113,6 +134,10 @@ export function performanceComparison(arms: Array<{ arm: string; usage: MeteredR
         cached_input_usd: componentDelta("cached_input_usd"),
         cache_write_input_usd: componentDelta("cache_write_input_usd"),
         output_usd: componentDelta("output_usd"),
+      },
+      uncached_input_by_phase: {
+        first_requests: delta(stockCache?.first_requests.uncached ?? null, currentCache?.first_requests.uncached ?? null),
+        later_requests: delta(stockCache?.later_requests.uncached ?? null, currentCache?.later_requests.uncached ?? null),
       },
       by_role: Object.fromEntries([false, true].map(child => {
         const a = roles(stock, child);
@@ -147,6 +172,17 @@ export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRol
   const providerArms = arms.filter(({ usage }) => usage.codex_visible_requests).map(({ arm }) => labels[arm] ?? arm).join(" and ");
   const comparison = performanceComparison(arms);
   const delta = comparison?.current_minus_stock;
+  const cacheRows = arms.flatMap(({ arm, usage }) => {
+    const phases = cachePhases(usage);
+    return (["first_requests", "later_requests"] as const).map(phase => {
+      const counts = phases?.[phase];
+      return `| ${labels[arm] ?? arm} | ${phase === "first_requests" ? "First request per thread" : "Later requests"} | ${number(counts?.requests)} | ${number(counts?.input)} | ${number(counts?.cached)} | ${number(counts?.uncached)} |`;
+    });
+  });
+  const prewarmRows = arms.map(({ arm, usage }) => {
+    const warm = usage.cache_usage?.prewarm;
+    return `| ${labels[arm] ?? arm} | ${number(warm?.request_count)} | ${number(warm?.usage.input_tokens)} | ${number(warm?.usage.cached_input_tokens)} | ${number(warm ? warm.usage.input_tokens - warm.usage.cached_input_tokens : null)} | ${number(warm?.estimated_api_usd, 6)} |`;
+  });
   const difference = delta ? `
 ### Where the measured difference sits
 
@@ -161,6 +197,23 @@ These figures come from deduplicated usage records and tool timestamps, without 
 | Arm / role | model requests | mean input/request | peak input/request | uncached input | cached input | output | estimated USD |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 ${rows.join("\n") || "| unavailable | | | | | | | |"}
+
+### Cache usage by request phase
+
+First means the first metered request in each thread, not each model or tool step. Later requests include retries and re-sends when captured. Unknown means complete, ordered request evidence is unavailable; cumulative totals cannot establish a first request. Uncached here means input minus cache reads, including any separately priced cache writes.
+
+| Arm | Phase | Requests | Input | Cached input | Uncached input |
+| --- | --- | ---: | ---: | ---: | ---: |
+${cacheRows.join("\n")}
+
+${delta ? `${labels.current ?? "Current"} minus ${labels.stock ?? "stock"}, uncached input: first requests ${number(delta.uncached_input_by_phase.first_requests)}; later requests ${number(delta.uncached_input_by_phase.later_requests)}. These components sum to the paired uncached-input gap when both are known.\n` : ""}
+### Excluded prewarm usage
+
+| Arm | Provider attempts | Input | Cached input | Uncached input | Estimated USD |
+| --- | ---: | ---: | ---: | ---: | ---: |
+${prewarmRows.join("\n")}
+
+Prewarm remains outside the paired task totals. Direct Codex rollouts do not expose it: unknown is not zero. Observed Mekugi prewarm is shown separately, not added to one side of the comparison. These task costs are not full-session startup-inclusive costs. A first-request cache miss does not prove a prefix mismatch or routing failure; incremental fingerprints and request-side turn-state absence cannot establish whether a provider supplied routing state. A fresh controlled run is needed to measure a transport fix, not reinterpret this historical run as fixed.
 
 ### Estimated cost components
 
