@@ -1,3 +1,4 @@
+import { armLabels } from "./arm-labels";
 import { copyFile, cp, mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -298,8 +299,10 @@ async function reportTrialsUnlocked(directory: string, set: TrialSet): Promise<s
     judge_estimated_api_usd: { ...summarize(judgeValues), total: judgeValues.length ? judgeValues.reduce((a, b) => a + b, 0) : null },
     pairs: rows };
   const display = (value: number | null): string => value === null ? "unavailable" : String(Number(value.toFixed(6)));
+  const labels = armLabels(set.controls);
   const markdown = `# Repeated Codex A/B report
 
+- A: ${labels.stock}. B: ${labels.current}.
 - Trial set: ${set.id}; status: ${set.status}.
 - Controls SHA-256: ${set.controls_sha256}; plan SHA-256: ${set.plan_sha256}.
 - Schedule: ${set.schedule}. Pairs run one after another; concurrent arms remain the default.

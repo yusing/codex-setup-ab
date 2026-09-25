@@ -129,28 +129,28 @@ export function performanceComparison(arms: Array<{ arm: string; usage: MeteredR
   };
 }
 
-export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRollouts }>): string {
+export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRollouts }>, labels: Record<string, string> = {}): string {
   const number = (value: number | null | undefined, digits = 0) => value == null ? "unknown" : value.toFixed(digits);
   const rows = arms.flatMap(({ arm, usage }) => usage.agents.map(agent => {
     const session = usage.sessions.find(item => item.thread_id === agent.thread_id);
     const role = session?.parent_thread_id ? session.agent_role ?? "child" : "root";
-    return `| ${arm} / ${role} | ${number(agent.request_count)} | ${number(agent.mean_input_tokens)} | ${number(agent.max_input_tokens)} | ${agent.usage.input_tokens - agent.usage.cached_input_tokens} | ${agent.usage.cached_input_tokens} | ${agent.usage.output_tokens} | ${number(agent.estimated_api_usd, 6)} |`;
+    return `| ${labels[arm] ?? arm} / ${role} | ${number(agent.request_count)} | ${number(agent.mean_input_tokens)} | ${number(agent.max_input_tokens)} | ${agent.usage.input_tokens - agent.usage.cached_input_tokens} | ${agent.usage.cached_input_tokens} | ${agent.usage.output_tokens} | ${number(agent.estimated_api_usd, 6)} |`;
   }));
   const timing = arms.flatMap(({ arm, usage }) => usage.sessions.map(session =>
-    `- ${arm} / ${session.parent_thread_id ? session.agent_role ?? "child" : "root"}: ${session.tool_calls} outer tool calls; ${number(session.observed_tool_blocked_seconds, 3)} observed blocked seconds; timing ${session.tool_timing_complete ? "complete" : "partial"}. By tool: ${Object.entries(session.observed_tool_seconds_by_name).map(([name, seconds]) => `${name}=${number(seconds, 3)}s`).join(", ") || "none"}.`));
+    `- ${labels[arm] ?? arm} / ${session.parent_thread_id ? session.agent_role ?? "child" : "root"}: ${session.tool_calls} outer tool calls; ${number(session.observed_tool_blocked_seconds, 3)} observed blocked seconds; timing ${session.tool_timing_complete ? "complete" : "partial"}. By tool: ${Object.entries(session.observed_tool_seconds_by_name).map(([name, seconds]) => `${name}=${number(seconds, 3)}s`).join(", ") || "none"}.`));
   const componentRows = arms.map(({ arm, usage }) => {
     const sum = (key: keyof NonNullable<typeof usage.agents[number]["cost_components"]>): number | null =>
       !usage.complete || usage.agents.length === 0 || usage.agents.some(agent => agent.cost_components[key] == null) ? null
         : usage.agents.reduce((total, agent) => total + agent.cost_components![key]!, 0);
-    return `| ${arm} | ${number(sum("uncached_input_usd"), 6)} | ${number(sum("cached_input_usd"), 6)} | ${number(sum("cache_write_input_usd"), 6)} | ${number(sum("output_usd"), 6)} |`;
+    return `| ${labels[arm] ?? arm} | ${number(sum("uncached_input_usd"), 6)} | ${number(sum("cached_input_usd"), 6)} | ${number(sum("cache_write_input_usd"), 6)} | ${number(sum("output_usd"), 6)} |`;
   });
-  const providerArms = arms.filter(({ usage }) => usage.codex_visible_requests).map(({ arm }) => arm).join(" and ");
+  const providerArms = arms.filter(({ usage }) => usage.codex_visible_requests).map(({ arm }) => labels[arm] ?? arm).join(" and ");
   const comparison = performanceComparison(arms);
   const delta = comparison?.current_minus_stock;
   const difference = delta ? `
 ### Where the measured difference sits
 
-- Current minus stock: ${number(delta.total_tokens)} tokens and estimated USD ${number(delta.estimated_api_usd, 6)}.
+- ${labels.current ?? "Current"} minus ${labels.stock ?? "stock"}: ${number(delta.total_tokens)} tokens and estimated USD ${number(delta.estimated_api_usd, 6)}.
 ${Object.entries(delta.by_role).map(([role, value]) => `- ${role}: ${number(value.total_tokens)} additional tokens; estimated USD ${number(value.estimated_api_usd, 6)} difference.`).join("\n")}
 ${Object.entries(delta.cost_components).map(([component, value]) => `- ${component}: USD ${number(value, 6)} difference.`).join("\n")}
 ` : "";

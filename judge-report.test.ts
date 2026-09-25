@@ -193,7 +193,7 @@ describe("report completion and winner eligibility", () => {
     expect(report.winner).toBe("stock");
     const markdown = await readFile(paths.markdownPath, "utf8");
     expect(markdown).toContain("priority service tier");
-    for (const heading of ["input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD", "## Current minus stock", "## Pricing provenance", "### Judge usage by attempted pass", "not a subscription charge or invoice", "service tier is not modeled"]) expect(markdown).toContain(heading);
+    for (const heading of ["input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD", "## Codex (current-home setup) minus Codex (minimal setup)", "## Pricing provenance", "### Judge usage by attempted pass", "not a subscription charge or invoice", "service tier is not modeled"]) expect(markdown).toContain(heading);
 
     const state = await readState(run);
     delete state.results?.current?.grade;
@@ -412,8 +412,8 @@ test("a later covered semantic pass cannot hide earlier unassessed criteria", as
   const report = JSON.parse(await readFile(result.jsonPath, "utf8"));
   expect(report.checks_executed).toBe(false);
   const markdown = await readFile(result.markdownPath, "utf8");
-  expect(markdown).toContain("| stock | unassessed |");
-  expect(markdown).toContain("| current | unassessed |");
+  expect(markdown).toContain("| Codex (minimal setup) | unassessed |");
+  expect(markdown).toContain("| Codex (current-home setup) | unassessed |");
   expect(report.measurement_complete).toBe(false);
   expect(report.winner).toBe("none");
 });
@@ -485,4 +485,40 @@ test("historical records without semantic criteria remain descriptive despite st
   expect(report.arms.stock.usage.totals.total_tokens).toBe(24);
   expect(await readFile(paths.markdownPath, "utf8")).toContain("Historical measurements are descriptive only");
   expect(await readFile(statePath, "utf8")).toBe(before);
+});
+
+
+test("reports use actual comparison names while preserving reversed blind judge identities", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.comparison = "stock-mekugi";
+  state.execution.current_launcher = "mekugi";
+  await writeState(run, state);
+  await file(join(run, state.results!.current!.stdout_path), `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Router session usage · Main turn: 30 in / 4 out, $0.1234 · Total: 30 in / 4 out, $0.1234" } })}\n`);
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const paths = await buildReport(run);
+  const report = await Bun.file(paths.jsonPath).json();
+  const markdown = await readFile(paths.markdownPath, "utf8");
+  expect(report.arm_labels).toEqual({ stock: "Codex (minimal setup)", current: "Codex + Mekugi (minimal setup)" });
+  expect(report.winner).toBe("stock");
+  expect(markdown).toContain("Overall winner: **Codex (minimal setup)**");
+  expect(markdown).toContain("| Codex + Mekugi (minimal setup) | pass |");
+  expect(markdown).toContain("| Codex + Mekugi (minimal setup) / root |");
+  expect(markdown).toContain("Presentation: candidate-1 = Codex + Mekugi (minimal setup), candidate-2 = Codex (minimal setup)");
+  expect(markdown).not.toContain("| current |");
+  expect(markdown).not.toContain("| stock |");
+});
+
+
+test("display labels do not change historical rollout storage lookup", async () => {
+  const { run } = await fixtureRun();
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const state = await readState(run);
+  delete state.arm_attempts;
+  await writeState(run, state);
+  const report = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(report.arms.stock.usage.totals.total_tokens).toBe(24);
+  expect(report.arms.current.usage.totals.total_tokens).toBe(34);
+  expect(report.measurement_complete).toBe(true);
+  expect(report.winner).toBe("stock");
 });

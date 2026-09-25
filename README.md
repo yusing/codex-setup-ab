@@ -2,6 +2,9 @@
 
 `codex-ab` runs controlled, descriptive comparisons of the same Codex model on the same repository task. The **stock** arm receives only a minimal model, service-tier, permission, and workspace-trust configuration. The **current** arm receives an audited snapshot of the user's instructions, skills, hooks, roles, and supporting tools. Codex runs directly by default; the current arm can explicitly use a snapshotted Mekugi launcher.
 
+Reports name arms by their actual launcher and setup (for example, `Codex (minimal setup)` versus `Codex + Mekugi (minimal setup)`). Mentor comparisons include off/on labels. `candidate-N` is reserved for blinded judge/grader evidence; report mappings reveal the actual arm afterward. CLI selectors, storage paths, and machine evidence retain `stock`/`current` keys; report JSON includes `arm_labels` for display. Regenerate a report to apply these names to an existing run.
+
+
 This is designed for a careful pilot, not a claim that one setup causes better results. A single pair does not support causal or general conclusions.
 
 ## Prerequisites and build

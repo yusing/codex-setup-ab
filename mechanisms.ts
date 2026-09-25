@@ -191,7 +191,7 @@ function reference(trace: WorkflowTrace, event: WorkflowEvent): string {
   return `${trace.source}:${event.line} (${event.timestamp}; ${event.kind})`;
 }
 
-export function explainMechanisms(arms: MechanismArm[]): MechanismReport {
+export function explainMechanisms(arms: MechanismArm[], labels: Record<string, string> = {}): MechanismReport {
   const findings: MechanismFinding[] = [];
   const unknowns = new Set<string>();
   for (const { arm, usage, policy } of arms) {
@@ -199,7 +199,7 @@ export function explainMechanisms(arms: MechanismArm[]): MechanismReport {
       const trace = root.workflow;
       if (!trace) continue;
       const children = usage.sessions.filter(session => session.parent_thread_id === root.thread_id && session.agent_role?.startsWith("review"));
-      if (children.length && !policy?.gated_review) unknowns.add(`${arm}: no recognized captured review-gate instruction; the observed behavior is not attributed to a policy.`);
+      if (children.length && !policy?.gated_review) unknowns.add(`${labels[arm] ?? arm}: no recognized captured review-gate instruction; the observed behavior is not attributed to a policy.`);
       for (const child of children) {
         const childTrace = child.workflow;
         if (!childTrace) continue;
@@ -216,12 +216,12 @@ export function explainMechanisms(arms: MechanismArm[]): MechanismReport {
         const preparation = before.filter(event => event.kind === "command" && wait && Date.parse(event.timestamp) < Date.parse(wait.timestamp));
         const launch = trace.events.find(event => event.kind === "spawn" && event.isolated_context && targetsChild(event));
         if (launch && preparation.length && wait && Date.parse(launch.timestamp) < Date.parse(preparation[0]!.timestamp)) findings.push({
-          mechanism: `${arm}: review started with a separate preparation context`,
+          mechanism: `${labels[arm] ?? arm}: review started with a separate preparation context`,
           explanation: "The parent launched this reviewer with fork_turns=none, so the reviewer did not inherit the parent’s conversation. The child performed its own command work before waiting for the parent. This creates a second context-processing path rather than reusing the parent’s accumulated context, and adds input processing before the parent’s later contact. Its recorded cost is included in the reviewer accounting below.",
           evidence: [reference(trace, launch), reference(childTrace, preparation[0]!), reference(childTrace, wait)],
           limitation: "Independent preparation can improve review quality. These records establish separate work, not that the same files were successfully read or that preparation could safely be omitted.",
         });
-        if (!ready) { unknowns.add(`${arm}: no visible actual review-readiness signal; review phases cannot be reconstructed.`); continue; }
+        if (!ready) { unknowns.add(`${labels[arm] ?? arm}: no visible actual review-readiness signal; review phases cannot be reconstructed.`); continue; }
         const after = trace.events.filter(event => Date.parse(event.timestamp) > Date.parse(ready.timestamp));
         const edit = after.find(event => event.kind === "edit" && finding && Date.parse(event.timestamp) > Date.parse(finding.timestamp));
         const testsBefore = trace.events.filter(event => event.kind === "test" && event.exit_code === 0 && Date.parse(event.timestamp) < Date.parse(ready.timestamp));
@@ -231,14 +231,14 @@ export function explainMechanisms(arms: MechanismArm[]): MechanismReport {
         const approval = after.find(event => event.kind === "review_result" && targetsChild(event) && event.verdict === "APPROVE"
           && reready && Date.parse(event.timestamp) > Date.parse(reready.timestamp));
         if (preparation.length && wait && policy?.gated_review) findings.push({
-          mechanism: `${arm}: early reviewer launch did not permit early substantive review`,
+          mechanism: `${labels[arm] ?? arm}: early reviewer launch did not permit early substantive review`,
           explanation: "The captured instructions require the parent to finish implementation and validation before sending “main done”, and prohibit the reviewer from inspecting milestones or returning interim findings. The trace shows reviewer familiarization and waiting before a parent message following test execution. This policy overlaps preparation, but schedules substantive review after initial validation rather than overlapping defect discovery with implementation.",
           evidence: [`${policy.source}:${policy.line} (captured review gate)`, reference(childTrace, preparation[0]!), reference(childTrace, wait), reference(trace, ready)],
           limitation: ready.kind === "ready" ? "The instruction-to-sequence match supports this scheduling mechanism, not an exact estimate of time saved by another policy."
             : "No explicit readiness signal was recognized in the parent message. Its timing is compatible with the prescribed handoff, but does not establish readiness or intent. The policy explains required scheduling, not proven transcript-level compliance.",
         });
         if (finding && Date.parse(finding.timestamp) > Date.parse(ready.timestamp) && edit && testsBefore.length && testsAfter.length && reready && approval) findings.push({
-          mechanism: `${arm}: edits after initial validation forced a second validation/review cycle`,
+          mechanism: `${labels[arm] ?? arm}: edits after initial validation forced a second validation/review cycle`,
           explanation: `Successful test execution preceded a parent message to this reviewer; the message’s intent is not needed to establish the following sequence. The reviewer returned ${finding.verdict}${finding.finding ? ` with the finding “${finding.finding.replace(/\.$/, "")}”` : " with findings"}. A completed file change was then recorded, followed by tests and another parent message to the same reviewer, who returned APPROVE. Initial validation therefore did not cover the final edited state. This adds sequential edit/test/re-review work, plus model requests processing the accumulated conversation, rather than just additional code output.`,
           evidence: [reference(trace, testsBefore.at(-1)!), reference(trace, ready), reference(trace, finding), reference(trace, edit), ...testsAfter.map(event => reference(trace, event)), reference(trace, reready), reference(trace, approval)],
           limitation: "The visible sequence supports a review-driven correction cycle. The reported defect is a reviewer assessment, not an independently rerun reproducer; this rule does not prove the exact edit repaired it or that the cycle was avoidable.",
@@ -247,14 +247,14 @@ export function explainMechanisms(arms: MechanismArm[]): MechanismReport {
       const fallback = trace.events.find(event => event.kind === "copy_fallback");
       const wrapped = trace.events.filter(event => event.kind === "test" && event.wrapper === "shadowtree" && event.seconds !== undefined && event.package_seconds !== undefined && event.seconds > event.package_seconds + 1);
       if (fallback && wrapped.length) findings.push({
-        mechanism: `${arm}: environment preparation made short tests expensive to invoke`,
+        mechanism: `${labels[arm] ?? arm}: environment preparation made short tests expensive to invoke`,
         explanation: `Execution output reports an overlayfs/copy fallback. In the same session, single-package test commands took ${wrapped.map(event => `${event.seconds!.toFixed(3)}s overall versus ${event.package_seconds!.toFixed(3)}s reported by the package`).join("; ")}. The command includes work outside the package test timer; repeating validation pays that surrounding work again.`,
         evidence: [reference(trace, fallback), ...wrapped.map(event => reference(trace, event))],
         limitation: "The time difference includes setup, build and command overhead. It cannot all be attributed to copying, nor does this isolate the launcher’s causal effect.",
       });
     }
-    if (usage.sessions.some(session => session.workflow?.encrypted_messages)) unknowns.add(`${arm}: some received agent messages are encrypted; their findings and intent are not inferred.`);
-    if (!usage.sessions.some(session => session.workflow?.events.length)) unknowns.add(`${arm}: no recognized visible workflow events; missing evidence is not evidence of no overhead.`);
+    if (usage.sessions.some(session => session.workflow?.encrypted_messages)) unknowns.add(`${labels[arm] ?? arm}: some received agent messages are encrypted; their findings and intent are not inferred.`);
+    if (!usage.sessions.some(session => session.workflow?.events.length)) unknowns.add(`${labels[arm] ?? arm}: no recognized visible workflow events; missing evidence is not evidence of no overhead.`);
   }
   const stock = arms.find(arm => arm.arm === "stock")?.usage;
   const current = arms.find(arm => arm.arm === "current")?.usage;
@@ -306,10 +306,10 @@ export function explainMechanisms(arms: MechanismArm[]): MechanismReport {
           return visible === null || visible >= requests ? ""
             : ` ${requests - visible} of ${name}'s ${requests} requests were provider attempts that Codex did not record, such as router-local tool re-sends or retries.`;
         };
-        const hiddenDetail = hidden(current, b, requestsB, "the current parent") + hidden(stock, a, requestsA, "the stock parent");
+        const hiddenDetail = hidden(current, b, requestsB, `${labels.current ?? "the current"} parent`) + hidden(stock, a, requestsA, `${labels.stock ?? "the stock"} parent`);
         findings.push({
           mechanism: "Extra workflow turns repeatedly process accumulated context",
-          explanation: `The current parent made ${requestsB} model requests versus ${requestsA} for stock and processed ${inputB.toLocaleString("en-US")} versus ${inputA.toLocaleString("en-US")} input tokens, a difference of ${deltaInput.toLocaleString("en-US")}.${hiddenDetail} ${componentDetail} Every request processes accumulated history again; caching reduces its price but not its token count.${costDetail}`,
+          explanation: `${labels.current ?? "The current"} parent made ${requestsB} model requests versus ${requestsA} for ${labels.stock ?? "stock"} and processed ${inputB.toLocaleString("en-US")} versus ${inputA.toLocaleString("en-US")} input tokens, a difference of ${deltaInput.toLocaleString("en-US")}.${hiddenDetail} ${componentDetail} Every request processes accumulated history again; caching reduces its price but not its token count.${costDetail}`,
           evidence: [hiddenDetail
             ? "Validated Mekugi provider attempts (excluding prewarm), Codex-recorded request counts, and per-root usage in the tables below."
             : "Deduplicated per-root token usage, request counts, and model-specific cost components in the tables below."],
