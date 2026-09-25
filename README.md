@@ -134,7 +134,7 @@ previous reports remain unchanged.
 ## Stock Codex versus stock plus Mekugi
 
 The convenience runner builds the CLI and a missing local image, prepares the selected task and
-comparison, runs model-free preflight, and then starts the paid pair:
+comparison, then starts the paid pair. The run command performs model-free preflight before inference:
 
 ```sh
 scripts/run.sh --preset stock-mekugi --task session-retention

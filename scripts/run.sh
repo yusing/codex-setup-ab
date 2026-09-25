@@ -265,6 +265,4 @@ case "$preset" in
 esac
 
 run_dir="$("${prepare_args[@]}")"
-printf 'Prepared run: %s\n' "$run_dir" >&2
-./dist/codex-ab preflight --run-dir "$run_dir" --docker-bin "$docker_bin"
 "${run_args[@]}" --run-dir "$run_dir"

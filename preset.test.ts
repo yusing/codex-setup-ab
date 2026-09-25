@@ -44,7 +44,7 @@ case "$1" in
 esac
 `, { mode: 0o755 });
     await writeFile(join(root, "bin/bun"), '#!/bin/sh\nprintf "bun %s\\n" "$*" >> "$PRESET_LOG"\n', { mode: 0o755 });
-    await writeFile(join(root, "dist/codex-ab"), '#!/bin/sh\nprintf "cli %s\\n" "$*" >> "$PRESET_LOG"\n[ "$1" != prepare ] || printf "%s/run\\n" "$PRESET_ROOT"\n', { mode: 0o755 });
+    await writeFile(join(root, "dist/codex-ab"), '#!/bin/sh\nprintf "cli %s\\n" "$*" >> "$PRESET_LOG"\nprintf "%s/run\\n" "$PRESET_ROOT"\n', { mode: 0o755 });
     const codexHash = createHash("sha256").update(codex).digest("hex");
     const hostHash = createHash("sha256").update(host).digest("hex");
     const child = Bun.spawn(["bash", join(root, "scripts/run.sh"), "--preset", preset, ...options], {
@@ -64,8 +64,8 @@ esac
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text(), new Response(child.stdout).text()]);
-    return { exitCode, stderr, calls: await readFile(join(root, "calls.log"), "utf8").catch(() => ""), codexHash, hostHash, root };
+    const [exitCode, stderr, stdout] = await Promise.all([child.exited, new Response(child.stderr).text(), new Response(child.stdout).text()]);
+    return { exitCode, stderr, stdout, calls: await readFile(join(root, "calls.log"), "utf8").catch(() => ""), codexHash, hostHash, root };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -79,8 +79,10 @@ test("preset reuses an image only when operator and both selected binary hashes 
   expect(result.calls).toContain(`--codex-bin ${result.root}/selected/codex`);
   expect(result.calls).not.toContain("--model ");
   expect(result.calls).toContain("--reasoning-effort medium");
-  expect(result.calls).toContain("cli preflight ");
-  expect(result.calls).toContain("cli run ");
+  expect(result.calls).not.toContain("cli preflight ");
+  expect(result.calls.match(/cli run /g)).toHaveLength(1);
+  expect(result.stdout).toBe(`${result.root}/run\n`);
+  expect(result.stderr).not.toContain("Prepared run:");
 });
 
 test("preset forwards explicit model and reasoning effort to prepare", async () => {
