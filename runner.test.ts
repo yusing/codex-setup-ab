@@ -225,6 +225,27 @@ test("stock-mekugi accepts an explicit Sol/high pair without mentor handoff", as
     model: "grok:grok-4.6", mekugiSource: captureSource })).rejects.toThrow("unsupported benchmark model");
 });
 
+test("stock-mekugi accepts low reasoning and rejects unsupported efforts clearly", async () => {
+  const captureSource = join(root, "low-stock-mekugi-capture-source");
+  await mkdir(captureSource, { recursive: true });
+  const options = { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi" as const,
+    model: "gpt-6-astra" as const, mekugiSource: captureSource };
+  const run = await prepare({ ...options, reasoningEffort: "low" });
+  const state = await readState(run);
+  expect(state.execution.reasoning_effort).toBe("low");
+  for (const template of [state.arms.stock.home_template, state.arms.current.home_template]) {
+    expect(await readFile(join(run, template, ".codex/config.toml"), "utf8"))
+      .toContain('model_reasoning_effort = "low"');
+  }
+  await verifyPreparedInputs(run, state);
+  await expect(prepare({ ...options, reasoningEffort: "minimal" as "low" }))
+    .rejects.toThrow("reasoning effort must be low, medium, high, or xhigh");
+  await expect(prepare({ ...options, comparison: "mentor-handoff", mentorSetup: "stock",
+    reasoningEffort: "low" })).rejects.toThrow("mentor-handoff requires high reasoning");
+});
+
 for (const setup of ["stock", "current"] as const) {
   test(`mentor-handoff uses the same ${setup} setup and launches Mekugi mentor-off/on with dual exports`, async () => {
     const run = await mentorPrepared(setup);

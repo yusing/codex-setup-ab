@@ -474,7 +474,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (!["codex", "mekugi", "grok"].includes(currentLauncher)) throw new Error("current launcher must be codex, mekugi, or grok");
   const needsMekugi = currentLauncher === "mekugi" || grokComparison;
   if (options.mekugiBinary && !needsMekugi) throw new Error("--mekugi-bin requires a Mekugi launcher treatment");
-  if (!["medium", "high", "xhigh"].includes(reasoningEffort) || (mentorComparison && reasoningEffort !== "high")) throw new Error("mentor matrix requires high reasoning; other comparisons accept medium, high, or xhigh");
+  if (!["low", "medium", "high", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be low, medium, high, or xhigh");
+  if (mentorComparison && reasoningEffort !== "high") throw new Error("mentor-handoff requires high reasoning");
   if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
     throw new Error("godoxy-icons benchmark identity mismatch");
   }
