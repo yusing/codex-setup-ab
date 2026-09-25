@@ -15,7 +15,7 @@
       {"id": "curl-posix", "description": "The curl path remains unchanged and the implementation remains POSIX-shell compatible."}
     ],
     "allowed_paths": ["install.sh"],
-    "evaluator_guidance": "Source install.sh with Bash when executing nvm_download because its top-level runtime guard requires Bash. Check POSIX compatibility separately with sh -n. Do not enable nounset before sourcing unless every variable required by the existing entry point is initialized.",
+    "evaluator_guidance": "Source install.sh with Bash when executing nvm_download because its top-level runtime guard requires Bash. Check POSIX compatibility separately with sh -n. Do not enable nounset before sourcing unless every variable required by the existing entry point is initialized. For literal output arguments and -o translation, test an output value that resembles a translated option, such as --compressed or -s, and compare exact wget argument boundaries.",
     "preparation": "sh -n install.sh",
     "existing_tests": "cd test/install_script && bash nvm_source",
     "qualification": "not-run"
