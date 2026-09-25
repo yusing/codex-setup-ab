@@ -43,6 +43,10 @@ test("harness schema restricts checks to the fixed criterion IDs", () => {
     expect(schema.properties[candidate]?.items.properties.criterion.enum).toEqual(["sum"]);
     expect(schema.properties[candidate]?.items.properties.command.minItems).toBe(1);
   }
+  const repair = semanticHarnessSchema(contract, { "candidate-1": [], "candidate-2": ["sum"] }) as typeof schema;
+  expect(repair.properties["candidate-1"]?.maxItems).toBe(0);
+  expect(repair.properties["candidate-2"]?.maxItems).toBe(1);
+  expect(repair.properties["candidate-2"]?.items.properties.criterion.enum).toEqual(["sum"]);
 });
 test("semantic prompts bound duplicated command output while retaining explicit evidence references", () => {
   const execution: CommandEvidence = {

@@ -190,7 +190,7 @@ overridden through this option. The selected arguments and comparison identity a
 machine state and consolidated report. Preparation and preflight make no model requests.
 
 Supply `--mekugi-source DIR` (required for `same-setup`) to enable sanitized `--capture-output`
-and capturer-owned metrics exports. Mekugi now writes the metrics snapshot through `--debug`; the runner keeps its other, potentially private debug files inside the disposable agent container and copies only `metrics.json` into the run artifacts. The checkout is not read for validation scripts or binary provenance; use `--mekugi-build` for recorded source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and its hash.
+and capturer-owned metrics exports. Mekugi now writes the metrics snapshot through `--debug`; the runner keeps its other, potentially private debug files inside the disposable agent container and copies only `metrics.json` and the root session's native usage report, `token-metrics.md`, into the run artifacts. The checkout is not read for validation scripts or binary provenance; use `--mekugi-build` for recorded source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and its hash.
 The report validates the capturer's schema, treatment identity and raw-record consistency with that analyzer, retaining missing or
 invalid telemetry explicitly. Capture calculations remain owned by Mekugi. When validation
 succeeds, a Mekugi arm's tokens and requests come from its provider attempts, excluding prewarm,
@@ -368,6 +368,8 @@ scores, per-criterion decisions, issues, and winner for that pass. The runner re
 that overwrite candidate files and detects changes to original files.
 
 A judge may repair a broken harness once per pass, including a failed check whose wiring was wrong.
+Repairs are limited to each candidate's failed or unassessed criteria; a resubmitted check for an
+earlier pass is ignored, and the passing evidence stands.
 Harnesses must use the runtime required by the inspected entry point. Evaluator-owned setup mistakes,
 such as a wrong interpreter, invented entry point, or missing harness-only dependency, must be
 reported as `HARNESS_ERROR`; candidate errors reached through documented supported setup remain

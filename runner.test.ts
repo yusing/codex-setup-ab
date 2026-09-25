@@ -674,6 +674,40 @@ test("completed semantic check time and artifacts survive a later author failure
   expect(captured.execution.elapsed_ms).toBeGreaterThan(0);
 });
 
+test("harness repair keeps a successful check when the judge resubmits it", async () => {
+  const criteriaPath = join(root, "repair-criteria.json");
+  await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
+    criteria: [{ id: "fixture", description: "Make the fixture better." }],
+    preparation: "true", existing_tests: "true", qualification: "not-run" }));
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath, outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
+  const auth = join(root, "repair-auth.json"); await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
+  // Only candidate 2's first check fails, so round 2 may repair it but not candidate 1's pass.
+  const docker = join(root, "repair-docker");
+  await file(docker, `#!/bin/sh
+last=; for argument in "$@"; do last="$argument"; done
+'${fake.path}' "$@" || exit
+case "$1:$last" in start:*-semantic-1-round-1-candidate-2-fixture) echo 'assertion failed' >&2; exit 1 ;; esac
+`, 0o755);
+  const check = { criterion: "fixture", files: [], command: ["true"], rationale: "Fixture behavior checked." };
+  const asked: { stage: string; prompt: string; schema: any }[] = [];
+  const evidence = await prepareSemanticAssessment({ runDir: run, state, contract: state.criteria!.contract, pass: 1,
+    order: ["stock", "current"], docker, ask: async (stage, prompt, schema) => {
+      asked.push({ stage, prompt, schema });
+      return { "candidate-1": [check], "candidate-2": [check] };
+    } });
+  expect(asked.map(item => item.stage)).toEqual(["harness-1", "harness-2"]);
+  expect(asked[1]!.prompt).toContain(`Criteria eligible for repair, by candidate: {"candidate-1":[],"candidate-2":["fixture"]}.`);
+  expect(asked[1]!.schema.properties["candidate-1"].maxItems).toBe(0);
+  expect(asked[1]!.schema.properties["candidate-2"].items.properties.criterion.enum).toEqual(["fixture"]);
+  expect(evidence.candidates["candidate-1"][0]?.status).toBe("pass");
+  expect(evidence.candidates["candidate-2"][0]?.status).toBe("pass");
+  expect(evidence.history["candidate-1"].map(item => item.criterion)).toEqual(["__existing_tests", "fixture"]);
+  expect(evidence.history["candidate-2"].map(item => item.status)).toEqual(["pass", "fail", "pass"]);
+});
+
 test("prepare makes base-only independent clones and an audited secret-free snapshot", async () => {
   const run = await prepared();
   const state = await readState(run);

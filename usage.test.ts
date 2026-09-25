@@ -47,6 +47,13 @@ test("native Mekugi cost reads compact and table reports but not incomplete usag
   expect(await readMekugiNativeCost(path)).toBeNull();
   await writeFile(path, `${event(table.replace("$0.4987 | 0 |", "cost n/a | 1 |"))}\n`);
   expect(await readMekugiNativeCost(path)).toBeNull();
+  const exported = join(home, "token-metrics.md");
+  const typesafe = "\n\n## TypeSafe AI usage\n\n| Agent | Model | Requests | Input | Output | Missing usage | Cost |\n| Total TypeSafe | fixture | 1 | 10 | 2 | 0 | n/a |\n";
+  await writeFile(exported, `${table.replace("$0.4987 | 0 |", "$1.2345 | 0 |")}${typesafe}`);
+  expect(await readMekugiNativeCost(path, exported)).toBe(1.2345);
+  expect(await readMekugiNativeCost(path, join(home, "missing.md"))).toBeNull();
+  await writeFile(path, `${event(table)}\n`);
+  expect(await readMekugiNativeCost(path, join(home, "missing.md"))).toBe(0.4987);
 });
 
 function rate(overrides: Partial<ModelPricing> = {}): ModelPricing {

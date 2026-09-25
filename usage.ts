@@ -374,7 +374,23 @@ function requestCost(usage: Usage, rates: ModelPricing): CostComponents {
 }
 
 /** Read Mekugi's own four-decimal API estimate, rather than repricing its provider attempts. */
-export async function readMekugiNativeCost(stdoutPath: string): Promise<number | null> {
+function mekugiReportCost(report: string): number | null {
+  const compact = /^Router session usage · Main turn: [^\n]+ · Total: [\d.]+[KMB]? in \/ [\d.]+[KMB]? out, \$([\d]+\.[\d]{4})(?: · [^\n]*)?$/.exec(report);
+  if (compact) return Number(compact[1]);
+  const totalRow = report.startsWith("Router session usage\n\n| Agent |")
+    ? report.split("\n").find(row => row.startsWith("| Total |")) : undefined;
+  const cells = totalRow?.split("|").slice(1, -1).map(cell => cell.trim());
+  return cells?.length === 11 && cells[0] === "Total" && cells[10] === "0" && /^\$[\d]+\.[\d]{4}$/.test(cells[9] ?? "")
+    ? Number(cells[9]!.slice(1)) : null;
+}
+
+/**
+ * Read Mekugi's native session cost from its exported token-metrics markdown. Runs recorded
+ * before that export carried the report as a final Codex agent message instead.
+ */
+export async function readMekugiNativeCost(stdoutPath: string, tokenMetricsPath?: string): Promise<number | null> {
+  const exported = tokenMetricsPath ? await readFile(tokenMetricsPath, "utf8").catch(() => null) : null;
+  if (exported !== null) return mekugiReportCost(exported);
   const contents = await readFile(stdoutPath, "utf8").catch(() => null);
   if (contents === null) return null;
   let cost: number | null = null;
@@ -384,14 +400,7 @@ export async function readMekugiNativeCost(stdoutPath: string): Promise<number |
     if (!isObject(event) || event.type !== "item.completed" || !isObject(event.item) ||
         event.item.type !== "agent_message" || typeof event.item.text !== "string" ||
         !event.item.text.startsWith("Router session usage")) continue;
-    const report = event.item.text;
-    const compact = /^Router session usage · Main turn: [^\n]+ · Total: [\d.]+[KMB]? in \/ [\d.]+[KMB]? out, \$([\d]+\.[\d]{4})(?: · [^\n]*)?$/.exec(report);
-    if (compact) { cost = Number(compact[1]); continue; }
-    const totalRow = report.startsWith("Router session usage\n\n| Agent |")
-      ? report.split("\n").find(row => row.startsWith("| Total |")) : undefined;
-    const cells = totalRow?.split("|").slice(1, -1).map(cell => cell.trim());
-    cost = cells?.length === 11 && cells[0] === "Total" && cells[10] === "0" && /^\$[\d]+\.[\d]{4}$/.test(cells[9] ?? "")
-      ? Number(cells[9]!.slice(1)) : null;
+    cost = mekugiReportCost(event.item.text);
   }
   return cost;
 }

@@ -1,5 +1,5 @@
 import { cp, copyFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { readState, sha256, writeState } from "./state";
 import type { ArmName } from "./types";
 
@@ -105,6 +105,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   if (state.mekugi_exports) {
     for (const [source, target] of [[state.mekugi_exports.capture, "mekugi-capture.jsonl"],
       [state.mekugi_exports.metrics, "mekugi-metrics.json"],
+      [join(dirname(state.mekugi_exports.metrics), "token-metrics.md"), "mekugi-token-metrics.md"],
       [state.mekugi_exports.validator.path, "analyze_capture.py"],
       [state.mekugi_exports.reader.path, "benchmark_jsonl.py"]]) {
       try { await copy(source!, target!); }
@@ -117,7 +118,8 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   for (const [arm, files] of Object.entries(state.mekugi_exports_by_arm ?? {})) {
     if (!files) continue;
     for (const [source, target] of [[files.capture, `${arm}-mekugi-capture.jsonl`],
-      [files.metrics, `${arm}-mekugi-metrics.json`]]) {
+      [files.metrics, `${arm}-mekugi-metrics.json`],
+      [join(dirname(files.metrics), "token-metrics.md"), `${arm}-mekugi-token-metrics.md`]]) {
       try { await copy(source, target); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;

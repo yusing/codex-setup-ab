@@ -6,11 +6,16 @@ import type { ArmName, RunState } from "./types";
 
 const FLAGS = new Set(["mode", "main-mentor-handoff", "mentor-handoff", "post-compact-recovery", "explore-filter", "timeout", "stream-idle-timeout", "debug", "grok"]);
 
-/** Keep private --debug artifacts in the disposable container; export only capturer-owned metrics. */
+/**
+ * Keep private --debug artifacts in the disposable container; export only capturer-owned metrics
+ * and the root session's native usage report, which Mekugi writes under TMPDIR.
+ */
 export const MEKUGI_METRICS_WRAPPER = 'temp_dir=$(mktemp -d "${MEKUGI_DEBUG_TMPDIR:-/tmp}/codex-ab-mekugi.XXXXXX") || exit; '
   + 'exec 3<&0; TMPDIR="$temp_dir" "$@" <&3 3<&- & child=$!; exec 3<&-; '
   + 'trap \'kill -TERM "$child" 2>/dev/null || :\' TERM INT; '
   + 'while :; do wait "$child"; status=$?; kill -0 "$child" 2>/dev/null || break; done; '
+  + 'set -- "$temp_dir"/mekugi-token-metrics-*.md; '
+  + 'if [ "$#" -eq 1 ] && [ -f "$1" ]; then cp "$1" /mekugi-exports/token-metrics.md || exit 1; fi; '
   + 'for metrics in "$temp_dir"/mekugi-debug-*/metrics.json; do '
   + 'if [ -f "$metrics" ]; then cp "$metrics" /mekugi-exports/metrics.json || exit 1; exit "$status"; fi; '
   + 'done; if [ "$status" -eq 0 ]; then echo "Mekugi did not write metrics" >&2; exit 1; fi; exit "$status"';

@@ -94,7 +94,8 @@ liveTest("metrics wrapper forwards Docker termination and exports the final snap
 liveTest("metrics wrapper preserves the task on Codex stdin", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-mekugi-stdin-"));
   try {
-    const child = 'IFS= read -r task; mkdir -p "$TMPDIR/mekugi-debug-stdin"; echo "{}" > "$TMPDIR/mekugi-debug-stdin/metrics.json"; printf "%s" "$task"';
+    const child = 'IFS= read -r task; mkdir -p "$TMPDIR/mekugi-debug-stdin"; echo "{}" > "$TMPDIR/mekugi-debug-stdin/metrics.json"; '
+      + 'echo "Router session usage" > "$TMPDIR/mekugi-token-metrics-root.md"; printf "%s" "$task"';
     const result = await runOwnedContainer({
       docker: "docker", name: `codex-ab-export-stdin-${process.pid}`, timeoutMs: 30000, stdin: "benchmark task\n",
       createArgs: ["--network", "none", "-i", "-v", `${root}:/mekugi-exports`,
@@ -104,6 +105,7 @@ liveTest("metrics wrapper preserves the task on Codex stdin", async () => {
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.stdout).toBe("benchmark task");
     expect(JSON.parse(await readFile(join(root, "metrics.json"), "utf8"))).toEqual({});
+    expect(await readFile(join(root, "token-metrics.md"), "utf8")).toBe("Router session usage\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -186,7 +186,9 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
     const kept = exports?.status === "valid" ? applyMekugiProviderUsage(metered, exports.metrics) : exports?.reason ?? "exports were not requested";
     if (kept !== null) metered.warnings.push(`Mekugi provider-attempt accounting is unavailable (${kept}); tokens and requests use the Codex rollout, which omits router-side attempts`);
     const stdoutPath = state.results?.[arm]?.stdout_path;
-    const nativeCost = stdoutPath ? await readMekugiNativeCost(join(runDir, stdoutPath)) : null;
+    const metricsPath = (state.mekugi_exports_by_arm?.[arm] ?? state.mekugi_exports)?.metrics;
+    const nativeCost = stdoutPath ? await readMekugiNativeCost(join(runDir, stdoutPath),
+      metricsPath ? join(runDir, dirname(metricsPath), "token-metrics.md") : undefined) : null;
     for (const agent of metered.agents) {
       agent.estimated_api_usd = null;
       agent.cost_components = { uncached_input_usd: null, cached_input_usd: null, cache_write_input_usd: null, output_usd: null };
