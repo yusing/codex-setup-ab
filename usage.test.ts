@@ -336,7 +336,7 @@ test("meterGrokHome prices the current Grok build alias from aggregate usage", a
   expect(result.totals.estimated_api_usd).toBeCloseTo((90 * 1.6 + 10 * 0.4 + 20 * 4.8) / 1_000_000);
 });
 
-test("meterGrokHome uses complete provider cost instead of applying tiers to session totals", async () => {
+test("meterGrokHome retains provider cost while pricing aggregate tokens at base list rates", async () => {
   const home = await mkdtemp(join(tmpdir(), "codex-ab-grok-provider-cost-"));
   await mkdir(join(home, "sessions/workspace/session"), { recursive: true });
   await writeFile(join(home, "sessions/workspace/session/usage.json"), JSON.stringify({
@@ -348,11 +348,44 @@ test("meterGrokHome uses complete provider cost instead of applying tiers to ses
     overrides: [{ min_prompt_tokens: 200_000, min_prompt_tokens_exclusive: false, prompt: 4 / 1_000_000, completion: 12 / 1_000_000, input_cache_read: 1 / 1_000_000 }],
   } }));
   expect(result.complete).toBe(true);
-  expect(result.totals.estimated_api_usd).toBeCloseTo(0.123456789);
+  expect(result.totals.estimated_api_usd).toBeCloseTo((50_000 * 2 + 200_000 * 0.5 + 1_000 * 6) / 1_000_000);
+  expect(result.agents[0]?.recorded_api_usd).toBeCloseTo(0.123456789);
   expect(result.totals.command_seconds).toBeNull();
-  expect(result.agents[0]?.method).toBe("grok_usage.session (provider-recorded cost)");
+  expect(result.agents[0]?.method).toBe("grok_usage.session (list-price estimate)");
   expect(result.agents[0]?.max_input_tokens).toBeNull();
-  expect(Object.values(result.agents[0]!.cost_components).every(value => value === null)).toBe(true);
+  expect(result.agents[0]?.cost_components).toEqual({
+    uncached_input_usd: 50_000 * (2 / 1_000_000), cached_input_usd: 200_000 * (0.5 / 1_000_000), cache_write_input_usd: 0, output_usd: 0.006,
+  });
+  expect(result.warnings.join("\n")).toContain("request-level long-context tiers cannot be reconstructed");
+});
+
+test("meterGrokHome sums only matched terminal durations and deduplicates identical events", async () => {
+  const home = await mkdtemp(join(tmpdir(), "codex-ab-grok-timing-"));
+  temporaryHomes.push(home);
+  const session = join(home, "sessions/workspace/session");
+  await mkdir(session, { recursive: true });
+  await writeFile(join(session, "usage.json"), JSON.stringify({ sessionId: "timed", session: {
+    inputTokens: 10, outputTokens: 2, cachedReadTokens: 0, cacheCreationTokens: 0,
+    reasoningTokens: 0, totalTokens: 12, modelCalls: 1, primaryModelId: "grok-4.7-build",
+  } }));
+  const started = { type: "tool_started", tool_name: "run_terminal_command", ts: "2026-09-09T00:00:00.000Z" };
+  const completed = (id: string, duration_ms: number) => ({
+    type: "tool_completed", tool_name: "run_terminal_command", tool_call_id: id,
+    duration_ms, ts: "2026-09-09T00:00:01.000Z",
+  });
+  const done = completed("first", 1_250);
+  await writeFile(join(session, "events.jsonl"), [started, done, done,
+    started, completed("second", 750),
+  ].map(item => JSON.stringify(item)).join("\n") + "\n");
+  const prices = pricing({ "grok-4.7": rate({ model_id: "grok-4.7" }) });
+  const matched = await meterGrokHome(home, prices);
+  expect(matched.totals.command_seconds).toBe(2);
+  expect(matched.complete).toBe(true);
+  await writeFile(join(session, "events.jsonl"), [started, done, started]
+    .map(item => JSON.stringify(item)).join("\n") + "\n");
+  const incomplete = await meterGrokHome(home, prices);
+  expect(incomplete.totals.command_seconds).toBeNull();
+  expect(incomplete.warnings.join("\n")).toContain("command timing is unavailable or incomplete");
 });
 
 test("meterGrokHome marks an unpriced session incomplete", async () => {
@@ -427,6 +460,23 @@ describe("applyMekugiProviderUsage", () => {
     expect(metered.totals).toMatchObject({ input_tokens: 480, total_tokens: 515, command_seconds: 1.5 });
     expect(metered.codex_visible_requests).toEqual({ root: 2 });
     expect(metered.warnings.at(-1)).toContain("3 validated provider attempts, excluding prewarm; the Codex rollout recorded 2 requests and 300 input tokens");
+  });
+
+  test("prices each captured provider attempt at captured list rates, not native total", () => {
+    const metered = rollout();
+    const prices = pricing({ "gpt-6-sol": rate({ model_id: "gpt-6-sol" }) });
+    expect(applyMekugiProviderUsage(metered, { exchanges: [
+      { sequence: 1, request_kind: "prewarm", thread_id: "root", provider_attempts: [attempt(90, 0, 0)] },
+      { sequence: 2, request_kind: "turn", thread_id: "root", provider_attempts: [attempt(100, 0, 10)] },
+      { sequence: 3, request_kind: "turn", thread_id: "root", provider_attempts: [attempt(180, 100, 5), attempt(200, 180, 20)] },
+    ] }, prices)).toBeNull();
+    expect(metered.agents[0]?.cost_components.uncached_input_usd).toBeCloseTo(0.2);
+    expect(metered.agents[0]?.cost_components.cached_input_usd).toBeCloseTo(0.028);
+    expect(metered.agents[0]?.cost_components.cache_write_input_usd).toBe(0);
+    expect(metered.agents[0]?.cost_components.output_usd).toBeCloseTo(0.35);
+    expect(metered.agents[0]?.estimated_api_usd).toBeCloseTo(0.578);
+    expect(metered.totals.estimated_api_usd).toBeCloseTo(0.578);
+    expect(metered.totals.command_seconds).toBe(1.5);
   });
 
   test("keeps rollout usage when capture and rollout disagree or usage is incomplete", () => {

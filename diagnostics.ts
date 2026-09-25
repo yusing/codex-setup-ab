@@ -156,7 +156,7 @@ ${Object.entries(delta.cost_components).map(([component, value]) => `- ${compone
 ` : "";
   return `## Programmatic performance breakdown
 
-These figures come from deduplicated usage records and tool timestamps, without a model request. Input tokens include context replayed on every request, not just newly read text. Cached input is still counted and billed at its recorded rate. Cumulative-only records cannot establish request counts or context sizes.${providerArms ? ` Rows for ${providerArms} count validated Mekugi provider attempts, including router-side re-sends and retries and excluding prewarm; other rows count Codex rollout records.` : ""}
+These figures come from deduplicated usage records and tool timestamps, without a model request. Input tokens include context replayed on every request, not just newly read text. Cached input is still counted and billed at its recorded rate. Cumulative-only records cannot establish request counts or context sizes.${providerArms ? ` Rows for ${providerArms} count validated Mekugi provider attempts, including router-side re-sends and retries and excluding prewarm; other rows use Codex rollout records or Grok session counters.` : ""}
 
 | Arm / role | model requests | mean input/request | peak input/request | uncached input | cached input | output | estimated USD |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -164,7 +164,7 @@ ${rows.join("\n") || "| unavailable | | | | | | | |"}
 
 ### Estimated cost components
 
-Per-request model and long-context rates are applied before summation; reasoning is already included in output.
+Per-request model and long-context rates are applied where request usage exists. Grok session-only estimates use base rates and exclude unknown long-context premiums. Reasoning is already included in output.
 
 | Arm | uncached input USD | cached input USD | cache writes USD | output USD |
 | --- | ---: | ---: | ---: | ---: |
@@ -174,6 +174,6 @@ ${difference}
 
 ${timing.join("\n") || "- No session timing available."}
 
-Tool spans end at the first matched output and are unioned within each session. Additional or unmatched outputs and missing timestamps mark timing partial: observed spans are lower bounds, not inferred zero time or proof of terminal completion. Child spans can overlap the parent's work: do not sum them into elapsed time. Command durations can overlap model generation and are not the same as blocked time. These measurements locate observed overhead but do not prove which instruction, launcher, or model behavior caused it.
+Codex tool spans end at the first matched output; Grok spans use completion timestamps and recorded durations, reconciled against start counts. Spans are unioned within each session. Additional or unmatched outputs and missing timestamps mark timing partial: observed spans are lower bounds, not inferred zero time or proof of terminal completion. Child spans can overlap the parent's work: do not sum them into elapsed time. Command durations can overlap model generation and are not the same as blocked time. These measurements locate observed overhead but do not prove which instruction, launcher, or model behavior caused it.
 `;
 }

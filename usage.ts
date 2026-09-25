@@ -63,6 +63,7 @@ export interface AgentUsage {
   method: "token_usage_record" | "token_count.total_token_usage (request-cost approximation)" | "grok_usage.session (provider-recorded cost)" | "grok_usage.session (list-price estimate)" | "mekugi_capture.provider_attempts";
   usage: Usage;
   estimated_api_usd: number | null;
+  recorded_api_usd?: number | null;
   request_count: number | null;
   mean_input_tokens: number | null;
   max_input_tokens: number | null;
@@ -79,6 +80,7 @@ export interface MeteredRollouts {
   warnings: string[];
   complete: boolean;
   /** Present when validated Mekugi provider attempts replaced rollout usage: Codex-recorded requests per thread. */
+  recorded_api_usd?: number | null;
   codex_visible_requests?: Record<string, number | null>;
 }
 
@@ -375,6 +377,19 @@ function requestCost(usage: Usage, rates: ModelPricing): CostComponents {
   };
 }
 
+function sumCosts(items: CostComponents[]): CostComponents {
+  const result: CostComponents = { uncached_input_usd: 0, cached_input_usd: 0, cache_write_input_usd: 0, output_usd: 0 };
+  for (const item of items) for (const key of Object.keys(result) as Array<keyof CostComponents>) {
+    result[key] = result[key] === null || item[key] === null ? null : result[key] + item[key];
+  }
+  return result;
+}
+
+function totalCost(costs: CostComponents): number | null {
+  const values = Object.values(costs);
+  return values.some(value => value === null) ? null : values.reduce<number>((sum, value) => sum + value!, 0);
+}
+
 /** Read Mekugi's own four-decimal API estimate, rather than repricing its provider attempts. */
 function mekugiReportCost(report: string): number | null {
   const compact = /^Router session usage · Main turn: [^\n]+ · Total: [\d.]+[KMB]? in \/ [\d.]+[KMB]? out, \$([\d]+\.[\d]{4})(?: · [^\n]*)?$/.exec(report);
@@ -416,7 +431,7 @@ const PROVIDER_USAGE_KEYS = ["input_tokens", "cached_input_tokens", "output_toke
  * direct Codex rollouts do not record it either. Returns why rollout usage was
  * kept, or null after replacement.
  */
-export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unknown): string | null {
+export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unknown, pricing?: PricingSnapshot): string | null {
   const exchanges = isObject(metrics) && Array.isArray(metrics.exchanges) ? metrics.exchanges : null;
   if (!exchanges) return "validated metrics have no provider exchanges";
   const groups = new Map<string, { threadId: string; model: string; requests: Usage[] }>();
@@ -464,21 +479,30 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
   metered.agents = [...groups.values()].map(group => {
     const total = emptyUsage();
     for (const request of group.requests) addUsage(total, request);
+    const rates = pricing ? ratesFor(pricing, group.model) : null;
+    const costs = rates ? sumCosts(group.requests.map(request => requestCost(request, rates))) : { ...nullCosts };
+    const estimated = totalCost(costs);
     return {
       model: group.model,
       thread_id: group.threadId,
       method: "mekugi_capture.provider_attempts" as const,
       usage: total,
-      estimated_api_usd: null,
+      estimated_api_usd: estimated,
       request_count: group.requests.length,
       mean_input_tokens: group.requests.length ? total.input_tokens / group.requests.length : null,
       max_input_tokens: group.requests.reduce((peak, request) => Math.max(peak, request.input_tokens), 0),
-      cost_components: { ...nullCosts },
+      cost_components: costs,
     };
   }).sort((a, b) => a.thread_id.localeCompare(b.thread_id) || a.model.localeCompare(b.model));
   const totals = emptyUsage();
   for (const agent of metered.agents) addUsage(totals, agent.usage);
-  metered.totals = { ...metered.totals, ...totals };
+  metered.totals = { ...metered.totals, ...totals,
+    estimated_api_usd: metered.agents.some(agent => agent.estimated_api_usd === null) ? null
+      : metered.agents.reduce((sum, agent) => sum + agent.estimated_api_usd!, 0) };
+  if (pricing && metered.totals.estimated_api_usd === null) {
+    metered.complete = false;
+    metered.warnings.push("Mekugi provider attempts have missing list-price rates");
+  }
   metered.codex_visible_requests = visible;
   const attempts = metered.agents.reduce((sum, agent) => sum + agent.request_count!, 0);
   metered.warnings.push(`Mekugi tokens and requests use ${attempts} validated provider attempts, excluding prewarm; the Codex rollout recorded ${rolloutRequests ?? "unknown"} requests and ${rolloutInput} input tokens`);
@@ -731,9 +755,57 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
   };
 }
 
+async function grokTiming(directory: string, threadId: string): Promise<{ seconds: number | null; session?: SessionDiagnostics }> {
+  let events: JsonObject[];
+  try {
+    const lines = (await readFile(join(directory, "events.jsonl"), "utf8")).split("\n").filter(line => line.trim());
+    events = lines.map(line => JSON.parse(line) as JsonObject);
+    if (!events.length || events.some(event => !isObject(event))) return { seconds: null };
+  } catch { return { seconds: null }; }
+  const starts = new Map<string, number>();
+  const completions = new Map<string, number>();
+  const trace: JsonObject[] = [];
+  const completed = new Map<string, string>();
+  let seconds = 0;
+  let valid = true;
+  for (const event of events) {
+    if (event.type !== "tool_started" && event.type !== "tool_completed") continue;
+    if (typeof event.tool_name !== "string") { valid = false; continue; }
+    const name = event.tool_name;
+    if (event.type === "tool_started") {
+      starts.set(name, (starts.get(name) ?? 0) + 1);
+      continue;
+    }
+    const id = event.tool_call_id;
+    if (typeof id !== "string") { valid = false; continue; }
+    const serialized = JSON.stringify(event);
+    if (completed.has(id)) { if (completed.get(id) !== serialized) valid = false; continue; }
+    completed.set(id, serialized);
+    completions.set(name, (completions.get(name) ?? 0) + 1);
+    const duration = event.duration_ms;
+    if (typeof duration !== "number" || !Number.isFinite(duration) || duration < 0) { valid = false; continue; }
+    if (name === "run_terminal_command") seconds += duration / 1000;
+    const end = typeof event.ts === "string" ? Date.parse(event.ts) : NaN;
+    trace.push({ type: "response_item", timestamp: Number.isFinite(end) ? new Date(end - duration).toISOString() : null,
+      payload: { type: "function_call", call_id: id, name } });
+    trace.push({ type: "response_item", timestamp: event.ts,
+      payload: { type: "function_call_output", call_id: id } });
+  }
+  // Grok starts carry no call ID. Reconcile counts, but use completion durations
+  // for spans rather than guessing start/completion pairing under concurrency.
+  for (const name of new Set([...starts.keys(), ...completions.keys()])) {
+    if (starts.get(name) !== completions.get(name)) valid = false;
+  }
+  const session = sessionDiagnostics(threadId, trace, join(directory, "events.jsonl"));
+  session.tool_timing_complete &&= valid;
+  return { seconds: valid ? seconds : null, session };
+}
+
 export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot): Promise<MeteredRollouts> {
   const warnings = [...pricing.warnings];
   const usagePath = join(grokHome, "sessions");
+  const sessions: SessionDiagnostics[] = [];
+  let commandSeconds: number | null = 0;
   const agents: AgentUsage[] = [];
   const totals = emptyUsage();
   let estimatedTotal: number | null = 0;
@@ -767,6 +839,13 @@ export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot):
           continue;
         }
         const session = parsed.session;
+        const threadId = typeof parsed.sessionId === "string" ? parsed.sessionId : directory;
+        const timing = await grokTiming(directory, threadId);
+        if (timing.session) sessions.push(timing.session);
+        if (timing.seconds === null) {
+          commandSeconds = null;
+          warnings.push(`${path}: Grok command timing is unavailable or incomplete in events.jsonl`);
+        } else if (commandSeconds !== null) commandSeconds += timing.seconds;
         const model = typeof session.primaryModelId === "string" ? session.primaryModelId : "grok-4.7";
         const usage: Usage = {
           input_tokens: typeof session.inputTokens === "number" ? session.inputTokens : 0,
@@ -789,30 +868,24 @@ export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot):
         let method: AgentUsage["method"];
         const recordedTicks = typeof session.costUsdTicks === "number" && Number.isSafeInteger(session.costUsdTicks)
           && session.costUsdTicks >= 0 && session.costIsPartial !== true ? session.costUsdTicks : null;
-        if (recordedTicks !== null) {
-          estimated = recordedTicks / GROK_USD_TICKS_PER_DOLLAR;
-          method = "grok_usage.session (provider-recorded cost)";
+        method = "grok_usage.session (list-price estimate)";
+        const rates = ratesFor(pricing, model);
+        if (!rates) {
+          markIncomplete(`${path}: no API price for Grok model ${model}`);
         } else {
-          method = "grok_usage.session (list-price estimate)";
-          const rates = ratesFor(pricing, model);
-          if (!rates) {
-            markIncomplete(`${path}: no API price for Grok model ${model}`);
-          } else if (modelCalls !== 1 && rates.overrides.length > 0) {
-            markIncomplete(`${path}: per-request Grok usage is unavailable for tiered pricing`);
-          } else {
-            costs = requestCost(usage, rates);
-            const values = Object.values(costs);
-            if (values.some(value => value === null)) {
-              markIncomplete(`${path}: required Grok API price component is missing`);
-            } else {
-              estimated = values.reduce<number>((sum, value) => sum + value!, 0);
-            }
-          }
+          // Session totals are not a single prompt. Without request usage, quote base rates
+          // explicitly rather than activating a long-context tier on the cumulative total.
+          const aggregate = modelCalls !== 1;
+          if (aggregate && rates.overrides.length > 0) warnings.push(`${path}: Grok list-price estimate uses base rates; request-level long-context tiers cannot be reconstructed from session totals`);
+          costs = requestCost(usage, aggregate ? { ...rates, overrides: [] } : rates);
+          estimated = totalCost(costs);
+          if (estimated === null) markIncomplete(`${path}: required Grok API price component is missing`);
         }
         agents.push({
           model,
-          thread_id: typeof parsed.sessionId === "string" ? parsed.sessionId : entry.name,
+          thread_id: threadId,
           method,
+          recorded_api_usd: recordedTicks === null ? null : recordedTicks / GROK_USD_TICKS_PER_DOLLAR,
           usage,
           estimated_api_usd: estimated,
           request_count: modelCalls,
@@ -831,5 +904,5 @@ export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot):
     markIncomplete(`cannot enumerate Grok usage: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!found) markIncomplete("no readable Grok usage.json found");
-  return { agents, sessions: [], totals: { ...totals, estimated_api_usd: estimatedTotal, command_seconds: null }, warnings: [...new Set(warnings), "Grok command timing is unavailable from usage.json"], complete };
+  return { agents, sessions, totals: { ...totals, estimated_api_usd: estimatedTotal, command_seconds: found ? commandSeconds : null }, warnings: [...new Set(warnings)], complete };
 }

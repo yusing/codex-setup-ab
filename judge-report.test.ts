@@ -91,7 +91,7 @@ async function fixtureRun(stockPassed = true, currentPassed = true): Promise<{ r
   return { run, auth };
 }
 
-test("Mekugi native cost replaces only cost, including mentor arms", async () => {
+test("Mekugi native cost is retained separately from captured list-price comparison", async () => {
   const { run } = await fixtureRun();
   const state = await readState(run);
   state.execution.current_launcher = "mekugi";
@@ -100,18 +100,20 @@ test("Mekugi native cost replaces only cost, including mentor arms", async () =>
   await usageSession(join(run, "arms/current/home/ubuntu/.codex"), "current-agent", "gpt-6-sol", 30);
   await file(join(run, state.results!.current!.stdout_path), `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Router session usage · Main turn: 30 in / 4 out, $0.1234 · Total: 30 in / 4 out, $0.1234" } })}\n`);
   const direct = (await Bun.file((await buildReport(run)).jsonPath).json()).arms;
-  expect(direct.current.usage.totals.estimated_api_usd).toBe(0.1234);
+  expect(direct.current.usage.totals.estimated_api_usd).toBeNull();
+  expect(direct.current.usage.recorded_api_usd).toBe(0.1234);
   expect(direct.current.usage.totals.total_tokens).toBe(34);
-  expect(direct.current.usage.complete).toBe(true);
+  expect(direct.current.usage.complete).toBe(false);
   expect(direct.current.usage.agents[0].estimated_api_usd).toBeNull();
   expect(direct.stock.usage.totals.estimated_api_usd).not.toBeNull();
 
   state.mentor = { setup: "stock", child_model: "gpt-6-luna", child_effort: "medium", parent_prompt: { path: "fixture", sha256: "fixture" }, child_config: { path: "fixture", sha256: "fixture" } };
   await writeState(run, state);
   const mentor = (await Bun.file((await buildReport(run)).jsonPath).json()).arms;
-  expect(mentor.current.usage.totals.estimated_api_usd).toBe(0.1234);
-  expect(mentor.stock.usage.totals.estimated_api_usd).toBeNull();
-  expect(mentor.stock.usage.complete).toBe(false);
+  expect(mentor.current.usage.totals.estimated_api_usd).toBeNull();
+  expect(mentor.current.usage.recorded_api_usd).toBe(0.1234);
+  expect(mentor.stock.usage.totals.estimated_api_usd).toBeCloseTo(0.00002745);
+  expect(mentor.stock.usage.complete).toBe(true);
   expect(mentor.stock.usage.totals.total_tokens).toBe(24);
 });
 
@@ -183,6 +185,29 @@ test("judge validation rejects schema errors and ineligible winners", () => {
 });
 
 describe("report completion and winner eligibility", () => {
+  test("partial accounting cannot win the descriptive cost ranking", async () => {
+    const { run } = await fixtureRun();
+    const path = join(run, "arms/stock/home/ubuntu/.codex/sessions/stock-agent.jsonl");
+    await writeFile(path, `${await readFile(path, "utf8")}not-json\n`);
+    const report = await Bun.file((await buildReport(run)).jsonPath).json();
+    expect(report.arms.stock.usage.complete).toBe(false);
+    expect(report.arms.stock.usage.totals.estimated_api_usd).not.toBeNull();
+    expect(report.efficiency.lower_estimated_cost).toBe("none");
+  });
+
+  test("explains failed candidates while reporting efficiency without a quality winner", async () => {
+    const { run } = await fixtureRun(false, false);
+    const paths = await buildReport(run);
+    const report = await Bun.file(paths.jsonPath).json();
+    expect(report.winner).toBe("none");
+    expect(report.winner_reason).toBe("Neither candidate passed the required checks.");
+    expect(report.efficiency).toEqual({ faster: "stock", lower_estimated_cost: "stock" });
+    const markdown = await readFile(paths.markdownPath, "utf8");
+    expect(markdown).toContain("Winner explanation: Neither candidate passed the required checks.");
+    expect(markdown).toContain("Lower estimated list-price cost: **Codex (minimal setup)**");
+    expect(markdown).toContain("descriptive only, not a quality winner");
+  });
+
   test("allows the passing candidate to win when the other fully measured candidate fails", async () => {
     const { run, auth } = await fixtureRun(true, false);
     await fixtureJudge(run, "candidate-1", "candidate-2");
@@ -193,7 +218,7 @@ describe("report completion and winner eligibility", () => {
     expect(report.winner).toBe("stock");
     const markdown = await readFile(paths.markdownPath, "utf8");
     expect(markdown).toContain("priority service tier");
-    for (const heading of ["input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD", "## Codex (current-home setup) minus Codex (minimal setup)", "## Pricing provenance", "### Judge usage by attempted pass", "not a subscription charge or invoice", "service tier is not modeled"]) expect(markdown).toContain(heading);
+    for (const heading of ["input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD", "## Codex (current-home setup) minus Codex (minimal setup)", "## Pricing provenance", "### Judge usage by attempted pass", "not subscription charges or invoices", "service-tier premiums are not modeled"]) expect(markdown).toContain(heading);
 
     const state = await readState(run);
     delete state.results?.current?.grade;
