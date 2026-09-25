@@ -297,10 +297,22 @@ export function explainMechanisms(arms: MechanismArm[]): MechanismReport {
           && cacheWriteCostA !== null && cacheWriteCostB !== null && outputCostA !== null && outputCostB !== null
           ? ` The model-priced cost components differ by ${signedUsd(cachedCostB - cachedCostA)} cached input, ${signedUsd(uncachedCostB - uncachedCostA)} uncached input, ${signedUsd(cacheWriteCostB - cacheWriteCostA)} cache writes, and ${signedUsd(outputCostB - outputCostA)} output.`
           : "";
+        const hidden = (usage: MeteredRollouts, agents: typeof a, requests: number, name: string): string => {
+          if (!usage.codex_visible_requests) return "";
+          const visible = [...new Set(agents.map(agent => agent.thread_id))].reduce<number | null>((sum, id) => {
+            const count = usage.codex_visible_requests![id];
+            return sum === null || count == null ? null : sum + count;
+          }, 0);
+          return visible === null || visible >= requests ? ""
+            : ` ${requests - visible} of ${name}'s ${requests} requests were provider attempts that Codex did not record, such as router-local tool re-sends or retries.`;
+        };
+        const hiddenDetail = hidden(current, b, requestsB, "the current parent") + hidden(stock, a, requestsA, "the stock parent");
         findings.push({
           mechanism: "Extra workflow turns repeatedly process accumulated context",
-          explanation: `The current parent made ${requestsB} model requests versus ${requestsA} for stock and processed ${inputB.toLocaleString("en-US")} versus ${inputA.toLocaleString("en-US")} input tokens, a difference of ${deltaInput.toLocaleString("en-US")}. ${componentDetail} Every request processes accumulated history again; caching reduces its price but not its token count.${costDetail}`,
-          evidence: ["Deduplicated per-root token usage, request counts, and model-specific cost components in the tables below."],
+          explanation: `The current parent made ${requestsB} model requests versus ${requestsA} for stock and processed ${inputB.toLocaleString("en-US")} versus ${inputA.toLocaleString("en-US")} input tokens, a difference of ${deltaInput.toLocaleString("en-US")}.${hiddenDetail} ${componentDetail} Every request processes accumulated history again; caching reduces its price but not its token count.${costDetail}`,
+          evidence: [hiddenDetail
+            ? "Validated Mekugi provider attempts (excluding prewarm), Codex-recorded request counts, and per-root usage in the tables below."
+            : "Deduplicated per-root token usage, request counts, and model-specific cost components in the tables below."],
           limitation: "This symmetric accounting decomposition is not a causal counterfactual. It shows where the measured delta sits; visible workflow events are needed to explain why each additional request occurred, and provider cache-key decisions remain unknown.",
         });
       }

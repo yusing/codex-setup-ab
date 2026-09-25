@@ -192,7 +192,11 @@ machine state and consolidated report. Preparation and preflight make no model r
 Supply `--mekugi-source DIR` (required for `same-setup`) to enable `--capture-output`
 and `--metrics-output` exports. The checkout is not read for validation scripts or binary provenance; use `--mekugi-build` for recorded source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and its hash.
 The report validates the capturer's schema, treatment identity and raw-record consistency with that analyzer, retaining missing or
-invalid telemetry explicitly. Capture calculations remain owned by Mekugi. The exports are
+invalid telemetry explicitly. Capture calculations remain owned by Mekugi. When validation
+succeeds, a Mekugi arm's tokens and requests come from its provider attempts, excluding prewarm,
+because router-local tool re-sends and retries never reach the Codex rollout while Mekugi's native
+cost includes them. Direct Codex rollouts omit prewarm too. Without a valid capture, the report
+falls back to the Codex rollout and says so in its warnings. The exports are otherwise
 within-arm diagnostics, not measured savings against A. Consistency checks alone do not protect
 exports from executor writes; the optional protected runtime below supplies that boundary.
 
@@ -295,7 +299,7 @@ suite_run="$(./dist/codex-ab prepare-suite \
 ./dist/codex-ab report-suite --suite-run "$suite_run"
 ```
 
-Use `--comparison mentor-matrix --mekugi-source /path/to/matching/mekugi` instead to prepare four Mekugi cells per task: stock setup × mentor off/on and current setup × mentor off/on. Each off/on pair uses the *same* setup and launcher. The fixed parent is gpt-6-sol at high reasoning; its one `benchmark_worker` child is configured as gpt-6-luna at medium reasoning. Mekugi's mentor flag changes only the child routing in the on arm. Per-arm Mekugi captures and metrics are validated against the snapshotted runner-bundled analyzer, Codex rollout lineage, and provider models; incomplete diagnostics suppress a complete measurement. Mekugi-arm cost uses Mekugi's native four-decimal session estimate, which accounts for the actual routed models. Codex-visible rollout tokens and requests remain the paired count source; missing or incomplete native usage leaves cost unknown. These captures are still writable from the ordinary agent container, so they are consistency checks rather than tamper-proof provenance. `--protect-mekugi` is not supported for the matrix. The existing direct-Codex `stock-current` comparison is unchanged.
+Use `--comparison mentor-matrix --mekugi-source /path/to/matching/mekugi` instead to prepare four Mekugi cells per task: stock setup × mentor off/on and current setup × mentor off/on. Each off/on pair uses the *same* setup and launcher. The fixed parent is gpt-6-sol at high reasoning; its one `benchmark_worker` child is configured as gpt-6-luna at medium reasoning. Mekugi's mentor flag changes only the child routing in the on arm. Per-arm Mekugi captures and metrics are validated against the snapshotted runner-bundled analyzer, Codex rollout lineage, and provider models; incomplete diagnostics suppress a complete measurement. Mekugi-arm cost uses Mekugi's native four-decimal session estimate, which accounts for the actual routed models. Tokens and requests come from each arm's validated provider attempts, excluding prewarm; missing or incomplete native usage leaves cost unknown. These captures are still writable from the ordinary agent container, so they are consistency checks rather than tamper-proof provenance. `--protect-mekugi` is not supported for the matrix. The existing direct-Codex `stock-current` comparison is unchanged.
 
 The suite report gives task-level counts and B-minus-A time and estimated cost effects only for complete pairs where **both** candidates pass. Its macro mean weights each eligible task once; unknown cost is not zero-filled. `stock` and `current` arm labels mean mentor off and on within a mentor-matrix setup, not stock versus current setup. The suite executes trial sets sequentially, does not resume interrupted runs, and retains partial reports. It is descriptive rather than a randomized causal estimate.
 

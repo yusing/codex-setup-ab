@@ -60,7 +60,7 @@ export interface CostComponents {
 export interface AgentUsage {
   model: string;
   thread_id: string;
-  method: "token_usage_record" | "token_count.total_token_usage (request-cost approximation)" | "grok_usage.session (provider-recorded cost)" | "grok_usage.session (list-price estimate)";
+  method: "token_usage_record" | "token_count.total_token_usage (request-cost approximation)" | "grok_usage.session (provider-recorded cost)" | "grok_usage.session (list-price estimate)" | "mekugi_capture.provider_attempts";
   usage: Usage;
   estimated_api_usd: number | null;
   request_count: number | null;
@@ -78,6 +78,8 @@ export interface MeteredRollouts {
   };
   warnings: string[];
   complete: boolean;
+  /** Present when validated Mekugi provider attempts replaced rollout usage: Codex-recorded requests per thread. */
+  codex_visible_requests?: Record<string, number | null>;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -392,6 +394,84 @@ export async function readMekugiNativeCost(stdoutPath: string): Promise<number |
       ? Number(cells[9]!.slice(1)) : null;
   }
   return cost;
+}
+
+const PROVIDER_USAGE_KEYS = ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens"] as const;
+
+/**
+ * Replace a Mekugi arm's rollout usage with its validated provider attempts.
+ * Router-local tool re-sends and provider retries never reach the Codex rollout,
+ * although Mekugi's native cost includes them. Prewarm stays excluded because
+ * direct Codex rollouts do not record it either. Returns why rollout usage was
+ * kept, or null after replacement.
+ */
+export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unknown): string | null {
+  const exchanges = isObject(metrics) && Array.isArray(metrics.exchanges) ? metrics.exchanges : null;
+  if (!exchanges) return "validated metrics have no provider exchanges";
+  const groups = new Map<string, { threadId: string; model: string; requests: Usage[] }>();
+  for (const exchange of exchanges) {
+    if (!isObject(exchange)) return "a provider exchange is not an object";
+    if (exchange.request_kind === "prewarm") continue;
+    const label = `exchange ${String(exchange.sequence)}`;
+    if (typeof exchange.thread_id !== "string" || !exchange.thread_id) return `${label} has no thread id`;
+    if (!Array.isArray(exchange.provider_attempts)) return `${label} has no provider attempts`;
+    for (const attempt of exchange.provider_attempts) {
+      if (!isObject(attempt)) return `${label} has an invalid provider attempt`;
+      // A failed attempt without usage recorded no tokens; a completed one must.
+      if (!isObject(attempt.usage) && attempt.status !== "completed") continue;
+      const recorded = isObject(attempt.usage) ? attempt.usage : {};
+      const counts = PROVIDER_USAGE_KEYS.map(key => recorded[key]);
+      if (!counts.every(value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
+        return `${label} has a provider attempt without complete usage`;
+      }
+      const [input, cached, output, reasoning] = counts as number[];
+      const model = typeof attempt.model === "string" && attempt.model ? attempt.model : null;
+      if (!model) return `${label} has a provider attempt without a model`;
+      const key = `${exchange.thread_id}\u0000${model}`;
+      let group = groups.get(key);
+      if (!group) groups.set(key, group = { threadId: exchange.thread_id, model, requests: [] });
+      group.requests.push({
+        input_tokens: input!, cached_input_tokens: cached!, cache_write_input_tokens: 0,
+        output_tokens: output!, reasoning_output_tokens: reasoning!, total_tokens: input! + output!,
+      });
+    }
+  }
+  const captured = new Set([...groups.values()].map(group => group.threadId));
+  const rolloutThreads = new Set(metered.agents.map(agent => agent.thread_id));
+  const known = new Set(metered.sessions.map(session => session.thread_id));
+  for (const threadId of captured) if (!known.has(threadId)) return `capture thread ${threadId} has no Codex rollout`;
+  for (const threadId of rolloutThreads) if (!captured.has(threadId)) return `rollout thread ${threadId} has no captured provider attempts`;
+
+  const visible: Record<string, number | null> = {};
+  for (const agent of metered.agents) {
+    const prior = Object.hasOwn(visible, agent.thread_id) ? visible[agent.thread_id]! : 0;
+    visible[agent.thread_id] = prior === null || agent.request_count === null ? null : prior + agent.request_count;
+  }
+  const rolloutRequests = Object.values(visible).reduce<number | null>((sum, count) => sum === null || count === null ? null : sum + count, 0);
+  const rolloutInput = metered.totals.input_tokens;
+  const nullCosts: CostComponents = { uncached_input_usd: null, cached_input_usd: null, cache_write_input_usd: null, output_usd: null };
+  metered.agents = [...groups.values()].map(group => {
+    const total = emptyUsage();
+    for (const request of group.requests) addUsage(total, request);
+    return {
+      model: group.model,
+      thread_id: group.threadId,
+      method: "mekugi_capture.provider_attempts" as const,
+      usage: total,
+      estimated_api_usd: null,
+      request_count: group.requests.length,
+      mean_input_tokens: group.requests.length ? total.input_tokens / group.requests.length : null,
+      max_input_tokens: group.requests.reduce((peak, request) => Math.max(peak, request.input_tokens), 0),
+      cost_components: { ...nullCosts },
+    };
+  }).sort((a, b) => a.thread_id.localeCompare(b.thread_id) || a.model.localeCompare(b.model));
+  const totals = emptyUsage();
+  for (const agent of metered.agents) addUsage(totals, agent.usage);
+  metered.totals = { ...metered.totals, ...totals };
+  metered.codex_visible_requests = visible;
+  const attempts = metered.agents.reduce((sum, agent) => sum + agent.request_count!, 0);
+  metered.warnings.push(`Mekugi tokens and requests use ${attempts} validated provider attempts, excluding prewarm; the Codex rollout recorded ${rolloutRequests ?? "unknown"} requests and ${rolloutInput} input tokens`);
+  return null;
 }
 
 export interface MeterExclusions {

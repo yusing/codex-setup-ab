@@ -144,6 +144,7 @@ export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRol
         : usage.agents.reduce((total, agent) => total + agent.cost_components![key]!, 0);
     return `| ${arm} | ${number(sum("uncached_input_usd"), 6)} | ${number(sum("cached_input_usd"), 6)} | ${number(sum("cache_write_input_usd"), 6)} | ${number(sum("output_usd"), 6)} |`;
   });
+  const providerArms = arms.filter(({ usage }) => usage.codex_visible_requests).map(({ arm }) => arm).join(" and ");
   const comparison = performanceComparison(arms);
   const delta = comparison?.current_minus_stock;
   const difference = delta ? `
@@ -155,7 +156,7 @@ ${Object.entries(delta.cost_components).map(([component, value]) => `- ${compone
 ` : "";
   return `## Programmatic performance breakdown
 
-These figures come from deduplicated usage records and tool timestamps, without a model request. Input tokens include context replayed on every request, not just newly read text. Cached input is still counted and billed at its recorded rate. Cumulative-only records cannot establish request counts or context sizes.
+These figures come from deduplicated usage records and tool timestamps, without a model request. Input tokens include context replayed on every request, not just newly read text. Cached input is still counted and billed at its recorded rate. Cumulative-only records cannot establish request counts or context sizes.${providerArms ? ` Rows for ${providerArms} count validated Mekugi provider attempts, including router-side re-sends and retries and excluding prewarm; other rows count Codex rollout records.` : ""}
 
 | Arm / role | model requests | mean input/request | peak input/request | uncached input | cached input | output | estimated USD |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |

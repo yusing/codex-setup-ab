@@ -2,11 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sessionDiagnostics } from "./diagnostics";
 import {
+  applyMekugiProviderUsage,
   fetchPricing,
   meterGrokHome,
   meterRollouts,
   readMekugiNativeCost,
+  type MeteredRollouts,
   type ModelPricing,
   type PricingSnapshot,
   type Usage,
@@ -377,4 +380,55 @@ test("explicit exclusions remove deduplicated requests and commands without cumu
   expect(adjusted.agents.find(agent => agent.thread_id === "child")?.usage.total_tokens).toBe(0);
   await expect(meterRollouts(home, prices, { response_ids: ["missing"], command_ids: [] })).rejects.toThrow("excluded response not found");
   await expect(meterRollouts(home, prices, { response_ids: [], command_ids: ["missing"] })).rejects.toThrow("excluded command not found");
+});
+
+describe("applyMekugiProviderUsage", () => {
+  const attempt = (input: number, cached: number, output: number, model = "gpt-6-sol") => ({
+    model, status: "completed", usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, reasoning_tokens: 1 },
+  });
+  const rollout = (): MeteredRollouts => ({
+    complete: true, warnings: [],
+    sessions: [sessionDiagnostics("root", [{ type: "session_meta", payload: { id: "root" } }], "root.jsonl")],
+    agents: [{
+      model: "gpt-6-sol", thread_id: "root", method: "token_usage_record",
+      usage: usage({ input_tokens: 300, cached_input_tokens: 200, output_tokens: 30, total_tokens: 330 }),
+      estimated_api_usd: null, request_count: 2, mean_input_tokens: 150, max_input_tokens: 200,
+      cost_components: { uncached_input_usd: null, cached_input_usd: null, cache_write_input_usd: null, output_usd: null },
+    }],
+    totals: { ...usage({ input_tokens: 300, cached_input_tokens: 200, output_tokens: 30, total_tokens: 330 }), estimated_api_usd: null, command_seconds: 1.5 },
+  });
+
+  test("counts router-side attempts, excludes prewarm, and records Codex-visible requests", () => {
+    const metered = rollout();
+    expect(applyMekugiProviderUsage(metered, { exchanges: [
+      { sequence: 1, request_kind: "prewarm", thread_id: "root", provider_attempts: [attempt(90, 0, 0)] },
+      { sequence: 2, request_kind: "turn", thread_id: "root", provider_attempts: [attempt(100, 0, 10)] },
+      { sequence: 3, request_kind: "turn", thread_id: "root", provider_attempts: [attempt(180, 100, 5), attempt(200, 180, 20)] },
+      { sequence: 4, request_kind: "turn", thread_id: "root", provider_attempts: [{ model: "gpt-6-sol", status: "failed" }] },
+    ] })).toBeNull();
+    expect(metered.agents).toHaveLength(1);
+    expect(metered.agents[0]).toMatchObject({
+      method: "mekugi_capture.provider_attempts", request_count: 3, mean_input_tokens: 160, max_input_tokens: 200,
+      usage: usage({ input_tokens: 480, cached_input_tokens: 280, output_tokens: 35, reasoning_output_tokens: 3, total_tokens: 515 }),
+    });
+    expect(metered.totals).toMatchObject({ input_tokens: 480, total_tokens: 515, command_seconds: 1.5 });
+    expect(metered.codex_visible_requests).toEqual({ root: 2 });
+    expect(metered.warnings.at(-1)).toContain("3 validated provider attempts, excluding prewarm; the Codex rollout recorded 2 requests and 300 input tokens");
+  });
+
+  test("keeps rollout usage when capture and rollout disagree or usage is incomplete", () => {
+    const cases: Array<[unknown, string]> = [
+      [{}, "no provider exchanges"],
+      [{ exchanges: [{ sequence: 2, request_kind: "turn", thread_id: "other", provider_attempts: [attempt(1, 0, 1)] }] }, "capture thread other has no Codex rollout"],
+      [{ exchanges: [{ sequence: 1, request_kind: "prewarm", thread_id: "root", provider_attempts: [attempt(1, 0, 0)] }] }, "rollout thread root has no captured provider attempts"],
+      [{ exchanges: [{ sequence: 2, request_kind: "turn", thread_id: "root", provider_attempts: [{ model: "gpt-6-sol", status: "completed" }] }] }, "exchange 2 has a provider attempt without complete usage"],
+    ];
+    for (const [metrics, reason] of cases) {
+      const metered = rollout();
+      expect(applyMekugiProviderUsage(metered, metrics)).toContain(reason);
+      expect(metered.agents[0]!.request_count).toBe(2);
+      expect(metered.totals.input_tokens).toBe(300);
+      expect(metered.codex_visible_requests).toBeUndefined();
+    }
+  });
 });

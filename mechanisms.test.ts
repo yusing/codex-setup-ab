@@ -174,4 +174,10 @@ test("request accounting explains token and cost deltas without claiming causali
   expect(lowerMean.explanation).toContain("approximately 87.5 tokens");
   expect(lowerMean.explanation).toContain("-37.5 tokens");
   expect(lowerMean.explanation).not.toContain("higher mean");
+  expect(lowerMean.explanation).not.toContain("did not record");
+
+  current.codex_visible_requests = { root: 1 };
+  const hidden = explainMechanisms([{ arm: "stock", usage: stock }, { arm: "current", usage: current }]).findings.at(-1)!;
+  expect(hidden.explanation).toContain("1 of the current parent's 2 requests were provider attempts that Codex did not record");
+  expect(hidden.evidence[0]).toContain("Validated Mekugi provider attempts");
 });
