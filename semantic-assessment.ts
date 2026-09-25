@@ -75,7 +75,8 @@ export async function prepareSemanticAssessment(options: {
   order: [ArmName, ArmName]; docker: string; signal?: AbortSignal;
   ask: (stage: string, prompt: string, schema: object) => Promise<unknown>;
   persistState?: () => Promise<void>;
-  reuseExisting?: boolean;
+  /** Recovery: reuse saved existing-test evidence and the latest completed evidence round. */
+  reuseSaved?: boolean;
 }): Promise<SemanticAssessmentEvidence> {
   const { state, contract, runDir, pass, order } = options;
   const root = join(runDir, "evaluator/semantic", `pass-${pass}`);
@@ -97,12 +98,21 @@ export async function prepareSemanticAssessment(options: {
     return result;
   };
   for (const id of candidates) {
-    evidence.existing_tests[id] = options.reuseExisting ? JSON.parse(await readFile(join(root, "existing", id, "__existing_tests", "evidence.json"), "utf8")) as CriterionEvidence : await execute(id, {
+    evidence.existing_tests[id] = options.reuseSaved ? JSON.parse(await readFile(join(root, "existing", id, "__existing_tests", "evidence.json"), "utf8")) as CriterionEvidence : await execute(id, {
       criterion: "__existing_tests", files: [], command: ["sh", "-lc", contract.existing_tests],
       rationale: "Predetermined relevant existing tests, executed in an isolated evaluator.",
     }, "existing");
   }
-  for (let round = 1; round <= 2; round++) {
+  let first = 1;
+  for (const round of options.reuseSaved ? [2, 1] : []) {
+    const saved = await readFile(join(root, `round-${round}.json`), "utf8").catch(() => null);
+    if (saved === null) continue;
+    Object.assign(evidence, JSON.parse(saved) as SemanticAssessmentEvidence);
+    first = round + 1;
+    break;
+  }
+  const passed = () => candidates.every(id => evidence.candidates[id].every(item => item.status === "pass"));
+  for (let round = first; round <= 2 && !(round > 1 && passed()); round++) {
     const repairable = round === 1 ? undefined : Object.fromEntries(candidates.map(id => [id,
       evidence.candidates[id].filter(item => item.status !== "pass").map(item => item.criterion)])) as Record<Candidate, string[]>;
     const prompt = `You are a blind behavioral evaluator. Inspect both read-only anonymous candidate directories under /candidates.
@@ -137,7 +147,6 @@ Existing and earlier executed evidence: ${JSON.stringify(semanticPromptEvidence(
       });
     }
     await writeFile(join(root, `round-${round}.json`), JSON.stringify(evidence, null, 2), { mode: 0o600 });
-    if (candidates.every(id => evidence.candidates[id].every(item => item.status === "pass"))) break;
   }
   return evidence;
 }

@@ -674,6 +674,17 @@ test("completed semantic check time and artifacts survive a later author failure
   expect(captured.execution.elapsed_ms).toBeGreaterThan(0);
 });
 
+/** Wrap a fake Docker so candidate 2's round-1 fixture check fails in every pass. */
+async function failingFirstCandidate2Check(fakePath: string, name: string): Promise<string> {
+  const docker = join(root, name);
+  await file(docker, `#!/bin/sh
+last=; for argument in "$@"; do last="$argument"; done
+'${fakePath}' "$@" || exit
+case "$1:$last" in start:*-semantic-?-round-1-candidate-2-fixture) echo 'assertion failed' >&2; exit 1 ;; esac
+`, 0o755);
+  return docker;
+}
+
 test("harness repair keeps a successful check when the judge resubmits it", async () => {
   const criteriaPath = join(root, "repair-criteria.json");
   await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
@@ -685,12 +696,7 @@ test("harness repair keeps a successful check when the judge resubmits it", asyn
   const fake = await fakeOwnedDocker(0);
   const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
   // Only candidate 2's first check fails, so round 2 may repair it but not candidate 1's pass.
-  const docker = join(root, "repair-docker");
-  await file(docker, `#!/bin/sh
-last=; for argument in "$@"; do last="$argument"; done
-'${fake.path}' "$@" || exit
-case "$1:$last" in start:*-semantic-1-round-1-candidate-2-fixture) echo 'assertion failed' >&2; exit 1 ;; esac
-`, 0o755);
+  const docker = await failingFirstCandidate2Check(fake.path, "repair-docker");
   const check = { criterion: "fixture", files: [], command: ["true"], rationale: "Fixture behavior checked." };
   const asked: { stage: string; prompt: string; schema: any }[] = [];
   const evidence = await prepareSemanticAssessment({ runDir: run, state, contract: state.criteria!.contract, pass: 1,
@@ -1359,10 +1365,10 @@ test("explicit judge recovery reuses saved pass 1 and runs only incomplete pass 
   judge.attempts = judge.attempts!.filter(item => item.pass === 1 || item.stage === "harness-1");
   for (const item of judge.attempts) if (item.pass === 2) item.status = "canceled";
   judge.usage_homes = judge.attempts.map(item => item.usage_home);
-  await expect(assertRecoverableJudge(run, state)).rejects.toThrow("no started pass-2 behavioral checks");
+  await rm(join(run, "evaluator/semantic/pass-2/round-1.json"));
+  await expect(assertRecoverableJudge(run, state)).rejects.toThrow("partially executed behavioral checks (pass 2, round 1)");
   await rm(join(run, "evaluator/judge/pass-2-assessment-1"), { recursive: true });
   await rm(join(run, "evaluator/semantic/pass-2/round-1"), { recursive: true });
-  await rm(join(run, "evaluator/semantic/pass-2/round-1.json"));
   const repaired = JSON.parse(await readFile(join(run, "evaluator/semantic/pass-1/round-1.json"), "utf8"));
   repaired.candidates["candidate-1"][0].execution.stdout = "repaired pass-1 evidence";
   await writeFile(join(run, "evaluator/semantic/pass-1/round-2.json"), JSON.stringify(repaired));
@@ -1384,6 +1390,52 @@ test("explicit judge recovery reuses saved pass 1 and runs only incomplete pass 
   expect(addedLog).not.toContain("-stock ");
   expect(addedLog).not.toContain("-current ");
   expect(finished.finishing_history).toHaveLength(1);
+}, 30_000);
+
+test("judge recovery replays a saved repair that resubmitted a successful check", async () => {
+  const run = await prepared();
+  const auth = join(root, "recover-repair-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const docker = await failingFirstCandidate2Check(fake.path, "recover-repair-docker");
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: docker });
+  // Rewind to the pre-fix failure: pass 1 threw on its saved round-2 plan before executing it,
+  // which canceled pass 2's repair stage. Completed round-1 evidence and harness responses remain.
+  const state = await readState(run);
+  const judge = state.judge!;
+  judge.status = "failed";
+  judge.error = "Error: harness repair must not replace a successful check";
+  judge.failed_pass = 1;
+  judge.passes = [];
+  judge.winner = "none";
+  judge.attempts = judge.attempts!.filter(item => item.stage !== "assessment");
+  for (const item of judge.attempts) if (item.pass === 2 && item.stage === "harness-2") item.status = "canceled";
+  judge.usage_homes = judge.attempts.map(item => item.usage_home);
+  for (const pass of [1, 2]) {
+    await rm(join(run, `evaluator/judge/pass-${pass}-assessment-1`), { recursive: true });
+    await rm(join(run, `evaluator/semantic/pass-${pass}/round-2`), { recursive: true });
+    await rm(join(run, `evaluator/semantic/pass-${pass}/round-2.json`));
+  }
+  state.finishing = { status: "failed", started_at: new Date().toISOString(), bundle_path: "reports/bundle", error: judge.error };
+  await writeState(run, state);
+  const priorLog = await readFile(fake.log, "utf8");
+  await finishBenchmark({ runDir: run, authFile: auth, dockerBin: docker, recoverJudge: true });
+  const finished = await readState(run);
+  expect(finished.finishing?.status).toBe("complete");
+  expect(finished.judge?.status).toBe("complete");
+  expect(finished.judge?.recovery?.reused_passes).toEqual([1, 2]);
+  expect(finished.judge?.passes.map(pass => pass.criteria?.["candidate-2"][0]?.status)).toEqual(["pass", "pass"]);
+  const addedLog = (await readFile(fake.log, "utf8")).slice(priorLog.length);
+  expect(addedLog).not.toContain("-judge-1-harness-");
+  expect(addedLog).not.toContain("-judge-2-harness-1-");
+  expect(addedLog).toContain("-judge-2-harness-2-2");
+  expect(addedLog).toContain("-judge-1-assessment-1");
+  expect(addedLog).toContain("-judge-2-assessment-1");
+  expect(addedLog).not.toMatch(/-semantic-[12]-(?:existing|round-1)-/);
+  expect(addedLog).toContain("-semantic-1-round-2-candidate-2-fixture");
+  expect(addedLog).not.toContain("-semantic-1-round-2-candidate-1-");
+  expect(addedLog).not.toContain("-stock ");
+  expect(addedLog).not.toContain("-current ");
 }, 30_000);
 
 test("preflight rejects mise migration warnings even when mise exits successfully", async () => {

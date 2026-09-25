@@ -78,7 +78,7 @@ Report options:
   --output-dir DIR      export outside the source run without changing its reports or state
   --source-assessments FILE  include recorded supplemental assessments inline; never reruns judging
 
-Started or finished commands are never resumed or restarted except for the explicit, audited source-only judge recovery.
+Started or finished commands are never resumed or restarted except for the explicit, audited judge recovery (finish --recover-judge).
 Within an active judge command, Sol capacity errors retry twice (5s, 15s), preserving all attempts.
 Test execution and accounting are programmatic; semantic harness authors and source judges use additional model calls.
 Run and judge require the explicit model-execution confirmation flag.

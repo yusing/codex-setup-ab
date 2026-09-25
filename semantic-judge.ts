@@ -1,4 +1,4 @@
-import { access, chmod, copyFile, cp, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { runOwnedContainer, withOwnedNetwork } from "./container";
@@ -20,7 +20,8 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
     reasoning_effort: "high", service_tier: "default", passes: [], winner: "none", usage_homes: [], attempts: [],
   };
   if (recover) {
-    report.recovery = { started_at: new Date().toISOString(), previous_error: report.error!, reused_passes: [1] };
+    const reused = new Set(report.attempts!.filter(item => item.status === "complete").map(item => item.pass));
+    report.recovery = { started_at: new Date().toISOString(), previous_error: report.error!, reused_passes: [...reused].sort() };
     report.status = "incomplete";
     delete report.error;
     delete report.failed_pass;
@@ -48,6 +49,12 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
       const pass = (index + 1) as 1 | 2;
       const ask = async (stage: string, prompt: string, schema: object): Promise<unknown> => {
         if (Buffer.byteLength(prompt) > 2_000_000) throw new Error("semantic evidence exceeds prompt limit; retained without truncation");
+        // Recovery replays a completed stage's recorded response instead of paying for it again.
+        const saved = recover ? report.attempts!.filter(item => item.pass === pass && item.stage === stage && item.status === "complete").at(-1) : undefined;
+        if (saved) {
+          process.stderr.write(`[judge] semantic pass ${pass}, ${stage}: reusing completed attempt ${saved.attempt}\n`);
+          return JSON.parse(lastAgentMessage(await readFile(join(runDir, saved.stdout_path), "utf8"))) as unknown;
+        }
         const previous = Math.max(0, ...report.attempts!.filter(item => item.pass === pass && item.stage === stage).map(item => item.attempt));
         for (let retry = 1; retry <= 3; retry++) {
           const number = previous + retry;
@@ -126,11 +133,8 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
         }
         throw new Error("semantic judge capacity retries exhausted");
       };
-      const repaired = recover && pass === 1 && await access(join(runDir, "evaluator/semantic/pass-1/round-2.json")).then(() => true, () => false);
-      const evidence = recover && pass === 1
-        ? JSON.parse(await readFile(join(runDir, "evaluator/semantic/pass-1", repaired ? "round-2.json" : "round-1.json"), "utf8")) as Awaited<ReturnType<typeof prepareSemanticAssessment>>
-        : await prepareSemanticAssessment({ runDir, state, contract, pass, order, docker, signal: controller.signal,
-          ask: (stage, prompt, schema) => ask(stage, `${prompt}\nTask:\n${task}`, schema), persistState, reuseExisting: recover });
+      const evidence = await prepareSemanticAssessment({ runDir, state, contract, pass, order, docker, signal: controller.signal,
+        ask: (stage, prompt, schema) => ask(stage, `${prompt}\nTask:\n${task}`, schema), persistState, reuseSaved: recover });
       const schema = { ...OUTPUT_SCHEMA, required: [...OUTPUT_SCHEMA.required, "criteria"],
         properties: { ...OUTPUT_SCHEMA.properties, criteria: criterionAssessmentSchema(contract) } };
       const prompt = `You are a blind software-change judge. Inspect both read-only /candidates/candidate-1 and /candidates/candidate-2.
@@ -146,8 +150,7 @@ Fixed criteria: ${JSON.stringify(contract)}
 Executed evidence summary (complete files are under /evidence): ${JSON.stringify(semanticPromptEvidence(evidence))}
 Return the required JSON schema with scores, evidence, issues, winner, rationale and per-candidate criteria.
 Each candidate must have exactly one criteria entry for every fixed criterion, using only those criterion IDs. Do not add the existing-test result as a criterion.`;
-      const saved = recover && pass === 1 ? report.attempts!.find(item => item.pass === 1 && item.stage === "assessment" && item.status === "complete") : undefined;
-      const value = saved ? JSON.parse(lastAgentMessage(await readFile(join(runDir, saved.stdout_path), "utf8"))) as unknown : await ask("assessment", prompt, schema);
+      const value = await ask("assessment", prompt, schema);
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid semantic assessment");
       const { criteria: rawCriteria, ...scores } = value as Record<string, unknown>;
       const criteria = validateCriterionAssessments(rawCriteria, contract, evidence);
@@ -171,7 +174,7 @@ Each candidate must have exactly one criteria entry for every fixed criterion, u
     };
 
     let initiatingFailure: { error: unknown; pass: 1 | 2 } | undefined;
-    if (recover) process.stderr.write("[judge] reusing saved pass 1; continuing incomplete pass 2\n");
+    if (recover) process.stderr.write("[judge] reusing completed judge stages and evidence rounds; continuing incomplete stages\n");
     else process.stderr.write("[judge] running both reversed-order semantic passes in parallel\n");
     const guardedPass = (order: [ArmName, ArmName], index: number) => runPass(order, index).catch(error => {
       if (!cancellationRequested && !initiatingFailure) {

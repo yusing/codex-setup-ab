@@ -138,19 +138,29 @@ export function summarizeCheck(check: CommandEvidence): Record<string, unknown> 
   };
 }
 
+/** Judge failures that current validation handles without failing, so their completed stages can be reused. */
+const RECOVERABLE_JUDGE_ERRORS = new Set([
+  "Error: source-only failure requires an explicitly required public interface",
+  "Error: harness repair must not replace a successful check",
+]);
+
 export async function assertRecoverableJudge(runDir: string, state: RunState): Promise<void> {
   const prior = state.judge;
-  if (prior?.status !== "failed" || prior.error !== "Error: source-only failure requires an explicitly required public interface" ||
-      prior.failed_pass !== 1 || prior.passes.length ||
-      prior.attempts?.filter(item => item.pass === 1 && item.stage === "assessment" && item.status === "complete").length !== 1 ||
-      prior.attempts?.some(item => item.pass === 2 && (item.stage !== "harness-1" || item.status !== "canceled"))) {
-    throw new Error("recovery requires the saved pass-1 source-only validation failure and an interrupted first pass-2 harness");
+  if (prior?.status !== "failed" || !RECOVERABLE_JUDGE_ERRORS.has(prior.error ?? "") || prior.passes.length ||
+      prior.attempts?.some(item => item.status === "running")) {
+    throw new Error("recovery requires a failed judge with a recoverable validation error, no recorded pass, and no running attempt");
   }
   const exists = async (path: string) => access(path).then(() => true, () => false);
-  if (await exists(join(runDir, "evaluator/semantic/pass-2/round-1")) ||
-      await exists(join(runDir, "evaluator/semantic/pass-2/round-2")) ||
-      !(await Promise.all(CANDIDATES.map(id => exists(join(runDir, "evaluator/semantic/pass-2/existing", id, "__existing_tests/evidence.json"))))).every(Boolean)) {
-    throw new Error("recovery requires completed existing tests and no started pass-2 behavioral checks");
+  for (const pass of [1, 2]) {
+    const root = join(runDir, "evaluator/semantic", `pass-${pass}`);
+    if (!(await Promise.all(CANDIDATES.map(id => exists(join(root, "existing", id, "__existing_tests/evidence.json"))))).every(Boolean)) {
+      throw new Error("recovery requires completed existing tests in both passes");
+    }
+    for (const round of [1, 2]) {
+      if (await exists(join(root, `round-${round}`)) && !await exists(join(root, `round-${round}.json`))) {
+        throw new Error(`recovery requires no partially executed behavioral checks (pass ${pass}, round ${round})`);
+      }
+    }
   }
 }
 
