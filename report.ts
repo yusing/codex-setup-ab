@@ -194,8 +194,8 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
     metered.totals.estimated_api_usd = nativeCost;
     metered.complete = metered.complete && nativeCost !== null;
     metered.warnings.push(nativeCost === null
-      ? "Mekugi native usage-report cost is unavailable or incomplete"
-      : "Mekugi cost uses its native four-decimal usage report; rollout per-agent prices are withheld");
+      ? "Mekugi native token-metrics cost is unavailable or incomplete"
+      : "Mekugi cost uses its native four-decimal token metrics; rollout per-agent prices are withheld");
   }
   const judgeAttempts = state.judge ? await Promise.all(state.judge.usage_homes.map(async home => ({ home, usage: await meterRollouts(join(runDir, home), pricing) }))) : [];
   const judgeUsage = state.judge ? sumMeters(judgeAttempts) : undefined;

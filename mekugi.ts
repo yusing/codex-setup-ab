@@ -4,7 +4,16 @@ import { exec } from "./process";
 import { sha256 } from "./state";
 import type { ArmName, RunState } from "./types";
 
-const FLAGS = new Set(["mode", "model-protocol", "main-mentor-handoff", "mentor-handoff", "timeout", "stream-idle-timeout", "debug", "grok"]);
+const FLAGS = new Set(["mode", "main-mentor-handoff", "mentor-handoff", "post-compact-recovery", "explore-filter", "timeout", "stream-idle-timeout", "debug", "grok"]);
+
+/** Keep private --debug artifacts in the disposable container; export only capturer-owned metrics. */
+export const MEKUGI_METRICS_WRAPPER = 'temp_dir=$(mktemp -d "${MEKUGI_DEBUG_TMPDIR:-/tmp}/codex-ab-mekugi.XXXXXX") || exit; '
+  + 'exec 3<&0; TMPDIR="$temp_dir" "$@" <&3 3<&- & child=$!; exec 3<&-; '
+  + 'trap \'kill -TERM "$child" 2>/dev/null || :\' TERM INT; '
+  + 'while :; do wait "$child"; status=$?; kill -0 "$child" 2>/dev/null || break; done; '
+  + 'for metrics in "$temp_dir"/mekugi-debug-*/metrics.json; do '
+  + 'if [ -f "$metrics" ]; then cp "$metrics" /mekugi-exports/metrics.json || exit 1; exit "$status"; fi; '
+  + 'done; if [ "$status" -eq 0 ]; then echo "Mekugi did not write metrics" >&2; exit 1; fi; exit "$status"';
 
 export function validateMekugiFlags(value: unknown): string[] {
   if (!Array.isArray(value) || value.some(flag => typeof flag !== "string")) throw new Error("Mekugi flags must be a string array");
@@ -13,16 +22,16 @@ export function validateMekugiFlags(value: unknown): string[] {
     const match = /^--([a-z-]+)(?:=([^\0\n]*))?$/.exec(flag);
     if (!match || !FLAGS.has(match[1]!) || seen.has(match[1]!) || (match[2] === undefined && match[1] !== "debug" && match[1] !== "grok")) throw new Error(`unsupported or repeated Mekugi flag: ${flag}`);
     if (match[1] === "mode" && !["mekugi", "passthrough"].includes(match[2]!)) throw new Error("invalid Mekugi mode");
-    if (match[1] === "model-protocol" && !["native", "ctp2"].includes(match[2]!)) throw new Error("invalid Mekugi protocol");
+    if (["main-mentor-handoff", "mentor-handoff", "post-compact-recovery", "explore-filter"].includes(match[1]!) && !["true", "false"].includes(match[2]!)) throw new Error(`invalid Mekugi boolean flag: ${flag}`);
+    if (match[1] === "debug" && match[2] !== undefined && match[2] !== "true") throw new Error(`invalid Mekugi debug flag: ${flag}`);
     seen.add(match[1]!);
   }
   return value;
 }
 
-export function mekugiIdentity(flags: string[]): { mode: string; model_protocol: string } {
+export function mekugiIdentity(flags: string[]): { mode: string } {
   return {
     mode: flags.find(flag => flag.startsWith("--mode="))?.slice("--mode=".length) ?? "mekugi",
-    model_protocol: flags.find(flag => flag.startsWith("--model-protocol="))?.slice("--model-protocol=".length) ?? "native",
   };
 }
 
@@ -46,7 +55,7 @@ export async function validateMekugiExports(runDir: string, state: RunState, arm
     "metrics = owner['load_json'](Path(sys.argv[2]))",
     "identity = json.loads(sys.argv[4])",
     "arm = 'control' if identity['mode'] == 'passthrough' else 'mekugi'",
-    "config = {'benchmark_mode': 'paired', 'treatment_model_protocol': identity['model_protocol']}",
+    "config = {'benchmark_mode': 'paired'}",
     "owner['validate_snapshot'](metrics, arm, config)",
     "owner['validate_raw_capture'](Path(sys.argv[3]), metrics)",
     "print(json.dumps(metrics))",

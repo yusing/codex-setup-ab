@@ -2,6 +2,7 @@ import { dependencyImage } from "./dependencies";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
+import { MEKUGI_METRICS_WRAPPER } from "./mekugi";
 import { runOwnedContainer } from "./container";
 import type { RunState } from "./types";
 
@@ -13,8 +14,10 @@ export function protectedArgs(runDir: string, state: RunState, runtime: string):
   return ["--user", "0:0", "--read-only", "--cap-add", "NET_ADMIN", "--cap-add", "SYS_ADMIN",
     "--security-opt", "no-new-privileges", "--security-opt", "apparmor=unconfined",
     "--tmpfs", "/tmp:exec,size=4g,mode=1777",
+    "--tmpfs", "/mekugi-debug:size=4g,mode=0700",
     "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin:/usr/sbin:/sbin",
     "-e", "MEKUGI_RUNTIME_DIR=/mekugi-runtime", "-e", "XDG_STATE_HOME=/mekugi-runtime/state",
+    "-e", "MEKUGI_DEBUG_TMPDIR=/mekugi-debug",
     "-e", "BENCH_ARTIFACT_DIR=/mekugi-exports", "-e", "GOCACHE=/tmp/go-build",
     "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
     "-v", `${runtime}:/mekugi-runtime`,
@@ -45,7 +48,7 @@ export async function protectedPreflight(docker: string, runDir: string, state: 
   const probe = join(directory, "probe.py");
   await writeFile(probe, `#!/usr/bin/env python3
 import os, pathlib, subprocess, urllib.request
-for directory in [os.environ['MEKUGI_RUNTIME_DIR'], os.environ['BENCH_ARTIFACT_DIR']]:
+for directory in [os.environ['MEKUGI_RUNTIME_DIR'], os.environ['BENCH_ARTIFACT_DIR'], os.environ['MEKUGI_DEBUG_TMPDIR']]:
     try:
         pathlib.Path(directory, 'executor-tamper').write_text('bad')
     except OSError:
@@ -66,8 +69,8 @@ print('CODEX_AB_PROTECTED_RUNTIME_OK')
         "-v", `${workspace}:/workspace`, "-v", `${home}:/home/ubuntu`,
         "-v", `${exports}:/mekugi-exports`, "-v", `${join(directory, "modules")}:/go/pkg/mod:ro`,
         "-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
-    const command = [dependencyImage(state), "mise", "exec", "--", "mekugi", ...(state.mekugi_flags ?? []),
-      "--capture-output=/mekugi-exports/capture.jsonl", "--metrics-output=/mekugi-exports/metrics.json", "codex", "--version"];
+    const command = [dependencyImage(state), "mise", "exec", "--", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...(state.mekugi_flags ?? []),
+      ...(state.mekugi_flags?.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]), "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"];
     const result = await runOwnedContainer({ docker, name: `${state.id}-isolation-probe`, signal, timeoutMs: 180000,
       createArgs: [...common, "-v", `${join(directory, "toolhost.js")}:/probe-toolhost.js:ro`, "-v", `${join(directory, "probe.go")}:/probe.go:ro`,
         "-v", `${probe}:/usr/local/libexec/codex-real:ro`, ...command] });

@@ -3,6 +3,7 @@ set -euo pipefail
 : "${MEKUGI_BASE_URL:?Codex must be launched by mekugi}"
 : "${MEKUGI_RUNTIME_DIR:?}"
 : "${BENCH_ARTIFACT_DIR:?}"
+export TMPDIR=/tmp
 port=${MEKUGI_BASE_URL#http://127.0.0.1:}
 port=${port%/v1}
 [[ $port =~ ^[0-9]+$ ]] || { echo 'benchmark: invalid private listener' >&2; exit 1; }

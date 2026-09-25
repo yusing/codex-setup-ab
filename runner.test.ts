@@ -150,7 +150,7 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json "));
   expect(launches).toHaveLength(2);
   expect(launches.some(line => line.includes(" mise exec -- codex exec "))).toBe(true);
-  expect(launches.some(line => line.includes(" mise exec -- mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec "))).toBe(true);
+  expect(launches.some(line => line.includes(" mise exec -- sh -c ") && line.includes("mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --debug codex exec "))).toBe(true);
   expect(launches.every(line => line.includes(`${state.runtime_tools.current_setup_installs}:/home/ubuntu/.local/share/mise/installs:ro`))).toBe(true);
   expect(await readlink(join(run, "arms/current/home/ubuntu/linked-guidance"))).toBe("AGENTS.md");
   await file(join(run, "reports/report.json"), "{}");
@@ -195,7 +195,7 @@ test("stock-mekugi isolates the launcher without current-home guidance", async (
   const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json "));
   expect(launches).toHaveLength(2);
   expect(launches.some(line => line.includes(" codex exec --json ") && !line.includes(" mekugi "))).toBe(true);
-  expect(launches.some(line => line.includes(" mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec --json "))).toBe(true);
+  expect(launches.some(line => line.includes(" sh -c ") && line.includes(" mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json "))).toBe(true);
   expect(launches.every(line => !line.includes(" mise exec ") && !line.includes("/home/ubuntu/.local/share/mise/installs:ro"))).toBe(true);
   await expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
@@ -260,8 +260,8 @@ for (const setup of ["stock", "current"] as const) {
     expect(creates).toHaveLength(2);
     const stock = creates.find(line => line.includes(`codex-ab-${state.id}-stock --label`))!;
     const current = creates.find(line => line.includes(`codex-ab-${state.id}-current --label`))!;
-    expect(stock).toContain("mekugi --main-mentor-handoff=false --mentor-handoff=false --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec --json");
-    expect(current).toContain("mekugi --main-mentor-handoff=false --mentor-handoff=true --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec --json");
+    expect(stock).toContain("mekugi --main-mentor-handoff=false --mentor-handoff=false --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json");
+    expect(current).toContain("mekugi --main-mentor-handoff=false --mentor-handoff=true --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json");
     expect(stock).toContain(`${join(run, "artifacts/stock/mekugi")}:/mekugi-exports`);
     expect(current).toContain(`${join(run, "artifacts/current/mekugi")}:/mekugi-exports`);
     expect(stock).toContain('agents.benchmark_worker.config_file="/benchmark-control/mentor-child.toml"');
@@ -269,8 +269,8 @@ for (const setup of ["stock", "current"] as const) {
     expect(stock).toContain("--model gpt-6-sol");
     expect(current).toContain('model_reasoning_effort="high"');
     if (setup === "current") {
-      expect(stock).toContain("mise exec -- mekugi");
-      expect(current).toContain("mise exec -- mekugi");
+      expect(stock).toContain("mise exec -- sh -c ");
+      expect(current).toContain("mise exec -- sh -c ");
     } else {
       expect(stock).not.toContain("mise exec -- mekugi");
       expect(current).not.toContain("mise exec -- mekugi");
@@ -440,7 +440,7 @@ test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
   await runBenchmark({ runDir: run, authFile: auth, grokAuthFile: grokAuth, dockerBin: fake.path });
   expect((await readState(run)).status).toBe("complete");
   const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json ") || line.includes(" grok --prompt-file "));
-  expect(launches.some(line => line.includes(" mekugi --mode=mekugi --grok --capture-output=/mekugi-exports/capture.jsonl --metrics-output=/mekugi-exports/metrics.json codex exec --json ") && line.includes(" --model grok:grok-4.6 "))).toBe(true);
+  expect(launches.some(line => line.includes(" mekugi --mode=mekugi --grok --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json ") && line.includes(" --model grok:grok-4.6 "))).toBe(true);
   expect(launches.some(line => line.includes(" grok --prompt-file /control/task.md --cwd /workspace -m grok-4.6 ") && line.includes("GROK_HOME=/home/ubuntu/.grok"))).toBe(true);
   expect(launches.every(line => !line.includes(" mise exec "))).toBe(true);
   const comparison = JSON.parse(await readFile(join(run, "reports/bundle/setup-comparison.json"), "utf8"));
@@ -470,8 +470,13 @@ test("protected runtime snapshots owner scripts without changing the direct arm"
   await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
   const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json "));
   expect(launches.find(line => line.includes(" mise exec -- codex exec "))!).not.toContain("--cap-add");
-  expect(launches.find(line => line.includes(" mise exec -- mekugi "))!).toContain("--cap-add SYS_ADMIN");
-  expect(launches.find(line => line.includes(" mise exec -- mekugi "))!).toContain("/usr/local/libexec/mekugi-agent-check.py:ro");
+  expect(launches.find(line => line.includes(" mise exec -- sh -c "))!).toContain("--cap-add SYS_ADMIN");
+  expect(launches.find(line => line.includes(" mise exec -- sh -c "))!).toContain("/usr/local/libexec/mekugi-agent-check.py:ro");
+  expect(launches.find(line => line.includes(" mise exec -- sh -c "))!).toContain("--tmpfs /mekugi-debug:size=4g,mode=0700");
+  expect(launches.find(line => line.includes(" mise exec -- sh -c "))!).toContain("MEKUGI_DEBUG_TMPDIR=/mekugi-debug");
+  const preflight = (await readFile(fake.log, "utf8")).split("\n").find(line => line.includes("-isolation-probe") && line.includes(" create "))!;
+  expect(preflight).toContain("mekugi-metrics mekugi");
+  expect(preflight).toContain("--debug --capture-output=/mekugi-exports/capture.jsonl codex --version");
   await file(join(run, state.protected_runtime!.scripts[0]!.path), "changed");
   await expect(verifyPreparedInputs(run, state)).rejects.toThrow("isolation script changed");
 });
@@ -535,6 +540,9 @@ test("Mekugi argument arrays cannot redirect benchmark-owned exports", () => {
   for (const value of ['["codex"]', '["--capture-output=/tmp/elsewhere"]', '["--config=other"]', '{}', '[3]']) {
     expect(() => parseMekugiFlags(value)).toThrow();
   }
+  expect(() => parseMekugiFlags('["--model-protocol=native"]')).toThrow();
+  expect(() => parseMekugiFlags('["--debug=false"]')).toThrow();
+  expect(parseMekugiFlags('["--post-compact-recovery=false","--explore-filter=false"]')).toEqual(["--post-compact-recovery=false", "--explore-filter=false"]);
 });
 
 test("task-pack CLI freezes pinned controls without exposing checks to either arm", async () => {

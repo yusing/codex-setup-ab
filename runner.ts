@@ -8,6 +8,7 @@ import candidateSource from "./candidate-script.txt" with { type: "text" };
 import { executorOwnership, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { readState, writeState, withRunLock } from "./state";
+import { MEKUGI_METRICS_WRAPPER } from "./mekugi";
 import { importControl } from "./control";
 import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
 
@@ -162,7 +163,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     progress("checking selected Mekugi flags and exports offline without model access");
     const launch = await runOwnedContainer({ docker, name: `${prefix}-mekugi`, signal, timeoutMs: 30000,
       createArgs: ["--network", "none", "-v", `${state.comparison === "codex-mekugi-grok" ? resolve(runDir, state.arms.stock.home_template) : currentHome}:/setup:ro`, image, "sh", "-lc",
-        'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && mekugi "$@" --capture-output=/tmp/capture.jsonl --metrics-output=/tmp/metrics.json codex --version',
+        'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && mekugi "$@" --capture-output=/tmp/capture.jsonl codex --version',
         "preflight", ...(state.mekugi_flags ?? [])] });
     await writeFile(join(runDir, "artifacts/preflight-mekugi.json"), JSON.stringify(launch, null, 2));
     if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
@@ -261,7 +262,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   let lifecycleError: string | undefined;
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
   const exportArgs = state.mekugi_exports_by_arm?.[arm] || (arm === exportArm && state.mekugi_exports)
-    ? ["--capture-output=/mekugi-exports/capture.jsonl", "--metrics-output=/mekugi-exports/metrics.json"] : [];
+    ? ["--capture-output=/mekugi-exports/capture.jsonl", ...(state.mekugi_flags?.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"])] : [];
   const exportMount = exportArgs.length ? ["-v", `${join(output, "mekugi")}:/mekugi-exports`] : [];
   if (exportArgs.length) await mkdir(join(output, "mekugi"), { recursive: true, mode: 0o700 });
   const protectedArm = arm === "current" && state.protected_runtime;
@@ -275,7 +276,8 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     : undefined;
   const mentorFlags = state.mentor ? ["--main-mentor-handoff=false", `--mentor-handoff=${arm === "current"}`] : [];
   const codexLauncher = mekugiArm ? ["mekugi", ...(state.mekugi_flags ?? []), ...mentorFlags, ...exportArgs, "codex"] : ["codex"];
-  const launcher = grokCommand ?? (mekugiArm && (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok" || state.mentor?.setup === "stock") ? codexLauncher : arm === "current" || state.comparison === "same-setup" || state.mentor?.setup === "current" ? ["mise", "exec", "--", ...codexLauncher] : ["codex"]);
+  const mekugiLauncher = exportArgs.length ? ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", ...codexLauncher] : codexLauncher;
+  const launcher = grokCommand ?? (mekugiArm && (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok" || state.mentor?.setup === "stock") ? mekugiLauncher : arm === "current" || state.comparison === "same-setup" || state.mentor?.setup === "current" ? ["mise", "exec", "--", ...mekugiLauncher] : ["codex"]);
   const grokPath = grokArm ? ["-e", "PATH=/home/ubuntu/.grok/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin"];
   const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
   try {

@@ -257,7 +257,7 @@ case "$preset" in
     prepare_args+=(
       --mekugi-source "$mekugi_source"
       --mekugi-bin "$mekugi_bin"
-      --mekugi-flags "[\"--mode=mekugi\",\"--model-protocol=native\",\"--grok\",\"--main-mentor-handoff=$mentor_handoff\",\"--mentor-handoff=$mentor_handoff\"]"
+      --mekugi-flags "[\"--mode=mekugi\",\"--grok\",\"--main-mentor-handoff=$mentor_handoff\",\"--mentor-handoff=$mentor_handoff\"]"
       --grok-bin "$grok_bin"
     )
     run_args+=(--grok-auth-file "$grok_auth_file")

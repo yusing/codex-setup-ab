@@ -162,7 +162,7 @@ run_dir="$(./dist/codex-ab prepare \
   --comparison codex-mekugi-grok \
   --mekugi-source /home/ubuntu/projects/mekugi \
   --mekugi-bin /home/ubuntu/go/bin/mekugi \
-  --mekugi-flags '["--mode=mekugi","--model-protocol=native","--grok"]' \
+  --mekugi-flags '["--mode=mekugi","--grok"]' \
   --grok-bin /home/ubuntu/.grok/bin/grok \
   --image codex-ab:0.154.0)"
 ./dist/codex-ab preflight --run-dir "$run_dir"
@@ -184,13 +184,13 @@ A reviewer overlay, if selected, therefore applies to both arms. There is no tre
 general workflow guidance. The default `stock-current` comparison is unchanged.
 
 Select the Mekugi executable with `--mekugi-bin`.
-Use `--mekugi-flags '["--mode=mekugi","--model-protocol=native"]'` for explicit Mekugi options placed before its `codex`
+Use `--mekugi-flags '["--mode=mekugi"]'` for explicit Mekugi options placed before its `codex`
 subcommand. Export destinations and runtime configuration are benchmark-owned and cannot be
 overridden through this option. The selected arguments and comparison identity appear in the
 machine state and consolidated report. Preparation and preflight make no model requests.
 
-Supply `--mekugi-source DIR` (required for `same-setup`) to enable `--capture-output`
-and `--metrics-output` exports. The checkout is not read for validation scripts or binary provenance; use `--mekugi-build` for recorded source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and its hash.
+Supply `--mekugi-source DIR` (required for `same-setup`) to enable sanitized `--capture-output`
+and capturer-owned metrics exports. Mekugi now writes the metrics snapshot through `--debug`; the runner keeps its other, potentially private debug files inside the disposable agent container and copies only `metrics.json` into the run artifacts. The checkout is not read for validation scripts or binary provenance; use `--mekugi-build` for recorded source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and its hash.
 The report validates the capturer's schema, treatment identity and raw-record consistency with that analyzer, retaining missing or
 invalid telemetry explicitly. Capture calculations remain owned by Mekugi. When validation
 succeeds, a Mekugi arm's tokens and requests come from its provider attempts, excluding prewarm,

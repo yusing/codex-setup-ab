@@ -9,7 +9,7 @@ mount --bind "$private_auth" "$auth_path"
 mount -o remount,bind,ro "$auth_path"
 rm -f -- "$private_auth"
 mount -t tmpfs -o size=1m,mode=000,ro tmpfs /benchmark-agent-issue-reports
-for path in "$MEKUGI_RUNTIME_DIR" "$BENCH_ARTIFACT_DIR" /root/.config; do
+for path in "$MEKUGI_RUNTIME_DIR" "$BENCH_ARTIFACT_DIR" "$MEKUGI_DEBUG_TMPDIR" /root/.config; do
  mount --bind "$path" "$path"
  mount -o remount,bind,ro "$path"
 done
