@@ -462,6 +462,19 @@ describe("applyMekugiProviderUsage", () => {
     expect(metered.warnings.at(-1)).toContain("3 validated provider attempts, excluding prewarm; the Codex rollout recorded 2 requests and 300 input tokens");
   });
 
+  test("retains journal evidence beside authoritative provider totals", () => {
+    const metered = rollout();
+    expect(applyMekugiProviderUsage(metered, { exchanges: [
+      { sequence: 1, request_kind: "compaction", thread_id: "root", compaction_answer: "router", provider_attempts: [] },
+      { sequence: 2, request_kind: "turn", thread_id: "root", provider_attempts: [attempt(100, 0, 10)],
+        journal: { started_at: "2026-09-29T00:00:00Z", sequence: 1, operations: { plan: 1 }, standalone_requests: 0, final_answers: 0, final_answer_bytes: 0, empty_outcomes: 0 } },
+    ] })).toBeNull();
+    expect(metered.totals.total_tokens).toBe(110);
+    expect(metered.journal?.compactions[0]?.answer).toBe("router");
+    expect(metered.journal?.post_compaction?.provider_tokens).toBe(110);
+    expect(metered.journal?.threads.root?.operations.plan).toBe(1);
+  });
+
   test("prices each captured provider attempt at captured list rates, not native total", () => {
     const metered = rollout();
     const prices = pricing({ "gpt-6-sol": rate({ model_id: "gpt-6-sol" }) });

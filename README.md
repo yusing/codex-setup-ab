@@ -438,6 +438,15 @@ or change overall winner eligibility. They are supplied evidence, not an operati
 
 The runner automatically writes `reports/report.md`, `reports/report.json`, and a checksummed `reports/bundle/` after execution, including partial runs. The bundle contains setup identities, task and evaluator controls, captured patches, interaction and role audits, source assessment, paired comparison, semantic check results, and integrity checks. Encrypted interaction content remains unknown; command waits are counted separately from reviewer-status polling. The standalone `report` command refreshes the standard report and an existing finishing bundle without starting inference. Readable rejected judge responses are retained separately as unvalidated evidence, never as an eligible winner. It includes raw, uncached, cached, cache-write, output, reasoning-output, and total tokens for root and child agents; estimated public-list API cost; command time; agent and grader wall time; gate status; B-minus-A percentages; both raw judge passes; and a separate judge cost. Pricing is fetched and snapshotted once per run, with source, timestamp, assumptions, and warnings. If usage or required checks are incomplete, the report shows no overall winner. When both candidates fail, neither wins; the report explains why and separately identifies the faster and lower-estimated-cost arms without declaring a quality winner.
 
+Validated Mekugi exports also report compaction answerer, provider cost and cost
+from the first compaction onward, excluding prewarm. Older exports without
+answerer evidence remain unknown, not provider-answered. Router answers with no
+provider attempts show zero provider tokens, not a savings estimate. The JSON
+usage evidence retains each thread's latest cumulative journal counters and its
+tracking start; snapshots are not added together across requests. Missing counts
+remain unknown. `--mekugi-flags` accepts `--journal-compaction=auto|slice|off`;
+this does not change Mekugi's gated default or authorize inference.
+
 The behavioral explanation matches captured review instructions against visible execution events.
 It recognizes isolated reviewer preparation, review gated until after validation,
 finding/edit/test/re-review cycles, and copied-workspace test overhead. Every supported mechanism

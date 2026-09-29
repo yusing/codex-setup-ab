@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { judgeRun, mappedWinner, validateJudgePass } from "./judge";
 import { buildReport, invalidateRun } from "./report";
-import { readState, writeState } from "./state";
+import { readState, sha256, writeState } from "./state";
 import type { ArmName, ArmResult, CommandEvidence, JudgeReport, RunState } from "./types";
 import type { PricingSnapshot } from "./usage";
 
@@ -115,6 +115,55 @@ test("Mekugi native cost is retained separately from captured list-price compari
   expect(mentor.stock.usage.totals.estimated_api_usd).toBeCloseTo(0.00002745);
   expect(mentor.stock.usage.complete).toBe(true);
   expect(mentor.stock.usage.totals.total_tokens).toBe(24);
+});
+
+test("validated journal evidence survives rollout accounting fallback for a capture thread mismatch", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.execution.current_launcher = "mekugi";
+  const validator = "artifacts/current/mekugi/analyze_capture.py";
+  const reader = "artifacts/current/mekugi/benchmark_jsonl.py";
+  const capture = "artifacts/current/mekugi/capture.jsonl";
+  const metricsPath = "artifacts/current/mekugi/metrics.json";
+  await file(join(run, validator), [
+    "import json",
+    "def load_json(path): return json.loads(path.read_text())",
+    "def validate_snapshot(metrics, *_):",
+    "    assert metrics['schema'] == 'fixture-validated'",
+    "def validate_raw_capture(path, metrics):",
+    "    assert path.read_text() == metrics['capture_marker']",
+    "",
+  ].join("\n"));
+  await file(join(run, reader), "# fixture reader\n");
+  await file(join(run, capture), "matching raw capture\n");
+  await file(join(run, metricsPath), JSON.stringify({
+    schema: "fixture-validated", capture_marker: "matching raw capture\n",
+    exchanges: [
+      { sequence: 1, thread_id: "capture-only-thread", request_kind: "compaction", status: "completed",
+        compaction_answer: "router", compaction_summary_bytes: 112, compaction_changes: 2, compaction_failures: 1,
+        provider_attempts: [], journal: { started_at: "2026-09-09T00:00:00.000Z", sequence: 3,
+          operations: { plan: 1, log: 2 }, standalone_requests: 0, final_answers: 1,
+          final_answer_bytes: 14, empty_outcomes: 0, last_outcome_empty: false } },
+    ],
+  }));
+  state.mekugi_exports = {
+    validator: { path: validator, sha256: await sha256(join(run, validator)) },
+    reader: { path: reader, sha256: await sha256(join(run, reader)) },
+    capture, metrics: metricsPath,
+  };
+  await writeState(run, state);
+
+  const paths = await buildReport(run);
+  const report = await Bun.file(paths.jsonPath).json();
+  const current = report.arms.current.usage;
+  expect(current.totals.total_tokens).toBe(34);
+  expect(current.agents[0].thread_id).toBe("current-agent");
+  expect(current.warnings).toContainEqual(expect.stringContaining("rollout thread current-agent has no captured provider attempts"));
+  expect(current.journal.compactions).toMatchObject([{ answer: "router", summary_bytes: 112, changes: 2, failures: 1 }]);
+  expect(current.journal.threads["capture-only-thread"]).toMatchObject({ operations: { plan: 1, log: 2 }, final_answer_bytes: 14 });
+  const markdown = await readFile(paths.markdownPath, "utf8");
+  expect(markdown).toContain("router: 1, provider: 0, unknown: 0");
+  expect(markdown).toContain("rollout thread current-agent has no captured provider attempts");
 });
 
 function verdict(winner: "candidate-1" | "candidate-2" | "tie" | "none", rationale: string, extra: Record<string, unknown> = {}): Record<string, unknown> {

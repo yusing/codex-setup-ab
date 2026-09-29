@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
+import { journalEvidence } from "./journal";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_TIMEOUT_MS = 8_000;
@@ -71,6 +72,7 @@ export interface AgentUsage {
 }
 
 export interface MeteredRollouts {
+  journal?: import("./journal").JournalEvidence;
   sessions: SessionDiagnostics[];
   agents: AgentUsage[];
   totals: Usage & {
@@ -530,6 +532,7 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
     metered.warnings.push("Mekugi provider attempts have missing list-price rates");
   }
   metered.codex_visible_requests = visible;
+  metered.journal = journalEvidence(metrics) ?? undefined;
   metered.cache_usage = { requests: orderKnown ? cacheRequests : null, prewarm: kindsKnown ? prewarm : null };
   const attempts = metered.agents.reduce((sum, agent) => sum + agent.request_count!, 0);
   metered.warnings.push(`Mekugi tokens and requests use ${attempts} validated provider attempts, excluding prewarm; the Codex rollout recorded ${rolloutRequests ?? "unknown"} requests and ${rolloutInput} input tokens`);

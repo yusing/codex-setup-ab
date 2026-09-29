@@ -4,7 +4,7 @@ import { exec } from "./process";
 import { sha256 } from "./state";
 import type { ArmName, RunState } from "./types";
 
-const FLAGS = new Set(["mode", "main-mentor-handoff", "mentor-handoff", "post-compact-recovery", "explore-filter", "timeout", "stream-idle-timeout", "debug", "grok"]);
+const FLAGS = new Set(["mode", "main-mentor-handoff", "mentor-handoff", "post-compact-recovery", "journal-compaction", "explore-filter", "timeout", "stream-idle-timeout", "debug", "grok"]);
 
 /**
  * Keep private --debug artifacts in the disposable container; export only capturer-owned metrics
@@ -27,6 +27,7 @@ export function validateMekugiFlags(value: unknown): string[] {
     const match = /^--([a-z-]+)(?:=([^\0\n]*))?$/.exec(flag);
     if (!match || !FLAGS.has(match[1]!) || seen.has(match[1]!) || (match[2] === undefined && match[1] !== "debug" && match[1] !== "grok")) throw new Error(`unsupported or repeated Mekugi flag: ${flag}`);
     if (match[1] === "mode" && !["mekugi", "passthrough"].includes(match[2]!)) throw new Error("invalid Mekugi mode");
+    if (match[1] === "journal-compaction" && !["auto", "slice", "off"].includes(match[2]!)) throw new Error("invalid journal-compaction mode");
     if (["main-mentor-handoff", "mentor-handoff", "post-compact-recovery", "explore-filter"].includes(match[1]!) && !["true", "false"].includes(match[2]!)) throw new Error(`invalid Mekugi boolean flag: ${flag}`);
     if (match[1] === "debug" && match[2] !== undefined && match[2] !== "true") throw new Error(`invalid Mekugi debug flag: ${flag}`);
     seen.add(match[1]!);
