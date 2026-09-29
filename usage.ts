@@ -434,6 +434,19 @@ export async function readMekugiNativeCost(stdoutPath: string, tokenMetricsPath?
 const PROVIDER_USAGE_KEYS = ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens"] as const;
 
 /**
+ * Read one provider attempt's usage counts. A failed attempt without usage recorded
+ * no tokens ("none"); any other attempt must record every count, or null is returned.
+ */
+export function providerAttemptUsage(attempt: unknown): Record<(typeof PROVIDER_USAGE_KEYS)[number], number> | "none" | null {
+  if (!isObject(attempt)) return null;
+  if (!isObject(attempt.usage) && attempt.status !== "completed") return "none";
+  const recorded = isObject(attempt.usage) ? attempt.usage : {};
+  const counts = Object.fromEntries(PROVIDER_USAGE_KEYS.map(key => [key, recorded[key]]));
+  return Object.values(counts).every(value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
+    ? counts as Record<(typeof PROVIDER_USAGE_KEYS)[number], number> : null;
+}
+
+/**
  * Replace a Mekugi arm's rollout usage with its validated provider attempts.
  * Router-local tool re-sends and provider retries never reach the Codex rollout,
  * although Mekugi's native cost includes them. Prewarm stays excluded because
@@ -460,19 +473,15 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
     if (!Array.isArray(exchange.provider_attempts)) return `${label} has no provider attempts`;
     for (const attempt of exchange.provider_attempts) {
       if (!isObject(attempt)) return `${label} has an invalid provider attempt`;
-      // A failed attempt without usage recorded no tokens; a completed one must.
-      if (!isObject(attempt.usage) && attempt.status !== "completed") continue;
-      const recorded = isObject(attempt.usage) ? attempt.usage : {};
-      const counts = PROVIDER_USAGE_KEYS.map(key => recorded[key]);
-      if (!counts.every(value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
-        return `${label} has a provider attempt without complete usage`;
-      }
-      const [input, cached, output, reasoning] = counts as number[];
+      const counts = providerAttemptUsage(attempt);
+      if (counts === "none") continue;
+      if (!counts) return `${label} has a provider attempt without complete usage`;
+      const { input_tokens: input, cached_input_tokens: cached, output_tokens: output, reasoning_tokens: reasoning } = counts;
       const model = typeof attempt.model === "string" && attempt.model ? attempt.model : null;
       if (!model) return `${label} has a provider attempt without a model`;
       const usage: Usage = {
-        input_tokens: input!, cached_input_tokens: cached!, cache_write_input_tokens: 0,
-        output_tokens: output!, reasoning_output_tokens: reasoning!, total_tokens: input! + output!,
+        input_tokens: input, cached_input_tokens: cached, cache_write_input_tokens: 0,
+        output_tokens: output, reasoning_output_tokens: reasoning, total_tokens: input + output,
       };
       if (warming) {
         addUsage(prewarm.usage, usage);

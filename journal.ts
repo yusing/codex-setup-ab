@@ -1,3 +1,5 @@
+import { providerAttemptUsage } from "./usage";
+
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -36,17 +38,19 @@ export interface JournalEvidence {
   threads: Record<string, JournalThreadCounters>;
 }
 
+/** Count provider cost with the same attempt rule as Mekugi arm usage. */
 function providerCost(exchange: RecordValue): { provider_requests: number | null; provider_tokens: number | null } {
   if (!Array.isArray(exchange.provider_attempts)) return { provider_requests: null, provider_tokens: null };
+  const provider_requests = exchange.provider_attempts.length;
   let tokens = 0;
   for (const attempt of exchange.provider_attempts) {
-    const usage = record(record(attempt).usage);
-    const input = count(usage.input_tokens), output = count(usage.output_tokens);
-    if (input === null || output === null) return { provider_requests: exchange.provider_attempts.length, provider_tokens: null };
-    tokens += input + output;
-    if (!Number.isSafeInteger(tokens)) return { provider_requests: exchange.provider_attempts.length, provider_tokens: null };
+    const usage = providerAttemptUsage(attempt);
+    if (usage === "none") continue;
+    if (!usage) return { provider_requests, provider_tokens: null };
+    tokens += usage.input_tokens + usage.output_tokens;
+    if (!Number.isSafeInteger(tokens)) return { provider_requests, provider_tokens: null };
   }
-  return { provider_requests: exchange.provider_attempts.length, provider_tokens: tokens };
+  return { provider_requests, provider_tokens: tokens };
 }
 
 /** Read validated exports without inventing provenance for historical snapshots. */

@@ -9,13 +9,15 @@ test("journal compaction flag accepts only the supported explicit enum", () => {
   }
 });
 
+const usage = (input: number, output: number) => ({ input_tokens: input, cached_input_tokens: 0, output_tokens: output, reasoning_tokens: 0 });
+
 test("router compaction has zero observed provider cost; old provenance stays unknown", () => {
   const metrics = { exchanges: [
-    { sequence: 3, thread_id: "root", request_kind: "turn", provider_attempts: [{ usage: { input_tokens: 30, output_tokens: 4 } }] },
-    { sequence: 1, thread_id: "root", request_kind: "turn", provider_attempts: [{ usage: { input_tokens: 10, output_tokens: 2 } }] },
+    { sequence: 3, thread_id: "root", request_kind: "turn", provider_attempts: [{ usage: usage(30, 4) }] },
+    { sequence: 1, thread_id: "root", request_kind: "turn", provider_attempts: [{ usage: usage(10, 2) }] },
     { sequence: 2, thread_id: "root", request_kind: "compaction", compaction_answer: "router", compaction_summary_bytes: 200, compaction_changes: 0, compaction_failures: 1, duration_ms: 4, provider_attempts: [] },
-    { sequence: 4, thread_id: "root", request_kind: "prewarm", provider_attempts: [{ usage: { input_tokens: 999, output_tokens: 999 } }] },
-    { sequence: 5, thread_id: "root", request_kind: "compaction", provider_attempts: [{ usage: { input_tokens: 8, output_tokens: 2 } }] },
+    { sequence: 4, thread_id: "root", request_kind: "prewarm", provider_attempts: [{ usage: usage(999, 999) }] },
+    { sequence: 5, thread_id: "root", request_kind: "compaction", provider_attempts: [{ usage: usage(8, 2) }] },
   ] };
   const result = journalEvidence(metrics)!;
   expect(result.compactions_known).toBe(true);
@@ -27,11 +29,19 @@ test("router compaction has zero observed provider cost; old provenance stays un
 });
 
 test("incomplete order and usage never become zero post-compaction cost", () => {
-  const event = { thread_id: "root", request_kind: "compaction", compaction_answer: "provider", provider_attempts: [{}] };
+  const event = { thread_id: "root", request_kind: "compaction", compaction_answer: "provider", provider_attempts: [{ status: "completed" }] };
   expect(journalEvidence({ exchanges: [event] })?.post_compaction).toBeNull();
   expect(journalEvidence({ exchanges: [{ ...event, sequence: 1 }] })?.post_compaction).toEqual({ provider_requests: 1, provider_tokens: null });
   expect(journalEvidence({ exchanges: [{ sequence: 1, thread_id: "root", provider_attempts: [] }] })?.compactions_known).toBe(false);
   expect(journalEvidence({})).toBeNull();
+});
+
+test("provider cost uses the arm usage attempt rule", () => {
+  const cost = (provider_attempts: unknown[]) => journalEvidence({ exchanges: [{ sequence: 1, thread_id: "root", request_kind: "compaction", provider_attempts }] })!.compactions[0];
+  // A failed attempt without usage costs nothing but still counts as a request.
+  expect(cost([{ status: "failed" }, { status: "completed", usage: usage(5, 1) }])).toMatchObject({ provider_requests: 2, provider_tokens: 6 });
+  // Arm usage rejects partial counts, so compaction cost must not invent a total from them.
+  expect(cost([{ status: "completed", usage: { input_tokens: 5, output_tokens: 1 } }])).toMatchObject({ provider_requests: 1, provider_tokens: null });
 });
 
 test("cumulative thread counters select latest sequence without adding snapshots", () => {
