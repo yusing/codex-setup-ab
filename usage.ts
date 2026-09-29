@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
 import { journalEvidence } from "./journal";
+import { providerAttemptUsage } from "./provider-usage";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_TIMEOUT_MS = 8_000;
@@ -429,21 +430,6 @@ export async function readMekugiNativeCost(stdoutPath: string, tokenMetricsPath?
     cost = mekugiReportCost(event.item.text);
   }
   return cost;
-}
-
-const PROVIDER_USAGE_KEYS = ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens"] as const;
-
-/**
- * Read one provider attempt's usage counts. A failed attempt without usage recorded
- * no tokens ("none"); any other attempt must record every count, or null is returned.
- */
-export function providerAttemptUsage(attempt: unknown): Record<(typeof PROVIDER_USAGE_KEYS)[number], number> | "none" | null {
-  if (!isObject(attempt)) return null;
-  if (!isObject(attempt.usage) && attempt.status !== "completed") return "none";
-  const recorded = isObject(attempt.usage) ? attempt.usage : {};
-  const counts = Object.fromEntries(PROVIDER_USAGE_KEYS.map(key => [key, recorded[key]]));
-  return Object.values(counts).every(value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)
-    ? counts as Record<(typeof PROVIDER_USAGE_KEYS)[number], number> : null;
 }
 
 /**

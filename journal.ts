@@ -1,4 +1,4 @@
-import { providerAttemptUsage } from "./usage";
+import { providerAttemptUsage } from "./provider-usage";
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue {
