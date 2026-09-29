@@ -104,8 +104,9 @@ export function journalEvidence(metrics: unknown): JournalEvidence | null {
   return result;
 }
 
-export function journalEvidenceMarkdown(arms: Array<{ label: string; evidence?: JournalEvidence | null }>): string {
-  if (!arms.some(arm => arm.evidence && (arm.evidence.compactions.length || Object.keys(arm.evidence.threads).length))) return "";
+/** `required` keeps the section when its absence is the result, as in a compaction comparison. */
+export function journalEvidenceMarkdown(arms: Array<{ label: string; evidence?: JournalEvidence | null }>, required = false): string {
+  if (!required && !arms.some(arm => arm.evidence && (arm.evidence.compactions.length || Object.keys(arm.evidence.threads).length))) return "";
   const shown = (value: number | null | undefined): string => value == null ? "unknown" : String(value);
   const rows = arms.map(({ label, evidence }) => {
     const compactions = evidence?.compactions;

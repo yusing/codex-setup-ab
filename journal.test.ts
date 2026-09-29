@@ -74,4 +74,7 @@ test("compaction comparison excludes absent evidence rather than counting a tie"
   expect(compactionComparisonExclusion([observed, none])).toBe("no compaction observed");
   expect(compactionComparisonExclusion([none, observed])).toBe("no compaction observed");
   expect(compactionComparisonExclusion([undefined, observed])).toBe("compaction evidence unavailable");
+  expect(journalEvidenceMarkdown([{ label: "A", evidence: none }, { label: "B", evidence: none }])).toBe("");
+  // The comparison keeps the table so zero observed compactions are visible, not hidden.
+  expect(journalEvidenceMarkdown([{ label: "A", evidence: none }, { label: "B", evidence: none }], true)).toContain("| B | 0 | router: 0, provider: 0, unknown: 0 |");
 });

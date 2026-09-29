@@ -614,7 +614,7 @@ test("journal-compaction report excludes unavailable compaction evidence without
   expect(await readFile(paths.markdownPath, "utf8")).toContain("Comparison excluded: compaction evidence unavailable.");
 });
 
-for (const missingArm of [null, "stock", "current"] as const) {
+for (const missingArm of [null, "stock", "current", "both"] as const) {
   test(`journal-compaction report consumes both validated exports (${missingArm ?? "both observed"})`, async () => {
     const { run } = await fixtureRun();
     await fixtureJudge(run, "candidate-1", "candidate-2");
@@ -635,7 +635,7 @@ for (const missingArm of [null, "stock", "current"] as const) {
       await file(join(run, capture), `${arm} fixture capture\n`);
       await file(join(run, metrics), JSON.stringify({ schema: "fixture-validated", capture_marker: `${arm} fixture capture\n`, exchanges: [
         { sequence: 1, thread_id: `${arm}-agent`, request_kind: "turn", provider_attempts: [attempt] },
-        ...(missingArm === arm ? [] : [{ sequence: 2, thread_id: `${arm}-agent`, request_kind: "compaction",
+        ...(missingArm === arm || missingArm === "both" ? [] : [{ sequence: 2, thread_id: `${arm}-agent`, request_kind: "compaction",
           compaction_answer: arm === "stock" ? "provider" : "router", provider_attempts: arm === "stock" ? [attempt] : [] }]),
       ] }));
       state.mekugi_exports_by_arm[arm] = { capture, metrics,
@@ -647,8 +647,8 @@ for (const missingArm of [null, "stock", "current"] as const) {
     const report = await Bun.file(paths.jsonPath).json();
     expect(report.comparison_exclusion).toBe(missingArm === null ? null : "no compaction observed");
     for (const arm of ["stock", "current"] as const) {
-      expect(report.arms[arm].usage.journal.compactions).toHaveLength(missingArm === arm ? 0 : 1);
-      expect(report.arms[arm].usage.totals.total_tokens).toBe(arm === "stock" && missingArm !== "stock" ? 48 : 24);
+      expect(report.arms[arm].usage.journal.compactions).toHaveLength(missingArm === arm || missingArm === "both" ? 0 : 1);
+      expect(report.arms[arm].usage.totals.total_tokens).toBe(arm === "stock" && (missingArm === null || missingArm === "current") ? 48 : 24);
     }
     if (missingArm === null) {
       expect(report.measurement_complete).toBe(true);
@@ -656,7 +656,9 @@ for (const missingArm of [null, "stock", "current"] as const) {
     } else {
       expect(report.measurement_complete).toBe(false);
       expect(report.winner).toBe("none");
-      expect(await readFile(paths.markdownPath, "utf8")).toContain("Comparison excluded: no compaction observed.");
+      const markdown = await readFile(paths.markdownPath, "utf8");
+      expect(markdown).toContain("Comparison excluded: no compaction observed.");
+      expect(markdown).toContain("## Journal and compaction evidence");
     }
   });
 }
