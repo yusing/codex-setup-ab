@@ -32,6 +32,8 @@ export function validateMekugiFlags(value: unknown): string[] {
     if (match[1] === "debug" && match[2] !== undefined && match[2] !== "true") throw new Error(`invalid Mekugi debug flag: ${flag}`);
     seen.add(match[1]!);
   }
+  // Passthrough never answers compaction, so the flag would label an arm it cannot change.
+  if (seen.has("journal-compaction") && value.includes("--mode=passthrough")) throw new Error("journal-compaction requires Mekugi mode");
   return value;
 }
 

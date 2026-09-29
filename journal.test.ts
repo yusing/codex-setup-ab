@@ -7,6 +7,8 @@ test("journal compaction flag accepts only the supported explicit enum", () => {
   for (const flags of [["--journal-compaction"], ["--journal-compaction=true"], ["--journal-compaction=off", "--journal-compaction=auto"]]) {
     expect(() => validateMekugiFlags(flags)).toThrow();
   }
+  expect(() => validateMekugiFlags(["--mode=passthrough", "--journal-compaction=auto"])).toThrow("journal-compaction requires Mekugi mode");
+  expect(validateMekugiFlags(["--mode=mekugi", "--journal-compaction=auto"])).toHaveLength(2);
 });
 
 const usage = (input: number, output: number) => ({ input_tokens: input, cached_input_tokens: 0, output_tokens: output, reasoning_tokens: 0 });
@@ -32,7 +34,10 @@ test("incomplete order and usage never become zero post-compaction cost", () => 
   const event = { thread_id: "root", request_kind: "compaction", compaction_answer: "provider", provider_attempts: [{ status: "completed" }] };
   expect(journalEvidence({ exchanges: [event] })?.post_compaction).toBeNull();
   expect(journalEvidence({ exchanges: [{ ...event, sequence: 1 }] })?.post_compaction).toEqual({ provider_requests: 1, provider_tokens: null });
-  expect(journalEvidence({ exchanges: [{ sequence: 1, thread_id: "root", provider_attempts: [] }] })?.compactions_known).toBe(false);
+  const unknownKinds = journalEvidence({ exchanges: [{ sequence: 1, thread_id: "root", provider_attempts: [], journal: { started_at: "2026-09-29T00:00:00Z", sequence: 1 } }] })!;
+  expect(unknownKinds.compactions_known).toBe(false);
+  // Without request kinds, answerer counts are unknown rather than zero.
+  expect(journalEvidenceMarkdown([{ label: "A", evidence: unknownKinds }])).toContain("| A | unknown | unknown |");
   expect(journalEvidence({})).toBeNull();
 });
 

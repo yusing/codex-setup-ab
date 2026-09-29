@@ -109,7 +109,7 @@ export function journalEvidenceMarkdown(arms: Array<{ label: string; evidence?: 
   const shown = (value: number | null | undefined): string => value == null ? "unknown" : String(value);
   const rows = arms.map(({ label, evidence }) => {
     const compactions = evidence?.compactions;
-    const provenance = compactions ? ["router", "provider", "unknown"].map(answer => `${answer}: ${compactions.filter(event => event.answer === answer).length}`).join(", ") : "unknown";
+    const provenance = compactions && evidence.compactions_known ? ["router", "provider", "unknown"].map(answer => `${answer}: ${compactions.filter(event => event.answer === answer).length}`).join(", ") : "unknown";
     return `| ${label} | ${evidence?.compactions_known ? compactions?.length : "unknown"} | ${provenance} | ${shown(evidence?.post_compaction?.provider_requests)} | ${shown(evidence?.post_compaction?.provider_tokens)} |`;
   });
   return `## Journal and compaction evidence\n\n| Arm | compactions | answerer | provider requests from first compaction | provider tokens from first compaction |\n| --- | ---: | --- | ---: | ---: |\n${rows.join("\n")}\n\nPost-compaction cost includes the first compaction and excludes prewarm. Unknown provenance in older exports stays unknown. Router answers with no provider attempts record zero provider tokens, not estimated savings. Per-thread cumulative journal counters are retained in each arm's JSON usage evidence.\n`;
