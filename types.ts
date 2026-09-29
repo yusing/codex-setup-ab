@@ -2,7 +2,7 @@ import type { CriterionEvidence } from "./semantic";
 
 export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" | "task";
 export type CodexLauncher = "codex" | "mekugi" | "grok";
-export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "mentor-handoff";
+export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "mentor-handoff" | "journal-compaction";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type BenchmarkModel = "gpt-6-astra" | "gpt-6-sol" | "grok:grok-4.7";
 
@@ -65,6 +65,7 @@ export interface RunState {
   image_id?: string;
   dependency_image?: { key: string; base_image: string; image_id: string };
   comparison?: Comparison;
+  auto_compact_limit?: number;
   arm_order?: ArmOrder;
   trial?: { set_id: string; index: number; controls_sha256: string; plan_sha256: string };
   protected_runtime?: { boundary: "direct-egress-vs-router-only"; scripts: Array<{ path: string; sha256: string }> };

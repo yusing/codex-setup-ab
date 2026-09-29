@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { journalEvidence, journalEvidenceMarkdown } from "./journal";
+import { compactionComparisonExclusion, journalEvidence, journalEvidenceMarkdown } from "./journal";
 import { validateMekugiFlags } from "./mekugi";
 
 test("journal compaction flag accepts only the supported explicit enum", () => {
@@ -50,4 +50,13 @@ test("cumulative thread counters select latest sequence without adding snapshots
     { sequence: 2, request_kind: "turn", thread_id: "root", journal: { ...counter, started_at: "2026-09-30T00:00:00Z", sequence: 1, final_answer_bytes: 0 } },
   ] })!;
   expect(reset.threads.root?.final_answer_bytes).toBe(0);
+});
+
+test("compaction comparison excludes absent evidence rather than counting a tie", () => {
+  const observed = journalEvidence({ exchanges: [{ sequence: 1, request_kind: "compaction" }] })!;
+  const none = journalEvidence({ exchanges: [{ sequence: 1, request_kind: "turn" }] })!;
+  expect(compactionComparisonExclusion([observed, observed])).toBeNull();
+  expect(compactionComparisonExclusion([observed, none])).toBe("no compaction observed");
+  expect(compactionComparisonExclusion([none, observed])).toBe("no compaction observed");
+  expect(compactionComparisonExclusion([undefined, observed])).toBe("compaction evidence unavailable");
 });

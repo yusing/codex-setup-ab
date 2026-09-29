@@ -43,10 +43,10 @@ test("complete metered pair reports enter the retained aggregate while partial p
     const set: TrialSet = {
       schema: "codex-ab.trials.v1", id: basename(directory), created_at: new Date().toISOString(),
       status: "partial", schedule: "concurrent", controls, controls_sha256: controlsSha,
-      plan_sha256: hash({ controls: controlsSha, count: 3, schedule: "concurrent" }),
+      plan_sha256: hash({ controls: controlsSha, count: 4, schedule: "concurrent" }),
       trials: [],
     };
-    for (let index = 1; index <= 3; index++) {
+    for (let index = 1; index <= 4; index++) {
       const runId = `${set.id}-${index}`;
       const state: RunState = { ...baseline, id: runId, arm_order: "concurrent",
         trial: { set_id: set.id, index, controls_sha256: controlsSha, plan_sha256: set.plan_sha256 } };
@@ -55,6 +55,7 @@ test("complete metered pair reports enter the retained aggregate while partial p
       await writeState(evidence, state);
       const report = {
         run_id: runId, setup: { arm_order: state.arm_order, trial: state.trial },
+        comparison_exclusion: index === 4 ? "no compaction observed" : null,
         measurement_complete: index !== 3, winner: index === 1 ? "current" : "tie",
         arms: Object.fromEntries(["stock", "current"].map(arm => [arm, {
           usage: { complete: true, totals: { total_tokens: arm === "stock" ? 100 : index === 1 ? 50 : 150,
@@ -76,14 +77,16 @@ test("complete metered pair reports enter the retained aggregate while partial p
     await writeFile(join(directory, "trials.json"), JSON.stringify(set));
     const path = await reportTrials(directory);
     const result = JSON.parse(await readFile(join(path, "..", "report.json"), "utf8"));
-    expect(result.planned_pairs).toBe(3);
+    expect(result.planned_pairs).toBe(4);
     expect(result.eligible_pairs).toBe(2);
     expect(result.current_minus_stock.total_tokens.difference).toMatchObject({ n: 2, mean: 0, min: -50, max: 50 });
     expect(result.current_minus_stock.estimated_api_usd.difference).toMatchObject({ n: 1, mean: 1 });
     expect(result.winners).toEqual({ stock: 0, current: 1, tie: 1, none: 0 });
-    expect(result.judge_estimated_api_usd).toMatchObject({ n: 3, total: 1.5 });
+    expect(result.judge_estimated_api_usd).toMatchObject({ n: 4, total: 2 });
     const markdown = await readFile(path, "utf8");
     expect(markdown).toContain("Pair 1 complete setup, source judgments and pricing fixture.");
+    expect(result.pairs[3].reason).toBe("no compaction observed");
+    expect(markdown).toContain("Excluded from paired aggregates: no compaction observed");
     expect(markdown).toContain("incomplete or invalid paired measurement");
     expect(markdown).toContain("A is direct Codex");
     expect(await readFile(join(path, "..", "MANIFEST.sha256"), "utf8")).toContain("trials/1/MANIFEST.sha256");

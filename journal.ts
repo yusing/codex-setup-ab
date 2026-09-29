@@ -110,3 +110,10 @@ export function journalEvidenceMarkdown(arms: Array<{ label: string; evidence?: 
   });
   return `## Journal and compaction evidence\n\n| Arm | compactions | answerer | provider requests from first compaction | provider tokens from first compaction |\n| --- | ---: | --- | ---: | ---: |\n${rows.join("\n")}\n\nPost-compaction cost includes the first compaction and excludes prewarm. Unknown provenance in older exports stays unknown. Router answers with no provider attempts record zero provider tokens, not estimated savings. Per-thread cumulative journal counters are retained in each arm's JSON usage evidence.\n`;
 }
+
+/** A paired compaction comparison needs observed compaction in both arms. */
+export function compactionComparisonExclusion(arms: Array<JournalEvidence | undefined>): string | null {
+  if (arms.some(arm => arm?.compactions_known && arm.compactions.length === 0)) return "no compaction observed";
+  if (arms.length !== 2 || arms.some(arm => !arm?.compactions_known)) return "compaction evidence unavailable";
+  return null;
+}

@@ -177,6 +177,20 @@ run_dir="$(./dist/codex-ab prepare \
 
 `--grok-auth-file` is copied privately into both isolated homes. Grok usage is metered from each B session `usage.json`, using captured list prices for comparison. Session-only Grok estimates use base rates and explicitly exclude unknown request-level long-context premiums; provider-recorded totals are retained separately. Command durations and tool blocking come from matched events in `events.jsonl`. Codex JSONL remains the A accounting source. Isolated launcher snapshots omit the unused current-home mise tool store. This is not a current-home direct Codex versus Mekugi comparison.
 
+## Journal compaction comparison
+
+Use `prepare --comparison journal-compaction --auto-compact-limit N` with the
+usual predetermined task/criteria and Mekugi source/binary options to compare
+model-written compaction (A, off) with router compaction (B, auto). Both arms use
+the same current-home snapshot, Mekugi binary and recorded positive token limit.
+This comparison owns the compaction flag and requires ordinary container
+boundaries in both arms. Imported controls are not supported. Preparation and preflight do not run inference; execution
+still requires `--confirm-paid-inference`. Pairs with no compaction in either arm
+are marked `no compaction observed` and excluded from paired aggregates, never
+counted as ties. Missing compaction evidence is separately reported as unavailable.
+Use `prepare-trials --count 4` on the prepared run for repeated pairs; schedules
+remain separate. This opt-in comparison does not enable auto as Mekugi's default.
+
 ## Current setup: direct Codex versus Mekugi
 
 Add `--comparison same-setup --mekugi-source /path/to/matching/mekugi` to `prepare`. A (stored as `stock` for compatibility)

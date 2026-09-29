@@ -6,7 +6,7 @@ import { applyMekugiProviderUsage, fetchPricing, meterGrokHome, meterRollouts, r
 import { validateMekugiExports } from "./mekugi";
 import { performanceComparison, performanceMarkdown } from "./diagnostics";
 import { explainMechanisms, mechanismsMarkdown, reviewPolicy } from "./mechanisms";
-import { journalEvidence, journalEvidenceMarkdown } from "./journal";
+import { compactionComparisonExclusion, journalEvidence, journalEvidenceMarkdown } from "./journal";
 import { readJudgeResponse, summarizeCheck, validateJudgePass } from "./judge";
 import { collectBundle, finalizeBundle } from "./bundle";
 import { readState, writeState, withRunLock } from "./state";
@@ -171,7 +171,7 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
   } : recordedPricing;
 
   const usage: Partial<Record<ArmName, MeteredRollouts>> = {};
-  const isMekugiArm = (arm: ArmName): boolean => Boolean(state.mentor) || (state.comparison === "codex-mekugi-grok"
+  const isMekugiArm = (arm: ArmName): boolean => Boolean(state.mentor) || state.comparison === "journal-compaction" || (state.comparison === "codex-mekugi-grok"
     ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi");
   for (const arm of ARMS) {
     const grokHome = state.arm_attempts?.[arm]?.grok_home;
@@ -225,8 +225,9 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
     && state.judge.usage_homes.length === (state.judge.attempts?.length ?? 2)
     && typeof state.judge.agreement === "boolean";
   const judgeUsageComplete = judgeUsage?.complete === true;
-  const diagnosticsComplete = !state.mentor || (diagnosticsByArm !== null && ARMS.every(arm => diagnosticsByArm[arm]?.status === "valid"));
-  const measurementComplete = valid && state.finishing?.status !== "failed" && checksExecuted && armUsageComplete && judgeComplete && judgeUsageComplete && diagnosticsComplete;
+  const diagnosticsComplete = (!state.mentor && state.comparison !== "journal-compaction") || (diagnosticsByArm !== null && ARMS.every(arm => diagnosticsByArm[arm]?.status === "valid"));
+  const comparisonExclusion = state.comparison === "journal-compaction" ? compactionComparisonExclusion(ARMS.map(arm => usage[arm]?.journal)) : null;
+  const measurementComplete = !comparisonExclusion && valid && state.finishing?.status !== "failed" && checksExecuted && armUsageComplete && judgeComplete && judgeUsageComplete && diagnosticsComplete;
 
   const delta: Record<string, number | null> = {};
   if (usage.stock && usage.current) {
@@ -245,6 +246,7 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
   }
 
   const winnerReason = selectedArms.length === 1 ? "Single-arm run: no paired winner."
+    : comparisonExclusion ? `Comparison excluded: ${comparisonExclusion}.`
     : !valid ? "Infrastructure invalid: winner suppressed."
     : checksExecuted && selectedArms.every(arm => state.results?.[arm]?.grade?.passed === false) ? "Neither candidate passed the required checks."
     : !measurementComplete ? "Required checks, usage, or judge evidence is incomplete."
@@ -281,7 +283,7 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
     selected_arms: selectedArms,
     profile: state.profile ?? "hpatch",
     source: state.source,
-    setup: { ...state.execution, dependency_image: state.dependency_image, comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], mentor: state.mentor ?? null, imported_control: state.imported_control ?? null, arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null, resource_limits: state.resource_limits, snapshot_manifest: state.snapshot_manifest },
+    setup: { ...state.execution, auto_compact_limit: state.auto_compact_limit ?? null, dependency_image: state.dependency_image, comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], mentor: state.mentor ?? null, imported_control: state.imported_control ?? null, arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null, resource_limits: state.resource_limits, snapshot_manifest: state.snapshot_manifest },
     finishing: state.finishing ?? null,
     status: state.status,
     validity: valid ? "valid" : "invalid",
@@ -292,6 +294,7 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
     judge_complete: judgeComplete,
     judge_usage_complete: judgeUsageComplete,
     measurement_complete: measurementComplete,
+    comparison_exclusion: comparisonExclusion,
     winner: effectiveWinner,
     winner_reason: winnerReason,
     efficiency,

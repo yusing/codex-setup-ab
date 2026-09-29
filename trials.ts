@@ -37,6 +37,7 @@ export interface TrialSet {
 interface PairReport {
   run_id: string;
   measurement_complete: boolean;
+  comparison_exclusion?: string | null;
   winner: string;
   setup: { arm_order: ArmOrder; trial: RunState["trial"] };
   arms: Record<ArmName, { result: ArmResult | null; usage: MeteredRollouts | null }>;
@@ -48,6 +49,7 @@ export function trialControls(state: RunState) {
   return {
     profile: state.profile, source: state.source, submodules: state.submodules,
     task: state.task, task_pack: state.task_pack, criteria: state.criteria,
+    auto_compact_limit: state.auto_compact_limit,
     comparison: state.comparison ?? "stock-current", execution: state.execution,
     image_id: state.image_id, dependency_image: state.dependency_image, resource_limits: state.resource_limits, timeout_seconds: state.timeout_seconds,
     current_snapshot: state.current_snapshot, snapshot_manifest: state.snapshot_manifest,
@@ -283,6 +285,7 @@ async function reportTrialsUnlocked(directory: string, set: TrialSet): Promise<s
         || JSON.stringify(report.setup.trial) !== JSON.stringify(state.trial)) throw new Error("pair report identity mismatch");
       if (trial.status !== "complete" || state.status !== "complete" || state.finishing?.status !== "complete"
         || state.invalidity_reasons?.length || report.measurement_complete !== true) reason = "incomplete or invalid paired measurement";
+      if (report.comparison_exclusion) reason = report.comparison_exclusion;
     } catch (error) { reason = String(error); report = null; markdown = "No verified pair report is available; retained evidence is under trials/."; }
     rows.push({ trial, eligible: reason === null, reason, report });
     sections.push(`## Pair ${trial.index}: ${trial.order}\n\n${reason ? `Excluded from paired aggregates: ${reason}\n\n` : ""}${markdown}`);

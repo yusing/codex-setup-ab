@@ -252,7 +252,9 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       if (await sha256(join(destination, "treatment", name)) !== item.after_sha256) throw new Error("applied treatment differs from manifest");
     }
   }
-  const setupDescriptions = state.comparison === "codex-mekugi-grok"
+  const setupDescriptions = state.comparison === "journal-compaction"
+    ? { stock: "Same current-home snapshot and Mekugi binary as B; journal compaction off.", current: "Same current-home snapshot and Mekugi binary as A; journal compaction auto." }
+    : state.comparison === "codex-mekugi-grok"
     ? {
       stock: "Minimal generated Codex configuration plus the Mekugi launcher on grok:grok-4.7; no current-home guidance overlay.",
       current: "Minimal generated Grok configuration plus the Grok CLI on grok-4.7; no current-home guidance overlay.",
@@ -273,6 +275,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
         };
   await write("setup-comparison.json", {
     source: state.source, task: state.task, task_pack: state.task_pack, criteria: state.criteria, submodules: state.submodules ?? [],
+    auto_compact_limit: state.auto_compact_limit,
     comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null,
     execution: state.execution, image_id: state.image_id, dependency_image: state.dependency_image, runtime_tools: state.runtime_tools,
     resource_limits: state.resource_limits, current_configuration: manifest.configuration_repository,

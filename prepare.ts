@@ -17,6 +17,7 @@ import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort, ArmNam
 export interface PrepareOptions {
   comparison?: import("./types").Comparison;
   mentorSetup?: ArmName;
+  autoCompactLimit?: number;
   model?: BenchmarkModel;
   grokBinary?: string;
   protectMekugi?: boolean;
@@ -112,10 +113,33 @@ function grokStockConfig(reasoningEffort: ReasoningEffort): string {
 }
 
 
+function validateCompactionComparison(comparison: RunState["comparison"], limit: number | undefined, flags: string[], protectedRuntime: boolean): void {
+  if (comparison !== "journal-compaction") {
+    if (limit !== undefined) throw new Error("--auto-compact-limit requires journal-compaction");
+    return;
+  }
+  if (limit === undefined || !Number.isSafeInteger(limit) || limit <= 0) throw new Error("journal-compaction requires a positive integer --auto-compact-limit");
+  if (protectedRuntime) throw new Error("journal-compaction requires the same ordinary container boundary in both arms");
+  if (flags.some(flag => flag.startsWith("--journal-compaction=") || flag === "--mode=passthrough" || flag === "--grok" || flag.startsWith("--grok="))) {
+    throw new Error("journal-compaction owns compaction mode and requires Codex with Mekugi routing");
+  }
+}
+
 export async function verifyPreparedInputs(runDir: string, state: RunState): Promise<void> {
   if (state.task.path !== "control/task.md") throw new Error("copied benchmark control path changed");
   const stock = join(runDir, "snapshots/stock/home/ubuntu");
-  const sameSetup = state.comparison === "same-setup";
+  const compaction = state.comparison === "journal-compaction";
+  const sameSetup = state.comparison === "same-setup" || compaction;
+  validateCompactionComparison(state.comparison, state.auto_compact_limit, state.mekugi_flags ?? [], Boolean(state.protected_runtime));
+  if (compaction) {
+    if (state.arms.current.home_template !== "snapshots/current/home/ubuntu") throw new Error("journal-compaction setup identity changed");
+    for (const arm of ["stock", "current"] as const) {
+      const item = state.mekugi_exports_by_arm?.[arm];
+      if (!item || item.capture !== `artifacts/${arm}/mekugi/capture.jsonl` || item.metrics !== `artifacts/${arm}/mekugi/metrics.json`) throw new Error("journal-compaction per-arm exports changed");
+    }
+    if (state.mekugi_exports_by_arm!.stock!.validator.sha256 !== state.mekugi_exports_by_arm!.current!.validator.sha256
+      || state.mekugi_exports_by_arm!.stock!.reader.sha256 !== state.mekugi_exports_by_arm!.current!.reader.sha256) throw new Error("journal-compaction export validation identity changed");
+  }
   const stockMekugi = state.comparison === "stock-mekugi";
   const mentor = state.comparison === "mentor-handoff";
   const grokComparison = state.comparison === "codex-mekugi-grok";
@@ -450,14 +474,16 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const profile = options.profile ?? (options.criteriaPath ? "task" : "mekugi");
   const mekugiFlags = validateMekugiFlags(options.mekugiFlags ?? []);
   const comparison = options.comparison ?? "stock-current";
-  if (!["stock-current", "same-setup", "stock-mekugi", "codex-mekugi-grok", "mentor-handoff"].includes(comparison)) throw new Error("unknown comparison");
+  if (!["stock-current", "same-setup", "stock-mekugi", "codex-mekugi-grok", "mentor-handoff", "journal-compaction"].includes(comparison)) throw new Error("unknown comparison");
+  const compactionComparison = comparison === "journal-compaction";
+  validateCompactionComparison(comparison, options.autoCompactLimit, mekugiFlags, Boolean(options.protectMekugi));
   const mentorComparison = comparison === "mentor-handoff";
   if (mentorComparison !== Boolean(options.mentorSetup) || (options.mentorSetup && !["stock", "current"].includes(options.mentorSetup))) {
     throw new Error("mentor-handoff requires --mentor-setup=stock or current, and other comparisons reject it");
   }
   const grokComparison = comparison === "codex-mekugi-grok";
   const isolatedFromCurrentTools = comparison === "stock-mekugi" || grokComparison || (mentorComparison && options.mentorSetup === "stock");
-  const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi" || mentorComparison;
+  const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi" || mentorComparison || compactionComparison;
   const currentLauncher = options.currentLauncher ?? (grokComparison ? "grok" : launcherComparison ? "mekugi" : "codex");
   if ((launcherComparison || grokComparison) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source to select export validation`);
   if (launcherComparison && currentLauncher !== "mekugi") throw new Error(`${comparison} requires the Mekugi launcher`);
@@ -674,11 +700,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       validator: { path: validatorPath, sha256: await sha256(join(runDir, validatorPath)) },
       reader: { path: readerPath, sha256: await sha256(join(runDir, readerPath)) } };
   }
-  const mekugiExportsByArm: RunState["mekugi_exports_by_arm"] = mentorComparison && mekugiExports
+  const mekugiExportsByArm: RunState["mekugi_exports_by_arm"] = (mentorComparison || compactionComparison) && mekugiExports
     ? Object.fromEntries((["stock", "current"] as const).map(arm => [arm, {
       ...mekugiExports, capture: `artifacts/${arm}/mekugi/capture.jsonl`, metrics: `artifacts/${arm}/mekugi/metrics.json`,
     }])) : undefined;
-  if (mentorComparison) mekugiExports = undefined;
+  if (mentorComparison || compactionComparison) mekugiExports = undefined;
 
   let protectedRuntime: RunState["protected_runtime"];
   if (options.protectMekugi) {
@@ -695,6 +721,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const state: RunState = {
     profile,
     comparison,
+    auto_compact_limit: options.autoCompactLimit,
     mekugi_flags: mekugiFlags,
     protected_runtime: protectedRuntime,
     mekugi_build: buildProvenance,
@@ -730,7 +757,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     },
     operator: { uid: 1000, gid: 1000 },
     arms: {
-      stock: { repository: "arms/stock/repo", home_template: mentorComparison ? (options.mentorSetup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu") : comparison === "same-setup" ? "snapshots/current/home/ubuntu" : grokComparison ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/stock/home/ubuntu" },
+      stock: { repository: "arms/stock/repo", home_template: mentorComparison ? (options.mentorSetup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu") : (comparison === "same-setup" || compactionComparison) ? "snapshots/current/home/ubuntu" : grokComparison ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/stock/home/ubuntu" },
       current: { repository: "arms/current/repo", home_template: mentorComparison ? (options.mentorSetup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu") : grokComparison ? "snapshots/stock-grok/home/ubuntu" : comparison === "stock-mekugi" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu" },
     },
   };

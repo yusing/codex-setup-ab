@@ -50,7 +50,8 @@ Prepare options:
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --current-home DIR    configuration Git repository root (default current home)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
-  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, or mentor-handoff
+  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, mentor-handoff, or journal-compaction
+  --auto-compact-limit N Required shared positive token limit for journal-compaction
   --mentor-setup NAME  stock or current; required for mentor-handoff
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
@@ -87,7 +88,7 @@ Run and judge require the explicit model-execution confirmation flag.
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["profile", "model", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mentor-setup", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["auto-compact-limit", "profile", "model", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mentor-setup", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
     "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
     "prepare-suite": ["suite", "sources-file", "count", "comparison", "order", "output-parent", "current-home", "review-treatment", "mekugi-flags", "mekugi-source", "mekugi-build", "mekugi-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory", "docker-bin"],
     "run-suite": ["suite-run", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -167,6 +168,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       outputParent: o["output-parent"] as string | undefined,
       reviewTreatment: o["review-treatment"] as string | undefined,
       comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,
+      autoCompactLimit: o["auto-compact-limit"] === undefined ? undefined : Number(o["auto-compact-limit"]),
       mentorSetup: o["mentor-setup"] as import("./types").ArmName | undefined,
       mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
       currentLauncher: o["current-launcher"] as import("./types").CodexLauncher | undefined,

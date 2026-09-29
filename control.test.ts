@@ -199,3 +199,10 @@ test("importControl rejects changed bundle evidence, mismatched identity, and ch
   await expect(importControl(changedRollout.targetRun, changedRollout.treatment, changedRollout.sourceRun, changedRollout.bundleSha256))
     .rejects.toThrow("control rollout bytes differ from the published bundle");
 });
+
+test("journal compaction comparisons reject imported direct-Codex controls", async () => {
+  const comparison = state("journal-control");
+  comparison.comparison = "journal-compaction";
+  await expect(importControl("/unused-target", comparison, "/unused-source", "a".repeat(64)))
+    .rejects.toThrow("direct-Codex stock controls only");
+});

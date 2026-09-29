@@ -304,6 +304,101 @@ for (const setup of ["stock", "current"] as const) {
   }, 30_000);
 }
 
+function journalCompactionOptions() {
+  return { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "journal-compaction" as const,
+    autoCompactLimit: 4096, mekugiSource: mentorMekugiSource };
+}
+
+test("journal-compaction launches the same current setup and binary with off/auto and a shared compact limit", async () => {
+  const run = await prepare(journalCompactionOptions());
+  const state = await readState(run);
+  expect(state.comparison).toBe("journal-compaction");
+  expect(state.auto_compact_limit).toBe(4096);
+  expect(state.execution.current_launcher).toBe("mekugi");
+  expect(state.arms.stock.home_template).toBe("snapshots/current/home/ubuntu");
+  expect(state.arms.current.home_template).toBe(state.arms.stock.home_template);
+  expect(state.runtime_tools.mekugi_sha256).toBe(await sha256(join(run, state.arms.current.home_template, ".local/bin/mekugi")));
+  expect(state.mekugi_exports).toBeUndefined();
+  for (const arm of ["stock", "current"] as const) {
+    expect(state.mekugi_exports_by_arm?.[arm]).toMatchObject({
+      capture: `artifacts/${arm}/mekugi/capture.jsonl`, metrics: `artifacts/${arm}/mekugi/metrics.json`,
+    });
+  }
+  await verifyPreparedInputs(run, state);
+  const auth = join(root, "journal-compaction-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
+  const launches = (await readFile(fake.log, "utf8")).split("\n")
+    .filter(line => / create --rm --name codex-ab-.*-(?:stock|current) --label /.test(line));
+  expect(launches).toHaveLength(2);
+  for (const arm of ["stock", "current"] as const) {
+    const launch = launches.find(line => line.includes(`codex-ab-${state.id}-${arm} --label`))!;
+    expect(launch).toContain("mise exec -- sh -c ");
+    expect(launch).toContain(`mekugi --journal-compaction=${arm === "stock" ? "off" : "auto"} --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json`);
+    expect(launch).toContain("-c model_auto_compact_token_limit=4096");
+    expect(launch).toContain(`${join(run, `artifacts/${arm}/mekugi`)}:/mekugi-exports`);
+    expect(launch).toContain(`${state.runtime_tools.current_setup_installs}:/home/ubuntu/.local/share/mise/installs:ro`);
+  }
+}, 30_000);
+
+test("journal-compaction rejects invalid limits, conflicting flags and protected runtime", async () => {
+  const options = journalCompactionOptions();
+  for (const autoCompactLimit of [undefined, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    await expect(prepare({ ...options, autoCompactLimit })).rejects.toThrow();
+  }
+  for (const mekugiFlags of [["--journal-compaction=off"], ["--journal-compaction=auto"], ["--journal-compaction=slice"], ["--mode=passthrough"], ["--grok"]]) {
+    await expect(prepare({ ...options, mekugiFlags })).rejects.toThrow();
+  }
+  await expect(prepare({ ...options, protectMekugi: true })).rejects.toThrow();
+  for (const comparison of ["stock-current", "same-setup", "stock-mekugi", "mentor-handoff"] as const) {
+    await expect(prepare({ ...options, comparison })).rejects.toThrow();
+  }
+});
+
+test("journal-compaction preflight rejects matrix drift and binary tampering", async () => {
+  const run = await prepare(journalCompactionOptions());
+  const original = await readState(run);
+  const tamperers: Array<(state: typeof original) => void> = [
+    state => { delete state.auto_compact_limit; },
+    ...[0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1].map(limit => (state: typeof original) => { state.auto_compact_limit = limit; }),
+    state => { state.arms.stock.home_template = "snapshots/stock/home/ubuntu"; },
+    state => { state.execution.current_launcher = "codex"; },
+    state => { delete state.mekugi_exports_by_arm!.stock; },
+    state => { delete state.mekugi_exports_by_arm!.current; },
+    state => { state.mekugi_exports_by_arm!.current!.capture = "artifacts/stock/mekugi/capture.jsonl"; },
+    state => { state.mekugi_exports_by_arm!.current!.metrics = "artifacts/stock/mekugi/metrics.json"; },
+    state => { delete state.runtime_tools.mekugi_sha256; },
+  ];
+  for (const tamper of tamperers) {
+    const changed = structuredClone(original);
+    tamper(changed);
+    await expect(verifyPreparedInputs(run, changed)).rejects.toThrow();
+  }
+  await file(join(run, original.arms.current.home_template, ".local/bin/mekugi"), "#!/bin/sh\nexit 7\n", 0o755);
+  await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("changed");
+});
+
+test("journal-compaction CLI records the compact limit and restricts it to prepare", async () => {
+  let stdout = "";
+  const capture = spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+    stdout += chunk.toString(); return true;
+  }) as typeof process.stdout.write);
+  try {
+    expect(await main(["prepare", "--source", source, "--base", base, "--forbidden", future,
+      "--task", task, "--criteria", fixtureCriteria, "--current-home", home,
+      "--codex-bin", join(home, ".local/bin/codex"), "--mekugi-bin", join(home, "go/bin/mekugi"),
+      "--output-parent", root, "--comparison", "journal-compaction", "--auto-compact-limit", "8192",
+      "--mekugi-source", mentorMekugiSource])).toBe(0);
+  } finally { capture.mockRestore(); }
+  expect((await readState(stdout.trim())).auto_compact_limit).toBe(8192);
+  for (const command of ["run", "prepare-trials", "prepare-suite"]) {
+    await expect(main([command, "--auto-compact-limit", "4096"])).rejects.toThrow("unknown option");
+  }
+});
+
 test("mentor-handoff rejects prepared matrix identity drift", async () => {
   const run = await mentorPrepared("current");
   const original = await readState(run);
