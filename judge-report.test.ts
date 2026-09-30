@@ -106,15 +106,6 @@ test("Mekugi native cost is retained separately from captured list-price compari
   expect(direct.current.usage.complete).toBe(false);
   expect(direct.current.usage.agents[0].estimated_api_usd).toBeNull();
   expect(direct.stock.usage.totals.estimated_api_usd).not.toBeNull();
-
-  state.mentor = { setup: "stock", child_model: "gpt-6-luna", child_effort: "medium", parent_prompt: { path: "fixture", sha256: "fixture" }, child_config: { path: "fixture", sha256: "fixture" } };
-  await writeState(run, state);
-  const mentor = (await Bun.file((await buildReport(run)).jsonPath).json()).arms;
-  expect(mentor.current.usage.totals.estimated_api_usd).toBeNull();
-  expect(mentor.current.usage.recorded_api_usd).toBe(0.1234);
-  expect(mentor.stock.usage.totals.estimated_api_usd).toBeCloseTo(0.00002745);
-  expect(mentor.stock.usage.complete).toBe(true);
-  expect(mentor.stock.usage.totals.total_tokens).toBe(24);
 });
 
 test("validated journal evidence survives rollout accounting fallback for a capture thread mismatch", async () => {

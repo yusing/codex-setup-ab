@@ -7,11 +7,11 @@ import { prepareTrials, readTrialSet, reportTrials, runTrials, summarize } from 
 import { sha256, withRunLock } from "./state";
 import type { ArmName } from "./types";
 
-type SuiteComparison = "stock-current" | "mentor-matrix";
+type SuiteComparison = "stock-current";
 type Schedule = "concurrent" | "alternating";
 interface SuiteTask { id: string; pack: string }
 interface SuiteManifest { schema: "codex-ab.suite.v1"; tasks: SuiteTask[] }
-interface SuiteSet { task: string; setup: "standard" | ArmName; trial_set: string; status: "prepared" | "running" | "complete" | "failed"; error?: string }
+interface SuiteSet { task: string; setup: "standard"; trial_set: string; status: "prepared" | "running" | "complete" | "failed"; error?: string }
 interface SuiteState {
   schema: "codex-ab.suite-run.v1"; id: string; created_at: string;
   status: "preparing" | "prepared" | "running" | "complete" | "partial";
@@ -23,7 +23,7 @@ interface PairReport {
   arms: Record<ArmName, { result?: { agent_elapsed_ms: number; grade?: { passed: boolean } } | null;
     usage?: { complete: boolean; totals: { estimated_api_usd: number | null } } | null }>;
 }
-interface TrialReport { trial_set: { controls: { task_pack?: { id?: string }; mentor?: { setup?: ArmName } } };
+interface TrialReport { trial_set: { controls: { task_pack?: { id?: string } } };
   pairs: Array<{ eligible: boolean; report: PairReport | null }> }
 
 const cleanName = (value: string): boolean => /^[a-z0-9][a-z0-9-]*$/.test(value);
@@ -39,13 +39,13 @@ async function writeSuite(directory: string, state: SuiteState): Promise<void> {
 async function readSuite(directory: string): Promise<SuiteState> {
   const state = JSON.parse(await readFile(join(directory, "suite.json"), "utf8")) as SuiteState;
   if (state.schema !== "codex-ab.suite-run.v1" || state.id !== basename(directory) || !Array.isArray(state.sets)
-    || !["stock-current", "mentor-matrix"].includes(state.comparison) || !["concurrent", "alternating"].includes(state.schedule)
+    || state.comparison !== "stock-current" || !["concurrent", "alternating"].includes(state.schedule)
     || !Number.isSafeInteger(state.count) || state.count < 2 || !/^[0-9a-f]{64}$/.test(state.manifest_sha256)
     || !/^[0-9a-f]{64}$/.test(state.sources_sha256)) throw new Error("invalid suite identity");
   const keys = new Set<string>();
   for (const set of state.sets) {
     const key = `${set.task}/${set.setup}`;
-    if (!cleanName(set.task) || keys.has(key) || !["standard", "stock", "current"].includes(set.setup)
+    if (!cleanName(set.task) || keys.has(key) || set.setup !== "standard"
       || !/^codex-ab-trials-[A-Za-z0-9]+$/.test(set.trial_set)) throw new Error("suite set plan changed");
     keys.add(key);
   }
@@ -55,10 +55,10 @@ async function readSuite(directory: string): Promise<SuiteState> {
 export async function prepareSuite(options: {
   manifestPath: string; sourcesPath: string; comparison: SuiteComparison; count: number; schedule: Schedule;
   outputParent?: string; dockerBin?: string;
-  common: Omit<PrepareOptions, "source" | "baseCommit" | "forbiddenCommit" | "taskPath" | "taskPackPath" | "comparison" | "mentorSetup" | "profile">;
+  common: Omit<PrepareOptions, "source" | "baseCommit" | "forbiddenCommit" | "taskPath" | "taskPackPath" | "comparison" | "profile">;
 }): Promise<string> {
   if (!Number.isSafeInteger(options.count) || options.count < 2) throw new Error("suite count must be at least 2");
-  if (!["stock-current", "mentor-matrix"].includes(options.comparison)) throw new Error("unsupported suite comparison");
+  if (options.comparison !== "stock-current") throw new Error("unsupported suite comparison");
   if (!["concurrent", "alternating"].includes(options.schedule)) throw new Error("unsupported suite schedule");
   const manifestPath = resolve(options.manifestPath);
   const sourcesPath = resolve(options.sourcesPath);
@@ -81,20 +81,17 @@ export async function prepareSuite(options: {
   await writeSuite(directory, state);
   try {
     for (const task of tasks) {
-      for (const setup of options.comparison === "mentor-matrix" ? ["stock", "current"] as const : ["standard"] as const) {
-        process.stderr.write(`[suite] preparing ${task.id}, ${setup}\n`);
-        const run = await prepare({ ...options.common, source: task.source,
-          baseCommit: task.pack.manifest.source.base_commit, forbiddenCommit: task.pack.manifest.source.forbidden_commit,
-          taskPath: task.pack.taskPath, taskPackPath: task.packPath, profile: "task",
-          comparison: options.comparison === "mentor-matrix" ? "mentor-handoff" : "stock-current",
-          mentorSetup: setup === "standard" ? undefined : setup,
-          reasoningEffort: setup === "standard" ? options.common.reasoningEffort : "high",
-          outputParent: directory });
-        const trialSet = await prepareTrials({ runDir: run, count: options.count, schedule: options.schedule,
-          outputParent: directory, dockerBin: options.dockerBin });
-        state.sets.push({ task: task.id, setup, trial_set: basename(trialSet), status: "prepared" });
-        await writeSuite(directory, state);
-      }
+      const setup = "standard";
+      process.stderr.write(`[suite] preparing ${task.id}, ${setup}\n`);
+      const run = await prepare({ ...options.common, source: task.source,
+        baseCommit: task.pack.manifest.source.base_commit, forbiddenCommit: task.pack.manifest.source.forbidden_commit,
+        taskPath: task.pack.taskPath, taskPackPath: task.packPath, profile: "task",
+        comparison: "stock-current",
+        outputParent: directory });
+      const trialSet = await prepareTrials({ runDir: run, count: options.count, schedule: options.schedule,
+        outputParent: directory, dockerBin: options.dockerBin });
+      state.sets.push({ task: task.id, setup, trial_set: basename(trialSet), status: "prepared" });
+      await writeSuite(directory, state);
     }
     state.status = "prepared";
   } catch (error) {
@@ -121,8 +118,7 @@ async function reportSuiteUnlocked(directory: string, state: SuiteState): Promis
     const trial = await readTrialSet(trialDir);
     const reportPath = await reportTrials(trialDir);
     const report = JSON.parse(await readFile(join(dirname(reportPath), "report.json"), "utf8")) as TrialReport;
-    if (trial.controls.task_pack?.id !== set.task || report.trial_set.controls.task_pack?.id !== set.task
-      || (state.comparison === "mentor-matrix" && trial.controls.mentor?.setup !== set.setup)) throw new Error("suite task or setup identity changed");
+    if (trial.controls.task_pack?.id !== set.task || report.trial_set.controls.task_pack?.id !== set.task) throw new Error("suite task or setup identity changed");
     const measured = report.pairs.filter(pair => pair.eligible && pair.report?.measurement_complete);
     const passing = measured.map(pair => pair.report!).filter(pair => pair.arms.stock.result?.grade?.passed && pair.arms.current.result?.grade?.passed);
     const values = { stock: { agent_seconds: [], estimated_api_usd: [] }, current: { agent_seconds: [], estimated_api_usd: [] } } as
@@ -148,7 +144,7 @@ async function reportSuiteUnlocked(directory: string, state: SuiteState): Promis
   const format = (item: number | null): string => item === null ? "unknown" : item.toFixed(4);
   const destination = await mkdtemp(join(directory, "report-"));
   const summary = { schema: "codex-ab.suite-report.v1", suite: state, rows, effects, macro, generated_at: new Date().toISOString() };
-  const markdown = `# Cross-task benchmark suite\n\nComparison: ${state.comparison}. Schedule: ${state.schedule}. Status: ${state.status}. These are descriptive results, not a causal or significance claim. Every row reports one task and one setup; the stock/current arm names mean mentor off/on in mentor-matrix rows. Only complete valid pairs whose **both** candidates passed contribute to speed and cost effects. Missing or failed measurements are never zero-filled.\n\n| Task | Setup | Planned pairs | Measured pairs | Both passed | B-A agent seconds | B-A estimated USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n${rows.map((row, index) => `| ${row.task} | ${row.setup} | ${row.planned} | ${row.measured} | ${row.both_pass} | ${format(effects[index]!.agent_seconds)} | ${format(effects[index]!.estimated_api_usd)} |`).join("\n")}\n\n## Equal-task macro effects\n\nEach eligible task has equal weight, regardless of repetitions.\n\n| Setup | Eligible tasks, time | Mean B-A seconds | Eligible tasks, cost | Mean B-A USD |\n| --- | ---: | ---: | ---: | ---: |\n${Object.entries(macro.agent_seconds).map(([setup, time]) => `| ${setup} | ${time.n} | ${format(time.mean)} | ${macro.estimated_api_usd[setup]?.n ?? 0} | ${format(macro.estimated_api_usd[setup]?.mean ?? null)} |`).join("\n")}\n\n## Per-task evidence\n\n${rows.map(row => `- ${row.task}, ${row.setup}: ${row.report}`).join("\n")}\n\nAll four mentor-matrix cells use Mekugi. A cross-setup difference is not a within-run randomized effect; compare stock and current setup rows cautiously. Estimates are public-list API equivalents, not invoices.\n`;
+  const markdown = `# Cross-task benchmark suite\n\nComparison: ${state.comparison}. Schedule: ${state.schedule}. Status: ${state.status}. These are descriptive results, not a causal or significance claim. Every row reports one task with the stock/current setup comparison. Only complete valid pairs whose **both** candidates passed contribute to speed and cost effects. Missing or failed measurements are never zero-filled.\n\n| Task | Setup | Planned pairs | Measured pairs | Both passed | B-A agent seconds | B-A estimated USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n${rows.map((row, index) => `| ${row.task} | ${row.setup} | ${row.planned} | ${row.measured} | ${row.both_pass} | ${format(effects[index]!.agent_seconds)} | ${format(effects[index]!.estimated_api_usd)} |`).join("\n")}\n\n## Equal-task macro effects\n\nEach eligible task has equal weight, regardless of repetitions.\n\n| Setup | Eligible tasks, time | Mean B-A seconds | Eligible tasks, cost | Mean B-A USD |\n| --- | ---: | ---: | ---: | ---: |\n${Object.entries(macro.agent_seconds).map(([setup, time]) => `| ${setup} | ${time.n} | ${format(time.mean)} | ${macro.estimated_api_usd[setup]?.n ?? 0} | ${format(macro.estimated_api_usd[setup]?.mean ?? null)} |`).join("\n")}\n\n## Per-task evidence\n\n${rows.map(row => `- ${row.task}, ${row.setup}: ${row.report}`).join("\n")}\n\nEstimates are public-list API equivalents, not invoices.\n`;
   await writeFile(join(destination, "report.json"), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });
   await writeFile(join(destination, "report.md"), markdown, { mode: 0o600 });
   return join(destination, "report.md");

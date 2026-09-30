@@ -17,7 +17,6 @@ USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning
 EXPECTED_ARM_CONFIG = {
     "control": "passthrough",
     "mekugi": "mekugi",
-    "mekugi-mentor": "mekugi",
 }
 INFERENCE_TRANSPORT_KEYS = (
     "client_requests",
@@ -562,14 +561,11 @@ def validate_results(
     metrics: dict[str, Any],
     results_path: Path,
     arm: str,
-    config: dict[str, Any],
     result_usage_excluded: set[int] | None = None,
 ) -> int:
     result_usage_excluded = result_usage_excluded or set()
     expected: dict[str, dict[str, int]] = {}
     allowed_models: dict[str, set[str]] = {}
-    main_models: dict[str, str] = {}
-    mentor_threads: dict[str, str] = {}
     for result_record in load_jsonl(results_path):
         if result_record.get("arm") != arm:
             continue
@@ -579,57 +575,12 @@ def validate_results(
             raise ValueError("results have a missing or duplicate measured thread")
         expected[thread] = usage(agent.get("usage"), result=True)
         configured_model = required_text(result_record.get("model"), "result model")
-        parent_model = result_record.get("parent_model") or configured_model
-        parent_model = required_text(parent_model, "result parent model")
-        allowed_models[thread] = {parent_model}
-
-        main_mentor = config.get("main_mentor", {})
-        if main_mentor.get("enabled"):
-            if config.get("benchmark_mode") != "mekugi-diagnostic" or arm != "mekugi":
-                raise ValueError("main mentor requires the diagnostic Mekugi arm")
-            if parent_model not in {"gpt-5.6", "gpt-5.6-sol"} or main_mentor.get("requested_model") != parent_model:
-                raise ValueError("main mentor configured model mismatch")
-            if main_mentor.get("requested_reasoning_effort") != result_record.get("reasoning_effort"):
-                raise ValueError("main mentor configured reasoning effort mismatch")
-            if main_mentor.get("model") != "gpt-6-astra":
-                raise ValueError("unsupported main mentor model")
-            allowed_models[thread].add("gpt-6-astra")
-            main_models[thread] = parent_model
-            mentor_threads[thread] = "gpt-6-astra"
-
-        child_model = result_record.get("child_model")
-        proof_value = agent.get("child_proof_path") if isinstance(agent, dict) else None
-        mentor_result = child_model is not None or proof_value is not None or arm == "mekugi-mentor"
-        if not mentor_result:
-            continue
-        child_model = required_text(child_model, "mentor child model")
-        proof_path = Path(required_text(proof_value, "mentor child proof path"))
-        if not proof_path.is_absolute():
-            proof_path = results_path.parent / proof_path
-        proof = load_json(proof_path)
-        if proof.get("schema") != "mekugi.benchmark.child-proof.v1":
-            raise ValueError("mentor child proof has an unsupported schema")
-        child_thread = required_text(proof.get("child_thread_id"), "mentor child thread")
-        if child_thread in allowed_models:
-            raise ValueError("mentor child thread is duplicated")
-        if proof.get("configured_model") != child_model:
-            raise ValueError("mentor child proof disagrees with the configured model")
-        child_effort = required_text(result_record.get("child_reasoning_effort"), "mentor child effort")
-        if proof.get("configured_reasoning_effort") != child_effort:
-            raise ValueError("mentor child proof disagrees with the configured reasoning effort")
-        allowed_models[child_thread] = {child_model}
-        if arm == "mekugi-mentor":
-            # The router's child mentor is independent of the benchmark's main model.
-            mentor_model = required_text(config.get("mentor_handoff", {}).get("mentor_model"), "mentor model")
-            allowed_models[child_thread].add(mentor_model)
-            mentor_threads[child_thread] = mentor_model
+        allowed_models[thread] = {configured_model}
     if not expected:
         raise ValueError(f"results contain no {arm} records")
 
     observed = {thread: empty_usage() for thread in expected}
     seen: set[str] = set()
-    actual_models: dict[str, set[str]] = defaultdict(set)
-    # Snapshots retain completion order; handoff follows request sequence.
     for exchange in sorted(metrics["exchanges"], key=lambda item: item["sequence"]):
         thread = exchange.get("thread_id")
         if thread not in allowed_models:
@@ -641,20 +592,6 @@ def validate_results(
             model = attempt.get("model") if isinstance(attempt, dict) else None
             if model not in allowed_models[thread]:
                 raise ValueError(f"provider model {model} violates the configured schedule")
-            # Non-turn requests do not advance the schedule. Compaction usage
-            # still counts in the result; prewarm usage remains aggregate-only.
-            if thread in main_models and (
-                exchange.get("request_kind") in {"prewarm", "compaction"}
-                or exchange["sequence"] in result_usage_excluded
-            ):
-                continue
-            if thread in main_models:
-                configured = main_models[thread]
-                if model == configured and "gpt-6-astra" not in actual_models[thread]:
-                    raise ValueError("main schedule did not start with Astra")
-                if model == "gpt-6-astra" and configured in actual_models[thread]:
-                    raise ValueError("main schedule restarted Astra after handoff")
-            actual_models[thread].add(model)
         if thread in observed:
             seen.add(thread)
             if exchange.get("usage") is not None and exchange.get("sequence") not in result_usage_excluded:
@@ -664,12 +601,6 @@ def validate_results(
             raise ValueError(f"capture has no request for measured thread {thread}")
         if observed[thread] != expected_usage:
             raise ValueError(f"captured provider usage differs from result usage for {thread}")
-    for child_thread in allowed_models.keys() - expected.keys():
-        if child_thread not in actual_models:
-            raise ValueError("capture has no request for a proved mentor child")
-    for child_thread, mentor_model in mentor_threads.items():
-        if mentor_model not in actual_models[child_thread]:
-            raise ValueError("mentor treatment never routed the scheduled thread to the mentor model")
     return len(expected)
 
 
@@ -686,7 +617,7 @@ def main() -> int:
         metrics = load_json(args.metrics)
         validate_snapshot(metrics, args.arm, config)
         result_usage_excluded = validate_raw_capture(args.capture, metrics)
-        runs = validate_results(metrics, args.results, args.arm, config, result_usage_excluded)
+        runs = validate_results(metrics, args.results, args.arm, result_usage_excluded)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
     json.dump(

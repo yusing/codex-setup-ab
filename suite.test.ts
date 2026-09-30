@@ -7,7 +7,7 @@ import { loadTaskPack } from "./task-pack";
 import { writeBundleManifest } from "./bundle";
 import { sha256, writeState } from "./state";
 import { reportTrials, trialControls, type TrialSet } from "./trials";
-import type { ArmName, RunState } from "./types";
+import type { RunState } from "./types";
 
 type PairFixture = {
   stockSeconds: number;
@@ -30,26 +30,24 @@ test("the checked-in diverse suite maps each of its four task IDs to a matching 
   }
 });
 
-function baseline(task: string, setup: ArmName): RunState {
+function baseline(task: string): RunState {
   return {
     schema_version: 1,
     id: "fixture",
     status: "complete",
     image_id: `sha256:${"a".repeat(64)}`,
-    comparison: "mentor-handoff",
+    comparison: "stock-current",
     task_pack: { id: task, path: "pack/manifest.json", sha256: "b".repeat(64) },
-    mentor: { setup, child_model: "gpt-6-luna", child_effort: "medium", parent_prompt: { path: "parent.md", sha256: "c".repeat(64) },
-      child_config: { path: "child.json", sha256: "d".repeat(64) } },
     execution: { model: "gpt-6-astra", reasoning_effort: "medium", service_tier: "default" },
     protected_runtime: { boundary: "direct-egress-vs-router-only", scripts: [] },
     finishing: { status: "complete" },
   } as unknown as RunState;
 }
 
-async function writeTrialSet(directory: string, task: string, setup: ArmName, fixtures: PairFixture[]): Promise<void> {
+async function writeTrialSet(directory: string, task: string, setup: "standard", fixtures: PairFixture[]): Promise<void> {
   await mkdir(directory, { recursive: true });
   const id = basename(directory);
-  const controls = trialControls(baseline(task, setup));
+  const controls = trialControls(baseline(task));
   const controlsSha = new Bun.CryptoHasher("sha256").update(JSON.stringify(controls)).digest("hex");
   const planSha = new Bun.CryptoHasher("sha256").update(JSON.stringify({ controls: controlsSha, count: fixtures.length, schedule: "concurrent" })).digest("hex");
   const set: TrialSet = {
@@ -62,7 +60,7 @@ async function writeTrialSet(directory: string, task: string, setup: ArmName, fi
     const runId = `${id}-${index}`;
     const armOrder = "concurrent" as const;
     const trial = { set_id: id, index, controls_sha256: controlsSha, plan_sha256: planSha };
-    const state: RunState = { ...baseline(task, setup), id: runId, arm_order: armOrder, trial };
+    const state: RunState = { ...baseline(task), id: runId, arm_order: armOrder, trial };
     const evidence = join(directory, "evidence", String(index));
     await mkdir(evidence, { recursive: true });
     await writeState(evidence, state);
@@ -129,14 +127,12 @@ test("suite preparation rejects a task ID that differs from its pack identity", 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("suite report filters to both-passing pairs, leaves missing costs unknown, and groups mentor setups", async () => {
+test("suite report filters to both-passing pairs, leaves missing costs unknown, and weights each task equally", async () => {
   const directory = await mkdtemp(join(tmpdir(), "codex-ab-suite-report-"));
   try {
     const sets = [
-      { task: "alpha", setup: "stock" as const, deltas: [1, 99], missingCost: true },
-      { task: "alpha", setup: "current" as const, deltas: [2, 2], missingCost: true },
-      { task: "beta", setup: "stock" as const, deltas: [3, 3], missingCost: false },
-      { task: "beta", setup: "current" as const, deltas: [4, 4], missingCost: false },
+      { task: "alpha", setup: "standard" as const, deltas: [1, 99], missingCost: true },
+      { task: "beta", setup: "standard" as const, deltas: [3, 3], missingCost: false },
     ];
     const suiteSets = [];
     for (const [offset, item] of sets.entries()) {
@@ -145,36 +141,34 @@ test("suite report filters to both-passing pairs, leaves missing costs unknown, 
         currentUsd: item.missingCost ? null : 3 };
       const second: PairFixture = { stockSeconds: 10, currentSeconds: 10 + item.deltas[1]!, stockUsd: item.missingCost ? null : 2,
         currentUsd: item.missingCost ? null : 3 };
-      if (item.task === "alpha" && item.setup === "stock") second.currentPassed = false;
+      if (item.task === "alpha" && item.setup === "standard") second.currentPassed = false;
       await writeTrialSet(join(directory, trialSet), item.task, item.setup, [first, second]);
       suiteSets.push({ task: item.task, setup: item.setup, trial_set: trialSet, status: "complete" as const });
     }
     const state = { schema: "codex-ab.suite-run.v1", id: basename(directory), created_at: new Date().toISOString(),
-      status: "complete", comparison: "mentor-matrix", schedule: "concurrent", count: 2,
+      status: "complete", comparison: "stock-current", schedule: "concurrent", count: 2,
       manifest_sha256: "e".repeat(64), sources_sha256: "f".repeat(64), sets: suiteSets };
     const suitePath = join(directory, "suite.json");
     await writeFile(suitePath, `${JSON.stringify(state, null, 2)}\n`);
 
     const reportPath = await reportSuite(directory);
     const report = JSON.parse(await readFile(join(reportPath, "..", "report.json"), "utf8"));
-    const alphaStock = report.rows.find((row: { task: string; setup: string }) => row.task === "alpha" && row.setup === "stock");
+    const alphaStock = report.rows.find((row: { task: string; setup: string }) => row.task === "alpha" && row.setup === "standard");
     expect(alphaStock).toMatchObject({ planned: 2, measured: 2, both_pass: 1 });
-    expect(report.effects.find((row: { task: string; setup: string }) => row.task === "alpha" && row.setup === "stock"))
+    expect(report.effects.find((row: { task: string; setup: string }) => row.task === "alpha" && row.setup === "standard"))
       .toMatchObject({ agent_seconds: 1, estimated_api_usd: null });
-    expect(report.macro.agent_seconds.stock).toMatchObject({ n: 2, mean: 2 });
-    expect(report.macro.agent_seconds.current).toMatchObject({ n: 2, mean: 3 });
-    expect(report.macro.estimated_api_usd.stock).toMatchObject({ n: 1, mean: 1 });
-    expect(report.macro.estimated_api_usd.current).toMatchObject({ n: 1, mean: 1 });
+    expect(report.macro.agent_seconds.standard).toMatchObject({ n: 2, mean: 2 });
+    expect(report.macro.estimated_api_usd.standard).toMatchObject({ n: 1, mean: 1 });
     const markdown = await readFile(reportPath, "utf8");
     expect(markdown).toContain("unknown");
     expect(markdown).toStartWith("# Cross-task benchmark suite\n\n");
-    expect(markdown).toContain("| alpha | stock | 2 | 2 | 1 | 1.0000 | unknown |");
+    expect(markdown).toContain("| alpha | standard | 2 | 2 | 1 | 1.0000 | unknown |");
 
     const renamedTaskState = { ...state, sets: suiteSets.map((set, index) => index === 0 ? { ...set, task: "renamed-alpha" } : set) };
     await writeFile(suitePath, JSON.stringify(renamedTaskState));
     await expect(reportSuite(directory)).rejects.toThrow("suite task or setup identity changed");
-    const wrongSetupState = { ...state, sets: suiteSets.map((set, index) => index === 0 ? { ...set, setup: "standard" } : set) };
+    const wrongSetupState = { ...state, sets: suiteSets.map((set, index) => index === 0 ? { ...set, setup: "stock" } : set) };
     await writeFile(suitePath, JSON.stringify(wrongSetupState));
-    await expect(reportSuite(directory)).rejects.toThrow("suite task or setup identity changed");
+    await expect(reportSuite(directory)).rejects.toThrow("suite set plan changed");
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run.sh --preset NAME [--task NAME] [--model NAME] [--reasoning-effort LEVEL] [--mentor-handoff]
+Usage: scripts/run.sh --preset NAME [--task NAME] [--model NAME] [--reasoning-effort LEVEL]
 
 Prepare, preflight, and run one pinned task with one comparison:
 
@@ -24,7 +24,6 @@ Model options:
   --model NAME          gpt-6-astra or gpt-6.1-sol (Codex comparisons; default gpt-6-astra)
   --reasoning-effort LEVEL
                         low, medium, high, or xhigh (default: high for Grok; otherwise medium for NVM, xhigh for session retention)
-  --mentor-handoff      Enable both Mekugi main-thread and subagent mentor handoff (default: off)
 
 Optional environment overrides:
   CODEX_AB_SOURCE_DIR        NVM checkout (default: /tmp/codex-ab-nvm-source)
@@ -48,7 +47,6 @@ preset=
 task=
 model=
 reasoning_effort=
-mentor_handoff=false
 while (($#)); do
   case "$1" in
     --preset)
@@ -101,11 +99,6 @@ while (($#)); do
       [[ -n "$reasoning_effort" ]] || die "--reasoning-effort requires a nonempty value"
       shift
       ;;
-    --mentor-handoff)
-      [[ "$mentor_handoff" == false ]] || die "--mentor-handoff may be supplied only once"
-      mentor_handoff=true
-      shift
-      ;;
     -h|--help)
       usage
       exit 0
@@ -141,10 +134,6 @@ case "$preset" in
   stock-current|current-vs-current-mekugi|stock-mekugi|codex-mekugi-grok) ;;
   *) die "unknown preset '$preset'; run with --help to list presets" ;;
 esac
-if [[ "$mentor_handoff" == true && "$preset" == stock-current ]]; then
-  die "--mentor-handoff requires a Mekugi preset"
-fi
-
 if [[ "$task" == nvm-download-no-eval ]]; then
   if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
     die "source path exists but is not a Git checkout: $source_dir"
@@ -253,14 +242,13 @@ case "$preset" in
     prepare_args+=(
       --mekugi-source "$mekugi_source"
       --mekugi-bin "$mekugi_bin"
-      --mekugi-flags "[\"--main-mentor-handoff=$mentor_handoff\",\"--mentor-handoff=$mentor_handoff\"]"
     )
     ;;
   codex-mekugi-grok)
     prepare_args+=(
       --mekugi-source "$mekugi_source"
       --mekugi-bin "$mekugi_bin"
-      --mekugi-flags "[\"--mode=mekugi\",\"--grok\",\"--main-mentor-handoff=$mentor_handoff\",\"--mentor-handoff=$mentor_handoff\"]"
+      --mekugi-flags "[\"--mode=mekugi\",\"--grok\"]"
       --grok-bin "$grok_bin"
     )
     run_args+=(--grok-auth-file "$grok_auth_file")

@@ -22,7 +22,7 @@ let source: string;
 let home: string;
 let task: string;
 let fixtureCriteria: string;
-let mentorMekugiSource: string;
+let mekugiSource: string;
 let base: string;
 let future: string;
 let codexHash: string;
@@ -104,8 +104,8 @@ beforeAll(async () => {
   await checked(["git", "-C", source, "commit", "-m", "future"]);
   future = (await checked(["git", "-C", source, "rev-parse", "HEAD"])).stdout.trim();
   task = join(root, "task.md"); fixtureCriteria = join(root, "fixture-criteria.json");
-  mentorMekugiSource = join(root, "mentor-mekugi-source");
-  await mkdir(mentorMekugiSource, { recursive: true });
+  mekugiSource = join(root, "mekugi-source");
+  await mkdir(mekugiSource, { recursive: true });
 
   await file(task, "Make the fixture better.\n");
   await file(fixtureCriteria, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
@@ -121,12 +121,6 @@ async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi"
     outputParent: root, currentHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds,
     codexBinary: join(currentHome, ".local/bin/codex"), currentLauncher,
     mekugiBinary: currentLauncher === "mekugi" ? join(currentHome, "go/bin/mekugi") : undefined });
-}
-
-async function mentorPrepared(setup: "stock" | "current"): Promise<string> {
-  return prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
-    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
-    comparison: "mentor-handoff", mentorSetup: setup, reasoningEffort: "high", mekugiSource: mentorMekugiSource });
 }
 
 test("same-setup uses one immutable configuration for both arms and rejects drift", async () => {
@@ -203,7 +197,7 @@ test("stock-mekugi isolates the launcher without current-home guidance", async (
     reviewTreatment: join(root, "unused-treatment"), mekugiSource: captureSource })).rejects.toThrow("does not accept");
 });
 
-test("stock-mekugi accepts an explicit Sol/high pair without mentor handoff", async () => {
+test("stock-mekugi accepts an explicit Sol/high pair with the selected model", async () => {
   const captureSource = join(root, "sol-stock-mekugi-capture-source");
   await mkdir(captureSource, { recursive: true });
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
@@ -212,7 +206,6 @@ test("stock-mekugi accepts an explicit Sol/high pair without mentor handoff", as
     model: "gpt-6.1-sol", reasoningEffort: "high", mekugiSource: captureSource });
   const state = await readState(run);
   expect(state.execution).toMatchObject({ model: "gpt-6.1-sol", reasoning_effort: "high", current_launcher: "mekugi" });
-  expect(state.mentor).toBeUndefined();
   for (const template of [state.arms.stock.home_template, state.arms.current.home_template]) {
     const config = await readFile(join(run, template, ".codex/config.toml"), "utf8");
     expect(config).toContain('model = "gpt-6.1-sol"');
@@ -246,85 +239,13 @@ test("stock-mekugi accepts low reasoning and rejects unsupported efforts clearly
   await verifyPreparedInputs(run, state);
   await expect(prepare({ ...options, reasoningEffort: "minimal" as "low" }))
     .rejects.toThrow("reasoning effort must be low, medium, high, or xhigh");
-  await expect(prepare({ ...options, comparison: "mentor-handoff", mentorSetup: "stock",
-    reasoningEffort: "low" })).rejects.toThrow("mentor-handoff requires high reasoning");
-});
-
-for (const setup of ["stock", "current"] as const) {
-  test(`mentor-handoff uses the same ${setup} setup and launches Mekugi mentor-off/on with dual exports`, async () => {
-    const run = await mentorPrepared(setup);
-    const state = await readState(run);
-    const selectedHome = setup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu";
-    expect(state.comparison).toBe("mentor-handoff");
-    expect(state.mentor).toMatchObject({ setup, child_model: "gpt-6-luna", child_effort: "medium" });
-    expect(state.execution).toMatchObject({ model: "gpt-6.1-sol", reasoning_effort: "high", current_launcher: "mekugi" });
-    expect(state.arms.stock.home_template).toBe(selectedHome);
-    expect(state.arms.current.home_template).toBe(selectedHome);
-    expect(state.mekugi_exports).toBeUndefined();
-    expect(state.mekugi_exports_by_arm?.stock).toMatchObject({
-      capture: "artifacts/stock/mekugi/capture.jsonl", metrics: "artifacts/stock/mekugi/metrics.json",
-    });
-    expect(state.mekugi_exports_by_arm?.current).toMatchObject({
-      capture: "artifacts/current/mekugi/capture.jsonl", metrics: "artifacts/current/mekugi/metrics.json",
-    });
-    expect(state.mentor?.parent_prompt.path).toBe("control/mentor-parent.md");
-    expect(state.mentor?.child_config.path).toBe("control/mentor-child.toml");
-    const parent = await readFile(join(run, state.mentor!.parent_prompt.path), "utf8");
-    const child = await readFile(join(run, state.mentor!.child_config.path), "utf8");
-    expect(parent).toContain("Spawn exactly one subagent");
-    expect(child).toContain('model = "gpt-6-luna"');
-    expect(child).toContain('model_reasoning_effort = "medium"');
-    await verifyPreparedInputs(run, state);
-
-    const auth = join(root, `mentor-${setup}-auth.json`);
-    await file(auth, "{}\n", 0o600);
-    const fake = await fakeOwnedDocker(0);
-    expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
-    const creates = (await readFile(fake.log, "utf8")).split("\n")
-      .filter(line => / create --rm --name codex-ab-.*-(?:stock|current) --label /.test(line));
-    expect(creates).toHaveLength(2);
-    const stock = creates.find(line => line.includes(`codex-ab-${state.id}-stock --label`))!;
-    const current = creates.find(line => line.includes(`codex-ab-${state.id}-current --label`))!;
-    expect(stock).toContain("mekugi --main-mentor-handoff=false --mentor-handoff=false --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json");
-    expect(current).toContain("mekugi --main-mentor-handoff=false --mentor-handoff=true --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json");
-    expect(stock).toContain(`${join(run, "artifacts/stock/mekugi")}:/mekugi-exports`);
-    expect(current).toContain(`${join(run, "artifacts/current/mekugi")}:/mekugi-exports`);
-    expect(stock).toContain('agents.benchmark_worker.config_file="/benchmark-control/mentor-child.toml"');
-    expect(current).toContain('model_instructions_file="/benchmark-control/mentor-parent.md"');
-    expect(stock).toContain("--model gpt-6.1-sol");
-    expect(current).toContain('model_reasoning_effort="high"');
-    if (setup === "current") {
-      expect(stock).toContain("mise exec -- sh -c ");
-      expect(current).toContain("mise exec -- sh -c ");
-    } else {
-      expect(stock).not.toContain("mise exec -- mekugi");
-      expect(current).not.toContain("mise exec -- mekugi");
-    }
-    await file(join(run, "reports/report.json"), "{}\n");
-    await file(join(run, "reports/report.md"), "fixture report\n");
-    await bundles.collectBundle(run);
-    expect(await readFile(join(run, "reports/bundle/analyze_capture.py"), "utf8")).toBe(MEKUGI_EXPORT_SCRIPTS["analyze_capture.py"]);
-    expect(await readFile(join(run, "reports/bundle/benchmark_jsonl.py"), "utf8")).toBe(MEKUGI_EXPORT_SCRIPTS["benchmark_jsonl.py"]);
-  }, 30_000);
-}
-
-test("historical GPT-6 Sol mentor inputs remain verifiable", async () => {
-  const run = await mentorPrepared("stock");
-  const state = await readState(run);
-  state.execution.model = "gpt-6-sol";
-  for (const template of ["snapshots/stock/home/ubuntu", state.arms.stock.home_template]) {
-    const config = join(run, template, ".codex/config.toml");
-    await writeFile(config, (await readFile(config, "utf8")).replace("gpt-6.1-sol", "gpt-6-sol"));
-  }
-  await writeState(run, state);
-  await verifyPreparedInputs(run, await readState(run));
 });
 
 function journalCompactionOptions() {
   return { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "journal-compaction" as const,
-    autoCompactLimit: 4096, mekugiSource: mentorMekugiSource };
+    autoCompactLimit: 4096, mekugiSource: mekugiSource };
 }
 
 test("journal-compaction launches the same current setup and binary with off/auto and a shared compact limit", async () => {
@@ -369,7 +290,7 @@ test("journal-compaction rejects invalid limits, conflicting flags and protected
     await expect(prepare({ ...options, mekugiFlags })).rejects.toThrow();
   }
   await expect(prepare({ ...options, protectMekugi: true })).rejects.toThrow();
-  for (const comparison of ["stock-current", "same-setup", "stock-mekugi", "mentor-handoff"] as const) {
+  for (const comparison of ["stock-current", "same-setup", "stock-mekugi"] as const) {
     await expect(prepare({ ...options, comparison })).rejects.toThrow();
   }
 });
@@ -407,50 +328,13 @@ test("journal-compaction CLI records the compact limit and restricts it to prepa
       "--task", task, "--criteria", fixtureCriteria, "--current-home", home,
       "--codex-bin", join(home, ".local/bin/codex"), "--mekugi-bin", join(home, "go/bin/mekugi"),
       "--output-parent", root, "--comparison", "journal-compaction", "--auto-compact-limit", "8192",
-      "--mekugi-source", mentorMekugiSource])).toBe(0);
+      "--mekugi-source", mekugiSource])).toBe(0);
   } finally { capture.mockRestore(); }
   expect((await readState(stdout.trim())).auto_compact_limit).toBe(8192);
   for (const command of ["run", "prepare-trials", "prepare-suite"]) {
     await expect(main([command, "--auto-compact-limit", "4096"])).rejects.toThrow("unknown option");
   }
 });
-
-test("mentor-handoff rejects prepared matrix identity drift", async () => {
-  const run = await mentorPrepared("current");
-  const original = await readState(run);
-  await verifyPreparedInputs(run, original);
-  const tamperers: Array<(state: typeof original) => void> = [
-    state => { state.mentor!.setup = "stock"; },
-    state => { state.arms.stock.home_template = "snapshots/stock/home/ubuntu"; },
-    state => { state.arms.current.home_template = "snapshots/stock/home/ubuntu"; },
-    state => { state.execution.current_launcher = "codex"; },
-    state => { state.execution.model = "gpt-6-astra"; },
-    state => { state.execution.reasoning_effort = "medium"; },
-    state => { state.mentor!.child_model = "gpt-6.1-sol" as never; },
-    state => { state.mentor!.child_effort = "high" as never; },
-    state => { state.mekugi_exports_by_arm!.stock = undefined; },
-    state => { state.mekugi_exports_by_arm!.current = undefined; },
-    state => { state.mekugi_exports_by_arm!.current!.capture = "artifacts/stock/mekugi/capture.jsonl"; },
-    state => { state.mekugi_exports_by_arm!.current!.metrics = "artifacts/stock/mekugi/metrics.json"; },
-  ];
-  for (const tamper of tamperers) {
-    const changed = structuredClone(original);
-    tamper(changed);
-    await expect(verifyPreparedInputs(run, changed)).rejects.toThrow("mentor matrix identity changed");
-  }
-});
-
-test("mentor-handoff task and handoff controls are checked before Docker is invoked", async () => {
-  const paths = ["control/task.md", "control/mentor-parent.md", "control/mentor-child.toml"];
-  for (const path of paths) {
-    const run = await mentorPrepared("stock");
-    await file(join(run, path), "tampered task control\n");
-    const fake = await fakeOwnedDocker(0);
-    await expect(preflightRun(run, fake.path)).rejects.toThrow(path === "control/mentor-parent.md" || path === "control/mentor-child.toml"
-      ? "mentor control changed" : "copied benchmark control changed");
-    expect(await Bun.file(fake.log).exists()).toBe(false);
-  }
-}, 30_000);
 
 for (const comparison of ["stock-current", "same-setup"] as const) {
   for (const cachePresent of [false, true]) {
@@ -545,10 +429,12 @@ test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
   await file(grokBin, "#!/bin/sh\necho grok 1.0.30\n", 0o755);
   const grokAuth = join(root, "grok-auth.json");
   await file(grokAuth, "{}\n", 0o600);
-  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+  const options = { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
-    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "codex-mekugi-grok",
-    mekugiFlags: ["--mode=mekugi", "--grok"], mekugiSource: captureSource, grokBinary: grokBin });
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "codex-mekugi-grok" as const,
+    mekugiFlags: ["--mode=mekugi", "--grok"], mekugiSource: captureSource, grokBinary: grokBin };
+  await expect(prepare({ ...options, mekugiFlags: ["--grok=false"] })).rejects.toThrow("requires --grok");
+  const run = await prepare(options);
   const state = await readState(run);
   expect(state.execution).toMatchObject({ current_launcher: "grok", model: "grok:grok-4.7", reasoning_effort: "high", service_tier: "default" });
   expect(await readFile(join(run, "snapshots/stock-mekugi/home/ubuntu/.codex/config.toml"), "utf8"))
@@ -678,7 +564,7 @@ test("Mekugi argument arrays cannot redirect benchmark-owned exports", () => {
   }
   expect(() => parseMekugiFlags('["--model-protocol=native"]')).toThrow();
   expect(() => parseMekugiFlags('["--debug=false"]')).toThrow();
-  expect(parseMekugiFlags('["--post-compact-recovery=false","--explore-filter=false"]')).toEqual(["--post-compact-recovery=false", "--explore-filter=false"]);
+  expect(parseMekugiFlags('["--post-compact-recovery=false","--ansi-faint=off"]')).toEqual(["--post-compact-recovery=false", "--ansi-faint=off"]);
 });
 
 test("task-pack CLI freezes pinned controls without exposing checks to either arm", async () => {

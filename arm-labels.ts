@@ -1,11 +1,7 @@
 import type { ArmName, RunState } from "./types";
 
-export function armLabels(state: Pick<RunState, "comparison" | "execution" | "mentor">): Record<ArmName, string> {
+export function armLabels(state: Pick<RunState, "comparison" | "execution">): Record<ArmName, string> {
   if (state.comparison === "journal-compaction") return { stock: "Codex + Mekugi (journal compaction off)", current: "Codex + Mekugi (journal compaction on: auto)" };
-  if (state.mentor) {
-    const setup = state.mentor.setup === "stock" ? "minimal setup" : "current-home setup";
-    return { stock: `Codex + Mekugi (${setup}, mentor off)`, current: `Codex + Mekugi (${setup}, mentor on)` };
-  }
   if (state.comparison === "codex-mekugi-grok") {
     return { stock: "Codex + Mekugi (Grok)", current: "Grok CLI" };
   }

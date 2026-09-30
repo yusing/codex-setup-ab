@@ -94,13 +94,17 @@ test("preset forwards explicit model and reasoning effort to prepare", async () 
 });
 
 for (const preset of ["stock-mekugi", "current-vs-current-mekugi", "codex-mekugi-grok"]) {
-  test(`${preset} defaults both mentor handoffs off and enables both with one flag`, async () => {
-    const disabled = await runPreset("matching", [], preset);
-    expect(disabled.exitCode).toBe(0);
-    expect(disabled.calls).toContain('"--main-mentor-handoff=false","--mentor-handoff=false"');
-    const enabled = await runPreset("matching", ["--mentor-handoff"], preset);
-    expect(enabled.exitCode).toBe(0);
-    expect(enabled.calls).toContain('"--main-mentor-handoff=true","--mentor-handoff=true"');
+  test(`${preset} launches without removed Mekugi flags`, async () => {
+    const result = await runPreset("matching", [], preset);
+    expect(result.exitCode).toBe(0);
+    expect(result.calls.match(/cli prepare /g)).toHaveLength(1);
+    expect(result.calls.match(/cli run /g)).toHaveLength(1);
+    expect(result.calls).not.toContain("--mentor-handoff");
+    expect(result.calls).not.toContain("--main-mentor-handoff");
+    expect(result.calls).not.toContain("--explore-filter");
+    if (preset === "codex-mekugi-grok") {
+      expect(result.calls).toContain('--mekugi-flags ["--mode=mekugi","--grok"]');
+    }
   });
 }
 
@@ -111,11 +115,14 @@ test("Grok preset uses high reasoning unless explicitly overridden", async () =>
   expect(override.calls).toContain("--reasoning-effort medium");
 });
 
-test("mentor flag is rejected without a Mekugi arm", async () => {
-  const result = await runPreset("matching", ["--mentor-handoff"]);
-  expect(result.exitCode).toBe(2);
-  expect(result.stderr).toContain("requires a Mekugi preset");
-});
+for (const preset of ["stock-current", "stock-mekugi", "current-vs-current-mekugi", "codex-mekugi-grok"]) {
+  test(`${preset} rejects the removed mentor flag before launching`, async () => {
+    const result = await runPreset("matching", ["--mentor-handoff"], preset);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("unknown argument: --mentor-handoff");
+    expect(result.calls).toBe("");
+  });
+}
 
 for (const state of ["stale-codex", "stale-host", "wrong-operator", "missing"] as const) {
   test(`preset rebuilds ${state} image with the selected host binary pair`, async () => {

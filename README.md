@@ -149,7 +149,7 @@ default. Other presets are `stock-current`, `current-vs-current-mekugi`, and
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
 
-Use `scripts/run.sh --preset stock-mekugi --model gpt-6.1-sol --reasoning-effort high` to run a Sol/high pair without mentor handoff. The script explicitly disables both Mekugi handoffs by default; add `--mentor-handoff` to enable both. For direct `prepare` commands, include `--main-mentor-handoff=false` and `--mentor-handoff=false` in `--mekugi-flags` because Mekugi's own defaults are on. The default model remains Astra/medium for the NVM task. The selected image must contain the matching host Codex and code-mode-host binaries; the runner checks their versions and hashes before inference. Build the selected Mekugi executable before rerunning.
+Use `scripts/run.sh --preset stock-mekugi --model gpt-6.1-sol --reasoning-effort high` to run a Sol/high pair. Mekugi runs the selected models without mentor handoff; the former mentor options and comparisons are no longer supported. Saved mentor runs cannot be processed by the current harness; retain their existing reports for historical results. The default model remains Astra/medium for the NVM task. The selected image must contain the matching host Codex and code-mode-host binaries; the runner checks their versions and hashes before inference. Build the selected Mekugi executable before rerunning.
 
 Select the executable with `--mekugi-bin`, and optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated with the runner-bundled analyzer; `--mekugi-source` remains the required export-validation selector, not proof that the binary came from that checkout. The current-home Git snapshot is retained for configuration provenance, while the selected executable and runner-owned analyzer sources are captured separately; unused current-home executables, runtime supplements, and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
@@ -202,7 +202,9 @@ general workflow guidance. The default `stock-current` comparison is unchanged.
 
 Select the Mekugi executable with `--mekugi-bin`.
 Use `--mekugi-flags '["--mode=mekugi"]'` for explicit Mekugi options placed before its `codex`
-subcommand. Export destinations and runtime configuration are benchmark-owned and cannot be
+subcommand. Supported flags include `--ansi-faint=auto|on|off`, `--post-compact-recovery=true|false`,
+`--journal-compaction=auto|slice|off`, timeouts, `--mode`, `--grok`, and `--debug`.
+The removed `--explore-filter` option is rejected. Export destinations, credential paths, and runtime configuration are benchmark-owned and cannot be
 overridden through this option. The selected arguments and comparison identity appear in the
 machine state and consolidated report. Preparation and preflight make no model requests.
 
@@ -295,7 +297,7 @@ identifies the supplied content; it is not a signature of upstream authenticity.
 
 Nvm needs no downloaded dependencies. Its pinned installer requires Bash to be sourced, so its existing checks run with Bash; the changed function must remain POSIX-compatible. Gin prepares pinned Go modules before inference and reuses separate evaluator caches offline. Nvm's existing tests exercise installer source selection, not network-dependent downloads. Adaptive semantic checks cover the task's remaining outcomes. Pack contracts record `qualification: "not-run"`; preparing a pack does not authorize inference or claim oracle qualification.
 
-## Diverse task suite and mentor matrix
+## Diverse task suite
 
 `tasks/diverse-suite.json` selects four pinned task packs: Gin, Flask, Express, and nvm. Supply a JSON object mapping each task ID to a local checkout of its source repository. The suite checks each checkout against its pack's base and forbidden commits, prepares at least two fresh pairs per task/setup, and runs model-free preflight before allowing inference. The new Flask and Express packs use adaptive grading, not prequalified hidden-test oracles. Their selected existing tests passed on the pinned baseline (Flask: 9; Express: 71).
 
@@ -316,9 +318,7 @@ suite_run="$(./dist/codex-ab prepare-suite \
 ./dist/codex-ab report-suite --suite-run "$suite_run"
 ```
 
-Use `--comparison mentor-matrix --mekugi-source /path/to/matching/mekugi` instead to prepare four Mekugi cells per task: stock setup × mentor off/on and current setup × mentor off/on. Each off/on pair uses the *same* setup and launcher. The fixed parent is gpt-6.1-sol at high reasoning; its one `benchmark_worker` child is configured as gpt-6-luna at medium reasoning. Mekugi's mentor flag changes only the child routing in the on arm. Per-arm Mekugi captures and metrics are validated against the snapshotted runner-bundled analyzer, Codex rollout lineage, and provider models; incomplete diagnostics suppress a complete measurement. Mekugi-arm cost applies captured list prices to validated provider attempts, using their actual routed models. Native four-decimal estimates are retained separately, not mixed into comparisons. Tokens and requests come from each arm's validated provider attempts, excluding prewarm; missing model prices leave estimated cost unknown. These captures are still writable from the ordinary agent container, so they are consistency checks rather than tamper-proof provenance. `--protect-mekugi` is not supported for the matrix. The existing direct-Codex `stock-current` comparison is unchanged.
-
-The suite report gives task-level counts and B-minus-A time and estimated cost effects only for complete pairs where **both** candidates pass. Its macro mean weights each eligible task once; unknown cost is not zero-filled. `stock` and `current` arm labels mean mentor off and on within a mentor-matrix setup, not stock versus current setup. The suite executes trial sets sequentially, does not resume interrupted runs, and retains partial reports. It is descriptive rather than a randomized causal estimate.
+The suite report gives task-level counts and B-minus-A time and estimated cost effects only for complete pairs where **both** candidates pass. Its macro mean weights each eligible task once; unknown cost is not zero-filled. The suite executes trial sets sequentially, does not resume interrupted runs, and retains partial reports. It is descriptive rather than a randomized causal estimate.
 
 ## Reuse a completed stock control
 
@@ -331,7 +331,7 @@ control_sha="$(sha256sum "$control_run/reports/bundle/MANIFEST.sha256" | cut -d'
   --confirm-paid-inference
 ```
 
-Only the treatment arm starts a new agent. The control bundle, state, rollout bytes, and usage totals must match, and both captured patches are graded against the new run's evaluator. A mismatched or altered control fails before treatment inference. This path does not support the mentor or Grok comparisons and cannot be used to reuse an arbitrary single-arm result.
+Only the treatment arm starts a new agent. The control bundle, state, rollout bytes, and usage totals must match, and both captured patches are graded against the new run's evaluator. A mismatched or altered control fails before treatment inference. This path does not support the Grok comparison and cannot be used to reuse an arbitrary single-arm result.
 
 ## Skills manager bundle profile
 

@@ -49,7 +49,7 @@ async function verifyRollouts(directory: string, expected: RolloutFile[]): Promi
 }
 
 export async function importControl(runDir: string, state: RunState, sourceDirectory: string, expectedBundleSha256: string): Promise<ArmResult> {
-  if (state.comparison === "journal-compaction" || state.comparison === "mentor-handoff" || state.comparison === "codex-mekugi-grok") {
+  if (state.comparison === "journal-compaction" || state.comparison === "codex-mekugi-grok") {
     throw new Error("control reuse currently supports direct-Codex stock controls only");
   }
   if (!/^[0-9a-f]{64}$/.test(expectedBundleSha256)) throw new Error("control bundle SHA-256 must be 64 lowercase hex characters");

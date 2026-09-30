@@ -24,7 +24,7 @@ Usage:
   codex-ab build-mekugi --source DIR --image NAME [--output-parent DIR] [--docker-bin FILE]
   codex-ab prepare [options]
   codex-ab prepare-trials --run-dir DIR --count N [--order concurrent|alternating] [--output-parent DIR] [--docker-bin FILE]
-  codex-ab prepare-suite --suite FILE --sources-file FILE --count N [--comparison stock-current|mentor-matrix] [options]
+  codex-ab prepare-suite --suite FILE --sources-file FILE --count N [--comparison stock-current] [options]
   codex-ab run-suite --suite-run DIR --confirm-paid-inference [--auth-file FILE]
   codex-ab report-suite --suite-run DIR
   codex-ab run-trials --trial-set DIR --confirm-paid-inference [--auth-file FILE] [--docker-bin FILE]
@@ -40,7 +40,7 @@ Usage:
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
   --model NAME          gpt-6-astra (default) or gpt-6.1-sol for Codex comparisons
-  --reasoning-effort N   low, medium, high, or xhigh; mentor-handoff requires high; Grok defaults to high, others to medium
+  --reasoning-effort N   low, medium, high, or xhigh; Grok defaults to high, others to medium
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
@@ -50,9 +50,8 @@ Prepare options:
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --current-home DIR    configuration Git repository root (default current home)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
-  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, mentor-handoff, or journal-compaction
+  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, or journal-compaction
   --auto-compact-limit N Required shared positive token limit for journal-compaction
-  --mentor-setup NAME  stock or current; required for mentor-handoff
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
   --mekugi-build DIR    captured build bundle; selects its Mekugi executable and source
@@ -88,7 +87,7 @@ Run and judge require the explicit model-execution confirmation flag.
 function options(command: string, args: string[]): Record<string, string | boolean> {
   const allowed: Record<string, string[]> = {
     "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["auto-compact-limit", "profile", "model", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mentor-setup", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
+    prepare: ["auto-compact-limit", "profile", "model", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
     "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
     "prepare-suite": ["suite", "sources-file", "count", "comparison", "order", "output-parent", "current-home", "review-treatment", "mekugi-flags", "mekugi-source", "mekugi-build", "mekugi-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory", "docker-bin"],
     "run-suite": ["suite-run", "auth-file", "docker-bin", "confirm-paid-inference"],
@@ -160,7 +159,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const runDir = await prepare({
       profile: string(o, "profile", o.criteria ? "task" : "mekugi") as import("./types").BenchmarkProfile,
       model: o.model as import("./types").BenchmarkModel | undefined,
-      reasoningEffort: string(o, "reasoning-effort", o.comparison === "mentor-handoff" || o.comparison === "codex-mekugi-grok" ? "high" : "medium") as import("./types").ReasoningEffort,
+      reasoningEffort: string(o, "reasoning-effort", o.comparison === "codex-mekugi-grok" ? "high" : "medium") as import("./types").ReasoningEffort,
       source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
       taskPackPath: o["task-pack"] as string | undefined,
@@ -169,7 +168,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       reviewTreatment: o["review-treatment"] as string | undefined,
       comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,
       autoCompactLimit: o["auto-compact-limit"] === undefined ? undefined : Number(o["auto-compact-limit"]),
-      mentorSetup: o["mentor-setup"] as import("./types").ArmName | undefined,
       mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
       currentLauncher: o["current-launcher"] as import("./types").CodexLauncher | undefined,
       protectMekugi: o["protect-mekugi"] === true,
@@ -195,7 +193,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "prepare-suite") {
     const comparison = string(o, "comparison", "stock-current");
     const order = string(o, "order", "alternating");
-    if (comparison !== "stock-current" && comparison !== "mentor-matrix") throw new Error("suite comparison must be stock-current or mentor-matrix");
+    if (comparison !== "stock-current") throw new Error("suite comparison must be stock-current");
     if (order !== "concurrent" && order !== "alternating") throw new Error("suite order must be concurrent or alternating");
     const count = Number(string(o, "count"));
     const timeout = Number(string(o, "timeout", "1800"));
@@ -205,7 +203,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       dockerBin: o["docker-bin"] as string | undefined,
       common: { currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),
         cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
-        reasoningEffort: comparison === "mentor-matrix" ? "high" : "medium",
+        reasoningEffort: "medium",
         reviewTreatment: o["review-treatment"] as string | undefined,
         mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
         mekugiSource: o["mekugi-source"] as string | undefined, mekugiBuild: o["mekugi-build"] as string | undefined,

@@ -134,10 +134,6 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       await copy(files.reader.path, "benchmark_jsonl.py");
     }
   }
-  if (state.mentor) {
-    await copy(state.mentor.parent_prompt.path, "mentor-parent.md");
-    await copy(state.mentor.child_config.path, "mentor-child.toml");
-  }
   if (state.protected_runtime) {
     await mkdir(join(destination, "isolation"), { recursive: true });
     for (const file of state.protected_runtime.scripts) await copy(file.path, `isolation/${file.path.split("/").at(-1)}`);

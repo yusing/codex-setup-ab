@@ -12,11 +12,10 @@ import type { BenchmarkModel } from "./types";
 import { validateMekugiFlags } from "./mekugi";
 import { MEKUGI_EXPORT_SCRIPTS, MEKUGI_ISOLATION_SCRIPTS } from "./support/mekugi";
 import { sha256, writeState } from "./state";
-import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort, ArmName } from "./types";
+import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from "./types";
 
 export interface PrepareOptions {
   comparison?: import("./types").Comparison;
-  mentorSetup?: ArmName;
   autoCompactLimit?: number;
   model?: BenchmarkModel;
   grokBinary?: string;
@@ -141,28 +140,9 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
       || state.mekugi_exports_by_arm!.stock!.reader.sha256 !== state.mekugi_exports_by_arm!.current!.reader.sha256) throw new Error("journal-compaction export validation identity changed");
   }
   const stockMekugi = state.comparison === "stock-mekugi";
-  const mentor = state.comparison === "mentor-handoff";
   const grokComparison = state.comparison === "codex-mekugi-grok";
   if (sameSetup && (state.arms.stock.home_template !== state.arms.current.home_template || state.execution.current_launcher !== "mekugi")) throw new Error("same-setup treatment identity changed");
-  if (!sameSetup && !grokComparison && !mentor && state.arms.stock.home_template !== "snapshots/stock/home/ubuntu") throw new Error("stock setup identity changed");
-  if (mentor) {
-    const selected = state.mentor?.setup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu";
-    if (!state.mentor || state.arms.stock.home_template !== selected || state.arms.current.home_template !== selected
-      || state.execution.current_launcher !== "mekugi" || !["gpt-6.1-sol", "gpt-6-sol"].includes(state.execution.model)
-      || state.execution.reasoning_effort !== "high" || state.mentor.child_model !== "gpt-6-luna"
-      || state.mentor.child_effort !== "medium" || !state.mekugi_exports_by_arm?.stock || !state.mekugi_exports_by_arm.current
-      || state.mekugi_exports_by_arm.stock.capture !== "artifacts/stock/mekugi/capture.jsonl"
-      || state.mekugi_exports_by_arm.stock.metrics !== "artifacts/stock/mekugi/metrics.json"
-      || state.mekugi_exports_by_arm.current.capture !== "artifacts/current/mekugi/capture.jsonl"
-      || state.mekugi_exports_by_arm.current.metrics !== "artifacts/current/mekugi/metrics.json"
-      || state.mekugi_exports_by_arm.stock.validator.sha256 !== state.mekugi_exports_by_arm.current.validator.sha256
-      || state.mekugi_exports_by_arm.stock.reader.sha256 !== state.mekugi_exports_by_arm.current.reader.sha256) {
-      throw new Error("mentor matrix identity changed");
-    }
-    for (const file of [state.mentor.parent_prompt, state.mentor.child_config]) {
-      if (await sha256(join(runDir, file.path)) !== file.sha256) throw new Error("mentor control changed");
-    }
-  }
+  if (!sameSetup && !grokComparison && state.arms.stock.home_template !== "snapshots/stock/home/ubuntu") throw new Error("stock setup identity changed");
   if (stockMekugi && (state.arms.current.home_template !== "snapshots/stock-mekugi/home/ubuntu" || state.execution.current_launcher !== "mekugi")) throw new Error("stock-mekugi treatment identity changed");
   if (grokComparison && (state.arms.stock.home_template !== "snapshots/stock-mekugi/home/ubuntu" || state.arms.current.home_template !== "snapshots/stock-grok/home/ubuntu" || state.execution.current_launcher !== "grok" || state.execution.model !== "grok:grok-4.7")) {
     throw new Error("codex-mekugi-grok treatment identity changed");
@@ -187,8 +167,8 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     const stockFiles = await manifest(stock);
     if (stockFiles.length !== 1 || stockFiles[0].path !== ".codex/config.toml" || stockFiles[0].type !== "file"
       || await readFile(join(stock, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)) throw new Error("stock setup snapshot changed");
-    if (stockMekugi || (mentor && state.mentor?.setup === "stock")) {
-      const treated = join(runDir, stockMekugi ? state.arms.current.home_template : state.arms.stock.home_template);
+    if (stockMekugi) {
+      const treated = join(runDir, state.arms.current.home_template);
       const treatedFiles = await manifest(treated);
       if (treatedFiles.length !== 2
         || await readFile(join(treated, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)
@@ -474,25 +454,18 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const profile = options.profile ?? (options.criteriaPath ? "task" : "mekugi");
   const mekugiFlags = validateMekugiFlags(options.mekugiFlags ?? []);
   const comparison = options.comparison ?? "stock-current";
-  if (!["stock-current", "same-setup", "stock-mekugi", "codex-mekugi-grok", "mentor-handoff", "journal-compaction"].includes(comparison)) throw new Error("unknown comparison");
+  if (!["stock-current", "same-setup", "stock-mekugi", "codex-mekugi-grok", "journal-compaction"].includes(comparison)) throw new Error("unknown comparison");
   const compactionComparison = comparison === "journal-compaction";
   validateCompactionComparison(comparison, options.autoCompactLimit, mekugiFlags, Boolean(options.protectMekugi));
-  const mentorComparison = comparison === "mentor-handoff";
-  if (mentorComparison !== Boolean(options.mentorSetup) || (options.mentorSetup && !["stock", "current"].includes(options.mentorSetup))) {
-    throw new Error("mentor-handoff requires --mentor-setup=stock or current, and other comparisons reject it");
-  }
   const grokComparison = comparison === "codex-mekugi-grok";
-  const isolatedFromCurrentTools = comparison === "stock-mekugi" || grokComparison || (mentorComparison && options.mentorSetup === "stock");
-  const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi" || mentorComparison || compactionComparison;
+  const isolatedFromCurrentTools = comparison === "stock-mekugi" || grokComparison;
+  const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi" || compactionComparison;
   const currentLauncher = options.currentLauncher ?? (grokComparison ? "grok" : launcherComparison ? "mekugi" : "codex");
   if ((launcherComparison || grokComparison) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source to select export validation`);
   if (launcherComparison && currentLauncher !== "mekugi") throw new Error(`${comparison} requires the Mekugi launcher`);
   if (grokComparison && currentLauncher !== "grok") throw new Error("codex-mekugi-grok requires the Grok launcher");
   if ((comparison === "stock-mekugi" || grokComparison) && options.reviewTreatment) throw new Error(`${comparison} does not accept a current-home review treatment`);
   if ((comparison === "stock-mekugi" || grokComparison) && options.protectMekugi) throw new Error(`${comparison} does not support the current-home protected runtime`);
-  if (mentorComparison && options.protectMekugi) throw new Error("mentor matrix currently requires the same ordinary container boundary in both arms");
-  if (mentorComparison && mekugiFlags.some(flag => flag.startsWith("--mentor-handoff=") || flag.startsWith("--main-mentor-handoff="))) throw new Error("mentor matrix owns both handoff flags");
-  if (mentorComparison && mekugiFlags.includes("--mode=passthrough")) throw new Error("mentor matrix requires Mekugi routing in both arms");
   if (options.protectMekugi && (currentLauncher !== "mekugi" || !options.mekugiSource)) throw new Error("protected runtime requires Mekugi and matching --mekugi-source or --mekugi-build");
   if (options.mekugiFlags?.length && currentLauncher !== "mekugi" && !grokComparison) throw new Error("Mekugi flags require the Mekugi launcher");
   const reasoningEffort = options.reasoningEffort ?? (grokComparison ? "high" : "medium");
@@ -501,7 +474,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const needsMekugi = currentLauncher === "mekugi" || grokComparison;
   if (options.mekugiBinary && !needsMekugi) throw new Error("--mekugi-bin requires a Mekugi launcher treatment");
   if (!["low", "medium", "high", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be low, medium, high, or xhigh");
-  if (mentorComparison && reasoningEffort !== "high") throw new Error("mentor-handoff requires high reasoning");
   if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
     throw new Error("godoxy-icons benchmark identity mismatch");
   }
@@ -557,12 +529,12 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const grokSha256 = grokBinary ? await sha256(grokBinary) : undefined;
   const grokVersion = grokBinary ? (await checked([grokBinary, "--version"])).stdout.trim() : undefined;
   if (grokBinary && !/^grok \d+\.\d+\.\d+/.test(grokVersion ?? "")) throw new Error(`unexpected Grok version: ${grokVersion}`);
-  if (grokComparison && !mekugiFlags.some(flag => flag === "--grok" || flag.startsWith("--grok="))) {
+  if (grokComparison && !mekugiFlags.some(flag => flag === "--grok" || flag === "--grok=true")) {
     throw new Error("codex-mekugi-grok requires --grok in --mekugi-flags");
   }
   if (options.model && !["gpt-6-astra", "gpt-6.1-sol"].includes(options.model) && !(grokComparison && options.model === "grok:grok-4.7")) throw new Error("unsupported benchmark model");
-  const model: BenchmarkModel = grokComparison ? "grok:grok-4.7" : mentorComparison ? "gpt-6.1-sol" : options.model ?? "gpt-6-astra";
-  if (options.model && (grokComparison || mentorComparison) && options.model !== model) throw new Error(`${comparison} uses ${model}`);
+  const model: BenchmarkModel = grokComparison ? "grok:grok-4.7" : options.model ?? "gpt-6-astra";
+  if (options.model && grokComparison && options.model !== model) throw new Error(`${comparison} uses ${model}`);
   const codeModeHostSha256 = await sha256(codeModeHost);
   const currentConfig = Bun.TOML.parse(await readFile(join(options.currentHome, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
   const configured = (key: string): string | undefined =>
@@ -579,17 +551,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   progress(`created isolated run ${runDir}`);
   for (const dir of ["control", "evaluator", "arms", "snapshots", "artifacts"]) await mkdir(join(runDir, dir), { recursive: true });
   await copyFile(taskPath, join(runDir, "control/task.md"));
-  let mentor: RunState["mentor"];
-  if (mentorComparison) {
-    const parent = "control/mentor-parent.md";
-    const child = "control/mentor-child.toml";
-    const task = await readFile(join(runDir, "control/task.md"), "utf8");
-    await writeFile(join(runDir, parent), 'Spawn exactly one subagent and do not inspect, edit, or validate the workspace yourself. Use agent_type "benchmark_worker", task_name "implementation", fork_turns "none", and no model or reasoning override. Ask it to complete the task in its developer instructions, wait for it, then return its result.\n');
-    await writeFile(join(runDir, child), `model = "gpt-6-luna"\nmodel_reasoning_effort = "medium"\ndeveloper_instructions = ${JSON.stringify(`You are the implementation agent. Complete and validate the following task directly; do not spawn another agent.\n\n${task}`)}\n`);
-    mentor = { setup: options.mentorSetup!, child_model: "gpt-6-luna", child_effort: "medium",
-      parent_prompt: { path: parent, sha256: await sha256(join(runDir, parent)) },
-      child_config: { path: child, sha256: await sha256(join(runDir, child)) } };
-  }
   if (criteriaContract) await writeFile(join(runDir, "evaluator/criteria.json"), JSON.stringify(criteriaContract, null, 2));
   if (pack) await writeFile(join(runDir, "evaluator/task-pack.json"), JSON.stringify(pack.snapshot, null, 2));
 
@@ -669,7 +630,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const stockTemplate = join(runDir, "snapshots/stock/home/ubuntu");
   await mkdir(join(stockTemplate, ".codex"), { recursive: true });
   const stockMekugiTemplate = join(runDir, "snapshots/stock-mekugi/home/ubuntu");
-  if (comparison === "stock-mekugi" || grokComparison || (mentorComparison && options.mentorSetup === "stock")) {
+  if (comparison === "stock-mekugi" || grokComparison) {
     await mkdir(join(stockMekugiTemplate, ".codex"), { recursive: true });
     await mkdir(join(stockMekugiTemplate, ".local/bin"), { recursive: true });
     await writeFile(join(stockMekugiTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
@@ -700,11 +661,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       validator: { path: validatorPath, sha256: await sha256(join(runDir, validatorPath)) },
       reader: { path: readerPath, sha256: await sha256(join(runDir, readerPath)) } };
   }
-  const mekugiExportsByArm: RunState["mekugi_exports_by_arm"] = (mentorComparison || compactionComparison) && mekugiExports
+  const mekugiExportsByArm: RunState["mekugi_exports_by_arm"] = compactionComparison && mekugiExports
     ? Object.fromEntries((["stock", "current"] as const).map(arm => [arm, {
       ...mekugiExports, capture: `artifacts/${arm}/mekugi/capture.jsonl`, metrics: `artifacts/${arm}/mekugi/metrics.json`,
     }])) : undefined;
-  if (mentorComparison || compactionComparison) mekugiExports = undefined;
+  if (compactionComparison) mekugiExports = undefined;
 
   let protectedRuntime: RunState["protected_runtime"];
   if (options.protectMekugi) {
@@ -727,7 +688,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     mekugi_build: buildProvenance,
     mekugi_exports: mekugiExports,
     mekugi_exports_by_arm: mekugiExportsByArm,
-    mentor,
     submodules,
     schema_version: 1,
     id: basename(runDir),
@@ -757,8 +717,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     },
     operator: { uid: 1000, gid: 1000 },
     arms: {
-      stock: { repository: "arms/stock/repo", home_template: mentorComparison ? (options.mentorSetup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu") : (comparison === "same-setup" || compactionComparison) ? "snapshots/current/home/ubuntu" : grokComparison ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/stock/home/ubuntu" },
-      current: { repository: "arms/current/repo", home_template: mentorComparison ? (options.mentorSetup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu") : grokComparison ? "snapshots/stock-grok/home/ubuntu" : comparison === "stock-mekugi" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu" },
+      stock: { repository: "arms/stock/repo", home_template: (comparison === "same-setup" || compactionComparison) ? "snapshots/current/home/ubuntu" : grokComparison ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/stock/home/ubuntu" },
+      current: { repository: "arms/current/repo", home_template: grokComparison ? "snapshots/stock-grok/home/ubuntu" : comparison === "stock-mekugi" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu" },
     },
   };
   await writeState(runDir, state);

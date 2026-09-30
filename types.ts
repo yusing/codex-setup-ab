@@ -2,7 +2,7 @@ import type { CriterionEvidence } from "./semantic";
 
 export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" | "task";
 export type CodexLauncher = "codex" | "mekugi" | "grok";
-export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "mentor-handoff" | "journal-compaction";
+export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "journal-compaction";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type BenchmarkModel = "gpt-6-astra" | "gpt-6.1-sol" | "grok:grok-4.7";
 
@@ -73,7 +73,6 @@ export interface RunState {
   mekugi_exports?: { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } };
   mekugi_exports_by_arm?: Partial<Record<ArmName, { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } }>>;
   mekugi_flags?: string[];
-  mentor?: { setup: ArmName; child_model: "gpt-6-luna"; child_effort: "medium"; parent_prompt: { path: string; sha256: string }; child_config: { path: string; sha256: string } };
   imported_control?: { source_run_id: string; bundle_sha256: string; controls_sha256: string; stdout_sha256: string; stderr_sha256: string };
   execution: { model: BenchmarkModel | "gpt-6-sol"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
   resource_limits: { cpus: string; memory: string };

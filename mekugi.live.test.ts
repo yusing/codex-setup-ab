@@ -23,7 +23,7 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
       createArgs: ["--network", "none", "-v", `${root}/exports:/mekugi-exports`,
         "-v", `${process.env.CODEX_AB_MEKUGI_BIN ?? "/home/ubuntu/go/bin/mekugi"}:/usr/local/bin/mekugi:ro`,
         process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery",
-        "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", "--mode=mekugi",
+        "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", "--mode=mekugi", "--ansi-faint=off",
         "--capture-output=/mekugi-exports/capture.jsonl", "--debug", "codex", "--version"],
     });
     expect(result.exitCode).toBe(0);
@@ -50,7 +50,8 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
       reader: { path: "benchmark_jsonl.py", sha256: await sha256(join(root, "benchmark_jsonl.py")) },
     } } as RunState;
     expect(await validateMekugiExports(root, state)).toMatchObject({ status: "unavailable", reason: expect.stringContaining("capture is empty") });
-    for (const [index, flags] of [["--timeout=not-a-duration"], ["--mode=passthrough", "--post-compact-recovery=true"]].entries()) {
+    for (const [index, flags] of [["--timeout=not-a-duration"], ["--mode=passthrough", "--post-compact-recovery=true"],
+      ["--mentor-handoff=false"], ["--main-mentor-handoff=false"], ["--explore-filter=false"]].entries()) {
       const invalid = await runOwnedContainer({
         docker: "docker", name: `codex-ab-export-invalid-${process.pid}-${index}`, timeoutMs: 30000,
         createArgs: ["--network", "none",

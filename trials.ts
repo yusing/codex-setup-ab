@@ -56,7 +56,7 @@ export function trialControls(state: RunState) {
     runtime_tools: state.runtime_tools, operator: state.operator, arms: state.arms,
     protected_runtime: state.protected_runtime, mekugi_flags: state.mekugi_flags,
     mekugi_build: state.mekugi_build, mekugi_exports: state.mekugi_exports,
-    mekugi_exports_by_arm: state.mekugi_exports_by_arm, mentor: state.mentor, pricing: state.pricing,
+    mekugi_exports_by_arm: state.mekugi_exports_by_arm, pricing: state.pricing,
   };
 }
 function digest(value: unknown): string { return new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex"); }

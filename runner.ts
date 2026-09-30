@@ -28,8 +28,8 @@ function containerArgs(state: RunState): string[] {
 }
 
 function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current"): string[] {
-  const usesCurrentSetup = state.comparison === "same-setup" || state.comparison === "journal-compaction" || (state.mentor?.setup === "current")
-    || (arm === "current" && state.comparison !== "stock-mekugi" && state.comparison !== "codex-mekugi-grok" && state.mentor?.setup !== "stock");
+  const usesCurrentSetup = state.comparison === "same-setup" || state.comparison === "journal-compaction"
+    || (arm === "current" && state.comparison !== "stock-mekugi" && state.comparison !== "codex-mekugi-grok");
   if (!usesCurrentSetup) return [];
   return ["-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
 }
@@ -128,7 +128,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   if (toolHost.exitCode !== 0 || toolHost.stdout.trim() !== "CODEX_AB_TOOL_HOST_OK") throw new Error(`code-mode tool host smoke failed: ${[toolHost.stdout.trim(), toolHost.stderr.trim()].filter(Boolean).join("; ")}`);
   const currentHome = resolve(runDir, state.arms.current.home_template);
   const workspace = resolve(runDir, state.arms.current.repository);
-  if (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok" || state.mentor?.setup === "stock") {
+  if (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok") {
     const mekugiHome = resolve(runDir, state.comparison === "codex-mekugi-grok" ? state.arms.stock.home_template : state.arms.current.home_template);
     progress(state.comparison === "codex-mekugi-grok" ? "checking the isolated Codex+Mekugi and Grok setups offline" : "checking the minimal stock-plus-Mekugi setup offline");
     const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none",
@@ -271,27 +271,24 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const ownedPaths = [repository, home, join(output, "mekugi"), runtime];
   if (protectedArm) await mkdir(runtime, { recursive: true });
   const grokArm = state.comparison === "codex-mekugi-grok" && arm === "current";
-  const mekugiArm = state.comparison === "journal-compaction" || state.comparison === "mentor-handoff" || (state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi");
+  const mekugiArm = state.comparison === "journal-compaction" || (state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi");
   const grokCommand = grokArm
     ? ["grok", "--prompt-file", "/control/task.md", "--cwd", "/workspace", "-m", "grok-4.7", "--reasoning-effort", state.execution.reasoning_effort, "--always-approve", "--sandbox", "off", "--output-format", "json", "--disable-web-search"]
     : undefined;
-  const mentorFlags = state.mentor ? ["--main-mentor-handoff=false", `--mentor-handoff=${arm === "current"}`] : [];
   const compactionFlags = state.comparison === "journal-compaction" ? [`--journal-compaction=${arm === "stock" ? "off" : "auto"}`] : [];
-  const codexLauncher = mekugiArm ? ["mekugi", ...(state.mekugi_flags ?? []), ...mentorFlags, ...compactionFlags, ...exportArgs, "codex"] : ["codex"];
+  const codexLauncher = mekugiArm ? ["mekugi", ...(state.mekugi_flags ?? []), ...compactionFlags, ...exportArgs, "codex"] : ["codex"];
   const mekugiLauncher = exportArgs.length ? ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", ...codexLauncher] : codexLauncher;
-  const launcher = grokCommand ?? (mekugiArm && (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok" || state.mentor?.setup === "stock") ? mekugiLauncher : arm === "current" || state.comparison === "same-setup" || state.comparison === "journal-compaction" || state.mentor?.setup === "current" ? ["mise", "exec", "--", ...mekugiLauncher] : ["codex"]);
+  const launcher = grokCommand ?? (mekugiArm && (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok") ? mekugiLauncher : arm === "current" || state.comparison === "same-setup" || state.comparison === "journal-compaction" ? ["mise", "exec", "--", ...mekugiLauncher] : ["codex"]);
   const grokPath = grokArm ? ["-e", "PATH=/home/ubuntu/.grok/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin"];
   const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
     result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, ...(grokArm ? [] : ["-i"]), ...grokPath,
       "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, ...currentSetupMounts(runDir, state, arm), ...exportMount, ...grokTask,
-      ...(state.mentor ? ["-v", `${join(runDir, "control")}:/benchmark-control:ro`] : []),
       ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
       imageRef(state), ...launcher, ...(grokArm ? [] : ["exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
       "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"',
       ...(state.auto_compact_limit !== undefined ? ["-c", `model_auto_compact_token_limit=${state.auto_compact_limit}`] : []),
-      ...(state.mentor ? ["-c", 'features.multi_agent_v2=true', "-c", 'agents.benchmark_worker.description="Fixed benchmark implementation role"', "-c", 'agents.benchmark_worker.config_file="/benchmark-control/mentor-child.toml"', "-c", 'model_instructions_file="/benchmark-control/mentor-parent.md"'] : []),
       "-"])] });
   } catch (error) {
     lifecycleError = error instanceof Error ? error.message : String(error);

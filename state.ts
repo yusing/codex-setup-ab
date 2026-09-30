@@ -18,6 +18,9 @@ export async function withRunLock<T>(runDir: string, operation: () => Promise<T>
 export async function readState(runDir: string): Promise<RunState> {
   const value = await Bun.file(join(runDir, "run.json")).json() as RunState;
   if (value.schema_version !== 1) throw new Error(`unsupported run schema: ${String(value.schema_version)}`);
+  if (value.comparison !== undefined && !["stock-current", "same-setup", "stock-mekugi", "codex-mekugi-grok", "journal-compaction"].includes(value.comparison)) {
+    throw new Error(`unsupported run comparison: ${String(value.comparison)}`);
+  }
   return value;
 }
 
