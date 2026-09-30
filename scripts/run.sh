@@ -21,7 +21,7 @@ Comparisons:
   codex-mekugi-grok   Stock Codex plus Mekugi vs the Grok CLI
 
 Model options:
-  --model NAME          gpt-6-astra or gpt-6-sol (Codex comparisons; default gpt-6-astra)
+  --model NAME          gpt-6-astra or gpt-6.1-sol (Codex comparisons; default gpt-6-astra)
   --reasoning-effort LEVEL
                         low, medium, high, or xhigh (default: high for Grok; otherwise medium for NVM, xhigh for session retention)
   --mentor-handoff      Enable both Mekugi main-thread and subagent mentor handoff (default: off)

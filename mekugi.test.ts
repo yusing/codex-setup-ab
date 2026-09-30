@@ -6,7 +6,8 @@ import { validateMekugiExports } from "./mekugi";
 import { sha256 } from "./state";
 import type { RunState } from "./types";
 
-test("mentor provider schedule permits Sol after a successful child compaction only", async () => {
+for (const solModel of ["gpt-6.1-sol", "gpt-6-sol"] as const) {
+test(`${solModel} mentor schedule permits Sol after a successful child compaction only`, async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-mentor-schedule-"));
   try {
     const validator = join(root, "analyze_capture.py");
@@ -28,16 +29,16 @@ test("mentor provider schedule permits Sol after a successful child compaction o
       { type: "turn_context", payload: { model: "gpt-6-luna", effort: "medium" } },
     ].map(JSON.stringify).join("\n") + "\n");
     const exchanges = [
-      { sequence: 1, thread_id: "parent", request_kind: "turn", status: "completed", provider_attempts: [{ model: "gpt-6-sol" }] },
-      { sequence: 2, thread_id: "child", request_kind: "turn", status: "completed", provider_attempts: [{ model: "gpt-6-sol" }] },
+      { sequence: 1, thread_id: "parent", request_kind: "turn", status: "completed", provider_attempts: [{ model: solModel }] },
+      { sequence: 2, thread_id: "child", request_kind: "turn", status: "completed", provider_attempts: [{ model: solModel }] },
       { sequence: 3, thread_id: "child", request_kind: "turn", status: "completed", provider_attempts: [{ model: "gpt-6-luna" }] },
       { sequence: 4, thread_id: "child", request_kind: "compaction", status: "completed", provider_attempts: [{ model: "gpt-6-luna" }] },
-      { sequence: 5, thread_id: "child", request_kind: "turn", status: "completed", provider_attempts: [{ model: "gpt-6-sol" }] },
+      { sequence: 5, thread_id: "child", request_kind: "turn", status: "completed", provider_attempts: [{ model: solModel }] },
     ];
     await writeFile(metricsPath, JSON.stringify({ exchanges }));
     const state = {
       comparison: "mentor-handoff", mentor: { setup: "stock", child_model: "gpt-6-luna", child_effort: "medium" },
-      execution: { model: "gpt-6-sol" }, mekugi_flags: [],
+      execution: { model: solModel }, mekugi_flags: [],
       results: { current: { stdout_path: "stdout.jsonl" } },
       mekugi_exports_by_arm: { current: {
         validator: { path: "analyze_capture.py", sha256: await sha256(validator) },
@@ -54,3 +55,4 @@ test("mentor provider schedule permits Sol after a successful child compaction o
     expect(await readFile(capture, "utf8")).toBe("");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+}

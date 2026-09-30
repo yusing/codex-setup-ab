@@ -86,10 +86,10 @@ test("preset reuses an image only when operator and both selected binary hashes 
 });
 
 test("preset forwards explicit model and reasoning effort to prepare", async () => {
-  const result = await runPreset("matching", ["--model", "gpt-6-sol", "--reasoning-effort=low"]);
+  const result = await runPreset("matching", ["--model", "gpt-6.1-sol", "--reasoning-effort=low"]);
   expect(result.exitCode).toBe(0);
   expect(result.calls).toContain("cli prepare --comparison stock-current");
-  expect(result.calls).toContain("--model gpt-6-sol");
+  expect(result.calls).toContain("--model gpt-6.1-sol");
   expect(result.calls).toContain("--reasoning-effort low");
 });
 

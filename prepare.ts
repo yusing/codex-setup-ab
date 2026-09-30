@@ -96,7 +96,7 @@ async function manifest(root: string): Promise<Array<{ path: string; type: strin
   return result;
 }
 
-function stockConfig(model: BenchmarkModel, reasoningEffort: ReasoningEffort): string {
+function stockConfig(model: RunState["execution"]["model"], reasoningEffort: ReasoningEffort): string {
   return [
     `model = ${JSON.stringify(model)}`, `model_reasoning_effort = "${reasoningEffort}"`, 'service_tier = "default"',
     'approval_policy = "never"', 'sandbox_mode = "danger-full-access"', 'network_access = "enabled"',
@@ -148,7 +148,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   if (mentor) {
     const selected = state.mentor?.setup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu";
     if (!state.mentor || state.arms.stock.home_template !== selected || state.arms.current.home_template !== selected
-      || state.execution.current_launcher !== "mekugi" || state.execution.model !== "gpt-6-sol"
+      || state.execution.current_launcher !== "mekugi" || !["gpt-6.1-sol", "gpt-6-sol"].includes(state.execution.model)
       || state.execution.reasoning_effort !== "high" || state.mentor.child_model !== "gpt-6-luna"
       || state.mentor.child_effort !== "medium" || !state.mekugi_exports_by_arm?.stock || !state.mekugi_exports_by_arm.current
       || state.mekugi_exports_by_arm.stock.capture !== "artifacts/stock/mekugi/capture.jsonl"
@@ -560,8 +560,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (grokComparison && !mekugiFlags.some(flag => flag === "--grok" || flag.startsWith("--grok="))) {
     throw new Error("codex-mekugi-grok requires --grok in --mekugi-flags");
   }
-  if (options.model && !["gpt-6-astra", "gpt-6-sol"].includes(options.model) && !(grokComparison && options.model === "grok:grok-4.7")) throw new Error("unsupported benchmark model");
-  const model: BenchmarkModel = grokComparison ? "grok:grok-4.7" : mentorComparison ? "gpt-6-sol" : options.model ?? "gpt-6-astra";
+  if (options.model && !["gpt-6-astra", "gpt-6.1-sol"].includes(options.model) && !(grokComparison && options.model === "grok:grok-4.7")) throw new Error("unsupported benchmark model");
+  const model: BenchmarkModel = grokComparison ? "grok:grok-4.7" : mentorComparison ? "gpt-6.1-sol" : options.model ?? "gpt-6-astra";
   if (options.model && (grokComparison || mentorComparison) && options.model !== model) throw new Error(`${comparison} uses ${model}`);
   const codeModeHostSha256 = await sha256(codeModeHost);
   const currentConfig = Bun.TOML.parse(await readFile(join(options.currentHome, ".codex/config.toml"), "utf8")) as Record<string, unknown>;

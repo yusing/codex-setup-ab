@@ -39,7 +39,7 @@ Usage:
 
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
-  --model NAME          gpt-6-astra (default) or gpt-6-sol for Codex comparisons
+  --model NAME          gpt-6-astra (default) or gpt-6.1-sol for Codex comparisons
   --reasoning-effort N   low, medium, high, or xhigh; mentor-handoff requires high; Grok defaults to high, others to medium
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit

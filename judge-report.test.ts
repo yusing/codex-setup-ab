@@ -39,7 +39,7 @@ function armResult(arm: ArmName, passed: boolean): ArmResult {
 const pricing: PricingSnapshot = {
   fetched_at: "2026-09-09T00:00:00.000Z", source: "fallback", catalog_url: "fixture://pricing",
   assumptions: ["fixture list prices"], warnings: [],
-  models: Object.fromEntries(["gpt-6-astra", "gpt-6-sol", "gpt-5.6-sol"].map(model => [model, {
+  models: Object.fromEntries(["gpt-6-astra", "gpt-6.1-sol", "gpt-5.6-sol"].map(model => [model, {
     model_id: model, source: `fixture:${model}`, prompt: 0.000001, completion: 0.000002,
     input_cache_read: 0.0000001, input_cache_write: 0.00000125, overrides: [],
   }])),
@@ -95,9 +95,9 @@ test("Mekugi native cost is retained separately from captured list-price compari
   const { run } = await fixtureRun();
   const state = await readState(run);
   state.execution.current_launcher = "mekugi";
-  delete (state.pricing as PricingSnapshot).models["gpt-6-sol"];
+  delete (state.pricing as PricingSnapshot).models["gpt-6.1-sol"];
   await writeState(run, state);
-  await usageSession(join(run, "arms/current/home/ubuntu/.codex"), "current-agent", "gpt-6-sol", 30);
+  await usageSession(join(run, "arms/current/home/ubuntu/.codex"), "current-agent", "gpt-6.1-sol", 30);
   await file(join(run, state.results!.current!.stdout_path), `${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Router session usage · Main turn: 30 in / 4 out, $0.1234 · Total: 30 in / 4 out, $0.1234" } })}\n`);
   const direct = (await Bun.file((await buildReport(run)).jsonPath).json()).arms;
   expect(direct.current.usage.totals.estimated_api_usd).toBeNull();
@@ -184,10 +184,10 @@ async function fixtureJudge(run: string, first: "candidate-1" | "candidate-2", s
   }));
   const winners = passes.map(mappedWinner);
   const usageHomes = ["evaluator/judge/pass-1/.codex", "evaluator/judge/pass-2/.codex"];
-  for (const [index, home] of usageHomes.entries()) await usageSession(join(run, home), `judge-${index}`, "gpt-6-sol");
+  for (const [index, home] of usageHomes.entries()) await usageSession(join(run, home), `judge-${index}`, "gpt-6.1-sol");
   const report: JudgeReport = {
     status: "complete", started_at: "2026-09-09T00:00:02.000Z", finished_at: "2026-09-09T00:00:03.000Z",
-    model: "gpt-6-sol", reasoning_effort: "high", service_tier: "priority", passes,
+    model: "gpt-6.1-sol", reasoning_effort: "high", service_tier: "priority", passes,
     agreement: winners[0] === winners[1], winner: winners[0] === winners[1] ? winners[0]! : "none",
     disagreement: winners[0] === winners[1] ? undefined : "stock versus current",
     usage_homes: usageHomes,
@@ -202,8 +202,8 @@ test("a new judge on a historical pricing snapshot keeps complete accounting", a
   await fixtureJudge(run, "candidate-1", "candidate-2");
   const state = await readState(run);
   const recorded = state.pricing as PricingSnapshot;
-  const judgeRate = recorded.models["gpt-6-sol"];
-  delete recorded.models["gpt-6-sol"];
+  const judgeRate = recorded.models["gpt-6.1-sol"];
+  delete recorded.models["gpt-6.1-sol"];
   state.judge_pricing = { captured_at: "2026-09-23T00:00:00.000Z", rate: judgeRate };
   await writeState(run, state);
 
@@ -212,7 +212,7 @@ test("a new judge on a historical pricing snapshot keeps complete accounting", a
   expect(report.judge_usage_complete).toBe(true);
   expect(report.measurement_complete).toBe(true);
   expect(report.winner).toBe("stock");
-  expect(report.pricing.models["gpt-6-sol"]).toEqual(judgeRate);
+  expect(report.pricing.models["gpt-6.1-sol"]).toEqual(judgeRate);
   expect((await readState(run)).pricing).toEqual(recorded);
 });
 

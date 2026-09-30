@@ -149,17 +149,17 @@ async function validateMentorSchedule(runDir: string, state: RunState, arm: ArmN
       destination.add(model);
       if (destination === models.child && arm === "current" && (entry.request_kind === "turn" || entry.request_kind == null)) {
         childTurnSeen = true;
-        if ((childPhase === "fresh" && model !== "gpt-6-sol") || (childPhase === "luna" && model === "gpt-6-sol")) {
+        if ((childPhase === "fresh" && model !== state.execution.model) || (childPhase === "luna" && model === state.execution.model)) {
           throw new Error("mentor child provider schedule did not start with Sol or returned to Sol without compaction");
         }
-        childPhase = model === "gpt-6-sol" ? "sol" : "luna";
+        childPhase = model === state.execution.model ? "sol" : "luna";
       }
     }
     if (destination === models.child && entry.request_kind === "compaction" && entry.status === "completed") childPhase = "fresh";
   }
   if (models.root.size !== 1 || !models.root.has(state.execution.model)) throw new Error("mentor root model differs from the configured model");
   if (arm === "stock" && (models.child.size !== 1 || !models.child.has(state.mentor!.child_model))) throw new Error("non-mentor child was routed to another model");
-  if (arm === "current" && (!models.child.has("gpt-6-sol") || [...models.child].some(model => model !== "gpt-6-sol" && model !== state.mentor!.child_model))) {
+  if (arm === "current" && (!models.child.has(state.execution.model) || [...models.child].some(model => model !== state.execution.model && model !== state.mentor!.child_model))) {
     throw new Error("mentor child did not use the expected bounded model schedule");
   }
   if (arm === "current" && !childTurnSeen) throw new Error("mentor child has no provider turn");

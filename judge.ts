@@ -177,8 +177,9 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
   if (!state.criteria) throw new Error("judge requires task-derived criteria");
   const pricing = (state.pricing ?? await fetchPricing()) as PricingSnapshot;
   if (!state.pricing) state.pricing = pricing;
-  if (!pricing.models[JUDGE_MODEL]) state.judge_pricing = {
-    captured_at: new Date().toISOString(), rate: embeddedFallbackPricing(JUDGE_MODEL),
+  const judgeModel = recover ? state.judge!.model : JUDGE_MODEL;
+  if (!pricing.models[judgeModel] && state.judge_pricing?.rate.model_id !== judgeModel) state.judge_pricing = {
+    captured_at: new Date().toISOString(), rate: embeddedFallbackPricing(judgeModel),
   };
   await writeState(runDir, state);
   return runSemanticJudge(runDir, state, auth, dockerBin, signal, recover);

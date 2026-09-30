@@ -4,7 +4,7 @@ export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" |
 export type CodexLauncher = "codex" | "mekugi" | "grok";
 export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "mentor-handoff" | "journal-compaction";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
-export type BenchmarkModel = "gpt-6-astra" | "gpt-6-sol" | "grok:grok-4.7";
+export type BenchmarkModel = "gpt-6-astra" | "gpt-6.1-sol" | "grok:grok-4.7";
 
 export type ArmOrder = "concurrent" | "stock-first" | "current-first";
 
@@ -75,7 +75,7 @@ export interface RunState {
   mekugi_flags?: string[];
   mentor?: { setup: ArmName; child_model: "gpt-6-luna"; child_effort: "medium"; parent_prompt: { path: string; sha256: string }; child_config: { path: string; sha256: string } };
   imported_control?: { source_run_id: string; bundle_sha256: string; controls_sha256: string; stdout_sha256: string; stderr_sha256: string };
-  execution: { model: BenchmarkModel; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
+  execution: { model: BenchmarkModel | "gpt-6-sol"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;
   snapshot_manifest: string;
@@ -161,7 +161,7 @@ export interface JudgeReport {
   started_at: string;
   finished_at?: string;
   /** Older completed reports retain their original judge model. */
-  model: "gpt-6-sol" | "gpt-5.6-sol";
+  model: "gpt-6.1-sol" | "gpt-6-sol" | "gpt-5.6-sol";
   /** Medium is retained for completed reports created before high became the judge default. */
   reasoning_effort: "medium" | "high";
   /** Optional because completed medium/default reports predate persisted judge-tier metadata. */

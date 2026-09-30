@@ -10,7 +10,7 @@ import { armLabels } from "./arm-labels";
 import type { ArmName, JudgeAttempt, JudgeReport, RunState } from "./types";
 
 const ids = ["candidate-1", "candidate-2"] as const;
-export const JUDGE_MODEL = "gpt-6-sol" as const;
+export const JUDGE_MODEL = "gpt-6.1-sol" as const;
 
 export async function runSemanticJudge(runDir: string, state: RunState, auth: string, docker: string, signal?: AbortSignal, recover = false): Promise<JudgeReport> {
   await verifyPreparedInputs(runDir, state);

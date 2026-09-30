@@ -15,7 +15,7 @@ import { prepareSemanticAssessment } from "./semantic-assessment";
 import { assertRecoverableJudge } from "./judge";
 import * as bundles from "./bundle";
 import { buildReport } from "./report";
-import type { PricingSnapshot } from "./usage";
+import { embeddedFallbackPricing, type PricingSnapshot } from "./usage";
 
 let root: string;
 let source: string;
@@ -209,16 +209,20 @@ test("stock-mekugi accepts an explicit Sol/high pair without mentor handoff", as
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
-    model: "gpt-6-sol", reasoningEffort: "high", mekugiSource: captureSource });
+    model: "gpt-6.1-sol", reasoningEffort: "high", mekugiSource: captureSource });
   const state = await readState(run);
-  expect(state.execution).toMatchObject({ model: "gpt-6-sol", reasoning_effort: "high", current_launcher: "mekugi" });
+  expect(state.execution).toMatchObject({ model: "gpt-6.1-sol", reasoning_effort: "high", current_launcher: "mekugi" });
   expect(state.mentor).toBeUndefined();
   for (const template of [state.arms.stock.home_template, state.arms.current.home_template]) {
     const config = await readFile(join(run, template, ".codex/config.toml"), "utf8");
-    expect(config).toContain('model = "gpt-6-sol"');
+    expect(config).toContain('model = "gpt-6.1-sol"');
     expect(config).toContain('model_reasoning_effort = "high"');
   }
   await verifyPreparedInputs(run, state);
+  await expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
+    model: "gpt-6-sol" as never, mekugiSource: captureSource })).rejects.toThrow("unsupported benchmark model");
   await expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
@@ -253,7 +257,7 @@ for (const setup of ["stock", "current"] as const) {
     const selectedHome = setup === "stock" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu";
     expect(state.comparison).toBe("mentor-handoff");
     expect(state.mentor).toMatchObject({ setup, child_model: "gpt-6-luna", child_effort: "medium" });
-    expect(state.execution).toMatchObject({ model: "gpt-6-sol", reasoning_effort: "high", current_launcher: "mekugi" });
+    expect(state.execution).toMatchObject({ model: "gpt-6.1-sol", reasoning_effort: "high", current_launcher: "mekugi" });
     expect(state.arms.stock.home_template).toBe(selectedHome);
     expect(state.arms.current.home_template).toBe(selectedHome);
     expect(state.mekugi_exports).toBeUndefined();
@@ -287,7 +291,7 @@ for (const setup of ["stock", "current"] as const) {
     expect(current).toContain(`${join(run, "artifacts/current/mekugi")}:/mekugi-exports`);
     expect(stock).toContain('agents.benchmark_worker.config_file="/benchmark-control/mentor-child.toml"');
     expect(current).toContain('model_instructions_file="/benchmark-control/mentor-parent.md"');
-    expect(stock).toContain("--model gpt-6-sol");
+    expect(stock).toContain("--model gpt-6.1-sol");
     expect(current).toContain('model_reasoning_effort="high"');
     if (setup === "current") {
       expect(stock).toContain("mise exec -- sh -c ");
@@ -303,6 +307,18 @@ for (const setup of ["stock", "current"] as const) {
     expect(await readFile(join(run, "reports/bundle/benchmark_jsonl.py"), "utf8")).toBe(MEKUGI_EXPORT_SCRIPTS["benchmark_jsonl.py"]);
   }, 30_000);
 }
+
+test("historical GPT-6 Sol mentor inputs remain verifiable", async () => {
+  const run = await mentorPrepared("stock");
+  const state = await readState(run);
+  state.execution.model = "gpt-6-sol";
+  for (const template of ["snapshots/stock/home/ubuntu", state.arms.stock.home_template]) {
+    const config = join(run, template, ".codex/config.toml");
+    await writeFile(config, (await readFile(config, "utf8")).replace("gpt-6.1-sol", "gpt-6-sol"));
+  }
+  await writeState(run, state);
+  await verifyPreparedInputs(run, await readState(run));
+});
 
 function journalCompactionOptions() {
   return { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
@@ -410,7 +426,7 @@ test("mentor-handoff rejects prepared matrix identity drift", async () => {
     state => { state.execution.current_launcher = "codex"; },
     state => { state.execution.model = "gpt-6-astra"; },
     state => { state.execution.reasoning_effort = "medium"; },
-    state => { state.mentor!.child_model = "gpt-6-sol" as never; },
+    state => { state.mentor!.child_model = "gpt-6.1-sol" as never; },
     state => { state.mentor!.child_effort = "high" as never; },
     state => { state.mekugi_exports_by_arm!.stock = undefined; },
     state => { state.mekugi_exports_by_arm!.current = undefined; },
@@ -1471,26 +1487,27 @@ test("finish recovers pre-judge reporting failure without restarting candidates"
   await finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
   const finished = await readState(run);
   expect(finished.finishing?.status).toBe("complete");
-  expect(finished.judge?.model).toBe("gpt-6-sol");
+  expect(finished.judge?.model).toBe("gpt-6.1-sol");
   expect(finished.judge?.passes).toHaveLength(2);
   const savedPricing = finished.pricing as PricingSnapshot;
   expect(savedPricing.models["gpt-5.6-sol"]).toEqual(oldSolRate);
-  expect(savedPricing.models["gpt-6-sol"]).toBeUndefined();
-  expect(finished.judge_pricing?.rate.source).toBe("fallback:gpt-6-sol");
+  expect(savedPricing.models["gpt-6.1-sol"]).toBeUndefined();
+  expect(finished.judge_pricing?.rate.source).toBe("fallback:gpt-6.1-sol");
   expect(finished.judge_pricing?.rate.completion).toBe(10 / 1_000_000);
   const report = await Bun.file(join(run, "reports/report.json")).json();
-  expect(report.pricing.models["gpt-6-sol"].completion).toBe(10 / 1_000_000);
+  expect(report.pricing.models["gpt-6.1-sol"].completion).toBe(10 / 1_000_000);
   expect(report.pricing.assumptions).toContainEqual(expect.stringContaining("original run pricing is unchanged"));
   expect(finished.finishing_history).toHaveLength(1);
   expect(await readFile(join(run, finished.finishing_history![0]!.bundle_path, "prior-failure.txt"), "utf8")).toBe("preserve this failure");
   const additional = (await readFile(fake.log, "utf8")).slice(before.length);
-  expect(additional).toContain("--model gpt-6-sol");
+  expect(additional).toContain("--model gpt-6.1-sol");
   expect(additional).not.toContain("-stock ");
   expect(additional).not.toContain("-current ");
   await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("failed finishing");
 }, 30_000);
 
-test("explicit judge recovery reuses saved pass 1 and runs only incomplete pass 2", async () => {
+for (const judgeModel of ["gpt-6.1-sol", "gpt-6-sol"] as const) {
+test(`${judgeModel} judge recovery reuses saved pass 1 and runs only incomplete pass 2`, async () => {
   const run = await prepared();
   const auth = join(root, "recover-judge-auth.json");
   await file(auth, "{}\n", 0o600);
@@ -1498,6 +1515,11 @@ test("explicit judge recovery reuses saved pass 1 and runs only incomplete pass 
   await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
   const state = await readState(run);
   const judge = state.judge!;
+  judge.model = judgeModel;
+  const recordedPricing = state.pricing as PricingSnapshot;
+  delete recordedPricing.models[judgeModel];
+  const supplementalPricing = { captured_at: new Date().toISOString(), rate: embeddedFallbackPricing(judgeModel) };
+  state.judge_pricing = supplementalPricing;
   const saved = judge.attempts!.find(item => item.pass === 1 && item.stage === "assessment")!;
   const event = JSON.parse((await readFile(join(run, saved.stdout_path), "utf8")).trim());
   const response = JSON.parse(event.item.text);
@@ -1527,18 +1549,24 @@ test("explicit judge recovery reuses saved pass 1 and runs only incomplete pass 
   await finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path, recoverJudge: true });
   const finished = await readState(run);
   expect(finished.finishing?.status).toBe("complete");
+  expect(finished.judge?.model).toBe(judgeModel);
+  expect(finished.judge_pricing).toEqual(supplementalPricing);
+  expect((finished.pricing as PricingSnapshot).models[judgeModel]).toBeUndefined();
   expect(finished.judge?.status).toBe("complete");
   expect(finished.judge?.recovery?.reused_passes).toEqual([1]);
   expect(finished.judge?.passes[0]?.criteria?.["candidate-2"][0]?.status).toBe("unassessed");
   expect(finished.judge?.passes[0]?.criteria?.["candidate-1"][0]?.execution?.stdout).toBe("repaired pass-1 evidence");
   expect(finished.judge?.attempts?.find(item => item.pass === 2 && item.stage === "harness-1" && item.attempt === 2)?.status).toBe("complete");
   const addedLog = (await readFile(fake.log, "utf8")).slice(priorLog.length);
+  expect(addedLog).toContain(`--model ${judgeModel}`);
   expect(addedLog).toContain("-judge-2-harness-1-2");
   expect(addedLog).not.toContain("-judge-1-");
   expect(addedLog).not.toContain("-stock ");
   expect(addedLog).not.toContain("-current ");
   expect(finished.finishing_history).toHaveLength(1);
 }, 30_000);
+
+}
 
 test("judge recovery replays a saved repair that resubmitted a successful check", async () => {
   const run = await prepared();

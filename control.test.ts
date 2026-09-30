@@ -128,7 +128,7 @@ test("control identity includes task, execution, tool, setup, and resource contr
 
   for (const changed of [
     { ...original, task: { ...original.task, sha256: "9".repeat(64) } },
-    { ...original, execution: { ...original.execution, model: "gpt-6-sol" as const } },
+    { ...original, execution: { ...original.execution, model: "gpt-6.1-sol" as const } },
     { ...original, runtime_tools: { ...original.runtime_tools, codex_sha256: "8".repeat(64) } },
     { ...original, resource_limits: { ...original.resource_limits, memory: "8g" } },
     { ...original, arms: { ...original.arms, stock: { ...original.arms.stock, home_template: "snapshots/other/home" } } },

@@ -130,6 +130,7 @@ const FALLBACK_USD_PER_MILLION: Record<string, {
 }> = {
   "gpt-6-astra": { prompt: 10, completion: 50, input_cache_read: 1, input_cache_write: 12.5, long_prompt: 20, long_completion: 75, long_input_cache_read: 2, long_input_cache_write: 25 },
   "gpt-6-astra-pro": { prompt: 10, completion: 50, input_cache_read: 1, input_cache_write: 12.5, long_prompt: 20, long_completion: 75, long_input_cache_read: 2, long_input_cache_write: 25 },
+  "gpt-6.1-sol": { prompt: 2, completion: 10, input_cache_read: 0.1, input_cache_write: 2.5, long_prompt: 4, long_completion: 15, long_input_cache_read: 0.2, long_input_cache_write: 5 },
   "gpt-6-sol": { prompt: 2, completion: 10, input_cache_read: 0.2, input_cache_write: 2.5, long_prompt: 4, long_completion: 15, long_input_cache_read: 0.4, long_input_cache_write: 5 },
   "gpt-6-luna": { prompt: 0.1, completion: 0.5, input_cache_read: 0.01, input_cache_write: 0.125, long_prompt: 0.2, long_completion: 0.75, long_input_cache_read: 0.02, long_input_cache_write: 0.25 },
   "gpt-5.6-sol": { prompt: 4, completion: 20, input_cache_read: 0.4, input_cache_write: 5, long_prompt: 8, long_completion: 30, long_input_cache_read: 0.8, long_input_cache_write: 10 },
