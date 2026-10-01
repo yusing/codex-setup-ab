@@ -1392,8 +1392,89 @@ test("finish recovers pre-judge reporting failure without restarting candidates"
   await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("failed finishing");
 }, 30_000);
 
+test("finish recovers both timed-out harness stages without changing completed candidate or existing-test evidence", async () => {
+  const run = await prepared();
+  const auth = join(root, "recover-timeout-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const state = await readState(run);
+  const judge = state.judge!;
+  const arms = ["stock", "current"] as const;
+  const savedResults = arms.map(arm => {
+    const { grade: _grade, ...result } = state.results![arm]!;
+    return result;
+  });
+  const savedPass = judge.passes[0]!;
+  const candidateOutputs = await Promise.all(arms.map(arm => readFile(join(run, state.results![arm]!.stdout_path), "utf8")));
+  judge.status = "failed";
+  judge.error = `Error: semantic judge timed out after ${state.timeout_seconds} seconds`;
+  judge.failed_pass = 1;
+  judge.passes = [];
+  judge.winner = "none";
+  judge.attempts = judge.attempts!.filter(item => item.stage === "harness-1");
+  for (const attempt of judge.attempts) attempt.status = attempt.pass === 1 ? "failed" : "canceled";
+  judge.usage_homes = judge.attempts.map(item => item.usage_home);
+  const priorAttempts = structuredClone(judge.attempts);
+  const attemptOutputs = await Promise.all(priorAttempts.map(item => readFile(join(run, item.stdout_path), "utf8")));
+  const existingPaths = [1, 2].flatMap(pass => ["candidate-1", "candidate-2"].map(candidate =>
+    join(run, `evaluator/semantic/pass-${pass}/existing/${candidate}/__existing_tests/evidence.json`)));
+  const existingEvidence = await Promise.all(existingPaths.map(path => readFile(path, "utf8")));
+  for (const pass of [1, 2]) {
+    await rm(join(run, `evaluator/judge/pass-${pass}-assessment-1`), { recursive: true });
+    await rm(join(run, `evaluator/semantic/pass-${pass}/round-1`), { recursive: true });
+    await rm(join(run, `evaluator/semantic/pass-${pass}/round-1.json`));
+  }
+  state.finishing = { status: "failed", started_at: new Date().toISOString(), bundle_path: "reports/bundle", error: judge.error };
+  await writeState(run, state);
+  await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("--recover-judge");
+
+  for (const error of ["Error: provider authentication failed", `Error: semantic judge timed out after ${state.timeout_seconds + 1} seconds`]) {
+    await expect(assertRecoverableJudge(run, { ...state, judge: { ...judge, error } })).rejects.toThrow("recovery requires a failed judge");
+  }
+  await expect(assertRecoverableJudge(run, { ...state, judge: { ...judge, status: "complete" } })).rejects.toThrow("recovery requires a failed judge");
+  await expect(assertRecoverableJudge(run, { ...state, judge: { ...judge, passes: [savedPass] } })).rejects.toThrow("no recorded pass");
+  await expect(assertRecoverableJudge(run, { ...state, judge: { ...judge,
+    attempts: judge.attempts.map((item, index) => index === 0 ? { ...item, status: "running" } : item),
+  } })).rejects.toThrow("no running attempt");
+  await rm(existingPaths[3]!);
+  await expect(assertRecoverableJudge(run, state)).rejects.toThrow("completed existing tests in both passes");
+  await writeFile(existingPaths[3]!, existingEvidence[3]!);
+  const partialRound = join(run, "evaluator/semantic/pass-2/round-1");
+  await mkdir(partialRound);
+  await expect(assertRecoverableJudge(run, state)).rejects.toThrow("partially executed behavioral checks (pass 2, round 1)");
+  await rm(partialRound, { recursive: true });
+
+  const priorLog = await readFile(fake.log, "utf8");
+  await finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path, recoverJudge: true });
+  const finished = await readState(run);
+  expect(finished.finishing?.status).toBe("complete");
+  expect(finished.judge?.status).toBe("complete");
+  expect(finished.judge?.passes).toHaveLength(2);
+  expect(finished.judge?.recovery).toMatchObject({ previous_error: judge.error, reused_passes: [] });
+  expect(finished.judge?.attempts?.filter(item => item.stage === "harness-1" && item.attempt === 1)).toEqual(priorAttempts);
+  expect(await Promise.all(priorAttempts.map(item => readFile(join(run, item.stdout_path), "utf8")))).toEqual(attemptOutputs);
+  expect(await Promise.all(existingPaths.map(path => readFile(path, "utf8")))).toEqual(existingEvidence);
+  expect(arms.map(arm => {
+    const { grade: _grade, ...result } = finished.results![arm]!;
+    return result;
+  })).toEqual(savedResults);
+  expect(await Promise.all(arms.map(arm => readFile(join(run, finished.results![arm]!.stdout_path), "utf8")))).toEqual(candidateOutputs);
+  for (const pass of [1, 2]) {
+    expect(finished.judge?.attempts?.find(item => item.pass === pass && item.stage === "harness-1" && item.attempt === 2)?.status).toBe("complete");
+  }
+  const addedLog = (await readFile(fake.log, "utf8")).slice(priorLog.length);
+  expect(addedLog).toContain("-judge-1-harness-1-2");
+  expect(addedLog).toContain("-judge-2-harness-1-2");
+  expect(addedLog).not.toMatch(/-semantic-[12]-existing-/);
+  expect(addedLog).not.toContain("-stock ");
+  expect(addedLog).not.toContain("-current ");
+  expect(finished.finishing_history).toHaveLength(1);
+}, 30_000);
+
 for (const judgeModel of ["gpt-6.1-sol", "gpt-6-sol"] as const) {
-test(`${judgeModel} judge recovery reuses saved pass 1 and runs only incomplete pass 2`, async () => {
+for (const failure of ["validation", "timeout"] as const) {
+test(`${judgeModel} ${failure} judge recovery reuses saved pass 1 and runs only incomplete pass 2`, async () => {
   const run = await prepared();
   const auth = join(root, "recover-judge-auth.json");
   await file(auth, "{}\n", 0o600);
@@ -1414,7 +1495,8 @@ test(`${judgeModel} judge recovery reuses saved pass 1 and runs only incomplete 
   event.item.text = JSON.stringify(response);
   await writeFile(join(run, saved.stdout_path), `${JSON.stringify(event)}\n`);
   judge.status = "failed";
-  judge.error = "Error: source-only failure requires an explicitly required public interface";
+  judge.error = failure === "timeout" ? `Error: semantic judge timed out after ${state.timeout_seconds} seconds` :
+    "Error: source-only failure requires an explicitly required public interface";
   judge.failed_pass = 1;
   judge.passes = [];
   judge.winner = "none";
@@ -1452,6 +1534,7 @@ test(`${judgeModel} judge recovery reuses saved pass 1 and runs only incomplete 
   expect(finished.finishing_history).toHaveLength(1);
 }, 30_000);
 
+}
 }
 
 test("judge recovery replays a saved repair that resubmitted a successful check", async () => {

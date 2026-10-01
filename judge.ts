@@ -138,7 +138,7 @@ export function summarizeCheck(check: CommandEvidence): Record<string, unknown> 
   };
 }
 
-/** Judge failures that current validation handles without failing, so their completed stages can be reused. */
+/** Validation failures whose completed stages can be revalidated without repeating inference. */
 const RECOVERABLE_JUDGE_ERRORS = new Set([
   "Error: source-only failure requires an explicitly required public interface",
   "Error: harness repair must not replace a successful check",
@@ -146,9 +146,11 @@ const RECOVERABLE_JUDGE_ERRORS = new Set([
 
 export async function assertRecoverableJudge(runDir: string, state: RunState): Promise<void> {
   const prior = state.judge;
-  if (prior?.status !== "failed" || !RECOVERABLE_JUDGE_ERRORS.has(prior.error ?? "") || prior.passes.length ||
+  const recoverable = RECOVERABLE_JUDGE_ERRORS.has(prior?.error ?? "") ||
+    prior?.error === `Error: semantic judge timed out after ${state.timeout_seconds} seconds`;
+  if (prior?.status !== "failed" || !recoverable || prior.passes.length ||
       prior.attempts?.some(item => item.status === "running")) {
-    throw new Error("recovery requires a failed judge with a recoverable validation error, no recorded pass, and no running attempt");
+    throw new Error("recovery requires a failed judge with a recoverable validation error or timeout, no recorded pass, and no running attempt");
   }
   const exists = async (path: string) => access(path).then(() => true, () => false);
   for (const pass of [1, 2]) {
