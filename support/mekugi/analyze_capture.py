@@ -14,6 +14,8 @@ from typing import Any
 from benchmark_jsonl import load_jsonl
 
 USAGE_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens")
+COVERAGE_KEYS = ("complete_attempts", "incomplete_attempts", "unknown_attempts", "missing_attempts")
+THROUGHPUT_KEYS = ("output_tokens", "duration_ns", "measured_requests")
 EXPECTED_ARM_CONFIG = {
     "control": "passthrough",
     "mekugi": "mekugi",
@@ -226,10 +228,10 @@ def validate_rate(actual: object, numerator: int, denominator: int, description:
 def validate_provider_evidence(value, measured_usage):
     if value is None:
         return
-    fields = {"request_id", "header_model", "model", "cached_tokens_state", "cached_tokens"}
+    fields = {"request_id", "header_model", "model", "service_tier", "cached_tokens_state", "cached_tokens"}
     if not isinstance(value, dict) or set(value) - fields:
         raise ValueError("invalid provider response evidence")
-    for key in ("request_id", "header_model", "model"):
+    for key in ("request_id", "header_model", "model", "service_tier"):
         if key in value:
             text = value[key]
             if (not isinstance(text, str) or not 1 <= len(text) <= 256
@@ -249,6 +251,7 @@ def validate_provider_evidence(value, measured_usage):
 
 
 def validate_raw_capture(path: Path, metrics: dict[str, Any]) -> set[int]:
+    v7 = metrics.get("schema") == "mekugi.capture.metrics.v7"
     records = load_jsonl(path)
     if not records:
         raise ValueError("capture is empty")
@@ -313,6 +316,10 @@ def validate_raw_capture(path: Path, metrics: dict[str, Any]) -> set[int]:
         exchange = exchanges_by_sequence.get(front_sequence)
         if exchange is None or exchange.get("thread_id") != front.get("thread_id"):
             raise ValueError("raw capture does not reconcile a metrics exchange")
+        if v7:
+            validate_response_metadata(front, exchange)
+            if front.get("compaction_answer") != exchange.get("compaction_answer"):
+                raise ValueError("raw compaction answer differs from metrics")
         request_kind = front.get("request_kind")
         if request_kind not in (None, "turn", "prewarm", "compaction"):
             raise ValueError("capture has an unsupported request kind")
@@ -337,6 +344,10 @@ def validate_raw_capture(path: Path, metrics: dict[str, Any]) -> set[int]:
         ):
             raise ValueError("raw client measurements differ from the metrics exchange")
         for raw, measured in zip(providers, attempts, strict=True):
+            if v7:
+                validate_response_metadata(raw, measured)
+                if raw.get("provider_attempt") != measured.get("attempt"):
+                    raise ValueError("raw provider attempt number differs from metrics")
             if raw.get("provider_response") != measured.get("provider_response"):
                 raise ValueError("raw provider response evidence differs from snapshot")
             validate_provider_evidence(raw.get("provider_response"), raw.get("usage"))
@@ -348,6 +359,14 @@ def validate_raw_capture(path: Path, metrics: dict[str, Any]) -> set[int]:
                 raise ValueError("raw provider usage presence differs from the metrics exchange")
             if raw_usage is not None and usage(raw_usage) != usage(measured_usage):
                 raise ValueError("raw provider usage differs from the metrics exchange")
+            if v7 and raw_usage is not None:
+                evidence = raw_usage.get("evidence_complete")
+                if "evidence_complete" in raw_usage and type(evidence) is not bool:
+                    raise ValueError("invalid raw usage coverage")
+                expected = dict.fromkeys(COVERAGE_KEYS, 0)
+                expected["unknown_attempts" if evidence is None else "complete_attempts" if evidence else "incomplete_attempts"] = 1
+                if usage_coverage(measured_usage) != expected or output_throughput(raw_usage) != output_throughput(measured_usage):
+                    raise ValueError("raw provider usage evidence differs from metrics")
             if (
                 raw.get("predecessor_sequence", 0) != front.get("predecessor_sequence", 0)
                 or raw.get("transport") != measured.get("transport")
@@ -390,7 +409,7 @@ def validate_raw_capture(path: Path, metrics: dict[str, Any]) -> set[int]:
 
 
 def validate_snapshot(metrics: dict[str, Any], arm: str, config: dict[str, Any]) -> None:
-    if metrics.get("schema") != "mekugi.capture.metrics.v6":
+    if metrics.get("schema") not in {"mekugi.capture.metrics.v6", "mekugi.capture.metrics.v7"}:
         raise ValueError("metrics have an unsupported schema")
     expected = EXPECTED_ARM_CONFIG.get(arm)
     if expected is None:
@@ -412,6 +431,34 @@ def validate_published_usage(value: object, parsed: dict[str, int], provider_att
         raise ValueError("published usage-bearing attempt count does not reconcile provider evidence")
 
 
+def validate_response_metadata(raw: dict, measured: dict) -> None:
+    if (any(raw.get(key) != measured.get(key) for key in ("status_code", "response_complete", "duration_ms", "capture_error"))
+        or raw.get("response_status") != measured.get("status")):
+        raise ValueError("raw response status or timing differs from metrics")
+
+
+def usage_coverage(value: dict) -> dict[str, int]:
+    result = {key: value.get(key) for key in COVERAGE_KEYS}
+    if any(type(count) is not int or count < 0 for count in result.values()):
+        raise ValueError("invalid usage coverage")
+    if sum(result[key] for key in COVERAGE_KEYS[:3]) != value.get("provider_attempts"):
+        raise ValueError("usage coverage differs from usage-bearing attempts")
+    return result
+
+
+def output_throughput(value: dict) -> dict[str, int]:
+    result = value.get("output_throughput", dict.fromkeys(THROUGHPUT_KEYS, 0))
+    if (not isinstance(result, dict) or set(result) != set(THROUGHPUT_KEYS)
+        or any(type(count) is not int or count < 0 for count in result.values())
+        or result["output_tokens"] > value.get("output_tokens", 0)
+        or (result["measured_requests"] == 0 and any(result.values()))
+        or (result["measured_requests"] > 0 and result["duration_ns"] == 0)):
+        raise ValueError("invalid output throughput")
+    if result["measured_requests"] > value.get("provider_attempts", 1):
+        raise ValueError("output throughput exceeds usage-bearing attempts")
+    return result
+
+
 def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any]]) -> None:
     def sequence(exchange: object) -> int:
         if not isinstance(exchange, dict):
@@ -422,7 +469,12 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
         return value
 
     ordered = sorted(exchanges, key=sequence)
+    v7 = metrics.get("schema") == "mekugi.capture.metrics.v7"
     requests = {"logical": len(ordered), "provider_attempts": 0, "completed": 0, "failed": 0}
+    if v7:
+        requests["retries"] = 0
+    calculated_coverage = dict.fromkeys(COVERAGE_KEYS, 0)
+    calculated_throughput = dict.fromkeys(THROUGHPUT_KEYS, 0)
     calculated_usage = empty_usage()
     usage_attempts = 0
     transport = {key: empty_payload() for key in INFERENCE_TRANSPORT_KEYS}
@@ -440,6 +492,8 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
         if not isinstance(attempts, list):
             raise ValueError("exchange is missing provider attempts")
         requests["provider_attempts"] += len(attempts)
+        if v7:
+            requests["retries"] += max(0, len(attempts) - 1)
         outcome = "completed" if exchange.get("status") == "completed" else "failed"
         requests[outcome] += 1
         add_payload(transport["client_requests"], exchange.get("client_request"))
@@ -451,6 +505,8 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
         for call in delivered:
             add_tool(delivered_tools, call)
         exchange_usage = empty_usage()
+        exchange_coverage = dict.fromkeys(COVERAGE_KEYS, 0)
+        exchange_throughput = dict.fromkeys(THROUGHPUT_KEYS, 0)
         exchange_usage_attempts = 0
         final_usage = None
         for attempt in attempts:
@@ -473,6 +529,17 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
                 exchange_usage_attempts += 1
                 usage_attempts += 1
                 validate_published_usage(published_attempt_usage, parsed_attempt_usage, 1)
+                if v7:
+                    coverage = usage_coverage(published_attempt_usage)
+                    if coverage["missing_attempts"] != 0:
+                        raise ValueError("observed provider usage cannot be missing")
+                    throughput = output_throughput(published_attempt_usage)
+                    for key in COVERAGE_KEYS:
+                        exchange_coverage[key] += coverage[key]
+                    for key in THROUGHPUT_KEYS:
+                        exchange_throughput[key] += throughput[key]
+            elif v7:
+                exchange_coverage["missing_attempts"] += 1
             final_usage = parsed_attempt_usage
             add_payload(transport["provider_attempt_requests"], attempt.get("request"))
             add_payload(transport["provider_responses"], attempt.get("response"))
@@ -484,27 +551,38 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
                 add_tool(provider_tools, emitted)
 
         published_exchange_usage = exchange.get("usage")
-        if exchange_usage_attempts:
+        router_local = v7 and exchange.get("compaction_answer") == "router" and not attempts
+        if exchange_usage_attempts or router_local:
             if usage(published_exchange_usage) != exchange_usage:
                 raise ValueError("exchange usage does not reconcile provider attempts")
             validate_published_usage(published_exchange_usage, exchange_usage, exchange_usage_attempts)
+            if v7 and (usage_coverage(published_exchange_usage) != exchange_coverage
+                       or output_throughput(published_exchange_usage) != exchange_throughput):
+                raise ValueError("exchange usage evidence does not reconcile provider attempts")
         elif published_exchange_usage is not None:
             raise ValueError("exchange publishes usage without provider evidence")
 
-        thread = exchange.get("thread_id")
-        if not isinstance(thread, str) or not thread:
-            if final_usage is not None:
-                cold_or_new += final_usage["input_tokens"] - final_usage["cached_input_tokens"]
-        elif final_usage is None:
-            previous_input.pop(thread, None)
-        else:
-            current_eligible = min(previous_input.get(thread, 0), final_usage["input_tokens"])
-            current_cached = min(current_eligible, final_usage["cached_input_tokens"])
-            current_miss = current_eligible - current_cached
-            eligible += current_eligible
-            eligible_cached += current_cached
-            cold_or_new += final_usage["input_tokens"] - final_usage["cached_input_tokens"] - current_miss
-            previous_input[thread] = final_usage["input_tokens"]
+        if v7:
+            for key in COVERAGE_KEYS:
+                calculated_coverage[key] += exchange_coverage[key]
+            for key in THROUGHPUT_KEYS:
+                calculated_throughput[key] += exchange_throughput[key]
+
+        if not v7:
+            thread = exchange.get("thread_id")
+            if not isinstance(thread, str) or not thread:
+                if final_usage is not None:
+                    cold_or_new += final_usage["input_tokens"] - final_usage["cached_input_tokens"]
+            elif final_usage is None:
+                previous_input.pop(thread, None)
+            else:
+                current_eligible = min(previous_input.get(thread, 0), final_usage["input_tokens"])
+                current_cached = min(current_eligible, final_usage["cached_input_tokens"])
+                current_miss = current_eligible - current_cached
+                eligible += current_eligible
+                eligible_cached += current_cached
+                cold_or_new += final_usage["input_tokens"] - final_usage["cached_input_tokens"] - current_miss
+                previous_input[thread] = final_usage["input_tokens"]
 
     validate_cache_diagnostics(exchanges)
 
@@ -514,6 +592,9 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
     if usage(published_usage) != calculated_usage:
         raise ValueError("aggregate usage does not reconcile exchanges")
     validate_published_usage(published_usage, calculated_usage, usage_attempts)
+    if v7 and (usage_coverage(published_usage) != calculated_coverage
+               or output_throughput(published_usage) != calculated_throughput):
+        raise ValueError("aggregate usage evidence does not reconcile exchanges")
     published_transport = metrics.get("transport")
     if not isinstance(published_transport, dict) or set(published_transport) != set(TRANSPORT_KEYS):
         raise ValueError("metrics have an unsupported transport shape")
@@ -528,6 +609,16 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
     published_cache = metrics.get("cache")
     if not isinstance(published_cache, dict):
         raise ValueError("metrics are missing cache calculations")
+    validate_rate(
+        published_cache.get("provider_cache_rate"),
+        calculated_usage["cached_input_tokens"],
+        calculated_usage["input_tokens"],
+        "provider cache rate",
+    )
+    if v7:
+        if set(published_cache) != {"provider_cache_rate"}:
+            raise ValueError("unsupported v7 cache calculations")
+        return
     eligible_miss = eligible - eligible_cached
     expected_cache = {
         "cold_or_new_uncached_input_tokens": cold_or_new,
@@ -537,12 +628,6 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
     }
     if any(published_cache.get(key) != value for key, value in expected_cache.items()):
         raise ValueError("cache attribution does not reconcile final provider attempts")
-    validate_rate(
-        published_cache.get("provider_cache_rate"),
-        calculated_usage["cached_input_tokens"],
-        calculated_usage["input_tokens"],
-        "provider cache rate",
-    )
     validate_rate(
         published_cache.get("eligible_prefix_cache_rate"),
         eligible_cached,

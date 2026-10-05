@@ -18,9 +18,12 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
       await writeFile(join(root, name), MEKUGI_EXPORT_SCRIPTS[name]);
     }
     await mkdir(join(root, "exports"));
+    await mkdir(join(root, "home/.local/state/mekugi/debug"), { recursive: true });
     const result = await runOwnedContainer({
       docker: "docker", name: `codex-ab-export-smoke-${process.pid}`, timeoutMs: 30000,
       createArgs: ["--network", "none", "-v", `${root}/exports:/mekugi-exports`,
+        "-v", `${root}/home:/home/ubuntu`,
+        "--tmpfs", "/home/ubuntu/.local/state/mekugi/debug:size=64m,mode=0700,uid=1000,gid=1000",
         "-v", `${process.env.CODEX_AB_MEKUGI_BIN ?? "/home/ubuntu/go/bin/mekugi"}:/usr/local/bin/mekugi:ro`,
         process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery",
         "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", "--mode=mekugi", "--ansi-faint=off",
@@ -29,13 +32,17 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("codex-cli");
     const metrics = JSON.parse(await readFile(join(root, "exports/metrics.json"), "utf8"));
-    expect(metrics.schema).toBe("mekugi.capture.metrics.v6");
+    expect(metrics.schema).toBe("mekugi.capture.metrics.v7");
     expect(metrics.requests.logical).toBe(0);
     expect((await readdir(join(root, "exports"))).sort()).toEqual(["capture.jsonl", "metrics.json"]);
+    expect(await readdir(join(root, "home/.local/state/mekugi/debug"))).toEqual([]);
     await mkdir(join(root, "protected-exports"));
+    await mkdir(join(root, "runtime/state/mekugi/debug"), { recursive: true });
     const protectedResult = await runOwnedContainer({
       docker: "docker", name: `codex-ab-export-private-${process.pid}`, timeoutMs: 30000,
       createArgs: ["--network", "none", "--user", "0:0", "--tmpfs", "/mekugi-debug:mode=0700,size=64m", "-e", "MEKUGI_DEBUG_TMPDIR=/mekugi-debug",
+        "-v", `${root}/runtime:/mekugi-runtime`, "-e", "XDG_STATE_HOME=/mekugi-runtime/state",
+        "--tmpfs", "/mekugi-runtime/state/mekugi/debug:size=64m,mode=0700",
         "-v", `${root}/protected-exports:/mekugi-exports`,
         "-v", `${process.env.CODEX_AB_MEKUGI_BIN ?? "/home/ubuntu/go/bin/mekugi"}:/usr/local/bin/mekugi:ro`,
         process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery",
@@ -44,6 +51,7 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
     });
     expect(protectedResult.exitCode, protectedResult.stderr).toBe(0);
     expect((await readdir(join(root, "protected-exports"))).sort()).toEqual(["capture.jsonl", "metrics.json"]);
+    expect(await readdir(join(root, "runtime/state/mekugi/debug"))).toEqual([]);
     const state = { mekugi_flags: ["--mode=mekugi"], mekugi_exports: {
       metrics: "exports/metrics.json", capture: "exports/capture.jsonl",
       validator: { path: "analyze_capture.py", sha256: await sha256(join(root, "analyze_capture.py")) },
@@ -65,6 +73,10 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
     await rm(join(root, "analyze_capture.py"));
     expect(await validateMekugiExports(root, state)).toMatchObject({ status: "unavailable", reason: expect.stringContaining("ENOENT") });
   } finally {
+    const restored = await runOwnedContainer({ docker: "docker", name: `codex-ab-export-restore-${process.pid}`,
+      createArgs: ["--network", "none", "--user", "0:0", "-v", `${root}:/owned`,
+        process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery", "chown", "-hR", `${process.getuid!()}:${process.getgid!()}`, "/owned"] });
+    expect(restored.exitCode, restored.stderr).toBe(0);
     await rm(root, { recursive: true, force: true });
   }
 }, 45000);
@@ -107,6 +119,37 @@ liveTest("metrics wrapper preserves the task on Codex stdin", async () => {
     expect(result.stdout).toBe("benchmark task");
     expect(JSON.parse(await readFile(join(root, "metrics.json"), "utf8"))).toEqual({});
     expect(await readFile(join(root, "token-metrics.md"), "utf8")).toBe("Router session usage\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+liveTest("metrics wrapper selects only its capture and rejects ambiguous state bundles", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codex-ab-mekugi-state-"));
+  try {
+    for (const variant of ["matching", "unrelated", "ambiguous"]) {
+      const output = join(root, variant);
+      await mkdir(output);
+      const child = 'set -eu; base="$XDG_STATE_HOME/mekugi/debug"; '
+        + 'mkdir -p "$base/mekugi-debug-unrelated"; echo unrelated > "$base/mekugi-debug-unrelated/metrics.json"; '
+        + 'ln -s /tmp/other-capture.jsonl "$base/mekugi-debug-unrelated/capture.jsonl"; '
+        + '[ "$1" != unrelated ] || exit 0; '
+        + 'mkdir -p "$base/mekugi-debug-current"; echo current > "$base/mekugi-debug-current/metrics.json"; '
+        + 'ln -s /mekugi-exports/capture.jsonl "$base/mekugi-debug-current/capture.jsonl"; '
+        + '[ "$1" != ambiguous ] || cp -a "$base/mekugi-debug-current" "$base/mekugi-debug-duplicate"';
+      const result = await runOwnedContainer({ docker: "docker", name: `codex-ab-state-${process.pid}-${variant}`, timeoutMs: 30000,
+        createArgs: ["--network", "none", "-e", "XDG_STATE_HOME=/tmp/state with spaces", "-v", `${output}:/mekugi-exports`,
+          process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery", "sh", "-c", MEKUGI_METRICS_WRAPPER,
+          "mekugi-metrics", "sh", "-c", child, "fixture", variant] });
+      if (variant === "matching") {
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect((await readFile(join(output, "metrics.json"), "utf8")).trim()).toBe("current");
+      } else {
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr).toContain(variant === "ambiguous" ? "ambiguous metrics" : "did not write metrics");
+        expect(await Bun.file(join(output, "metrics.json")).exists()).toBe(false);
+      }
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

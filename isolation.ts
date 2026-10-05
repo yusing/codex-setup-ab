@@ -15,6 +15,7 @@ export function protectedArgs(runDir: string, state: RunState, runtime: string):
     "--security-opt", "no-new-privileges", "--security-opt", "apparmor=unconfined",
     "--tmpfs", "/tmp:exec,size=4g,mode=1777",
     "--tmpfs", "/mekugi-debug:size=4g,mode=0700",
+    "--tmpfs", "/mekugi-runtime/state/mekugi/debug:size=4g,mode=0700",
     "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin:/usr/sbin:/sbin",
     "-e", "MEKUGI_RUNTIME_DIR=/mekugi-runtime", "-e", "XDG_STATE_HOME=/mekugi-runtime/state",
     "-e", "MEKUGI_DEBUG_TMPDIR=/mekugi-debug",
@@ -65,10 +66,11 @@ print('CODEX_AB_PROTECTED_RUNTIME_OK')
   const paths = [workspace, home, runtime, exports];
   try {
     await executorOwnership(docker, state, `${state.id}-isolation-own`, paths, false);
+    const installs = resolve(runDir, state.runtime_tools.current_setup_installs);
     const common = [...protectedArgs(runDir, state, runtime), "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
         "-v", `${workspace}:/workspace`, "-v", `${home}:/home/ubuntu`,
         "-v", `${exports}:/mekugi-exports`, "-v", `${join(directory, "modules")}:/go/pkg/mod:ro`,
-        "-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
+        "-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`];
     const command = [dependencyImage(state), "mise", "exec", "--", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...(state.mekugi_flags ?? []),
       ...(state.mekugi_flags?.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]), "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"];
     const result = await runOwnedContainer({ docker, name: `${state.id}-isolation-probe`, signal, timeoutMs: 180000,

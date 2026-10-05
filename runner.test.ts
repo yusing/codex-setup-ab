@@ -54,6 +54,8 @@ async function fixtureHome(): Promise<string> {
   await file(join(h, ".cache/skills-mgr/remote-skills/content/current-modern/scripts/VERSION"), "v0.1.1\n");
   await file(join(h, ".cache/skills-mgr/remote-skills/content/current-modern/SKILL.md"), "full remote body\n");
   await file(join(h, ".local/share/mise/migrations/runtime-symlink-dirs-v2"), "ok\n");
+  await file(join(h, ".config/mise/config.toml"), '[tools]\n"fixture-runner" = "1"\n');
+  await file(join(h, ".config/mise/mise.lock"), "# fixture lock\n");
   await file(join(h, ".cache/go-modern-guidelines/v0.1.1/go-modern-guidelines"), "#!/bin/sh\necho guideline\n", 0o755);
   await file(join(h, ".local/share/mise/installs/go-github-com-yusing-skills-mgr/0.0.0-20260908072306-37a730da5ab5/bin/skills-mgr"), "fixture\n", 0o755);
   await file(join(h, ".local/share/mise/installs/aqua-rtk-ai-rtk/0.48.0/rtk"), "fixture\n", 0o755);
@@ -145,7 +147,7 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   expect(launches).toHaveLength(2);
   expect(launches.some(line => line.includes(" mise exec -- codex exec "))).toBe(true);
   expect(launches.some(line => line.includes(" mise exec -- sh -c ") && line.includes("mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --debug codex exec "))).toBe(true);
-  expect(launches.every(line => line.includes(`${state.runtime_tools.current_setup_installs}:/home/ubuntu/.local/share/mise/installs:ro`))).toBe(true);
+  expect(launches.every(line => line.includes(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`))).toBe(true);
   expect(await readlink(join(run, "arms/current/home/ubuntu/linked-guidance"))).toBe("AGENTS.md");
   await file(join(run, "reports/report.json"), "{}");
   await file(join(run, "reports/report.md"), "fixture report");
@@ -165,7 +167,7 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   expect(adaptedConfig.projects).toEqual({ "/workspace": { trust_level: "trusted" } });
 });
 
-test("stock-mekugi isolates the launcher without current-home guidance", async () => {
+test("stock-mekugi shares configured tools while isolating current-home guidance", async () => {
   const captureSource = join(root, "stock-mekugi-capture-source");
   await mkdir(captureSource, { recursive: true });
 
@@ -177,9 +179,20 @@ test("stock-mekugi isolates the launcher without current-home guidance", async (
   expect(state.execution).toMatchObject({ current_launcher: "mekugi", service_tier: "default" });
   expect(state.arms.stock.home_template).toBe("snapshots/stock/home/ubuntu");
   expect(state.arms.current.home_template).toBe("snapshots/stock-mekugi/home/ubuntu");
-  expect(state.runtime_tools.current_setup_installs).toBe("snapshots/current/mise/installs");
-  expect((await stat(join(run, state.runtime_tools.current_setup_installs))).isDirectory()).toBe(true);
-  await expect(stat(join(run, state.runtime_tools.current_setup_installs, "fixture-runner"))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(state.runtime_tools.current_setup_installs).toBe(await realpath(join(home, ".local/share/mise/installs")));
+  for (const arm of ["stock", "current"] as const) {
+    const template = join(run, state.arms[arm].home_template);
+    expect(await readFile(join(template, ".config/mise/config.toml"), "utf8")).toBe('[tools]\n"fixture-runner" = "1"\n');
+    expect(await Bun.file(join(template, ".local/bin/mise")).exists()).toBe(true);
+    expect(await Bun.file(join(template, "AGENTS.md")).exists()).toBe(false);
+    expect(await Bun.file(join(template, ".codex/AGENTS.md")).exists()).toBe(false);
+    expect(await Bun.file(join(template, ".codex/hooks.json")).exists()).toBe(false);
+    const config = join(template, ".config/mise/config.toml");
+    const original = await readFile(config, "utf8");
+    await writeFile(config, `${original}# drift\n`);
+    await expect(verifyPreparedInputs(run, state)).rejects.toThrow("setup snapshot changed");
+    await writeFile(config, original);
+  }
   await verifyPreparedInputs(run, state);
 
   const auth = join(root, "stock-mekugi-auth.json");
@@ -190,7 +203,12 @@ test("stock-mekugi isolates the launcher without current-home guidance", async (
   expect(launches).toHaveLength(2);
   expect(launches.some(line => line.includes(" codex exec --json ") && !line.includes(" mekugi "))).toBe(true);
   expect(launches.some(line => line.includes(" sh -c ") && line.includes(" mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json "))).toBe(true);
-  expect(launches.every(line => !line.includes(" mise exec ") && !line.includes("/home/ubuntu/.local/share/mise/installs:ro"))).toBe(true);
+  expect(launches.every(line => line.includes(" mise exec ") && line.includes(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`)
+    && line.includes(`MISE_INSTALLS_DIR=${state.runtime_tools.current_setup_installs}`))).toBe(true);
+  expect(launches.find(line => line.includes(" mekugi --mode=mekugi "))).toContain("--tmpfs /home/ubuntu/.local/state/mekugi/debug:size=4g,mode=0700,uid=1000,gid=1000");
+  const exportPreflight = (await readFile(fake.log, "utf8")).split("\n").find(line => line.includes(" create ") && line.includes("-preflight-mekugi "))!;
+  expect(exportPreflight).toContain("/artifacts/preflight-mekugi:/mekugi-exports");
+  expect(exportPreflight).toContain("mekugi-metrics mekugi --mode=mekugi --debug --capture-output=/mekugi-exports/capture.jsonl codex --version");
   await expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
@@ -277,7 +295,7 @@ test("journal-compaction launches the same current setup and binary with off/aut
     expect(launch).toContain(`mekugi --journal-compaction=${arm === "stock" ? "off" : "auto"} --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json`);
     expect(launch).toContain("-c model_auto_compact_token_limit=4096");
     expect(launch).toContain(`${join(run, `artifacts/${arm}/mekugi`)}:/mekugi-exports`);
-    expect(launch).toContain(`${state.runtime_tools.current_setup_installs}:/home/ubuntu/.local/share/mise/installs:ro`);
+    expect(launch).toContain(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`);
   }
 }, 30_000);
 
@@ -362,7 +380,6 @@ test("stock-mekugi does not require unused current-home runtime supplements", as
   await cp(home, isolatedHome, { recursive: true });
   await rm(join(isolatedHome, ".codex/.tmp/bundled-marketplaces/openai-bundled"), { recursive: true });
 
-  await rm(join(isolatedHome, ".local/bin/mise"));
   await writeFile(join(isolatedHome, ".codex/config.toml"), 'model = "some-other-model"\nmodel_reasoning_effort = "xhigh"\nservice_tier = "default"\n');
   const captureSource = join(root, "stock-mekugi-minimal-capture-source");
   await mkdir(captureSource, { recursive: true });
@@ -495,6 +512,7 @@ test("protected runtime snapshots owner scripts without changing the direct arm"
   expect(launches.find(line => line.includes(" mise exec -- sh -c "))!).toContain("--cap-add SYS_ADMIN");
   expect(launches.find(line => line.includes(" mise exec -- sh -c "))!).toContain("/usr/local/libexec/mekugi-agent-check.py:ro");
   expect(launches.find(line => line.includes(" mise exec -- sh -c "))!).toContain("--tmpfs /mekugi-debug:size=4g,mode=0700");
+  expect(launches.find(line => line.includes(" mise exec -- sh -c "))!).toContain("--tmpfs /mekugi-runtime/state/mekugi/debug:size=4g,mode=0700");
   expect(launches.find(line => line.includes(" mise exec -- sh -c "))!).toContain("MEKUGI_DEBUG_TMPDIR=/mekugi-debug");
   const preflight = (await readFile(fake.log, "utf8")).split("\n").find(line => line.includes("-isolation-probe") && line.includes(" create "))!;
   expect(preflight).toContain("mekugi-metrics mekugi");
@@ -1045,7 +1063,7 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   expect(state.results?.current?.grade?.passed).toBe(false);
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain(" mise exec -- codex exec ");
-  expect(log).toContain(`${state.runtime_tools.current_setup_installs}:/home/ubuntu/.local/share/mise/installs:ro`);
+  expect(log).toContain(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`);
   const agentWarmCalls = log.split("\n").filter(line => /-agent-warm /.test(line));
   expect(agentWarmCalls).toHaveLength(2);
   expect(agentWarmCalls.every(line => line.includes("--network none") && !line.includes("go-pkg-cache"))).toBe(true);

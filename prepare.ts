@@ -45,6 +45,7 @@ export interface PrepareOptions {
 }
 
 function progress(message: string): void { process.stderr.write(`[prepare] ${message}\n`); }
+const TOOL_SETUP_PATHS = [".local/bin/mise", ".config/mise", ".local/share/mise/migrations"];
 
 async function exists(path: string): Promise<boolean> { try { await lstat(path); return true; } catch { return false; } }
 
@@ -141,6 +142,8 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   }
   const stockMekugi = state.comparison === "stock-mekugi";
   const grokComparison = state.comparison === "codex-mekugi-grok";
+  const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
+  const currentFiles = stockMekugi && state.runtime_tools.current_setup_mise_sha256 ? await manifest(currentTemplate) : undefined;
   if (sameSetup && (state.arms.stock.home_template !== state.arms.current.home_template || state.execution.current_launcher !== "mekugi")) throw new Error("same-setup treatment identity changed");
   if (!sameSetup && !grokComparison && state.arms.stock.home_template !== "snapshots/stock/home/ubuntu") throw new Error("stock setup identity changed");
   if (stockMekugi && (state.arms.current.home_template !== "snapshots/stock-mekugi/home/ubuntu" || state.execution.current_launcher !== "mekugi")) throw new Error("stock-mekugi treatment identity changed");
@@ -165,12 +168,16 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     }
   } else {
     const stockFiles = await manifest(stock);
-    if (stockFiles.length !== 1 || stockFiles[0].path !== ".codex/config.toml" || stockFiles[0].type !== "file"
+    const sharedTools = currentFiles?.filter(file => TOOL_SETUP_PATHS.some(path => file.path === path || file.path.startsWith(`${path}/`))) ?? [];
+    const withoutTools = (files: Awaited<ReturnType<typeof manifest>>) => files.filter(file => !sharedTools.some(tool => tool.path === file.path));
+    const sameTools = (files: Awaited<ReturnType<typeof manifest>>) => sharedTools.every(tool => files.some(file => JSON.stringify(file) === JSON.stringify(tool)));
+    const stockGuidance = withoutTools(stockFiles);
+    if (!sameTools(stockFiles) || stockGuidance.length !== 1 || stockGuidance[0].path !== ".codex/config.toml" || stockGuidance[0].type !== "file"
       || await readFile(join(stock, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)) throw new Error("stock setup snapshot changed");
     if (stockMekugi) {
       const treated = join(runDir, state.arms.current.home_template);
       const treatedFiles = await manifest(treated);
-      if (treatedFiles.length !== 2
+      if (!sameTools(treatedFiles) || withoutTools(treatedFiles).length !== 2
         || await readFile(join(treated, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)
         || await sha256(join(treated, ".local/bin/mekugi")) !== state.runtime_tools.mekugi_sha256) {
         throw new Error("stock-mekugi setup snapshot changed");
@@ -204,8 +211,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   const manifestPath = join(runDir, state.snapshot_manifest);
   if (await sha256(manifestPath) !== state.current_snapshot.manifest_sha256) throw new Error("snapshot manifest changed");
   const recorded = JSON.parse(await readFile(manifestPath, "utf8")) as { files: unknown };
-  const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
-  if (JSON.stringify(await manifest(currentTemplate)) !== JSON.stringify(recorded.files)) throw new Error("current setup snapshot changed");
+  if (JSON.stringify(currentFiles ?? await manifest(currentTemplate)) !== JSON.stringify(recorded.files)) throw new Error("current setup snapshot changed");
   if (state.runtime_tools.current_setup_mise_sha256 &&
       await sha256(join(currentTemplate, ".local/bin/mise")) !== state.runtime_tools.current_setup_mise_sha256) {
     throw new Error("snapshotted current setup runtime changed");
@@ -338,7 +344,8 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
       "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
       "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
     ] : [
-      "current-home executables and runtime supplements omitted because neither benchmark arm uses the current setup",
+      "current-home guidance supplements omitted from minimal comparisons",
+      ...(miseBinary ? ["configured mise runtime retained for identical tool access in both minimal arms"] : ["current-home tool runtime omitted"]),
     ]),
   ], files: await manifest(destination) }, null, 2)}\n`);
   return output;
@@ -458,7 +465,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const compactionComparison = comparison === "journal-compaction";
   validateCompactionComparison(comparison, options.autoCompactLimit, mekugiFlags, Boolean(options.protectMekugi));
   const grokComparison = comparison === "codex-mekugi-grok";
-  const isolatedFromCurrentTools = comparison === "stock-mekugi" || grokComparison;
+  const isolatedGuidance = comparison === "stock-mekugi" || grokComparison;
+  const isolatedFromCurrentTools = grokComparison;
   const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi" || compactionComparison;
   const currentLauncher = options.currentLauncher ?? (grokComparison ? "grok" : launcherComparison ? "mekugi" : "codex");
   if ((launcherComparison || grokComparison) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source to select export validation`);
@@ -539,11 +547,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const currentConfig = Bun.TOML.parse(await readFile(join(options.currentHome, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
   const configured = (key: string): string | undefined =>
     typeof currentConfig[key] === "string" ? currentConfig[key] : undefined;
-  if (!isolatedFromCurrentTools &&
+  if (!isolatedGuidance &&
       (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium")) {
     throw new Error("current setup must configure model gpt-6-astra with medium reasoning for this benchmark");
   }
-  const serviceTier = isolatedFromCurrentTools ? "default" : configured("service_tier");
+  const serviceTier = isolatedGuidance ? "default" : configured("service_tier");
   if (!serviceTier) throw new Error("current setup does not declare service_tier");
   if (!(await exists(join(source, ".git")))) throw new Error(`source is not a Git worktree: ${source}`);
   const runDir = await mkdtemp(join(options.outputParent ?? tmpdir(), "codex-ab-"));
@@ -608,8 +616,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
   const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate,
-    isolatedFromCurrentTools ? undefined : mekugiBinary,
-    miseBinary, !isolatedFromCurrentTools, reviewTreatment);
+    isolatedGuidance ? undefined : mekugiBinary,
+    miseBinary, !isolatedGuidance, reviewTreatment);
   const currentSetupInstalls = isolatedFromCurrentTools
     ? join(runDir, "snapshots/current/mise/installs")
     : await realpath(join(options.currentHome, ".local/share/mise/installs"));
@@ -645,6 +653,13 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     await chmod(join(grokTemplate, ".grok/bin/grok"), 0o755);
   }
   await writeFile(join(stockTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
+  if (comparison === "stock-mekugi") {
+    for (const target of [stockTemplate, stockMekugiTemplate]) {
+      for (const path of TOOL_SETUP_PATHS) {
+        if (await exists(join(currentTemplate, path))) await copyRequired(join(currentTemplate, path), join(target, path));
+      }
+    }
+  }
   const bunSource = bunBinary;
   const bunTarget = join(runDir, "snapshots/runtime/bin/bun");
   await copyRequired(bunSource, bunTarget);

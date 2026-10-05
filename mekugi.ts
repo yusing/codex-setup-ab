@@ -6,8 +6,8 @@ import type { ArmName, RunState } from "./types";
 const FLAGS = new Set(["mode", "ansi-faint", "post-compact-recovery", "journal-compaction", "timeout", "stream-idle-timeout", "debug", "grok"]);
 
 /**
- * Keep private --debug artifacts in the disposable container; export only capturer-owned metrics
- * and the root session's native usage report, which Mekugi writes under TMPDIR.
+ * Export sanitized metrics for this capture, leaving private debug bundles at their owner.
+ * Older binaries write bundles and an optional native usage report under TMPDIR.
  */
 export const MEKUGI_METRICS_WRAPPER = 'temp_dir=$(mktemp -d "${MEKUGI_DEBUG_TMPDIR:-/tmp}/codex-ab-mekugi.XXXXXX") || exit; '
   + 'exec 3<&0; TMPDIR="$temp_dir" "$@" <&3 3<&- & child=$!; exec 3<&-; '
@@ -15,9 +15,12 @@ export const MEKUGI_METRICS_WRAPPER = 'temp_dir=$(mktemp -d "${MEKUGI_DEBUG_TMPD
   + 'while :; do wait "$child"; status=$?; kill -0 "$child" 2>/dev/null || break; done; '
   + 'set -- "$temp_dir"/mekugi-token-metrics-*.md; '
   + 'if [ "$#" -eq 1 ] && [ -f "$1" ]; then cp "$1" /mekugi-exports/token-metrics.md || exit 1; fi; '
-  + 'for metrics in "$temp_dir"/mekugi-debug-*/metrics.json; do '
-  + 'if [ -f "$metrics" ]; then cp "$metrics" /mekugi-exports/metrics.json || exit 1; exit "$status"; fi; '
-  + 'done; if [ "$status" -eq 0 ]; then echo "Mekugi did not write metrics" >&2; exit 1; fi; exit "$status"';
+  + 'selected=; for metrics in "$temp_dir"/mekugi-debug-*/metrics.json "${XDG_STATE_HOME:-$HOME/.local/state}"/mekugi/debug/mekugi-debug-*/metrics.json; do '
+  + '[ -f "$metrics" ] || continue; '
+  + 'case "$metrics" in "$temp_dir"/*) ;; *) [ "$(readlink -f "${metrics%/metrics.json}/capture.jsonl")" = /mekugi-exports/capture.jsonl ] || continue ;; esac; '
+  + '[ -z "$selected" ] || { echo "Mekugi wrote ambiguous metrics" >&2; exit 1; }; selected=$metrics; '
+  + 'done; if [ -n "$selected" ]; then cp "$selected" /mekugi-exports/metrics.json || exit 1; '
+  + 'elif [ "$status" -eq 0 ]; then echo "Mekugi did not write metrics" >&2; exit 1; fi; exit "$status"';
 
 export function validateMekugiFlags(value: unknown): string[] {
   if (!Array.isArray(value) || value.some(flag => typeof flag !== "string")) throw new Error("Mekugi flags must be a string array");

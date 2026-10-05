@@ -28,10 +28,11 @@ function containerArgs(state: RunState): string[] {
 }
 
 function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current"): string[] {
-  const usesCurrentSetup = state.comparison === "same-setup" || state.comparison === "journal-compaction"
-    || (arm === "current" && state.comparison !== "stock-mekugi" && state.comparison !== "codex-mekugi-grok");
+  const usesCurrentSetup = state.comparison === "same-setup" || state.comparison === "stock-mekugi" || state.comparison === "journal-compaction"
+    || (arm === "current" && state.comparison !== "codex-mekugi-grok");
   if (!usesCurrentSetup) return [];
-  return ["-v", `${resolve(runDir, state.runtime_tools.current_setup_installs)}:/home/ubuntu/.local/share/mise/installs:ro`];
+  const installs = resolve(runDir, state.runtime_tools.current_setup_installs);
+  return ["-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`];
 }
 
 function imageRef(state: RunState): string { return dependencyImage(state); }
@@ -132,8 +133,9 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     const mekugiHome = resolve(runDir, state.comparison === "codex-mekugi-grok" ? state.arms.stock.home_template : state.arms.current.home_template);
     progress(state.comparison === "codex-mekugi-grok" ? "checking the isolated Codex+Mekugi and Grok setups offline" : "checking the minimal stock-plus-Mekugi setup offline");
     const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none",
-      "-v", `${mekugiHome}:/setup:ro`, image, "sh", "-lc",
-      "cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && test -x /home/ubuntu/.local/bin/mekugi"] });
+      "-v", `${mekugiHome}:/setup:ro`, ...currentSetupMounts(runDir, state), image, "sh", "-lc",
+      "cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && test -x /home/ubuntu/.local/bin/mekugi"
+        + (state.comparison === "stock-mekugi" ? " && cd /home/ubuntu && missing_tools=\"$(mise ls --current --missing --no-header)\" && if test -n \"$missing_tools\"; then printf 'missing configured tools: %s\\n' \"$missing_tools\" >&2; exit 1; fi && mise exec -- sh -c 'command -v codex >/dev/null'" : "")] });
     if (dependencies.exitCode !== 0) throw new Error(`stock-plus-Mekugi setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
     if (state.comparison === "codex-mekugi-grok") {
       const grokHome = resolve(runDir, state.arms.current.home_template);
@@ -162,10 +164,16 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   }
   if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
     progress("checking selected Mekugi flags and exports offline without model access");
+    const exports = join(runDir, "artifacts/preflight-mekugi");
+    await mkdir(exports, { recursive: true, mode: 0o700 });
+    const flags = state.mekugi_flags ?? [];
     const launch = await runOwnedContainer({ docker, name: `${prefix}-mekugi`, signal, timeoutMs: 30000,
-      createArgs: ["--network", "none", "-v", `${state.comparison === "codex-mekugi-grok" ? resolve(runDir, state.arms.stock.home_template) : currentHome}:/setup:ro`, image, "sh", "-lc",
-        'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && mekugi "$@" --capture-output=/tmp/capture.jsonl codex --version',
-        "preflight", ...(state.mekugi_flags ?? [])] });
+      createArgs: ["--network", "none", "-v", `${state.comparison === "codex-mekugi-grok" ? resolve(runDir, state.arms.stock.home_template) : currentHome}:/setup:ro`,
+        "-v", `${exports}:/mekugi-exports`, image, "sh", "-lc",
+        'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && exec "$@"',
+        "preflight", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...flags,
+        ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),
+        "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"] });
     await writeFile(join(runDir, "artifacts/preflight-mekugi.json"), JSON.stringify(launch, null, 2));
     if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
   }
@@ -278,13 +286,16 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const compactionFlags = state.comparison === "journal-compaction" ? [`--journal-compaction=${arm === "stock" ? "off" : "auto"}`] : [];
   const codexLauncher = mekugiArm ? ["mekugi", ...(state.mekugi_flags ?? []), ...compactionFlags, ...exportArgs, "codex"] : ["codex"];
   const mekugiLauncher = exportArgs.length ? ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", ...codexLauncher] : codexLauncher;
-  const launcher = grokCommand ?? (mekugiArm && (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok") ? mekugiLauncher : arm === "current" || state.comparison === "same-setup" || state.comparison === "journal-compaction" ? ["mise", "exec", "--", ...mekugiLauncher] : ["codex"]);
+  const launcher = grokCommand ?? (mekugiArm && state.comparison === "codex-mekugi-grok" ? mekugiLauncher : arm === "current" || state.comparison === "stock-mekugi" || state.comparison === "same-setup" || state.comparison === "journal-compaction" ? ["mise", "exec", "--", ...mekugiLauncher] : ["codex"]);
   const grokPath = grokArm ? ["-e", "PATH=/home/ubuntu/.grok/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin"];
   const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
+  const debugStorage = mekugiArm && !protectedArm
+    ? ["--tmpfs", `/home/ubuntu/.local/state/mekugi/debug:size=4g,mode=0700,uid=${state.operator.uid},gid=${state.operator.gid}`] : [];
+  if (debugStorage.length) await mkdir(join(home, ".local/state/mekugi/debug"), { recursive: true, mode: 0o700 });
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
     result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, ...(grokArm ? [] : ["-i"]), ...grokPath,
-      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, ...currentSetupMounts(runDir, state, arm), ...exportMount, ...grokTask,
+      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, ...currentSetupMounts(runDir, state, arm), ...exportMount, ...grokTask, ...debugStorage,
       ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
       imageRef(state), ...launcher, ...(grokArm ? [] : ["exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
       "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"',

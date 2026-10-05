@@ -487,6 +487,24 @@ describe("applyMekugiProviderUsage", () => {
     expect(metered.warnings.at(-1)).toContain("3 validated provider attempts, excluding prewarm; the Codex rollout recorded 2 requests and 300 input tokens");
   });
 
+  test("uses only explicitly complete v7 provider usage and preserves rollout fallback", () => {
+    for (const complete of [true, false]) {
+      const metered = rollout();
+      const before = structuredClone(metered);
+      const provider = attempt(300, 200, 30);
+      Object.assign(provider.usage, { complete_attempts: complete ? 1 : 0,
+        incomplete_attempts: complete ? 0 : 1, unknown_attempts: 0, missing_attempts: 0 });
+      const result = applyMekugiProviderUsage(metered, { exchanges: [
+        { sequence: 1, request_kind: "turn", thread_id: "root", provider_attempts: [provider] },
+      ] });
+      if (complete) expect(result).toBeNull();
+      else {
+        expect(result).toContain("without complete usage");
+        expect(metered).toEqual(before);
+      }
+    }
+  });
+
   test("retains journal evidence beside authoritative provider totals", () => {
     const metered = rollout();
     expect(applyMekugiProviderUsage(metered, { exchanges: [

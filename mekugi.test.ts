@@ -61,6 +61,11 @@ test("Mekugi rejects inputs other than string arrays", () => {
   }
 });
 
+test("capture analyzer retains v6 and reconciles sanitized v7 evidence offline", async () => {
+  const result = await exec(["python3", "support/mekugi/capture_v7_test.py"]);
+  expect(result.exitCode, result.stderr).toBe(0);
+});
+
 test("bundled analyzer reconciles only configured measured threads and provider usage", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-mekugi-reconciliation-"));
   try {

@@ -1,6 +1,6 @@
 # codex-ab
 
-`codex-ab` runs controlled, descriptive comparisons of the same Codex model on the same repository task. The **stock** arm receives only a minimal model, service-tier, permission, and workspace-trust configuration. The **current** arm receives an audited snapshot of the user's instructions, skills, hooks, roles, and supporting tools. Codex runs directly by default; the current arm can explicitly use a snapshotted Mekugi launcher.
+`codex-ab` runs controlled, descriptive comparisons of the same Codex model on the same repository task. In the default `stock-current` comparison, the **stock** arm receives only a minimal model, service-tier, permission, and workspace-trust configuration. The **current** arm receives an audited snapshot of the user's instructions, skills, hooks, roles, and supporting tools. Codex runs directly by default; the current arm can explicitly use a snapshotted Mekugi launcher. The `stock-mekugi` comparison instead gives both arms minimal guidance and identical configured tool access, comparing direct Codex with Mekugi without current-home agent guidance.
 
 Reports and operator progress name arms by their actual launcher and setup (for example, `Codex (minimal setup)` versus `Codex + Mekugi (minimal setup)`). Mentor comparisons include off/on labels. Operator progress reveals the A/B mapping for each reversed-order judge pass; blinded judge/grader inputs still use `candidate-N`, and machine evidence retains those IDs. CLI selectors and storage paths retain `stock`/`current` keys; report JSON includes `arm_labels` for display. Regenerate a report to apply these names to an existing run.
 
@@ -56,7 +56,7 @@ Runtime supplements are copied separately: installed hooks, materialized skills,
 
 The clone preserves absolute `/home/ubuntu` paths inside its container. `snapshot-manifest.json` records the configuration commit and tree, overlaid tracked paths, a SHA-256 for every regular setup file (excluding Git metadata), literal symlink targets, and portability adaptations. The installed-tool metadata manifest and copied setup manager are also verified before launch. Preflight requires every configured tool to be present, then runs a referenced remote skill and the registered Go-guidelines hook with networking disabled. For Mekugi, it checks the snapshotted executable and launches `mekugi codex --version` offline. This checks launcher startup, not a complete model-to-tool request. An incomplete setup fails before inference instead of being silently bypassed.
 
-Each arm sees only its own clone, caches, and private home; the current arm also receives its read-only installed-tool snapshot. Agent logs and captured patches stay outside its writable mounts. Behavioral criteria are fixed before execution; adaptive checks are authored after both candidates stop and run in separate evaluator workspaces.
+Each arm sees only its own clone, caches, and private home. The host installed-tool store is mounted read-only into the current arm for `stock-current`, into both arms for `stock-mekugi`, `same-setup`, and `journal-compaction`, and into neither arm for `codex-mekugi-grok`. Agent logs and captured patches stay outside its writable mounts. Behavioral criteria are fixed before execution; adaptive checks are authored after both candidates stop and run in separate evaluator workspaces.
 
 Validate the image and snapshotted dependencies without making a model request:
 
@@ -95,8 +95,9 @@ For Mekugi's original router task, use the `mekugi` profile and explicitly selec
 Start from an unused prepared pair. `prepare-trials` runs model-free preflight, pins the immutable
 image, input identities and pricing snapshot, then copies fresh source/setup trees for every pair.
 The prototype is not executed. Each pair has independent writable homes and container layers;
-task dependencies share the pinned Docker image without per-pair cache copies. Large tool
-snapshots still require enough disk space for all pairs.
+task dependencies share the pinned Docker image without per-pair cache copies. Configured tools
+reuse the same read-only host installation store without per-pair copies; keep that store
+available and unchanged while the trial set is in use.
 
 ```sh
 trial_set="$(./dist/codex-ab prepare-trials --run-dir "$run_dir" --count 4)"
@@ -170,11 +171,13 @@ Omitting it preserves Mekugi's default; `stock-current` rejects it. The dedicate
 [journal compaction comparison](#journal-compaction-comparison) remains a lower-level `prepare`
 comparison, separate from these presets.
 
-Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
+Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. Both arms receive the same minimal generated Codex configuration and the existing mise runtime and configuration, including referenced lock sidecars and migration completion records. Both access the same read-only host installation store at its original absolute path. A launches direct Codex through mise; B additionally receives the selected Mekugi executable and launches `mekugi codex` through mise. Neither arm receives current-home agent instructions, skills, hooks, roles, or a reviewer overlay. Both use the default service tier.
+
+Preparation does not install tools or copy their store, and no Dockerfile tool provisioning is needed. Preflight requires the configured tools to be available offline. Keep the host installation store available and unchanged while prepared runs or trial sets are in use; its read-only container mount does not prevent host-side updates. This tool access applies to `stock-mekugi`; the Grok comparison still omits the store, while `same-setup` retains the full current-home guidance in both arms.
 
 Use `scripts/run.sh --preset stock-mekugi --model gpt-6.1-sol --reasoning-effort high` to run a Sol/high pair. Mekugi runs the selected models without mentor handoff; the former mentor options and comparisons are no longer supported. Saved mentor runs cannot be processed by the current harness; retain their existing reports for historical results. The default model remains Astra. Reasoning defaults to medium for NVM and xhigh for the skills manager and session-retention tasks; the Grok preset defaults to high regardless of task. An explicit `--reasoning-effort` overrides these defaults. The selected image must contain the matching host Codex and code-mode-host binaries; the runner checks their versions and hashes before inference. Build the selected Mekugi executable before rerunning.
 
-Select the executable with `--mekugi-bin`, and optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated with the runner-bundled analyzer; `--mekugi-source` remains the required export-validation selector, not proof that the binary came from that checkout. The current-home Git snapshot is retained for configuration provenance, while the selected executable and runner-owned analyzer sources are captured separately; unused current-home executables, runtime supplements, and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
+Select the executable with `--mekugi-bin`, and optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated with the runner-bundled analyzer; `--mekugi-source` remains the required export-validation selector, not proof that the binary came from that checkout. The current-home Git snapshot is retained for configuration provenance, while the selected executable and runner-owned analyzer sources are captured separately. Only the configured mise tool setup reaches both minimal agent homes; other current-home runtime supplements and unused launcher executables are omitted. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
 
 ## Stock Codex plus Mekugi versus Grok CLI
