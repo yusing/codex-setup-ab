@@ -3,14 +3,15 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run.sh --preset NAME [--task NAME] [--model NAME] [--reasoning-effort LEVEL]
+Usage: scripts/run.sh --preset NAME [--task NAME] [--model NAME] [--reasoning-effort LEVEL] [--journal-compaction MODE]
 
 Prepare, preflight, and run one pinned task with one comparison:
 
 Tasks:
 
   nvm-download-no-eval  Harden NVM's curl-to-wget argument translation (default)
-  session-retention     Add session-aware Mekugi replay storage retention
+  session-retention     Add Mekugi replay retention (stock-current only)
+  skills-mgr-agent-cli  Add non-interactive skill management (long horizon)
 
 Comparisons:
 
@@ -23,10 +24,15 @@ Comparisons:
 Model options:
   --model NAME          gpt-6-astra or gpt-6.1-sol (Codex comparisons; default gpt-6-astra)
   --reasoning-effort LEVEL
-                        low, medium, high, or xhigh (default: high for Grok; otherwise medium for NVM, xhigh for session retention)
+                        low, medium, high, or xhigh (default: high for Grok; otherwise medium for NVM, xhigh for other tasks)
+
+Mekugi options:
+  --journal-compaction MODE
+                        auto, slice, or off (Mekugi comparisons only; default: Mekugi's default)
 
 Optional environment overrides:
   CODEX_AB_SOURCE_DIR        NVM checkout (default: /tmp/codex-ab-nvm-source)
+  CODEX_AB_SKILLS_MGR_SOURCE Skills manager checkout (default: $HOME/projects/skills-mgr)
   CODEX_AB_IMAGE             Container image (default: codex-ab:0.1.0)
   CODEX_AB_DOCKER_BIN        Docker executable (default: docker)
   CODEX_AB_CODEX_BIN         Standalone Codex executable (default: $HOME/.local/bin/codex)
@@ -47,6 +53,7 @@ preset=
 task=
 model=
 reasoning_effort=
+journal_compaction=
 while (($#)); do
   case "$1" in
     --preset)
@@ -99,6 +106,19 @@ while (($#)); do
       [[ -n "$reasoning_effort" ]] || die "--reasoning-effort requires a nonempty value"
       shift
       ;;
+    --journal-compaction)
+      (($# >= 2)) || die "--journal-compaction requires a value"
+      [[ -z "$journal_compaction" ]] || die "--journal-compaction may be supplied only once"
+      [[ -n "$2" ]] || die "--journal-compaction requires a nonempty value"
+      journal_compaction=$2
+      shift 2
+      ;;
+    --journal-compaction=*)
+      [[ -z "$journal_compaction" ]] || die "--journal-compaction may be supplied only once"
+      journal_compaction=${1#*=}
+      [[ -n "$journal_compaction" ]] || die "--journal-compaction requires a nonempty value"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -111,7 +131,7 @@ done
 [[ -n "$preset" ]] || { usage >&2; exit 2; }
 task=${task:-nvm-download-no-eval}
 case "$task" in
-  nvm-download-no-eval|session-retention) ;;
+  nvm-download-no-eval|session-retention|skills-mgr-agent-cli) ;;
   *) die "unknown task '$task'; run with --help to list tasks" ;;
 esac
 
@@ -121,6 +141,7 @@ cd "$repo_root"
 
 user_home=${HOME:?HOME must be set}
 source_dir=${CODEX_AB_SOURCE_DIR:-${TMPDIR:-/tmp}/codex-ab-nvm-source}
+skills_mgr_source=${CODEX_AB_SKILLS_MGR_SOURCE:-$user_home/projects/skills-mgr}
 image=${CODEX_AB_IMAGE:-codex-ab:0.1.0}
 docker_bin=${CODEX_AB_DOCKER_BIN:-docker}
 codex_bin=${CODEX_AB_CODEX_BIN:-$user_home/.local/bin/codex}
@@ -134,6 +155,16 @@ case "$preset" in
   stock-current|current-vs-current-mekugi|stock-mekugi|codex-mekugi-grok) ;;
   *) die "unknown preset '$preset'; run with --help to list presets" ;;
 esac
+if [[ "$task" == session-retention && "$preset" != stock-current ]]; then
+  die "Mekugi comparisons require a task outside Mekugi; use --task skills-mgr-agent-cli or nvm-download-no-eval"
+fi
+if [[ -n "$journal_compaction" ]]; then
+  case "$journal_compaction" in
+    auto|slice|off) ;;
+    *) die "--journal-compaction must be auto, slice, or off" ;;
+  esac
+  [[ "$preset" != stock-current ]] || die "--journal-compaction requires a Mekugi comparison"
+fi
 if [[ "$task" == nvm-download-no-eval ]]; then
   if [[ -e "$source_dir" && ! -d "$source_dir/.git" ]]; then
     die "source path exists but is not a Git checkout: $source_dir"
@@ -141,6 +172,8 @@ if [[ "$task" == nvm-download-no-eval ]]; then
   if [[ ! -d "$source_dir/.git" ]]; then
     git clone https://github.com/nvm-sh/nvm.git "$source_dir"
   fi
+elif [[ "$task" == skills-mgr-agent-cli ]]; then
+  git -C "$skills_mgr_source" rev-parse --git-dir >/dev/null 2>&1 || die "Skills manager source is not a Git checkout: $skills_mgr_source"
 elif ! git -C "$mekugi_source" rev-parse --git-dir >/dev/null 2>&1; then
   die "Mekugi source is not a Git checkout: $mekugi_source"
 fi
@@ -229,6 +262,14 @@ case "$task" in
       --timeout 3600
     )
     ;;
+  skills-mgr-agent-cli)
+    prepare_args+=(
+      --task-pack ./tasks/skills-mgr-agent-cli/manifest.json
+      --source "$skills_mgr_source"
+      --reasoning-effort "${reasoning_effort:-xhigh}"
+      --timeout 7200
+    )
+    ;;
 esac
 run_args=(
   ./dist/codex-ab run
@@ -248,12 +289,22 @@ case "$preset" in
     prepare_args+=(
       --mekugi-source "$mekugi_source"
       --mekugi-bin "$mekugi_bin"
-      --mekugi-flags "[\"--mode=mekugi\",\"--grok\"]"
       --grok-bin "$grok_bin"
     )
     run_args+=(--grok-auth-file "$grok_auth_file")
     ;;
 esac
+
+mekugi_flags='["--mode=mekugi"'
+if [[ "$preset" == codex-mekugi-grok ]]; then
+  mekugi_flags+=',"--grok"'
+fi
+if [[ -n "$journal_compaction" ]]; then
+  mekugi_flags+=",\"--journal-compaction=$journal_compaction\""
+fi
+if [[ "$preset" == codex-mekugi-grok || -n "$journal_compaction" ]]; then
+  prepare_args+=(--mekugi-flags "$mekugi_flags]")
+fi
 
 run_dir="$("${prepare_args[@]}")"
 "${run_args[@]}" --run-dir "$run_dir"

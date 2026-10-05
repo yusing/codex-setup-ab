@@ -1,0 +1,1 @@
+Make skills-mgr usable by coding agents without its interactive UI. Agents should be able to understand which skills are available and active, diagnose problems, and safely change skill selection and content. Preserve existing ownership and selection semantics, and cover the workflow with tests.

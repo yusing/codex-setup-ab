@@ -140,16 +140,39 @@ The convenience runner builds the CLI and rebuilds a missing or stale local imag
 comparison, then starts the paid pair. The run command performs model-free preflight before inference:
 
 ```sh
-scripts/run.sh --preset stock-mekugi --task session-retention
+scripts/run.sh --preset stock-mekugi --task skills-mgr-agent-cli
 ```
 
-Available tasks are `nvm-download-no-eval` and `session-retention`; omitting `--task` keeps the NVM
-default. Other presets are `stock-current`, `current-vs-current-mekugi`, and
-`codex-mekugi-grok`. Run `scripts/run.sh --help` for path and image overrides.
+Available tasks are `nvm-download-no-eval`, `session-retention`, and
+[skills-mgr-agent-cli](tasks/skills-mgr-agent-cli/README.md); omitting `--task` keeps the NVM
+default. The skills manager task asks for agent-friendly, non-interactive skill management,
+leaving the interface and implementation design open. It uses a two-hour agent timeout;
+long-horizon runtime and compaction frequency have not been measured, and compaction is not guaranteed.
+`session-retention` is available only with `stock-current`. All Mekugi presets reject that
+Mekugi development task before external effects, so the launcher is compared on a separate project.
+Other presets are `stock-current`, `current-vs-current-mekugi`, and `codex-mekugi-grok`.
+Use `CODEX_AB_SKILLS_MGR_SOURCE` to select the skills manager task checkout
+(default `$HOME/projects/skills-mgr`). `CODEX_AB_MEKUGI_SOURCE` independently selects the
+Mekugi runtime checkout (default `$HOME/projects/mekugi`) and the source for `session-retention`;
+run `scripts/run.sh --help` for other path and image overrides.
+
+To select Mekugi's compaction mode explicitly:
+
+```sh
+CODEX_AB_SKILLS_MGR_SOURCE=/path/to/skills-mgr \
+CODEX_AB_MEKUGI_SOURCE=/path/to/mekugi scripts/run.sh \
+  --preset stock-mekugi --task skills-mgr-agent-cli --journal-compaction auto
+```
+
+This command starts paid inference. `--journal-compaction auto|slice|off` accepts spaced or
+equals forms with `stock-mekugi`, `current-vs-current-mekugi`, and `codex-mekugi-grok`.
+Omitting it preserves Mekugi's default; `stock-current` rejects it. The dedicated
+[journal compaction comparison](#journal-compaction-comparison) remains a lower-level `prepare`
+comparison, separate from these presets.
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. A receives the minimal generated stock configuration and launches Codex directly. B receives the same generated configuration plus only the selected Mekugi executable, then launches `mekugi codex`. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier.
 
-Use `scripts/run.sh --preset stock-mekugi --model gpt-6.1-sol --reasoning-effort high` to run a Sol/high pair. Mekugi runs the selected models without mentor handoff; the former mentor options and comparisons are no longer supported. Saved mentor runs cannot be processed by the current harness; retain their existing reports for historical results. The default model remains Astra/medium for the NVM task. The selected image must contain the matching host Codex and code-mode-host binaries; the runner checks their versions and hashes before inference. Build the selected Mekugi executable before rerunning.
+Use `scripts/run.sh --preset stock-mekugi --model gpt-6.1-sol --reasoning-effort high` to run a Sol/high pair. Mekugi runs the selected models without mentor handoff; the former mentor options and comparisons are no longer supported. Saved mentor runs cannot be processed by the current harness; retain their existing reports for historical results. The default model remains Astra. Reasoning defaults to medium for NVM and xhigh for the skills manager and session-retention tasks; the Grok preset defaults to high regardless of task. An explicit `--reasoning-effort` overrides these defaults. The selected image must contain the matching host Codex and code-mode-host binaries; the runner checks their versions and hashes before inference. Build the selected Mekugi executable before rerunning.
 
 Select the executable with `--mekugi-bin`, and optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated with the runner-bundled analyzer; `--mekugi-source` remains the required export-validation selector, not proof that the binary came from that checkout. The current-home Git snapshot is retained for configuration provenance, while the selected executable and runner-owned analyzer sources are captured separately; unused current-home executables, runtime supplements, and the mise tool store are omitted and are not mounted into or used by either agent. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
@@ -266,11 +289,12 @@ supported and explicitly reports missing source provenance.
 
 ## Portable task packs
 
-The portable [nvm download](tasks/nvm-download-no-eval/manifest.json) and
-[Gin context copy](tasks/gin-context-copy/manifest.json) packs reuse Mekugi's task prompts and
-behavioral criteria. Each pins its upstream base and excluded solution commit, dependency
-preparation, behavioral criteria and task-required single-file boundary. They use the generic
-`task` profile, not a repository-specific runner branch.
+Portable packs include [nvm download](tasks/nvm-download-no-eval/manifest.json),
+[Gin context copy](tasks/gin-context-copy/manifest.json), and
+[skills manager agent CLI](tasks/skills-mgr-agent-cli/README.md). Each pins its upstream base and
+excluded solution commit, dependency preparation, and behavioral criteria. NVM and Gin also
+enforce their task-required single-file boundaries; the skills manager task leaves file scope open.
+They use the generic `task` profile, not a repository-specific runner branch.
 
 Obtain the source repository locally, then prepare from its manifest:
 

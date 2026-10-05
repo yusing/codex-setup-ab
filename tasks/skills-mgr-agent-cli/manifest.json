@@ -1,0 +1,39 @@
+{
+  "schema": "codex-ab.task-pack.v1",
+  "id": "skills-mgr-agent-cli",
+  "source": {
+    "repository": "https://github.com/yusing/skills-mgr.git",
+    "base_commit": "9ee73a175a6c86b749984cf1904433b3037e530f",
+    "forbidden_commit": "3d287a151622bca1ac764ffa1ce50e5b5472fd25"
+  },
+  "prompt": "task.md",
+  "criteria": {
+    "schema": "codex-ab.criteria.v1",
+    "criteria": [
+      {
+        "id": "discovery",
+        "description": "An agent can determine which skills are available and active through a non-interactive interface consistent with normal skill serving."
+      },
+      {
+        "id": "diagnostics",
+        "description": "An agent can diagnose problems with skill availability or content through useful non-interactive feedback."
+      },
+      {
+        "id": "selection",
+        "description": "An agent can change skill selection non-interactively while preserving existing selection semantics."
+      },
+      {
+        "id": "content",
+        "description": "An agent can safely change skill content non-interactively while respecting existing ownership and preserving prior state on rejected changes."
+      },
+      {
+        "id": "compatibility-and-tests",
+        "description": "Existing skill ownership, selection, serving, and interactive behavior remain compatible, and tests exercise the new agent-facing workflow."
+      }
+    ],
+    "preparation": "go mod download",
+    "existing_tests": "go test . -count=1",
+    "evaluator_guidance": "Derive checks only from the task prompt and the candidate's actual interface. Use isolated temporary home/project roots and local fixtures. Do not prescribe command names, flags, JSON schemas, digest checks, helper names, or the historical solution's design. Exercise end-to-end outcomes and retained behavior at the pinned base. Do not consult the excluded solution. No hidden oracle or runtime-duration threshold is supplied.",
+    "qualification": "not-run"
+  }
+}

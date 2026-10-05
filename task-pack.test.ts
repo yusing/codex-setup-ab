@@ -40,6 +40,22 @@ test("pack fingerprints change with task contents and reject escaping assets", a
   }
 });
 
+test("skills manager task pins a historical non-Mekugi implementation", async () => {
+  const pack = await loadTaskPack(join(import.meta.dir, "tasks/skills-mgr-agent-cli/manifest.json"));
+  expect(pack.manifest.id).toBe("skills-mgr-agent-cli");
+  expect(pack.manifest.source).toEqual({
+    repository: "https://github.com/yusing/skills-mgr.git",
+    base_commit: "9ee73a175a6c86b749984cf1904433b3037e530f",
+    forbidden_commit: "3d287a151622bca1ac764ffa1ce50e5b5472fd25",
+  });
+  expect(pack.contract.qualification).toBe("not-run");
+  expect(pack.contract.allowed_paths).toBeUndefined();
+  expect(Object.keys(pack.snapshot.files).sort()).toEqual(["manifest.json", "task.md"]);
+  expect(pack.contract.criteria.map(criterion => criterion.id)).toEqual([
+    "discovery", "diagnostics", "selection", "content", "compatibility-and-tests",
+  ]);
+});
+
 test("checked-in standalone criteria bind their task prompts", async () => {
   const { createHash } = await import("node:crypto");
   const { validateCriteria } = await import("./semantic");
