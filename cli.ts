@@ -50,7 +50,7 @@ Prepare options:
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --current-home DIR    configuration Git repository root (default current home)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
-  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, or journal-compaction
+  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, journal-compaction, or duplicate-output
   --auto-compact-limit N Required shared positive token limit for journal-compaction
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
@@ -71,7 +71,7 @@ Run/judge options (run includes automatic source assessment and reporting):
   --auth-file FILE      auth copied privately into isolated homes
   --docker-bin FILE     Docker-compatible fixture or executable
   --arm NAME            run only stock or current (run only; default is both)
-  --control-run DIR     reuse a completed stock-only run; execute only current
+  --control-run DIR     reuse original stock from a completed run; execute only current
   --control-bundle-sha256 HEX  required published SHA-256 of control bundle/MANIFEST.sha256
 
 Report options:

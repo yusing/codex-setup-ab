@@ -2,7 +2,7 @@
 
 `codex-ab` runs controlled, descriptive comparisons of the same Codex model on the same repository task. In the default `stock-current` comparison, the **stock** arm receives only a minimal model, service-tier, permission, and workspace-trust configuration. The **current** arm receives an audited snapshot of the user's instructions, skills, hooks, roles, and supporting tools. Codex runs directly by default; the current arm can explicitly use a snapshotted Mekugi launcher. The `stock-mekugi` comparison instead gives both arms minimal guidance and identical configured tool access, comparing direct Codex with Mekugi without current-home agent guidance.
 
-Reports and operator progress name arms by their actual launcher and setup (for example, `Codex (minimal setup)` versus `Codex + Mekugi (minimal setup)`). Mentor comparisons include off/on labels. Operator progress reveals the A/B mapping for each reversed-order judge pass; blinded judge/grader inputs still use `candidate-N`, and machine evidence retains those IDs. CLI selectors and storage paths retain `stock`/`current` keys; report JSON includes `arm_labels` for display. Regenerate a report to apply these names to an existing run.
+Reports and operator progress name arms by their actual launcher and setup (for example, `Codex (minimal setup)` versus `Codex + Mekugi (minimal setup)`). Duplicate-output and journal-compaction comparisons include off/on labels. Operator progress reveals the A/B mapping for each reversed-order judge pass; blinded judge/grader inputs still use `candidate-N`, and machine evidence retains those IDs. CLI selectors and storage paths retain `stock`/`current` keys; report JSON includes `arm_labels` for display. Regenerate a report to apply these names to an existing run.
 
 
 This is designed for a careful pilot, not a claim that one setup causes better results. A single pair does not support causal or general conclusions.
@@ -54,9 +54,9 @@ To apply a benchmark-only reviewer overlay, add `--review-treatment DIR` with `p
 
 Runtime supplements are copied separately: installed hooks, materialized skills, bundled plugins when their temporary cache exists, the referenced remote-skill cache generations, and the existing Modern Go Guidelines provider. Preparation copies mise's migration completion records and the pipx lock sidecars referenced by its lockfile, but does not copy or hard-link its installed tools. Containers use the shared base/dependency image plus a read-only bind mount of the existing host mise tool store. Preparation records its absolute path and file metadata (device, inode, size, mode, and nanosecond modification/change times), without reading or hashing installed-tool contents. Preflight and the final launch check reject changed metadata, including same-size rewrites. This checks that the same host installation is still in place, rather than accepting replacement files with matching contents. Keep that host path available and do not update or remove installed tools while a run or trial set is in use: a read-only container mount does not prevent host-side changes. Trial pairs reuse the same mount without duplicating the store. The obsolete `--snapshot-base` option has been removed. Task dependency caches remain in the shared Docker dependency image. Preflight rejects mise migration failures before agent execution; the tool store stays read-only. The current arm starts Codex through that setup, so every tool declared by the active user configuration is available without network access. `--current-launcher mekugi` additionally copies the executable selected by `--mekugi-bin` (default `~/go/bin/mekugi`) into the audited snapshot, without copying Mekugi state. Its path and hash are recorded and checked before launch. Other untracked home files, including authentication and session history, are not copied. The source repository is expected to contain only configuration suitable for the benchmark, not tracked credentials or task solutions.
 
-The clone preserves absolute `/home/ubuntu` paths inside its container. `snapshot-manifest.json` records the configuration commit and tree, overlaid tracked paths, a SHA-256 for every regular setup file (excluding Git metadata), literal symlink targets, and portability adaptations. The installed-tool metadata manifest and copied setup manager are also verified before launch. Preflight requires every configured tool to be present, then runs a referenced remote skill and the registered Go-guidelines hook with networking disabled. For Mekugi, it checks the snapshotted executable and launches `mekugi codex --version` offline. This checks launcher startup, not a complete model-to-tool request. An incomplete setup fails before inference instead of being silently bypassed.
+The clone preserves absolute `/home/ubuntu` paths inside its container. `snapshot-manifest.json` records the configuration commit and tree, overlaid tracked paths, a SHA-256 for every regular setup file (excluding Git metadata), literal symlink targets, and portability adaptations. The installed-tool metadata manifest and copied setup manager are also verified before launch. Preflight requires every configured tool to be present and checks the general setup tools with networking disabled. It additionally exercises the `use-modern-go` remote skill and registered Go-guidelines hook when the task workspace contains `go.mod`. For Mekugi, it checks the snapshotted executable and launches `mekugi codex --version` offline. This checks launcher startup, not a complete model-to-tool request. An incomplete setup fails before inference instead of being silently bypassed.
 
-Each arm sees only its own clone, caches, and private home. The host installed-tool store is mounted read-only into the current arm for `stock-current`, into both arms for `stock-mekugi`, `same-setup`, and `journal-compaction`, and into neither arm for `codex-mekugi-grok`. Agent logs and captured patches stay outside its writable mounts. Behavioral criteria are fixed before execution; adaptive checks are authored after both candidates stop and run in separate evaluator workspaces.
+Each arm sees only its own clone, caches, and private home. The host installed-tool store is mounted read-only into the current arm for `stock-current`, into both arms for `stock-mekugi`, `same-setup`, `journal-compaction`, and `duplicate-output`, and into neither arm for `codex-mekugi-grok`. Agent logs and captured patches stay outside its writable mounts. Behavioral criteria are fixed before execution; adaptive checks are authored after both candidates stop and run in separate evaluator workspaces.
 
 Validate the image and snapshotted dependencies without making a model request:
 
@@ -217,6 +217,42 @@ counted as ties. Missing compaction evidence is separately reported as unavailab
 Use `prepare-trials --count 4` on the prepared run for repeated pairs; schedules
 remain separate. This opt-in comparison does not enable auto as Mekugi's default.
 
+## Duplicate-output comparison
+
+Use `prepare --comparison duplicate-output` with the usual predetermined
+task/criteria and `--mekugi-source`/`--mekugi-bin` options to compare Mekugi's
+duplicate-output projection off (A, `--duplicate-output=false`) with on
+(B, `--duplicate-output=true`). Both arms launch the same Mekugi binary through
+mise with separate writable copies of the same immutable current-home snapshot,
+the same task, model, reasoning, service tier, tools, and ordinary container
+boundary. A reviewer overlay, if selected, applies to both arms. This isolates
+the output projection rather than comparing direct Codex with Mekugi.
+
+Select supported model controls explicitly, for example
+`--model gpt-6.1-sol --reasoning-effort high`. This comparison accepts a current-home configuration
+that already uses those values; it does not require Astra/medium in that configuration.
+Both arms retain identical current-home setup. Absolute paths under the original
+home (for example, `/home/yusing`) resolve to each arm's own isolated home through
+an alias alongside `/home/ubuntu`. The active host home is not mounted. Preflight
+uses a read-only snapshot alias; installed tools retain their existing read-only
+host-store mount, including when nested under that alias. Other comparisons keep
+their existing model guards and home-path behavior.
+
+The comparison owns `--duplicate-output`; supplying it through `--mekugi-flags`
+is rejected, as are passthrough, Grok routing, and `--protect-mekugi`.
+Imported direct-Codex controls are unsupported. Model-free preflight checks both
+flag values and their export paths before inference. Each arm retains separate
+capture and metrics exports and provider-usage accounting; missing or invalid
+exports prevent a complete paired measurement. Preparation and preflight do not
+run inference; execution requires `--confirm-paid-inference`. Use
+`prepare-trials --count 4` on a prepared run for fresh repeated pairs.
+
+Duplicate-output projection is enabled by default in Mekugi mode. Outside this
+comparison, use `--mekugi-flags '["--duplicate-output=false"]'` to disable it.
+Passthrough is unaffected, and full host results, retained evidence, and the UI
+remain intact. See Mekugi's
+[projection contract](https://github.com/yusing/mekugi/blob/main/doc/spec/execution.md#duplicate-output-projection).
+
 ## Current setup: direct Codex versus Mekugi
 
 Add `--comparison same-setup --mekugi-source /path/to/matching/mekugi` to `prepare`. A (stored as `stock` for compatibility)
@@ -229,7 +265,8 @@ general workflow guidance. The default `stock-current` comparison is unchanged.
 Select the Mekugi executable with `--mekugi-bin`.
 Use `--mekugi-flags '["--mode=mekugi"]'` for explicit Mekugi options placed before its `codex`
 subcommand. Supported flags include `--ansi-faint=auto|on|off`, `--post-compact-recovery=true|false`,
-`--journal-compaction=auto|slice|off`, timeouts, `--mode`, `--grok`, and `--debug`.
+`--journal-compaction=auto|slice|off`, `--duplicate-output=true|false`, timeouts,
+`--mode`, `--grok`, and `--debug`.
 The removed `--explore-filter` option is rejected. Export destinations, credential paths, and runtime configuration are benchmark-owned and cannot be
 overridden through this option. The selected arguments and comparison identity appear in the
 machine state and consolidated report. Preparation and preflight make no model requests.
@@ -349,7 +386,7 @@ The suite report gives task-level counts and B-minus-A time and estimated cost e
 
 ## Reuse a completed stock control
 
-For a matched direct-Codex comparison, run a fresh stock-only control with `run --arm stock --confirm-paid-inference`. Its finished bundle must be complete and valid. Prepare a second run with identical task, setup, model, Codex/image, dependency image, resources, and timeout, then run it with `--control-run` and the SHA-256 of the published control bundle's `MANIFEST.sha256` file:
+For a direct-Codex comparison, reuse the original stock result from a completed stock-only or paired run. You can also create a control with `run --arm stock --confirm-paid-inference`. Its finished bundle must be complete and valid. Prepare a second run with matching task, model, Codex/image, dependency image, resources, and recorded setup controls, then run it with `--control-run` and the SHA-256 of the published control bundle's `MANIFEST.sha256` file:
 
 ```sh
 control_sha="$(sha256sum "$control_run/reports/bundle/MANIFEST.sha256" | cut -d' ' -f1)"
@@ -358,7 +395,9 @@ control_sha="$(sha256sum "$control_run/reports/bundle/MANIFEST.sha256" | cut -d'
   --confirm-paid-inference
 ```
 
-Only the treatment arm starts a new agent. The control bundle, state, rollout bytes, and usage totals must match, and both captured patches are graded against the new run's evaluator. A mismatched or altered control fails before treatment inference. This path does not support the Grok comparison and cannot be used to reuse an arbitrary single-arm result.
+Only the treatment arm starts a new agent. The control bundle, state, rollout bytes, and usage totals must match, and both captured patches are graded against the new run's evaluator. A mismatched or altered control fails before treatment inference. This historical comparison does not establish unchanged host tool-store contents or configuration across runs. This path does not support the Grok, journal-compaction, or duplicate-output comparisons, or reuse of an imported control.
+
+For a standalone B run, use `run --arm current --confirm-paid-inference` without `--control-run`. It retains a single-arm report and bundle without a paired judge or winner.
 
 ## Skills manager bundle profile
 

@@ -357,6 +357,17 @@ describe("report completion and winner eligibility", () => {
   });
 });
 
+test("imported controls are labeled as historical comparisons", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.imported_control = { source_run_id: "prior-pair", bundle_sha256: "a".repeat(64),
+    controls_sha256: "b".repeat(64), stdout_sha256: "c".repeat(64), stderr_sha256: "d".repeat(64) };
+  await writeState(run, state);
+  const paths = await buildReport(run);
+  expect((await Bun.file(paths.jsonPath).json()).design).toContain("historical stock control");
+  expect(await readFile(paths.markdownPath, "utf8")).toContain("Host tool-store contents and configuration may differ across runs.");
+});
+
 test("stock singleton reports executed checks and complete root plus child usage without a winner", async () => {
   const { run } = await fixtureRun();
   const state = await readState(run);
@@ -605,51 +616,66 @@ test("journal-compaction report excludes unavailable compaction evidence without
   expect(await readFile(paths.markdownPath, "utf8")).toContain("Comparison excluded: compaction evidence unavailable.");
 });
 
-for (const missingArm of [null, "stock", "current", "both"] as const) {
-  test(`journal-compaction report consumes both validated exports (${missingArm ?? "both observed"})`, async () => {
-    const { run } = await fixtureRun();
-    await fixtureJudge(run, "candidate-1", "candidate-2");
-    const state = await readState(run);
-    state.comparison = "journal-compaction";
-    state.auto_compact_limit = 4096;
-    const validator = "artifacts/validator.py", reader = "artifacts/reader.py";
-    await file(join(run, validator), [
-      "import json", "def load_json(path): return json.loads(path.read_text())",
-      "def validate_snapshot(metrics, *_): assert metrics['schema'] == 'fixture-validated'",
-      "def validate_raw_capture(path, metrics): assert path.read_text() == metrics['capture_marker']", "",
-    ].join("\n"));
-    await file(join(run, reader), "# fixture reader\n");
-    state.mekugi_exports_by_arm = {};
-    for (const arm of ["stock", "current"] as const) {
-      const capture = `artifacts/${arm}/mekugi/capture.jsonl`, metrics = `artifacts/${arm}/mekugi/metrics.json`;
-      const attempt = { model: "gpt-6-astra", usage: { input_tokens: 20, cached_input_tokens: 2, output_tokens: 4, reasoning_tokens: 2 } };
-      await file(join(run, capture), `${arm} fixture capture\n`);
-      await file(join(run, metrics), JSON.stringify({ schema: "fixture-validated", capture_marker: `${arm} fixture capture\n`, exchanges: [
-        { sequence: 1, thread_id: `${arm}-agent`, request_kind: "turn", provider_attempts: [attempt] },
-        ...(missingArm === arm || missingArm === "both" ? [] : [{ sequence: 2, thread_id: `${arm}-agent`, request_kind: "compaction",
-          compaction_answer: arm === "stock" ? "provider" : "router", provider_attempts: arm === "stock" ? [attempt] : [] }]),
-      ] }));
-      state.mekugi_exports_by_arm[arm] = { capture, metrics,
-        validator: { path: validator, sha256: await sha256(join(run, validator)) },
-        reader: { path: reader, sha256: await sha256(join(run, reader)) } };
-    }
-    await writeState(run, state);
-    const paths = await buildReport(run);
-    const report = await Bun.file(paths.jsonPath).json();
-    expect(report.comparison_exclusion).toBe(missingArm === null ? null : "no compaction observed");
-    for (const arm of ["stock", "current"] as const) {
-      expect(report.arms[arm].usage.journal.compactions).toHaveLength(missingArm === arm || missingArm === "both" ? 0 : 1);
-      expect(report.arms[arm].usage.totals.total_tokens).toBe(arm === "stock" && (missingArm === null || missingArm === "current") ? 48 : 24);
-    }
-    if (missingArm === null) {
-      expect(report.measurement_complete).toBe(true);
-      expect(report.winner).toBe("stock");
-    } else {
-      expect(report.measurement_complete).toBe(false);
-      expect(report.winner).toBe("none");
-      const markdown = await readFile(paths.markdownPath, "utf8");
-      expect(markdown).toContain("Comparison excluded: no compaction observed.");
-      expect(markdown).toContain("## Journal and compaction evidence");
-    }
-  });
+for (const comparison of ["journal-compaction", "duplicate-output"] as const) {
+  const missingArms = comparison === "duplicate-output" ? [null, "stock", "current"] as const : [null, "stock", "current", "both"] as const;
+  for (const missingArm of missingArms) {
+    test(`${comparison} report consumes both validated exports (${missingArm ?? "both observed"})`, async () => {
+      const { run } = await fixtureRun();
+      await fixtureJudge(run, "candidate-1", "candidate-2");
+      const state = await readState(run);
+      state.comparison = comparison;
+      state.auto_compact_limit = comparison === "journal-compaction" ? 4096 : undefined;
+      const validator = "artifacts/validator.py", reader = "artifacts/reader.py";
+      await file(join(run, validator), [
+        "import json", "def load_json(path): return json.loads(path.read_text())",
+        "def validate_snapshot(metrics, *_): assert metrics['schema'] == 'fixture-validated'",
+        "def validate_raw_capture(path, metrics): assert path.read_text() == metrics['capture_marker']", "",
+      ].join("\n"));
+      await file(join(run, reader), "# fixture reader\n");
+      state.mekugi_exports_by_arm = {};
+      for (const arm of ["stock", "current"] as const) {
+        const capture = `artifacts/${arm}/mekugi/capture.jsonl`, metrics = `artifacts/${arm}/mekugi/metrics.json`;
+        const attempt = { model: "gpt-6-astra", usage: { input_tokens: 20, cached_input_tokens: 2, output_tokens: 4, reasoning_tokens: 2 } };
+        await file(join(run, capture), `${arm} fixture capture\n`);
+        await file(join(run, metrics), JSON.stringify({ schema: "fixture-validated", capture_marker: `${arm} fixture capture\n`, exchanges: [
+          { sequence: 1, thread_id: `${arm}-agent`, request_kind: "turn", provider_attempts: comparison === "duplicate-output" && arm === "stock" ? [attempt, attempt] : [attempt] },
+          ...(comparison === "duplicate-output" || missingArm === arm || missingArm === "both" ? [] : [{ sequence: 2, thread_id: `${arm}-agent`, request_kind: "compaction",
+            compaction_answer: arm === "stock" ? "provider" : "router", provider_attempts: arm === "stock" ? [attempt] : [] }]),
+        ] }));
+        if (comparison === "duplicate-output" && missingArm === arm) await rm(join(run, metrics));
+        state.mekugi_exports_by_arm[arm] = { capture, metrics,
+          validator: { path: validator, sha256: await sha256(join(run, validator)) },
+          reader: { path: reader, sha256: await sha256(join(run, reader)) } };
+      }
+      await writeState(run, state);
+      const paths = await buildReport(run);
+      const report = await Bun.file(paths.jsonPath).json();
+      expect(report.comparison_exclusion).toBe(comparison === "duplicate-output" || missingArm === null ? null : "no compaction observed");
+      for (const arm of ["stock", "current"] as const) {
+        if (comparison === "duplicate-output") {
+          expect(report.mekugi_diagnostics_by_arm[arm].status).toBe(missingArm === arm ? "unavailable" : "valid");
+          expect(report.arms[arm].usage.totals.total_tokens).toBe(missingArm === arm ? (arm === "stock" ? 24 : 34) : arm === "stock" ? 48 : 24);
+          expect(report.arms[arm].usage.totals.estimated_api_usd).not.toBeNull();
+          if (missingArm === arm) expect(report.arms[arm].usage.warnings)
+            .toContainEqual(expect.stringContaining("provider-attempt accounting is unavailable"));
+          else expect(report.arms[arm].usage.journal.compactions).toHaveLength(0);
+        } else {
+          expect(report.arms[arm].usage.journal.compactions).toHaveLength(missingArm === arm || missingArm === "both" ? 0 : 1);
+          expect(report.arms[arm].usage.totals.total_tokens).toBe(arm === "stock" && (missingArm === null || missingArm === "current") ? 48 : 24);
+        }
+      }
+      if (missingArm === null) {
+        expect(report.measurement_complete).toBe(true);
+        expect(report.winner).toBe("stock");
+      } else {
+        expect(report.measurement_complete).toBe(false);
+        expect(report.winner).toBe("none");
+        const markdown = await readFile(paths.markdownPath, "utf8");
+        if (comparison === "journal-compaction") {
+          expect(markdown).toContain("Comparison excluded: no compaction observed.");
+          expect(markdown).toContain("## Journal and compaction evidence");
+        }
+      }
+    });
+  }
 }

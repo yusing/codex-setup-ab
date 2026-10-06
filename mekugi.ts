@@ -3,7 +3,7 @@ import { exec } from "./process";
 import { sha256 } from "./state";
 import type { ArmName, RunState } from "./types";
 
-const FLAGS = new Set(["mode", "ansi-faint", "post-compact-recovery", "journal-compaction", "timeout", "stream-idle-timeout", "debug", "grok"]);
+const FLAGS = new Set(["mode", "ansi-faint", "post-compact-recovery", "journal-compaction", "duplicate-output", "timeout", "stream-idle-timeout", "debug", "grok"]);
 
 /**
  * Export sanitized metrics for this capture, leaving private debug bundles at their owner.
@@ -32,13 +32,23 @@ export function validateMekugiFlags(value: unknown): string[] {
     if (match[1] === "mode" && !["mekugi", "passthrough"].includes(match[2]!)) throw new Error("invalid Mekugi mode");
     if (match[1] === "ansi-faint" && !["auto", "on", "off"].includes(match[2]!)) throw new Error("invalid ansi-faint mode");
     if (match[1] === "journal-compaction" && !["auto", "slice", "off"].includes(match[2]!)) throw new Error("invalid journal-compaction mode");
-    if (["post-compact-recovery", "grok"].includes(match[1]!) && match[2] !== undefined && !["true", "false"].includes(match[2]!)) throw new Error(`invalid Mekugi boolean flag: ${flag}`);
+    if (["post-compact-recovery", "duplicate-output", "grok"].includes(match[1]!) && match[2] !== undefined && !["true", "false"].includes(match[2]!)) throw new Error(`invalid Mekugi boolean flag: ${flag}`);
     if (match[1] === "debug" && match[2] !== undefined && match[2] !== "true") throw new Error(`invalid Mekugi debug flag: ${flag}`);
     seen.add(match[1]!);
   }
   // Passthrough never answers compaction, so the flag would label an arm it cannot change.
   if (seen.has("journal-compaction") && value.includes("--mode=passthrough")) throw new Error("journal-compaction requires Mekugi mode");
   return value;
+}
+
+export function isPairedMekugiComparison(comparison: RunState["comparison"]): boolean {
+  return comparison === "journal-compaction" || comparison === "duplicate-output";
+}
+
+export function mekugiArmFlags(state: Pick<RunState, "comparison" | "mekugi_flags">, arm: ArmName): string[] {
+  const treatment = state.comparison === "journal-compaction" ? [`--journal-compaction=${arm === "stock" ? "off" : "auto"}`]
+    : state.comparison === "duplicate-output" ? [`--duplicate-output=${arm === "current"}`] : [];
+  return [...(state.mekugi_flags ?? []), ...treatment];
 }
 
 export function mekugiIdentity(flags: string[]): { mode: string } {

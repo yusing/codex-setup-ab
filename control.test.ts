@@ -90,7 +90,7 @@ function state(id: string): RunState {
   };
 }
 
-async function publishedControl() {
+async function publishedControl(paired = false) {
   const directory = await mkdtemp(join(tmpdir(), "codex-ab-control-test-"));
   directories.push(directory);
   const sourceRun = join(directory, "source-run");
@@ -103,6 +103,10 @@ async function publishedControl() {
   await mkdir(targetRun, { recursive: true });
 
   const source = state("published-control");
+  if (paired) {
+    source.selected_arms = ["stock", "current"];
+    source.results!.current = { ...source.results!.stock!, arm: "current", anonymous_id: "candidate-2" };
+  }
   const rolloutPath = join(sessions, "rollout.jsonl");
   await writeFile(rolloutPath, rollout);
   await writeFile(join(sourceRun, source.results!.stock!.patch_path), "diff --git a/file b/file\n");
@@ -137,7 +141,7 @@ test("control identity includes task, execution, tool, setup, and resource contr
   }
 });
 
-test("runner accepts stock-only selection and rejects current-only before Docker preflight", async () => {
+test("runner accepts either single-arm selection and honors cancellation before Docker preflight", async () => {
   const directory = await mkdtemp(join(tmpdir(), "codex-ab-stock-run-test-"));
   directories.push(directory);
   const runDir = join(directory, "prepared-run");
@@ -161,11 +165,11 @@ test("runner accepts stock-only selection and rejects current-only before Docker
 
   const options = { runDir, authFile: "/unused-auth", dockerBin: "/must-not-launch", signal: AbortSignal.abort() };
   await expect(runPair({ ...options, arm: "stock" })).rejects.toThrow("preflight canceled; no model was launched");
-  await expect(runPair({ ...options, arm: "current" })).rejects.toThrow("single-arm runs support stock controls only");
+  await expect(runPair({ ...options, arm: "current" })).rejects.toThrow("preflight canceled; no model was launched");
 });
 
-test("importControl carries a verified stock result into a matching treatment", async () => {
-  const fixture = await publishedControl();
+test.each([false, true])("importControl carries a verified stock result into a matching treatment (paired source: %s)", async paired => {
+  const fixture = await publishedControl(paired);
   expect(controlIdentity(fixture.source)).toEqual(controlIdentity(fixture.treatment));
 
   const imported = await importControl(fixture.targetRun, fixture.treatment, fixture.sourceRun, fixture.bundleSha256);
@@ -184,6 +188,14 @@ test("importControl carries a verified stock result into a matching treatment", 
 });
 
 test("importControl rejects changed bundle evidence, mismatched identity, and changed rollout bytes", async () => {
+  const missingStock = await publishedControl();
+  missingStock.source.selected_arms = ["current"];
+  await writeState(missingStock.sourceRun, missingStock.source);
+  await writeFile(join(missingStock.bundle, "run.json"), await readFile(join(missingStock.sourceRun, "run.json")));
+  await writeBundleManifest(missingStock.bundle);
+  await expect(importControl(missingStock.targetRun, missingStock.treatment, missingStock.sourceRun, await sha256(join(missingStock.bundle, "MANIFEST.sha256"))))
+    .rejects.toThrow("complete, valid original stock attempt");
+
   const changedBundle = await publishedControl();
   await writeFile(join(changedBundle.bundle, "stock-changes.patch"), "tampered patch\n");
   await expect(importControl(changedBundle.targetRun, changedBundle.treatment, changedBundle.sourceRun, changedBundle.bundleSha256))
@@ -200,9 +212,11 @@ test("importControl rejects changed bundle evidence, mismatched identity, and ch
     .rejects.toThrow("control rollout bytes differ from the published bundle");
 });
 
-test("journal compaction comparisons reject imported direct-Codex controls", async () => {
-  const comparison = state("journal-control");
-  comparison.comparison = "journal-compaction";
-  await expect(importControl("/unused-target", comparison, "/unused-source", "a".repeat(64)))
-    .rejects.toThrow("direct-Codex stock controls only");
-});
+for (const comparisonName of ["journal-compaction", "duplicate-output"] as const) {
+  test(`${comparisonName} rejects imported direct-Codex controls`, async () => {
+    const comparison = state("journal-control");
+    comparison.comparison = comparisonName;
+    await expect(importControl("/unused-target", comparison, "/unused-source", "a".repeat(64)))
+      .rejects.toThrow("direct-Codex stock controls only");
+  });
+}

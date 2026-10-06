@@ -7,5 +7,6 @@ test("arm names follow setup and launcher rather than storage position", () => {
   expect(armLabels({ execution: { ...execution, current_launcher: "mekugi" } }).current).toBe("Codex + Mekugi (current-home setup)");
   expect(armLabels({ execution, comparison: "same-setup" })).toEqual({ stock: "Codex (current-home setup)", current: "Codex + Mekugi (current-home setup)" });
   expect(armLabels({ execution, comparison: "stock-mekugi" })).toEqual({ stock: "Codex (minimal setup)", current: "Codex + Mekugi (minimal setup)" });
+  expect(armLabels({ execution, comparison: "duplicate-output" })).toEqual({ stock: "Codex + Mekugi (duplicate output off)", current: "Codex + Mekugi (duplicate output on)" });
   expect(armLabels({ execution, comparison: "codex-mekugi-grok" })).toEqual({ stock: "Codex + Mekugi (Grok)", current: "Grok CLI" });
 });

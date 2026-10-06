@@ -1,6 +1,6 @@
 import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories } from "./dependencies";
 import { chmod, copyFile, cp, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedNetwork } from "./container";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
@@ -8,7 +8,7 @@ import candidateSource from "./candidate-script.txt" with { type: "text" };
 import { executorOwnership, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { readState, writeState, withRunLock } from "./state";
-import { MEKUGI_METRICS_WRAPPER } from "./mekugi";
+import { isPairedMekugiComparison, mekugiArmFlags, MEKUGI_METRICS_WRAPPER } from "./mekugi";
 import { importControl } from "./control";
 import { armLabels } from "./arm-labels";
 import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
@@ -27,12 +27,21 @@ function containerArgs(state: RunState): string[] {
   return ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory];
 }
 
-function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current"): string[] {
-  const usesCurrentSetup = state.comparison === "same-setup" || state.comparison === "stock-mekugi" || state.comparison === "journal-compaction"
+async function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current", home?: string): Promise<string[]> {
+  const usesCurrentSetup = state.comparison === "same-setup" || state.comparison === "stock-mekugi" || isPairedMekugiComparison(state.comparison)
     || (arm === "current" && state.comparison !== "codex-mekugi-grok");
   if (!usesCurrentSetup) return [];
   const installs = resolve(runDir, state.runtime_tools.current_setup_installs);
-  return ["-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`];
+  const mounts: string[] = [];
+  if (state.comparison === "duplicate-output") {
+    const snapshot = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8")) as { source_home?: string };
+    const sourceHome = snapshot.source_home;
+    if (typeof sourceHome !== "string" || !isAbsolute(sourceHome) || sourceHome === "/") throw new Error("invalid current setup home alias");
+    if (sourceHome !== "/home/ubuntu") {
+      mounts.push("-v", `${home ?? resolve(runDir, state.arms[arm].home_template)}:${sourceHome}${home ? "" : ":ro"}`);
+    }
+  }
+  return [...mounts, "-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`];
 }
 
 function imageRef(state: RunState): string { return dependencyImage(state); }
@@ -133,7 +142,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     const mekugiHome = resolve(runDir, state.comparison === "codex-mekugi-grok" ? state.arms.stock.home_template : state.arms.current.home_template);
     progress(state.comparison === "codex-mekugi-grok" ? "checking the isolated Codex+Mekugi and Grok setups offline" : "checking the minimal stock-plus-Mekugi setup offline");
     const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none",
-      "-v", `${mekugiHome}:/setup:ro`, ...currentSetupMounts(runDir, state), image, "sh", "-lc",
+      "-v", `${mekugiHome}:/setup:ro`, ...await currentSetupMounts(runDir, state), image, "sh", "-lc",
       "cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && test -x /home/ubuntu/.local/bin/mekugi"
         + (state.comparison === "stock-mekugi" ? " && cd /home/ubuntu && missing_tools=\"$(mise ls --current --missing --no-header)\" && if test -n \"$missing_tools\"; then printf 'missing configured tools: %s\\n' \"$missing_tools\" >&2; exit 1; fi && mise exec -- sh -c 'command -v codex >/dev/null'" : "")] });
     if (dependencies.exitCode !== 0) throw new Error(`stock-plus-Mekugi setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
@@ -155,8 +164,8 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
       ? " && test -x /home/ubuntu/.local/bin/mekugi"
       : "";
     const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none", "-e", `CODEX_AB_HOOK_EVENT=${hookEvent}`,
-      "-v", `${currentHome}:/setup:ro`, "-v", `${workspace}:/workspace:ro`, ...currentSetupMounts(runDir, state), image, "sh", "-lc",
-      `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && missing_tools="$(mise ls --current --missing --no-header)" && if test -n "$missing_tools"; then printf "missing current setup tools: %s\n" "$missing_tools" >&2; exit 1; fi && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go && if test -f /workspace/go.mod; then printf "%s\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="; fi'${mekugiCheck}`] });
+      "-v", `${currentHome}:/setup:ro`, "-v", `${workspace}:/workspace:ro`, ...await currentSetupMounts(runDir, state), image, "sh", "-lc",
+      `cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && missing_tools="$(mise ls --current --missing --no-header)" && if test -n "$missing_tools"; then printf "missing current setup tools: %s\n" "$missing_tools" >&2; exit 1; fi && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && if test -f /workspace/go.mod; then test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go && printf "%s\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="; fi'${mekugiCheck}`] });
     if (/\[WARN\] migrate:/.test(`${dependencies.stdout}\n${dependencies.stderr}`)) {
       throw new Error("current setup mise migration failed against the read-only tool snapshot; prepare again from a home with completed mise migrations");
     }
@@ -164,18 +173,21 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   }
   if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
     progress("checking selected Mekugi flags and exports offline without model access");
-    const exports = join(runDir, "artifacts/preflight-mekugi");
-    await mkdir(exports, { recursive: true, mode: 0o700 });
-    const flags = state.mekugi_flags ?? [];
-    const launch = await runOwnedContainer({ docker, name: `${prefix}-mekugi`, signal, timeoutMs: 30000,
-      createArgs: ["--network", "none", "-v", `${state.comparison === "codex-mekugi-grok" ? resolve(runDir, state.arms.stock.home_template) : currentHome}:/setup:ro`,
-        "-v", `${exports}:/mekugi-exports`, image, "sh", "-lc",
-        'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && exec "$@"',
-        "preflight", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...flags,
-        ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),
-        "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"] });
-    await writeFile(join(runDir, "artifacts/preflight-mekugi.json"), JSON.stringify(launch, null, 2));
-    if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
+    const paired = isPairedMekugiComparison(state.comparison);
+    for (const arm of paired ? ["stock", "current"] as const : ["current"] as const) {
+      const exports = join(runDir, "artifacts/preflight-mekugi", paired ? arm : "");
+      await mkdir(exports, { recursive: true, mode: 0o700 });
+      const flags = mekugiArmFlags(state, arm);
+      const launch = await runOwnedContainer({ docker, name: `${prefix}-mekugi${paired ? `-${arm}` : ""}`, signal, timeoutMs: 30000,
+        createArgs: ["--network", "none", "-v", `${state.comparison === "codex-mekugi-grok" ? resolve(runDir, state.arms.stock.home_template) : currentHome}:/setup:ro`,
+          "-v", `${exports}:/mekugi-exports`, ...await currentSetupMounts(runDir, state, arm), image, "sh", "-lc",
+          'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && exec "$@"',
+          "preflight", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...flags,
+          ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),
+          "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"] });
+      await writeFile(join(runDir, `artifacts/preflight-mekugi${paired ? `-${arm}` : ""}.json`), JSON.stringify(launch, null, 2));
+      if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
+    }
   }
   await ensureDependencyImage(docker, runDir, state, signal);
   const dependencyBase = dependencyImage(state);
@@ -279,14 +291,13 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const ownedPaths = [repository, home, join(output, "mekugi"), runtime];
   if (protectedArm) await mkdir(runtime, { recursive: true });
   const grokArm = state.comparison === "codex-mekugi-grok" && arm === "current";
-  const mekugiArm = state.comparison === "journal-compaction" || (state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi");
+  const mekugiArm = isPairedMekugiComparison(state.comparison) || (state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi");
   const grokCommand = grokArm
     ? ["grok", "--prompt-file", "/control/task.md", "--cwd", "/workspace", "-m", "grok-4.7", "--reasoning-effort", state.execution.reasoning_effort, "--always-approve", "--sandbox", "off", "--output-format", "json", "--disable-web-search"]
     : undefined;
-  const compactionFlags = state.comparison === "journal-compaction" ? [`--journal-compaction=${arm === "stock" ? "off" : "auto"}`] : [];
-  const codexLauncher = mekugiArm ? ["mekugi", ...(state.mekugi_flags ?? []), ...compactionFlags, ...exportArgs, "codex"] : ["codex"];
+  const codexLauncher = mekugiArm ? ["mekugi", ...mekugiArmFlags(state, arm), ...exportArgs, "codex"] : ["codex"];
   const mekugiLauncher = exportArgs.length ? ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", ...codexLauncher] : codexLauncher;
-  const launcher = grokCommand ?? (mekugiArm && state.comparison === "codex-mekugi-grok" ? mekugiLauncher : arm === "current" || state.comparison === "stock-mekugi" || state.comparison === "same-setup" || state.comparison === "journal-compaction" ? ["mise", "exec", "--", ...mekugiLauncher] : ["codex"]);
+  const launcher = grokCommand ?? (mekugiArm && state.comparison === "codex-mekugi-grok" ? mekugiLauncher : arm === "current" || state.comparison === "stock-mekugi" || state.comparison === "same-setup" || isPairedMekugiComparison(state.comparison) ? ["mise", "exec", "--", ...mekugiLauncher] : ["codex"]);
   const grokPath = grokArm ? ["-e", "PATH=/home/ubuntu/.grok/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin"];
   const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
   const debugStorage = mekugiArm && !protectedArm
@@ -295,7 +306,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
     result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, ...(grokArm ? [] : ["-i"]), ...grokPath,
-      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, ...currentSetupMounts(runDir, state, arm), ...exportMount, ...grokTask, ...debugStorage,
+      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, ...await currentSetupMounts(runDir, state, arm, home), ...exportMount, ...grokTask, ...debugStorage,
       ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
       imageRef(state), ...launcher, ...(grokArm ? [] : ["exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
       "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"',
@@ -357,7 +368,6 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`run is ${state.status}; prepare a new run instead of resuming or restarting it`);
   if (!state.criteria) throw new Error("run has no evaluator contract; prepare with --criteria");
-  if (options.arm && options.arm !== "stock") throw new Error("single-arm runs support stock controls only");
   if (options.controlRun && options.arm) throw new Error("--control-run selects the current treatment arm; do not pass --arm");
   if (Boolean(options.controlRun) !== Boolean(options.controlBundleSha256)) throw new Error("--control-run requires --control-bundle-sha256 and vice versa");
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
@@ -390,7 +400,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     state.results = imported ? { stock: imported } : {};
     state.selected_arms = selectedArms;
     await writeState(runDir, state);
-    progress("preparing identical task dependencies for both arms");
+    progress(activeArms.length === 1 ? "preparing task dependencies for the selected arm" : "preparing identical task dependencies for both arms");
     const warmed = await Promise.allSettled(activeArms.map(arm => prewarm(docker, runDir, state, arm, setups[arm]!.home, controller.signal)));
     const warmFailure = warmed.find(result => result.status === "rejected");
     if (warmFailure?.status === "rejected") throw warmFailure.reason;

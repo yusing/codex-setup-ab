@@ -4,6 +4,7 @@ import { verifyBundleManifest } from "./bundle";
 import { readState, sha256 } from "./state";
 import { meterRollouts, type PricingSnapshot, USAGE_KEYS } from "./usage";
 import type { ArmResult, RunState } from "./types";
+import { isPairedMekugiComparison } from "./mekugi";
 
 function digest(value: unknown): string { return new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex"); }
 
@@ -49,7 +50,7 @@ async function verifyRollouts(directory: string, expected: RolloutFile[]): Promi
 }
 
 export async function importControl(runDir: string, state: RunState, sourceDirectory: string, expectedBundleSha256: string): Promise<ArmResult> {
-  if (state.comparison === "journal-compaction" || state.comparison === "codex-mekugi-grok") {
+  if (isPairedMekugiComparison(state.comparison) || state.comparison === "codex-mekugi-grok") {
     throw new Error("control reuse currently supports direct-Codex stock controls only");
   }
   if (!/^[0-9a-f]{64}$/.test(expectedBundleSha256)) throw new Error("control bundle SHA-256 must be 64 lowercase hex characters");
@@ -60,10 +61,10 @@ export async function importControl(runDir: string, state: RunState, sourceDirec
   if (await sha256(join(sourceRun, "run.json")) !== await sha256(join(bundle, "run.json"))) throw new Error("control state differs from the published bundle");
   const source = await readState(sourceRun);
   if (source.status !== "complete" || source.finishing?.status !== "complete" || source.invalidity_reasons?.length
-    || JSON.stringify(source.selected_arms) !== JSON.stringify(["stock"]) || source.imported_control
+    || !source.selected_arms?.includes("stock") || source.imported_control
     || !source.results?.stock || source.results.stock.exit_code !== 0 || source.results.stock.collection_error
     || source.results.stock.lifecycle_error || source.results.stock.grade?.preparation.exit_code !== 0) {
-    throw new Error("published control is not a complete, valid stock-only attempt");
+    throw new Error("published control is not a complete, valid original stock attempt");
   }
   if (digest(controlIdentity(source)) !== digest(controlIdentity(state))) throw new Error("published control does not match task, setup, model, tool, or resource controls");
   const provenance = join(runDir, "evaluator/imported-control");

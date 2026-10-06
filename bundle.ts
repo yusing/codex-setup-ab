@@ -248,7 +248,9 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       if (await sha256(join(destination, "treatment", name)) !== item.after_sha256) throw new Error("applied treatment differs from manifest");
     }
   }
-  const setupDescriptions = state.comparison === "journal-compaction"
+  const setupDescriptions = state.comparison === "duplicate-output"
+    ? { stock: "Same current-home snapshot and Mekugi binary as B; duplicate-output projection off.", current: "Same current-home snapshot and Mekugi binary as A; duplicate-output projection on." }
+    : state.comparison === "journal-compaction"
     ? { stock: "Same current-home snapshot and Mekugi binary as B; journal compaction off.", current: "Same current-home snapshot and Mekugi binary as A; journal compaction auto." }
     : state.comparison === "codex-mekugi-grok"
     ? {
