@@ -59,9 +59,43 @@ test("skills manager task pins a historical non-Mekugi implementation", async ()
 test("checked-in standalone criteria bind their task prompts", async () => {
   const { createHash } = await import("node:crypto");
   const { validateCriteria } = await import("./semantic");
-  for (const directory of [".", "tasks/shell-activity", "tasks/skills-mgr-bundle"]) {
+  for (const directory of [".", "tasks/shell-activity", "tasks/skills-mgr-bundle", "tasks/booking-ledger"]) {
     const task = await readFile(join(import.meta.dir, directory, "task.md"));
     const criteria = JSON.parse(await readFile(join(import.meta.dir, directory, "criteria.json"), "utf8"));
     expect(validateCriteria(criteria, createHash("sha256").update(task).digest("hex")).criteria.length).toBeGreaterThan(0);
+  }
+});
+
+test("new-project seed is deterministic, empty and excludes its sentinel from a shallow baseline", async () => {
+  const roots: string[] = [];
+  const isolation = await mkdtemp(join(tmpdir(), "codex-ab-booking-isolation-"));
+  function git(directory: string, ...args: string[]) {
+    const result = Bun.spawnSync(["git", "-C", directory, ...args]);
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString().trim();
+  }
+  try {
+    for (let i = 0; i < 2; i++) {
+      const result = Bun.spawnSync(["bash", join(import.meta.dir, "tasks/booking-ledger/seed.sh")]);
+      expect(result.exitCode).toBe(0);
+      const root = result.stdout.toString().trim();
+      expect(root).toMatch(/^\/tmp\/codex-ab-booking-ledger\.[A-Za-z0-9]+$/);
+      roots.push(root);
+      expect(git(root, "ls-tree", "--name-only", "HEAD")).toBe("README.md");
+      expect(git(root, "status", "--porcelain")).toBe("");
+      expect(git(root, "remote")).toBe("");
+      expect(git(root, "rev-parse", "HEAD")).toBe(git(root, "rev-parse", "benchmark-base"));
+    }
+    const base = git(roots[0]!, "rev-parse", "benchmark-base");
+    const excluded = git(roots[0]!, "rev-parse", "benchmark-excluded");
+    expect(base).toBe(git(roots[1]!, "rev-parse", "benchmark-base"));
+    expect(excluded).toBe(git(roots[1]!, "rev-parse", "benchmark-excluded"));
+    expect(excluded).not.toBe(base);
+    git(isolation, "init", "--bare");
+    git(isolation, "fetch", "--depth=1", roots[0]!, base);
+    expect(git(isolation, "rev-parse", "FETCH_HEAD")).toBe(base);
+    expect(Bun.spawnSync(["git", "-C", isolation, "cat-file", "-e", `${excluded}^{commit}`]).exitCode).not.toBe(0);
+  } finally {
+    await Promise.all([...roots, isolation].map(root => rm(root, { recursive: true, force: true })));
   }
 });

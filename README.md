@@ -327,6 +327,17 @@ selected independently and verified normally. This is locally recorded build pro
 not a signed third-party attestation. Supplying binaries without a build bundle remains
 supported and explicitly reports missing source provenance.
 
+## New-project quality and requirement-retention task
+
+The [Booking Ledger benchmark](tasks/booking-ledger/README.md) asks candidates to
+build a complete Python/SQLite CLI from a clean synthetic seed. It focuses on
+quality, correctness, completeness, and requirement drift across persistent state,
+interval capacity, atomic changes, imports, and reports. Its model-free preparation
+recipe compares stock Codex with Mekugi journal context reset enabled and caps each
+agent at 55 minutes. Reset occurrence and project duration remain unmeasured;
+post-reset claims require observed root reset and continued work. Evaluation time
+is separate. This task uses standalone criteria and the generic task profile.
+
 ## Portable task packs
 
 Portable packs include [nvm download](tasks/nvm-download-no-eval/manifest.json),
