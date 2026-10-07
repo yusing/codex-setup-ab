@@ -8,7 +8,7 @@ const duration = (ms) => typeof ms === "number" && Number.isFinite(ms) ? metric(
 let config, workflow = "pair", selected, snapshot, activeId, busy = false, actionEntry, reportSignature, stateSignature;
 let artifactItems = [];
 let listSignature, artifactSignature, childSignature, liveKeys;
-let snapshotRequest = 0;
+let eventStream, latestSnapshot;
 function field(label, name, value = "", type = "text", hint = "", prefix = "f") {
   const id = prefix + "-" + name;
   return '<div class="field"><label for="' + id + '">' + esc(label) + '</label><input id="' + id + '" name="' + esc(name) + '" type="' + type + '" value="' + esc(value) + '" spellcheck="false">' + (hint ? '<p class="hint">' + esc(hint) + '</p>' : "") + "</div>";
@@ -197,7 +197,6 @@ async function perform(id, endpoint, body) {
       activeId = result.id;
       showNotice(id, "Operation started");
       await selectEntry(result.id);
-      await refreshEntries();
     }
   } catch (error) { showNotice(id, error.message, true); }
   finally { busy = false; updateConsent(); }
@@ -354,7 +353,6 @@ function renderSnapshot(data) {
   $("stop-operation").disabled = job.status === "stopping";
   $("stop-operation").textContent = job.status === "stopping" ? "Stopping and retaining evidence…" : "Stop operation";
   const statuses = obj(state.arm_attempts);
-  const elapsed = job.startedAt ? duration(Date.parse(job.finishedAt || new Date().toISOString()) - Date.parse(job.startedAt)) : "Not measured by this server";
   const errors = [job.error, state.error, obj(state.finishing).error, obj(state.judge).error].filter(Boolean);
   const phaseItems = entry.kind === "pair" ? [
     ["A execution", obj(statuses.stock).status || "Not started"],
@@ -362,9 +360,10 @@ function renderSnapshot(data) {
     ["Source assessment", obj(state.judge).status || "Not started"],
     ["Report finishing", obj(state.finishing).status || (data.report ? "Report available" : "Not started")],
   ] : [["Evidence", state.status || "Preparing"], ["Operation", job.status || "Attached"], ["Completed children", data.children.filter((child) => child.status === "complete").length + " of " + data.children.length], ["Report", data.report ? "Available" : "Not yet generated"]];
-  $("run-status").innerHTML = '<div class="status-line"><span class="badge ' + esc(job.status || state.status || "prepared") + '">' + esc(job.status || "attached") + "</span><span>Evidence: " + esc(state.status || "not yet prepared") + "</span><span>Operation elapsed: " + esc(elapsed) + "</span></div>"
+  $("run-status").innerHTML = '<div class="status-line"><span class="badge ' + esc(job.status || state.status || "prepared") + '">' + esc(job.status || "attached") + "</span><span>Evidence: " + esc(state.status || "not yet prepared") + '</span><span>Operation elapsed: <span id="operation-elapsed"></span></span></div>'
     + '<div class="phases">' + phaseItems.map(([title, value]) => "<div><strong>" + esc(title) + "</strong><span>" + esc(value) + "</span></div>").join("") + "</div>"
     + (errors.length ? '<p class="notice error">' + esc([...new Set(errors)].join("\n")) + "</p>" : "");
+  renderElapsed();
   const log = $("phase-log");
   const atBottom = log.scrollHeight - log.clientHeight - log.scrollTop < 40;
   log.textContent = job.log || "No phase messages from this server operation. Attached runs expose persisted state and candidate logs below.";
@@ -405,7 +404,7 @@ function renderSnapshot(data) {
 }
 async function selectEntry(id) {
   selected = id; reportSignature = undefined; stateSignature = undefined; actionEntry = undefined;
-  snapshot = undefined;
+  snapshot = undefined; latestSnapshot = undefined;
   $("start-action").disabled = true; $("existing-actions").hidden = true;
   $("run-title").textContent = "Loading selected evidence…";
   $("run-directory").textContent = "";
@@ -415,45 +414,54 @@ async function selectEntry(id) {
   $("launch-view").hidden = true; $("watch-view").hidden = false;
   $("artifact-filter").value = "";
   history.replaceState(null, "", "#" + id);
-  await refreshSelected(true);
+  connectEvents();
 }
-async function refreshEntries() {
-  const data = await api("entries");
+function renderEntries(data) {
   activeId = data.active;
   const signature = JSON.stringify([selected, data.entries.map((entry) => [entry.id, entry.title, entry.kind, obj(entry.job).status])]);
   if (listSignature !== signature) {
     $("run-list").innerHTML = data.entries.length ? data.entries.map((entry) => '<button data-entry="' + entry.id + '" aria-current="' + (selected === entry.id) + '"><strong>' + esc(entry.title) + "</strong><small>" + esc(entry.kind + " · " + (obj(entry.job).status || "attached evidence")) + "</small></button>").join("") : "<p class='hint'>No runs yet. Set up a comparison or attach retained evidence.</p>";
     listSignature = signature;
   }
-  const current = data.entries.find((entry) => entry.id === selected);
   $("stop-operation").hidden = activeId !== selected;
-  if (!$("watch-enabled").checked && snapshot?.entry.id === selected && current?.job?.status !== snapshot.entry.job?.status) await refreshSelected(true);
   updateConsent();
 }
-async function refreshSelected(force = false) {
-  if (!selected || !force && !$("watch-enabled").checked) return;
-  const id = selected;
-  const request = ++snapshotRequest;
-  try {
-    const data = await api("entries/" + id);
-    if (selected === id && request === snapshotRequest) renderSnapshot(data);
-  }
-  catch (error) { if (selected === id && request === snapshotRequest) $("watch-error").textContent = error.message + ". Attach the evidence directory again if the server was restarted."; }
+function renderElapsed() {
+  const element = $("operation-elapsed");
+  if (!element || snapshot?.entry.id !== selected) return;
+  const job = obj(snapshot.entry.job);
+  element.textContent = job.startedAt ? duration(Date.parse(job.finishedAt || new Date().toISOString()) - Date.parse(job.startedAt)) : "Not measured by this server";
 }
-async function tick() {
-  try {
-    await refreshEntries(); await refreshSelected();
+function connectEvents() {
+  eventStream?.close();
+  const id = selected;
+  const stream = new EventSource("/api/events" + (id ? "?entry=" + encodeURIComponent(id) : ""));
+  eventStream = stream;
+  const current = () => eventStream === stream && selected === id;
+  stream.addEventListener("entries", (event) => {
+    if (!current()) return;
+    renderEntries(JSON.parse(event.data));
     $("connection").textContent = activeId ? "Local service · operation active" : "Local service · ready";
-  } catch {
-    $("connection").textContent = "Connection lost. Restart the local service and reload. Retained evidence stays on disk.";
-  }
-  setTimeout(tick, 1500);
+  });
+  stream.addEventListener("snapshot", (event) => {
+    if (!current()) return;
+    const data = JSON.parse(event.data);
+    latestSnapshot = data;
+    $("watch-error").textContent = "";
+    if ($("watch-enabled").checked || !snapshot || data.entry.job?.status !== snapshot.entry.job?.status) renderSnapshot(data);
+  });
+  stream.addEventListener("snapshot-error", (event) => {
+    if (current()) $("watch-error").textContent = JSON.parse(event.data).error;
+  });
+  stream.onerror = () => {
+    if (current()) $("connection").textContent = "Connection lost. Reconnecting automatically. If the service restarted, reload and attach retained evidence.";
+  };
 }
 async function init() {
   try {
     config = await api("config");
-    drawLaunch(); await refreshEntries();
-    $("new-run").addEventListener("click", () => { selected = undefined; $("launch-view").hidden = false; $("watch-view").hidden = true; history.replaceState(null, "", "/"); refreshEntries().catch(() => {}); });
+    drawLaunch();
+    $("new-run").addEventListener("click", () => { selected = undefined; $("launch-view").hidden = false; $("watch-view").hidden = true; history.replaceState(null, "", "/"); connectEvents(); });
     document.addEventListener("click", (event) => {
       const button = event.target.closest("[data-entry]");
       if (button) selectEntry(button.dataset.entry).catch((error) => showNotice("watch-error", error.message, true));
@@ -467,19 +475,22 @@ async function init() {
     $("check-action").addEventListener("click", () => perform("action-status", "check", actionRequest()));
     $("attach-form").addEventListener("submit", async (event) => {
       event.preventDefault(); $("attach-error").textContent = "Checking evidence directory…";
-      try { const entry = await api("attach", { directory: $("attach-directory").value }); $("attach-error").textContent = ""; await selectEntry(entry.id); await refreshEntries(); }
+      try { const entry = await api("attach", { directory: $("attach-directory").value }); $("attach-error").textContent = ""; await selectEntry(entry.id); }
       catch (error) { $("attach-error").textContent = error.message; }
     });
     $("stop-operation").addEventListener("click", async () => {
       $("stop-operation").disabled = true;
-      try { await api("entries/" + selected + "/stop", {}); await refreshSelected(true); }
+      try { await api("entries/" + selected + "/stop", {}); }
       catch (error) { $("watch-error").textContent = error.message; $("stop-operation").disabled = false; }
     });
     $("artifact-filter").addEventListener("input", renderArtifacts);
-    $("watch-enabled").addEventListener("change", () => { if ($("watch-enabled").checked) refreshSelected(); else $("updated-at").textContent = "Evidence updates paused. Operation status stays live."; });
+    $("watch-enabled").addEventListener("change", () => { if ($("watch-enabled").checked && latestSnapshot) renderSnapshot(latestSnapshot); else $("updated-at").textContent = "Evidence updates paused. Operation status stays live."; });
     const hash = location.hash.slice(1);
     if (/^[a-f0-9-]+$/.test(hash)) await selectEntry(hash);
-    tick();
+    else connectEvents();
+    setInterval(renderElapsed, 1000);
+    window.addEventListener("pagehide", () => eventStream?.close());
+    window.addEventListener("pageshow", (event) => { if (event.persisted) connectEvents(); });
   } catch (error) { $("connection").textContent = "Cannot connect: " + error.message; }
 }
 init();

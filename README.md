@@ -58,7 +58,9 @@ before starting a run. A repeat count of two or more prepares fresh trial pairs.
 The suite workflow accepts a suite manifest and source-mapping file.
 
 The run view shows phase messages, elapsed time, persisted run/arm/judge status,
-candidate output tails, and partial results while work continues. You can stop an
+candidate output tails, and partial results while work continues. Updates arrive
+through server-sent events when operation or evidence files change. A dropped
+connection reconnects automatically and loads the current view. You can stop an
 active operation; cancellation retains available evidence and uses the runner's
 container cleanup. Closing a browser tab leaves the server operation running.
 Reload to reconnect, or attach an existing run, trial-set, or suite directory after

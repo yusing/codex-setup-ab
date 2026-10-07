@@ -1,6 +1,6 @@
-import { constants } from "node:fs";
+import { constants, watch, type FSWatcher } from "node:fs";
 import { access, lstat, open, readdir, realpath, stat } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { BOOLEAN_FLAGS, COMMAND_OPTIONS, type CliOptions } from "./cli-options";
@@ -105,6 +105,10 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
   let active: { entry: Entry; child?: ReturnType<typeof Bun.spawn>; canceled: boolean; finished?: Promise<void> } | undefined;
   const cli = import.meta.path.includes("$bunfs") ? [process.execPath] : [process.execPath, join(import.meta.dir, "cli.ts")];
   const defaults = launchDefaults();
+  const subscribers = new Set<() => void>();
+  const streams = new Set<() => void>();
+  const notify = () => { for (const update of subscribers) update(); };
+  const entryList = () => ({ entries: [...entries.values()].map(entry => ({ id: entry.id, title: entry.title, kind: entry.kind, directory: entry.directory, job: entry.job ? { status: entry.job.status } : undefined })), active: active?.entry.id });
 
   async function attach(directory: string, entry?: Entry): Promise<Entry> {
     const root = await realpath(resolve(directory));
@@ -114,6 +118,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     const result = entry ?? { id: randomUUID(), title: root.split("/").at(-1)!, kind };
     result.directory = root; result.kind = kind;
     entries.set(result.id, result);
+    notify();
     return result;
   }
   function bodyOptions(value: unknown, command: string): CliOptions {
@@ -202,7 +207,10 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     return { request: { command, options, entryId: entry?.id }, warnings };
   }
   function log(entry: Entry, value: string) {
-    if (entry.job) entry.job.log = (entry.job.log + value).slice(-64000);
+    if (entry.job && value) {
+      entry.job.log = (entry.job.log + value).slice(-64000);
+      notify();
+    }
   }
   async function childCommand(entry: Entry, command: string, options: CliOptions): Promise<void> {
     if (!active || active.canceled) throw new Error("Operation canceled before launch");
@@ -243,6 +251,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     entry.job = { command: request.command, status: "running", startedAt: new Date().toISOString(), log: "" };
     entries.set(entry.id, entry);
     active = { entry, canceled: false };
+    notify();
     const owned = active;
     owned.finished = (async () => {
       try {
@@ -262,6 +271,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       } finally {
         entry.job!.finishedAt = new Date().toISOString();
         if (active === owned) active = undefined;
+        notify();
       }
     })();
     return entry;
@@ -299,9 +309,123 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     }
     return { entry, state, report, artifacts, children, live };
   }
+  function events(req: Request, entry?: Entry): Response {
+    const encoder = new TextEncoder();
+    const watchers = new Map<string, { watcher: FSWatcher; identity: string }>();
+    const previous = new Map<string, string>();
+    let closed = false, running = false, dirty = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let controller: ReadableStreamDefaultController<Uint8Array>;
+    function close() {
+      if (closed) return;
+      closed = true;
+      clearTimeout(timer); clearInterval(heartbeat);
+      for (const { watcher } of watchers.values()) watcher.close();
+      subscribers.delete(schedule); streams.delete(close);
+      req.signal.removeEventListener("abort", close);
+      try { controller.close(); } catch { /* The response may already be canceled. */ }
+    }
+    function send(event: string, value: unknown) {
+      const data = JSON.stringify(value);
+      if (closed || previous.get(event) === data) return;
+      if (controller.desiredSize !== null && controller.desiredSize <= 0) { close(); return; }
+      previous.set(event, data);
+      controller.enqueue(encoder.encode(`event: ${event}\ndata: ${data}\n\n`));
+    }
+    async function observe(data: Awaited<ReturnType<typeof snapshot>>) {
+      if (closed || !entry?.directory) return;
+      const root = entry.directory;
+      // Watch evidence only, not the private homes and source trees in a run.
+      const paths = new Map<string, boolean>([[root, false]]);
+      paths.set(dirname(root), false);
+      if (entry.kind === "pair") {
+        for (const path of ["artifacts", "artifacts/stock", "artifacts/current"]) paths.set(join(root, path), false);
+      }
+      if (entry.kind === "trials") paths.set(join(root, "runs"), false);
+      if (entry.kind === "pair" || entry.kind === "trials") paths.set(join(root, "reports"), true);
+      if (entry.kind === "suite") for (const name of await readdir(root)) {
+        if (/^report-[A-Za-z0-9]+$/.test(name)) paths.set(join(root, name), true);
+      }
+      for (const child of data.children) paths.set(child.directory, false);
+      const state = object("state" in data ? data.state : undefined);
+      const pending = entry.kind === "trials" && Array.isArray(state.trials) ? state.trials.map(value => object(value).run_dir)
+        : entry.kind === "suite" && Array.isArray(state.sets) ? state.sets.map(value => object(value).trial_set) : [];
+      for (const path of pending) {
+        if (typeof path !== "string" || !(entry.kind === "trials" ? /^runs\/\d+$/.test(path) : /^codex-ab-trials-[A-Za-z0-9]+$/.test(path))) continue;
+        const directory = join(root, path);
+        const info = await lstat(directory).catch(() => undefined);
+        if (info?.isDirectory()) paths.set(directory, false);
+      }
+      if (closed) return;
+      for (const [path, { watcher }] of watchers) if (!paths.has(path)) { watcher.close(); watchers.delete(path); }
+      for (const [path, recursive] of paths) {
+        const info = await lstat(path).catch(error => {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        });
+        if (closed) return;
+        const identity = info?.isDirectory() ? `${info.dev}:${info.ino}` : undefined;
+        const existing = watchers.get(path);
+        if (identity && existing?.identity === identity) continue;
+        existing?.watcher.close(); watchers.delete(path);
+        if (!identity) continue;
+        try {
+          const watcher = watch(path, { recursive }, (_event, filename) => {
+            if (path !== dirname(root) || !filename || String(filename) === basename(root)) schedule();
+          });
+          watcher.on("error", () => { watcher.close(); watchers.delete(path); schedule(); });
+          watchers.set(path, { watcher, identity });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    }
+    async function update() {
+      if (closed || running) return;
+      running = true; dirty = false;
+      try {
+        if (entry) {
+          // Install the root watcher before reading so changes during a read cause another update.
+          if (!entry.directory || !watchers.has(entry.directory)) await observe({ entry, artifacts: [], children: [], live: {} });
+          try {
+            const data = await snapshot(entry);
+            await observe(data);
+            if (previous.delete("snapshot-error")) previous.delete("snapshot");
+            send("entries", entryList());
+            send("snapshot", data);
+          } catch (error) { send("snapshot-error", { error: message(error) }); }
+        }
+        send("entries", entryList());
+      } catch (error) { send("snapshot-error", { error: message(error) }); }
+      finally {
+        running = false;
+        if (dirty) schedule();
+      }
+    }
+    function schedule() {
+      dirty = true;
+      if (!closed && !running && !timer) timer = setTimeout(() => { timer = undefined; void update(); }, 50);
+    }
+    const stream = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+        subscribers.add(schedule); streams.add(close);
+        req.signal.addEventListener("abort", close, { once: true });
+        if (req.signal.aborted) { close(); return; }
+        controller.enqueue(encoder.encode("retry: 1500\n\n"));
+        heartbeat = setInterval(() => {
+          if (controller.desiredSize !== null && controller.desiredSize <= 0) { close(); return; }
+          controller.enqueue(encoder.encode(": keepalive\n\n"));
+        }, 15000);
+        void update();
+      },
+      cancel: close,
+    }, { highWaterMark: 16 });
+    return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } });
+  }
   const server = Bun.serve({
     hostname, port, maxRequestBodySize: 128000,
-    async fetch(req) {
+    async fetch(req, server) {
       const url = new URL(req.url);
       const addresses = hostname === "0.0.0.0" || hostname === "::"
         ? Object.values(networkInterfaces()).flatMap(items => (items ?? []).map(item => item.address)) : [];
@@ -313,7 +437,14 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         if (req.method === "GET" && url.pathname === "/style.css") return new Response(css, { headers: { "Content-Type": "text/css" } });
         if (req.method === "GET" && url.pathname === "/app.js") return new Response(javascript, { headers: { "Content-Type": "text/javascript" } });
         if (req.method === "GET" && url.pathname === "/api/config") return json({ token, defaults, comparisons: COMPARISONS, tasks: taskCatalog(), commands: COMMAND_OPTIONS, actions: ACTIONS, paidCommands: [...PAID] });
-        if (req.method === "GET" && url.pathname === "/api/entries") return json({ entries: [...entries.values()].map(entry => ({ id: entry.id, title: entry.title, kind: entry.kind, directory: entry.directory, job: entry.job ? { status: entry.job.status } : undefined })), active: active?.entry.id });
+        if (req.method === "GET" && url.pathname === "/api/entries") return json(entryList());
+        if (req.method === "GET" && url.pathname === "/api/events") {
+          const id = url.searchParams.get("entry");
+          const selected = id ? entries.get(id) : undefined;
+          if (id && !selected) return json({ error: "Attach the evidence directory again if the server was restarted" }, 404);
+          server.timeout(req, 0);
+          return events(req, selected);
+        }
         const match = url.pathname.match(/^\/api\/entries\/([a-f0-9-]+)(?:\/(artifacts|stop))?$/);
         const entry = match ? entries.get(match[1]!) : undefined;
         if (req.method === "GET" && entry && !match?.[2]) return json(await snapshot(entry));
@@ -354,6 +485,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         active.child?.kill("SIGTERM");
         await active.finished;
       }
+      for (const close of streams) close();
       server.stop(true);
     },
   };

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serveWorkbench } from "./web-server";
@@ -34,6 +34,34 @@ async function pair(): Promise<string> {
     results: { stock: { exit_code: 0, agent_elapsed_ms: 1234 }, current: { exit_code: 0, agent_elapsed_ms: 987 } },
   }));
   return directory;
+}
+
+async function subscribe(id?: string) {
+  const abort = new AbortController();
+  const response = await fetch(origin + "/api/events" + (id ? "?entry=" + id : ""), { signal: AbortSignal.any([abort.signal, AbortSignal.timeout(5000)]) });
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("text/event-stream");
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  return {
+    close: () => abort.abort(),
+    async next(event: string, accept: (data: ReturnType<typeof JSON.parse>) => boolean = () => true) {
+      while (true) {
+        const end = pending.indexOf("\n\n");
+        if (end >= 0) {
+          const frame = pending.slice(0, end); pending = pending.slice(end + 2);
+          if (!frame.startsWith("event: " + event + "\n")) continue;
+          const data = JSON.parse(frame.slice(frame.indexOf("data: ") + 6));
+          if (accept(data)) return data;
+          continue;
+        }
+        const { value, done } = await reader.read();
+        if (done) throw new Error("SSE ended before " + event);
+        pending += decoder.decode(value, { stream: true });
+      }
+    },
+  };
 }
 
 beforeEach(async () => {
@@ -126,8 +154,75 @@ test("mutations require the local origin and the current workbench token", async
   ];
   for (const headers of foreignHeaders) {
     expect((await fetch(origin + "/api/config", { headers })).status).toBe(403);
+    expect((await fetch(origin + "/api/events", { headers })).status).toBe(403);
   }
   expect((await (await fetch(origin + "/api/entries")).json()).entries).toEqual([]);
+});
+
+test("SSE pushes attachment, external evidence changes, and current state on reconnect", async () => {
+  const list = await subscribe();
+  expect((await list.next("entries")).entries).toEqual([]);
+  const directory = await pair();
+  const entry = await attach(directory);
+  expect((await list.next("entries")).entries[0].id).toBe(entry.id);
+  list.close();
+  const stream = await subscribe(entry.id);
+  expect((await stream.next("snapshot")).state.status).toBe("complete");
+  await file(join(directory, "run.json"), JSON.stringify({ schema_version: 1, status: "partial" }));
+  expect((await stream.next("snapshot", data => data.state.status === "partial")).state.status).toBe("partial");
+  await file(join(directory, "run.json"), "{");
+  expect((await stream.next("snapshot-error")).error).toBeString();
+  await file(join(directory, "run.json"), JSON.stringify({ schema_version: 1, status: "partial" }));
+  expect((await stream.next("snapshot")).state.status).toBe("partial");
+  await file(join(directory, "artifacts/current/codex.jsonl"), '{"type":"item.completed","item":{"text":"Pushed output"}}\n');
+  expect((await stream.next("snapshot", data => data.live.current?.includes("Pushed output"))).live.current).toContain("Pushed output");
+  await rename(join(directory, "artifacts/current"), join(directory, "artifacts/old-current"));
+  await file(join(directory, "artifacts/current/codex.jsonl"), "Replacement output\n");
+  await stream.next("snapshot", data => data.live.current?.includes("Replacement output"));
+  await file(join(directory, "artifacts/current/codex.jsonl"), "Later replacement output\n");
+  expect((await stream.next("snapshot", data => data.live.current?.includes("Later replacement output"))).live.current).toContain("Later replacement output");
+  await file(join(directory, "reports/report.json"), JSON.stringify({ winner_reason: "Pushed report" }));
+  const reported = await stream.next("snapshot", data => data.report?.winner_reason === "Pushed report");
+  expect(reported.artifacts.map((item: { path: string }) => item.path)).toContain("reports/report.json");
+  await rename(directory, directory + "-old");
+  await pair();
+  await stream.next("snapshot", data => data.state.status === "complete");
+  await file(join(directory, "run.json"), JSON.stringify({ schema_version: 1, status: "replacement" }));
+  expect((await stream.next("snapshot", data => data.state.status === "replacement")).state.status).toBe("replacement");
+  stream.close();
+  const reconnected = await subscribe(entry.id);
+  expect((await reconnected.next("snapshot")).state.status).toBe("replacement");
+  reconnected.close();
+  expect((await fetch(origin + "/api/events?entry=missing")).status).toBe(404);
+});
+
+test("SSE discovers suite reports written after their empty directory appears", async () => {
+  const directory = join(root, "suite");
+  await file(join(directory, "suite.json"), JSON.stringify({ schema: "codex-ab.suite-run.v1", sets: [] }));
+  const entry = await attach(directory);
+  const stream = await subscribe(entry.id);
+  await stream.next("snapshot");
+  await mkdir(join(directory, "report-latest"));
+  await Bun.sleep(150);
+  await file(join(directory, "report-latest/report.json"), JSON.stringify({ rows: [{ task: "pushed" }] }));
+  expect((await stream.next("snapshot", data => data.report?.rows?.[0]?.task === "pushed")).report.rows[0].task).toBe("pushed");
+  stream.close();
+});
+
+test("SSE updates selected trial children as their evidence changes", async () => {
+  const directory = join(root, "trials");
+  await file(join(directory, "trials.json"), JSON.stringify({ schema: "codex-ab.trials.v1", trials: [{ run_dir: "runs/1" }] }));
+  const entry = await attach(directory);
+  const stream = await subscribe(entry.id);
+  expect((await stream.next("snapshot")).children).toEqual([]);
+  await mkdir(join(directory, "runs/1"), { recursive: true });
+  await Bun.sleep(150); // Preparation can create the directory before its marker.
+  await file(join(directory, "runs/1/run.json"), JSON.stringify({ schema_version: 1, status: "running" }));
+  const child = (await stream.next("snapshot", data => data.children.length === 1)).children[0];
+  expect(child.status).toBe("running");
+  await file(join(directory, "runs/1/run.json"), JSON.stringify({ schema_version: 1, status: "complete" }));
+  expect((await stream.next("snapshot", data => data.children[0]?.status === "complete")).children[0].id).toBe(child.id);
+  stream.close();
 });
 
 test("explicit and wildcard hosts permit same-origin access while retaining request protections", async () => {
@@ -210,15 +305,13 @@ test("a model-free CLI operation completes, persists its result, and releases th
   const directory = await pair();
   const entry = await attach(directory);
   for (const reason of ["Operator withdrew this result", "Corrected exclusion rationale"]) {
+    const stream = await subscribe(entry.id);
+    await stream.next("snapshot");
     const response = await post("/api/start", { command: "invalidate", entryId: entry.id, options: { reason } });
     expect(response.status).toBe(202);
     expect((await response.json()).job.status).toBe("running");
-    let detail = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
-    const deadline = Date.now() + 5000;
-    while (detail.entry.job.status === "running" && Date.now() < deadline) {
-      await Bun.sleep(20);
-      detail = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
-    }
+    const detail = await stream.next("snapshot", data => data.entry.job?.status === "complete" && data.state.invalidity_reasons?.[0] === reason);
+    stream.close();
     expect(detail.entry.job.status).toBe("complete");
     expect(detail.entry.job.finishedAt).toBeString();
     expect(detail.entry.job.log).toContain(directory);
@@ -241,22 +334,13 @@ test("stopping a real CLI operation retains its phase log and releases the activ
   });
   expect(started.status).toBe(202);
   const entry = await started.json();
-  const url = `${origin}/api/entries/${entry.id}`;
-  let detail = await (await fetch(url)).json();
-  const phaseDeadline = Date.now() + 3000;
-  while (!detail.entry.job.log.includes("[build] freezing") && Date.now() < phaseDeadline) {
-    await Bun.sleep(20);
-    detail = await (await fetch(url)).json();
-  }
+  const stream = await subscribe(entry.id);
+  let detail = await stream.next("snapshot", data => data.entry.job.log.includes("[build] freezing"));
   expect(detail.entry.job.log).toContain("[build] freezing");
   expect(detail.entry.job.status).toBe("running");
   expect((await post(`/api/entries/${entry.id}/stop`, {})).status).toBe(200);
-  const stopDeadline = Date.now() + 3000;
-  do {
-    detail = await (await fetch(url)).json();
-    if (detail.entry.job.status !== "stopping") break;
-    await Bun.sleep(20);
-  } while (Date.now() < stopDeadline);
+  detail = await stream.next("snapshot", data => data.entry.job.status === "canceled");
+  stream.close();
   expect(detail.entry.job.status).toBe("canceled");
   expect(detail.entry.job.log).toContain("[build] freezing");
   expect(Date.parse(detail.entry.job.finishedAt)).toBeGreaterThanOrEqual(Date.parse(detail.entry.job.startedAt));
