@@ -11,10 +11,27 @@ make correctness checkable across multiple features. Shared rules for UTC,
 half-open intervals, cancelled bookings, IDs, validation, and persistent state
 also expose requirement drift between code, tests, CLI behavior, and documentation.
 
-## Prepare without inference
+## Launch in the Web UI
+
+Open the workbench described in the main [README](../../README.md#launch-and-watch-in-the-web-ui)
+and select **Booking Ledger new project**. Leave **Source checkout** blank to create
+a private seed when preparation starts, or enter a seed previously created by the
+helper below. **Check inputs** does not create a seed or start inference.
+
+The task selects minimal Codex versus minimal Mekugi with auto journal compaction.
+Its task defaults are xhigh reasoning and a 3300-second limit for each agent.
+Comparison and runtime overrides remain available. Choose preparation only, or
+give fresh paid-inference consent. Watch the operation and inspect its results
+in the workbench.
+
+## Agent-directed preparation without inference
 
 Build the benchmark CLI and container image as described in the main
 [README](../../README.md#prerequisites-and-build). From the benchmark root:
+
+Use `./dist/codex-ab launch --task booking-ledger --prepare-only` for the same seed
+creation and task defaults as the Web UI. The existing launch flags can override
+the comparison and runtime settings. For explicit low-level preparation:
 
 ```sh
 source_dir="$(bash tasks/booking-ledger/seed.sh)"
@@ -42,14 +59,14 @@ only the first commit to candidates and checks that the sentinel is absent.
 The helper prints the source path and retains it; it does not modify this
 checkout's Git state or start inference. Keep that directory for preparation and
 trial preparation. This synthetic task uses standalone criteria rather than the
-historical HTTPS task-pack schema and is not a `scripts/run.sh --task` selector.
+historical HTTPS task-pack schema.
 
 Both agents have the same prompt, base, model, reasoning effort, minimal setup,
 and installed-tool access. The Mekugi arm additionally uses the selected launcher
 and its journal tools. Neither receives current-home instructions or skills.
 Default model selection follows the harness; pin `--model` when repeating runs.
 
-## Run explicitly
+## Agent-directed execution
 
 ```sh
 ./dist/codex-ab run --run-dir "$run_dir" \

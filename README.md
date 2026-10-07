@@ -64,6 +64,9 @@ Choose a pinned task and comparison, set the source checkout, model, reasoning e
 and optional Mekugi settings, then **Check inputs**. The workbench explains incompatible
 combinations and missing local inputs before starting work. Advanced settings expose
 the existing preparation options, including custom task packs and task/criteria files.
+Booking Ledger is available in the task selector. Leave its source checkout blank
+to create a clean synthetic seed during preparation. Its defaults use minimal Codex
+versus minimal Mekugi, auto journal compaction, xhigh reasoning, and a 55-minute limit.
 Choose preparation only for a model-free check, or explicitly consent to paid inference
 before starting a run. A repeat count of two or more prepares fresh trial pairs.
 The suite workflow accepts a suite manifest and source-mapping file.

@@ -154,7 +154,10 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     if (command === "launch") {
       const config = launchConfiguration(options);
       const sourceExists = await stat(config.prepare.source).then(info => info.isDirectory()).catch(() => false);
-      if (!sourceExists && (options.task === undefined || options.task === "nvm-download-no-eval")) warnings.push("The NVM checkout will be cloned to " + config.prepare.source);
+      if (options.task === "booking-ledger" && !config.prepare.source) {
+        await required(resolve("tasks/booking-ledger/seed.sh"), "Booking Ledger seed helper");
+        warnings.push("A private Booking Ledger seed checkout will be created when preparation starts.");
+      } else if (!sourceExists && (options.task === undefined || options.task === "nvm-download-no-eval")) warnings.push("The NVM checkout will be cloned to " + config.prepare.source);
       else await required(config.prepare.source, "Source checkout", true);
       await required(config.prepare.currentHome, "Current setup home", true);
       await required(config.prepare.codexBinary!, "Codex executable", false, true);

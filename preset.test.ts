@@ -92,6 +92,24 @@ test("feature comparisons, repeat preparation, and custom task contracts use the
   expect(custom.prepare.taskPath).toBe("/prompt.md");
 });
 
+test("Booking Ledger uses its standalone seed, controls and documented runtime defaults", () => {
+  const options = launchConfiguration({ task: "booking-ledger", "prepare-only": true });
+  expect(options.prepare.source).toBe("");
+  expect(options.prepare.comparison).toBe("stock-mekugi");
+  expect(options.prepare.mekugiFlags).toEqual(["--mode=mekugi", "--journal-compaction=auto"]);
+  expect(options.prepare.taskPath).toEndWith("tasks/booking-ledger/task.md");
+  expect(options.prepare.criteriaPath).toEndWith("tasks/booking-ledger/criteria.json");
+  expect(options.prepare.baseCommit).toBe("benchmark-base");
+  expect(options.prepare.forbiddenCommit).toBe("benchmark-excluded");
+  expect(options.prepare.reasoningEffort).toBe("xhigh");
+  expect(options.prepare.timeoutSeconds).toBe(3300);
+  const overridden = launchConfiguration({ task: "booking-ledger", source: "/existing-seed", preset: "stock-current", "reasoning-effort": "high", timeout: "1000" });
+  expect(overridden.prepare.source).toBe("/existing-seed");
+  expect(overridden.prepare.comparison).toBe("stock-current");
+  expect(overridden.prepare.reasoningEffort).toBe("high");
+  expect(overridden.prepare.timeoutSeconds).toBe(1000);
+});
+
 test("incompatible comparisons and malformed parameters reject before external work", () => {
   for (const [options, error] of [
     [{ preset: "same-setup", task: "session-retention" }, "require a task outside Mekugi"],

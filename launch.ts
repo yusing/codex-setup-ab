@@ -25,6 +25,7 @@ export function taskCatalog() {
     { id: "nvm-download-no-eval", title: "NVM download arguments", source: process.env.CODEX_AB_SOURCE_DIR ?? join(tmpdir(), "codex-ab-nvm-source"), timeout: 1800, effort: "medium", pack: "tasks/nvm-download-no-eval/manifest.json" },
     { id: "skills-mgr-agent-cli", title: "Skills manager agent CLI", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-agent-cli/manifest.json" },
     { id: "session-retention", title: "Mekugi session retention", source: process.env.CODEX_AB_MEKUGI_SOURCE ?? join(userRoot, "projects/mekugi"), timeout: 3600, effort: "xhigh", pack: "" },
+    { id: "booking-ledger", title: "Booking Ledger new project", source: "", timeout: 3300, effort: "xhigh", pack: "" },
     ...["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding"].map(id => ({ id, title: id === "gin-context-copy" ? "Gin context copy" : id === "flask-ipv6-server-name" ? "Flask IPv6 server name" : "Express transfer encoding", source: join(userRoot, "projects", id.split("-")[0]!), timeout: 1800, effort: "medium", pack: `tasks/${id}/manifest.json` })),
     { id: "custom", title: "Custom task or portable pack", source: "", timeout: 1800, effort: "medium", pack: "" },
   ];
@@ -48,7 +49,9 @@ function positive(value: string, label: string): number {
   return Number(value);
 }
 export function launchConfiguration(input: CliOptions): { prepare: PrepareOptions; count: number; order: "concurrent" | "alternating"; docker: string; auth: string; grokAuth: string; prepareOnly: boolean } {
-  const o = { ...launchDefaults(), ...input };
+  const bookingDefaults: CliOptions = input.task === "booking-ledger" && !input.preset && !input.comparison
+    ? { preset: "stock-mekugi", "journal-compaction": "auto" } : {};
+  const o: CliOptions = { ...launchDefaults(), ...bookingDefaults, ...input };
   const task = taskCatalog().find(task => task.id === o.task);
   if (!task) throw new Error("Choose a supported task");
   const preset = stringOption(o, "comparison", stringOption(o, "preset"));
@@ -78,7 +81,8 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (["journal-compaction", "duplicate-output"].includes(comparison) && flags.some(flag => flag.startsWith(`--${comparison}=`) || flag === "--mode=passthrough" || flag.startsWith("--grok"))) throw new Error("The paired feature comparison owns its treatment flag and requires Mekugi Codex routing");
   if (o["mekugi-build"] && (input["mekugi-bin"] || input["mekugi-source"])) throw new Error("A captured Mekugi build owns its source and executable");
   const source = stringOption(o, "source", task.source);
-  if (!source.trim()) throw new Error("Source checkout is required");
+  const booking = task.id === "booking-ledger";
+  if (!source.trim() && !booking) throw new Error("Source checkout is required");
   const custom = task.id === "custom";
   const pack = stringOption(o, "task-pack", task.pack);
   if (custom && !pack && ["base", "forbidden", "task-file", "criteria"].some(key => !stringOption(o, key))) throw new Error("A custom task needs a pack, or base, forbidden commit, task file, and criteria file");
@@ -92,11 +96,11 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   return {
     prepare: {
       comparison: comparison as PrepareOptions["comparison"], model: model as PrepareOptions["model"], reasoningEffort: effort as PrepareOptions["reasoningEffort"],
-      source: resolve(source), profile: profile as PrepareOptions["profile"],
-      baseCommit: stringOption(o, "base", "302ee2d6691b406f30fcbea38459c6ddc16f6935"),
-      forbiddenCommit: stringOption(o, "forbidden", "d49862486236d8a507bc0986aa1d543481f8fb61"),
-      taskPath: resolve(stringOption(o, "task-file", "tasks/session-retention/task.md")),
-      criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria", "tasks/session-retention/criteria.json")),
+      source: source.trim() ? resolve(source) : "", profile: profile as PrepareOptions["profile"],
+      baseCommit: stringOption(o, "base", booking ? "benchmark-base" : "302ee2d6691b406f30fcbea38459c6ddc16f6935"),
+      forbiddenCommit: stringOption(o, "forbidden", booking ? "benchmark-excluded" : "d49862486236d8a507bc0986aa1d543481f8fb61"),
+      taskPath: resolve(stringOption(o, "task-file", booking ? "tasks/booking-ledger/task.md" : "tasks/session-retention/task.md")),
+      criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria", booking ? "tasks/booking-ledger/criteria.json" : "tasks/session-retention/criteria.json")),
       taskPackPath: pack ? resolve(pack) : undefined,
       currentHome: resolve(stringOption(o, "current-home")), image: stringOption(o, "image"), cpus, memory,
       timeoutSeconds: positive(stringOption(o, "timeout", String(task.timeout)), "Timeout"), autoCompactLimit: limit,
@@ -152,6 +156,16 @@ export async function runLaunch(o: CliOptions): Promise<string> {
   process.on("SIGINT", cancel); process.on("SIGTERM", cancel);
   const progress = (message: string) => process.stderr.write(`[launch] ${message}\n`);
   try {
+    if (o.task === "booking-ledger") {
+      if (!config.prepare.source) {
+        progress("Creating the clean Booking Ledger seed");
+        config.prepare.source = (await checked(["bash", resolve("tasks/booking-ledger/seed.sh")], { signal: controller.signal })).stdout.trim();
+        progress(`Synthetic source retained at ${config.prepare.source}`);
+      }
+      for (const key of ["baseCommit", "forbiddenCommit"] as const) {
+        config.prepare[key] = (await checked(["git", "-C", config.prepare.source, "rev-parse", "--verify", `${config.prepare[key]}^{commit}`], { signal: controller.signal })).stdout.trim();
+      }
+    }
     if (o.task === undefined || o.task === "nvm-download-no-eval") {
       if (!await Bun.file(join(config.prepare.source, ".git/HEAD")).exists()) {
         let exists = true;

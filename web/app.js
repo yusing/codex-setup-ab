@@ -115,6 +115,13 @@ function drawLaunch() {
     $("f-task").addEventListener("change", () => {
       const task = config.tasks.find((item) => item.id === $("f-task").value);
       $("f-source").value = task.source;
+      $("f-source").closest(".field").querySelector(".hint").textContent = task.id === "booking-ledger"
+        ? "Leave blank to create a clean synthetic Git seed during preparation, or reuse a Booking Ledger seed checkout."
+        : "Local Git checkout. The default NVM source can be cloned during preparation.";
+      if (task.id === "booking-ledger") {
+        $("f-preset").value = "stock-mekugi";
+        $("f-journal-compaction").value = "auto";
+      }
       updateCombination();
     });
     for (const id of ["f-preset", "f-current-launcher", "f-mekugi-build", "f-task-pack"]) {
