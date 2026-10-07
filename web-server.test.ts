@@ -101,10 +101,11 @@ test("attached evidence retains report data, arm logs, hierarchy, and stable ent
   expect(detail.artifacts.map((artifact: { path: string }) => artifact.path)).toContain("reports/report.json");
 
   const trials = join(root, "trials");
-  await file(join(trials, "trials.json"), JSON.stringify({ schema: "codex-ab.trials.v1", trials: [{ run_dir: "runs/1" }] }));
+  await file(join(trials, "trials.json"), JSON.stringify({ schema: "codex-ab.trials.v1", controls: { comparison: "same-setup" }, trials: [{ run_dir: "runs/1" }] }));
   await file(join(trials, "runs/1/run.json"), JSON.stringify({ schema_version: 1, status: "partial", error: "agent timed out" }));
   const trialEntry = await attach(trials);
   const trialDetail = await (await fetch(`${origin}/api/entries/${trialEntry.id}`)).json();
+  expect(trialDetail.arm_labels).toEqual({ stock: "Codex (current-home setup)", current: "Codex + Mekugi (current-home setup)" });
   expect(trialDetail.children).toHaveLength(1);
   expect(trialDetail.children[0]).toMatchObject({ kind: "pair", status: "partial", error: "agent timed out" });
   const child = await (await fetch(`${origin}/api/entries/${trialDetail.children[0].id}`)).json();
@@ -120,6 +121,14 @@ test("attached evidence retains report data, arm logs, hierarchy, and stable ent
   expect((await (await fetch(origin + "/api/entries")).json()).entries).toHaveLength(5);
 });
 
+test("workbench serves its interface font locally", async () => {
+  const response = await fetch(origin + "/fonts/ibm-plex-sans-latin.woff2");
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("font/woff2");
+  expect(Buffer.from(await response.arrayBuffer())).toEqual(await readFile(join(import.meta.dir, "web/fonts/ibm-plex-sans-latin.woff2")));
+  expect(await (await fetch(origin + "/fonts/OFL.txt")).text()).toContain("SIL OPEN FONT LICENSE");
+});
+
 test("pair measurement headers use actual arms before reporting and retain recorded report labels", async () => {
   const directory = await pair();
   const state = { schema_version: 1, comparison: "same-setup", execution: { current_launcher: "mekugi" } };
@@ -130,20 +139,53 @@ test("pair measurement headers use actual arms before reporting and retain recor
   const stream = await subscribe(entry.id);
   try {
     const partial = await stream.next("snapshot");
-    expect(render(partial)).toContain('A: Codex (current-home setup)</th>');
-    expect(render(partial)).toContain('B: Codex + Mekugi (current-home setup)</th>');
+    expect(render(partial)).toContain('class="a">Codex (current-home setup)</th>');
+    expect(render(partial)).toContain('class="b">Codex + Mekugi (current-home setup)</th>');
     await file(join(directory, "run.json"), JSON.stringify({ ...state, comparison: "duplicate-output" }));
     const updated = await stream.next("snapshot", data => data.state.comparison === "duplicate-output");
-    expect(render(updated)).toContain('A: Codex + Mekugi (duplicate output off)</th>');
-    expect(render(updated)).toContain('B: Codex + Mekugi (duplicate output on)</th>');
+    expect(render(updated)).toContain('class="a">Codex + Mekugi (duplicate output off)</th>');
+    expect(render(updated)).toContain('class="b">Codex + Mekugi (duplicate output on)</th>');
     await file(join(directory, "reports/report.json"), JSON.stringify({ winner: "current" }));
     const unlabeled = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
-    expect(render(unlabeled)).toContain('B: Codex + Mekugi (duplicate output on)</th>');
+    expect(render(unlabeled)).toContain('class="b">Codex + Mekugi (duplicate output on)</th>');
     await file(join(directory, "reports/report.json"), JSON.stringify({ arm_labels: { stock: "Recorded <A>", current: "Recorded B" } }));
     const labeled = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
-    expect(render(labeled)).toContain('A: Recorded &lt;A&gt;</th>');
-    expect(render(labeled)).toContain('B: Recorded B</th>');
+    expect(render(labeled)).toContain('class="a">Recorded &lt;A&gt;</th>');
+    expect(render(labeled)).toContain('class="b">Recorded B</th>');
   } finally { stream.close(); }
+});
+
+test("source assessments replace numbered identities using each pass's presentation order", async () => {
+  const directory = await pair();
+  const report = {
+    arm_labels: { stock: "Direct Codex", current: "Codex + Mekugi" }, winner: "current",
+    criteria: { contract: { criteria: [{ id: "checks", description: "Behavioral checks" }] } },
+    arms: { stock: { result: { grade: { semantic: {
+      "pass-1": [{ criterion: "checks", status: "pass", basis: "executed", reasoning: "Candidate-1 met the criterion", check: { result: "Candidate-1 check succeeded" } }],
+      "pass-2": [{ criterion: "checks", status: "pass", basis: "executed", reasoning: "Candidate-2 met the criterion", execution: { result: "Candidate-2 check succeeded" } }],
+    } } } } },
+    judge: { result: { passes: [
+      { pass: 1, presentation: ["stock", "current"], winner: "candidate-2", rationale: "Candidate-1 inspected <main>", scores: { "candidate-1": { correctness: 3 }, "candidate-2": { correctness: 4 } } },
+      { pass: 2, presentation: ["current", "stock"], winner: "candidate-1", evidence: ["Candidate-2 added checks"], issues: [{ candidate: "candidate-2", detail: "constructor" }] },
+      { pass: 3, winner: "candidate-1" },
+    ] } },
+  };
+  await file(join(directory, "reports/report.json"), JSON.stringify(report));
+  const entry = await attach(directory);
+  const input = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const rendered = runInNewContext(source + "\nresultContent(input)", { input });
+  expect(rendered).toContain("Pass 1: Codex + Mekugi");
+  expect(rendered).toContain("Pass 2: Codex + Mekugi");
+  expect(rendered).toContain("Pass 3: Unmapped setup");
+  expect(rendered).toContain("Direct Codex inspected &lt;main&gt;");
+  expect(rendered).toContain("Direct Codex added checks");
+  expect(rendered).toContain("Direct Codex met the criterion");
+  expect(rendered).toContain("Direct Codex check succeeded");
+  expect(rendered).not.toContain("Codex + Mekugi met the criterion");
+  expect(rendered).toContain("Recorded outcome: Codex + Mekugi");
+  expect(rendered).not.toMatch(/candidate[-_ ]([12])|>A[: ]|>B[: ]/i);
+  expect(input.report).toEqual(report);
 });
 
 test("artifact access exposes evidence while rejecting private files, traversal, and symlinks", async () => {

@@ -23,10 +23,18 @@ randomized causal estimates. See the [CLI guide](cli.md) for repeated runs and t
 | `journal-compaction` | Model-written versus router compaction with the same Mekugi setup. |
 | `duplicate-output` | Mekugi duplicate-output projection off versus on. |
 
-The Web UI's pair measurement headers name the actual A and B arms, including
-their launcher, setup, or comparison treatment. These names are available in
-partial results before a report is generated. Generated reports retain their
-recorded arm names.
+The Web UI names each compared setup by its launcher, guidance, or treatment.
+Previews, measurements, execution status, output, and source assessments use these
+names instead of positional letters or numbered candidate aliases. Names are
+available in partial results before a report is generated. Source assessments
+resolve identities through each pass's recorded presentation order. Missing
+identity mappings are shown as unavailable. Stored reports and evidence keep
+their original identifiers.
+
+The dark-mode workbench uses readable sans-serif typography, paired setup previews,
+and grouped run settings. Navigation, forms, and results adapt to narrow screens
+with visible keyboard focus. Fonts are served locally, including from the
+standalone executable; the browser does not contact an external font service.
 
 ## Stock Codex versus stock plus Mekugi
 

@@ -12,6 +12,8 @@ import type { RunState } from "./types";
 import html from "./web/index.html" with { type: "text" };
 import css from "./web/style.css" with { type: "text" };
 import javascript from "./web/app.js" with { type: "text" };
+import interfaceFont from "./web/fonts/ibm-plex-sans-latin.woff2" with { type: "file" };
+import fontLicense from "./web/fonts/OFL.txt" with { type: "text" };
 
 type JsonObject = Record<string, unknown>;
 type Kind = "pair" | "trials" | "suite" | "build";
@@ -309,9 +311,10 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       live.build = await tail(entry.directory, "build.stdout");
       live["build stderr"] = await tail(entry.directory, "build.stderr");
     }
-    const labels = entry.kind === "pair" ? armLabels({
-      comparison: state.comparison as RunState["comparison"],
-      execution: object(state.execution) as RunState["execution"],
+    const labelState = entry.kind === "trials" ? object(state.controls) : state;
+    const labels = entry.kind === "pair" || entry.kind === "trials" ? armLabels({
+      comparison: labelState.comparison as RunState["comparison"],
+      execution: object(labelState.execution) as RunState["execution"],
     }) : undefined;
     return { entry, state, report, arm_labels: labels, artifacts, children, live };
   }
@@ -442,6 +445,8 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         if (req.method === "GET" && url.pathname === "/") return new Response(html as unknown as string, { headers: { "Content-Type": "text/html; charset=utf-8" } });
         if (req.method === "GET" && url.pathname === "/style.css") return new Response(css, { headers: { "Content-Type": "text/css" } });
         if (req.method === "GET" && url.pathname === "/app.js") return new Response(javascript, { headers: { "Content-Type": "text/javascript" } });
+        if (req.method === "GET" && url.pathname === "/fonts/ibm-plex-sans-latin.woff2") return new Response(Bun.file(interfaceFont), { headers: { "Content-Type": "font/woff2" } });
+        if (req.method === "GET" && url.pathname === "/fonts/OFL.txt") return new Response(fontLicense, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
         if (req.method === "GET" && url.pathname === "/api/config") return json({ token, defaults, comparisons: COMPARISONS, tasks: taskCatalog(), commands: COMMAND_OPTIONS, actions: ACTIONS, paidCommands: [...PAID] });
         if (req.method === "GET" && url.pathname === "/api/entries") return json(entryList());
         if (req.method === "GET" && url.pathname === "/api/events") {

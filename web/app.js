@@ -9,6 +9,21 @@ let config, workflow = "pair", selected, snapshot, activeId, busy = false, actio
 let artifactItems = [];
 let listSignature, artifactSignature, childSignature, liveKeys;
 let eventStream, latestSnapshot;
+function setupLabels(data) {
+  return { stock: "Setup unavailable", current: "Setup unavailable", ...obj(data.arm_labels), ...obj(obj(data.report).arm_labels) };
+}
+function displayName(value, names) {
+  const text = String(value ?? "");
+  return Object.hasOwn(names, text) ? names[text] : text.replace(/\bcandidate[-_ ]([12])\b/gi, (_, number) => names["candidate-" + number] || "Unmapped setup");
+}
+function assessmentNames(value, names) {
+  const order = obj(value).presentation;
+  return Array.isArray(order) ? { ...names, "candidate-1": names[order[0]] || "Unmapped setup", "candidate-2": names[order[1]] || "Unmapped setup" } : names;
+}
+function semanticNames(key, passes, names) {
+  const pass = (Array.isArray(passes) ? passes : []).find((item) => key === `pass-${item.pass}` || key === `pass-${item.pass}-existing`);
+  return assessmentNames(pass, names);
+}
 function field(label, name, value = "", type = "text", hint = "", prefix = "f") {
   const id = prefix + "-" + name;
   return '<div class="field"><label for="' + id + '">' + esc(label) + '</label><input id="' + id + '" name="' + esc(name) + '" type="' + type + '" value="' + esc(value) + '" spellcheck="false">' + (hint ? '<p class="hint">' + esc(hint) + '</p>' : "") + "</div>";
@@ -65,13 +80,13 @@ function drawLaunch() {
     fields = '<div class="grid">'
       + select("Comparison", "preset", config.comparisons.map((item) => [item.id, item.title]), defaults.preset)
       + select("Task", "task", config.tasks.map((item) => [item.id, item.title]), defaults.task)
-      + '</div><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><div class="grid">'
-      + field("Source checkout", "source", task.source, "text", "Local Git checkout. The default NVM source can be cloned during preparation.")
+      + '</div><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><section class="form-section" aria-labelledby="run-settings-title"><h2 id="run-settings-title">Run configuration</h2><div class="grid">'
+      + '<div class="source-field">' + field("Source checkout", "source", task.source, "text", "Local Git checkout. The default NVM source can be cloned during preparation.") + '</div>'
       + select("Model", "model", [["gpt-6-astra", "GPT-6 Astra"], ["gpt-6.1-sol", "GPT-6.1 Sol"]], defaults.model)
       + select("Reasoning effort", "reasoning-effort", [["", "Task default"], ...["low", "medium", "high", "xhigh"].map((value) => [value, words(value)])], "", "NVM and portable packs: medium. Long-horizon tasks: xhigh. Grok: high.")
       + field("Fresh pair count", "count", "1", "number", "One is a single pair. Two or more create a trial set.")
       + select("Trial arm order", "order", [["concurrent", "Concurrent"], ["alternating", "Alternating first arm"]], "concurrent")
-      + '<div id="compaction-limit-field">' + field("Shared compaction token limit", "auto-compact-limit", "", "number", "Required for the journal comparison.") + "</div></div>"
+      + '<div id="compaction-limit-field">' + field("Shared compaction token limit", "auto-compact-limit", "", "number", "Required for the journal comparison.") + "</div></div></section>"
       + '<details class="advanced"><summary>Runtime and resource settings</summary><div class="grid">' + sharedFields()
       + field("Codex authentication file", "auth-file", defaults["auth-file"], "text", "Local path only. Never paste credential contents.")
       + field("Grok authentication file", "grok-auth-file", defaults["grok-auth-file"])
@@ -139,7 +154,7 @@ function updateCombination() {
   const grok = comparison.id === "codex-mekugi-grok";
   const mekugi = comparison.id !== "stock-current" || $("f-current-launcher").value === "mekugi";
   const titleB = comparison.id === "stock-current" && mekugi ? "Mekugi · current setup" : comparison.b;
-  $("comparison-preview").innerHTML = '<article><span class="arm-id">A</span><h2>' + esc(comparison.a) + '</h2><p>Fresh isolated workspace</p></article><article><span class="arm-id">B</span><h2>' + esc(titleB) + '</h2><p>Same pinned task and resource limits</p></article>';
+  $("comparison-preview").innerHTML = '<article><h2>' + esc(comparison.a) + '</h2><p>Fresh isolated workspace</p></article><article><h2>' + esc(titleB) + '</h2><p>Same task and resource limits</p></article>';
   $("comparison-description").textContent = comparison.description + (grok ? " The fixed model is Grok 4.7." : "");
   setEnabled("f-model", !grok);
   setEnabled("f-current-launcher", comparison.id === "stock-current");
@@ -201,18 +216,23 @@ async function perform(id, endpoint, body) {
   } catch (error) { showNotice(id, error.message, true); }
   finally { busy = false; updateConsent(); }
 }
-function tree(value, depth = 0) {
+function tree(value, depth = 0, names = {}, passes = []) {
+  names = assessmentNames(value, { ...names, ...obj(obj(value).arm_labels) });
+  const judge = obj(obj(value).judge), recordedPasses = obj(judge.result).passes ?? judge.passes;
+  if (Array.isArray(recordedPasses)) passes = recordedPasses;
   if (value === null || value === undefined) return '<span class="hint">Unknown</span>';
-  if (typeof value !== "object") return esc(typeof value === "boolean" ? value ? "Yes" : "No" : value);
-  if (depth > 9) return "<pre>" + esc(JSON.stringify(value, null, 2)) + "</pre>";
+  if (typeof value !== "object") return esc(typeof value === "boolean" ? value ? "Yes" : "No" : displayName(value, names));
+  if (depth > 9) return "<pre>" + esc(displayName(JSON.stringify(value, null, 2), names)) + "</pre>";
   const entries = Object.entries(value);
+  const label = (key) => displayName(key.startsWith("current_minus_stock") && names.current && names.stock
+    ? `${names.current} minus ${names.stock}${words(key.slice("current_minus_stock".length))}` : Object.hasOwn(names, key) ? names[key] : words(key), names);
   const scalar = entries.filter(([, item]) => item === null || typeof item !== "object");
   const nested = entries.filter(([, item]) => item !== null && typeof item === "object");
-  return (scalar.length ? "<dl>" + scalar.map(([key, item]) => "<dt>" + esc(words(key)) + "</dt><dd>" + tree(item, depth + 1) + "</dd>").join("") + "</dl>" : "")
-    + nested.map(([key, item]) => "<details><summary>" + esc(words(key)) + (Array.isArray(item) ? " (" + item.length + ")" : "") + "</summary>" + tree(item, depth + 1) + "</details>").join("");
+  return (scalar.length ? "<dl>" + scalar.map(([key, item]) => "<dt>" + esc(label(key)) + "</dt><dd>" + tree(item, depth + 1, names, passes) + "</dd>").join("") + "</dl>" : "")
+    + nested.map(([key, item]) => "<details><summary>" + esc(label(key)) + (Array.isArray(item) ? " (" + item.length + ")" : "") + "</summary>" + tree(item, depth + 1, semanticNames(key, passes, names), passes) + "</details>").join("");
 }
-function disclosure(title, value) {
-  return '<details class="tree"><summary>' + esc(title) + "</summary><div>" + tree(value) + "</div></details>";
+function disclosure(title, value, names, passes) {
+  return '<details class="tree"><summary>' + esc(title) + "</summary><div>" + tree(value, 0, names, passes) + "</div></details>";
 }
 function metricTable(report, state, labels) {
   const arms = obj(report.arms);
@@ -228,31 +248,37 @@ function metricTable(report, state, labels) {
     ["Command time", metric(a.totals.command_seconds, 2) + (typeof a.totals.command_seconds === "number" ? " s" : ""), metric(b.totals.command_seconds, 2) + (typeof b.totals.command_seconds === "number" ? " s" : "")],
     ["Estimated API cost", typeof a.totals.estimated_api_usd === "number" ? "$" + metric(a.totals.estimated_api_usd, 6) : "Unknown", typeof b.totals.estimated_api_usd === "number" ? "$" + metric(b.totals.estimated_api_usd, 6) : "Unknown"],
   ];
-  return '<div class="table-scroll" tabindex="0" role="region" aria-label="Pair measurements"><table><thead><tr><th>Measurement</th><th class="a">A: ' + esc(labels.stock || "Stock") + '</th><th class="b">B: ' + esc(labels.current || "Current") + "</th></tr></thead><tbody>"
+  return '<div class="table-scroll" tabindex="0" role="region" aria-label="Pair measurements"><table><thead><tr><th>Measurement</th><th class="a">' + esc(labels.stock) + '</th><th class="b">' + esc(labels.current) + "</th></tr></thead><tbody>"
     + rows.map(([label, av, bv]) => "<tr><th>" + esc(label) + '</th><td class="metric a">' + esc(av) + '</td><td class="metric b">' + esc(bv) + "</td></tr>").join("") + "</tbody></table></div>";
 }
-function criterionTable(report) {
+function criterionTable(report, labels) {
   const contract = obj(obj(report.criteria).contract);
   const criteria = Array.isArray(contract.criteria) ? contract.criteria : [];
   if (!criteria.length) return "";
   const evidence = (arm, id) => {
     const grade = obj(obj(obj(report.arms)[arm]).result).grade;
-    const matches = Object.values(obj(obj(grade).semantic)).flat().filter((item) => obj(item).criterion === id);
-    return matches.length ? matches.map((item) => '<details><summary>' + esc(words(item.status)) + " · " + esc(item.basis) + "</summary><p>" + esc(item.reasoning) + '</p><div class="tree">' + tree(item.execution ?? item.check) + "</div></details>").join("") : '<span class="hint">Not assessed</span>';
+    const matches = Object.entries(obj(obj(grade).semantic)).flatMap(([key, items]) => {
+      const names = semanticNames(key, obj(obj(report.judge).result).passes, labels);
+      return (Array.isArray(items) ? items : []).filter((item) => obj(item).criterion === id).map((item) => '<details><summary>' + esc(words(item.status)) + " · " + esc(item.basis) + "</summary><p>" + esc(displayName(item.reasoning, names)) + '</p><div class="tree">' + tree(item.execution ?? item.check, 0, names) + "</div></details>");
+    });
+    return matches.join("") || '<span class="hint">Not assessed</span>';
   };
-  return '<h3>Criterion outcomes</h3><div class="table-scroll" tabindex="0" role="region" aria-label="Criterion outcomes"><table><thead><tr><th>Criterion</th><th class="a">A evidence</th><th class="b">B evidence</th></tr></thead><tbody>'
+  return '<h3>Criterion outcomes</h3><div class="table-scroll" tabindex="0" role="region" aria-label="Criterion outcomes"><table><thead><tr><th>Criterion</th><th class="a">' + esc(labels.stock) + '</th><th class="b">' + esc(labels.current) + '</th></tr></thead><tbody>'
     + criteria.map((item) => "<tr><th>" + esc(item.id) + '<p class="hint">' + esc(item.description) + '</p></th><td class="a">' + evidence("stock", item.id) + '</td><td class="b">' + evidence("current", item.id) + "</td></tr>").join("") + "</tbody></table></div>";
 }
-function judgeSummary(judge) {
+function judgeSummary(judge, labels) {
   const result = obj(obj(judge).result);
   if (!Array.isArray(result.passes) || !result.passes.length) return "";
-  return '<h3>Source assessment</h3>' + result.passes.map((pass) => '<details class="tree"><summary>Pass ' + esc(pass.pass) + ": " + esc(pass.winner) + "</summary><p>" + esc(pass.rationale) + "</p>"
-    + (Array.isArray(pass.evidence) ? "<ul>" + pass.evidence.map((item) => "<li>" + esc(item) + "</li>").join("") + "</ul>" : "")
-    + "<div>" + tree({ presentation: pass.presentation, scores: pass.scores, issues: pass.issues, criteria: pass.criteria }) + "</div></details>").join("");
+  return '<h3>Source assessment</h3>' + result.passes.map((pass) => {
+    const names = assessmentNames(pass, labels);
+    return '<details class="tree"><summary>Pass ' + esc(pass.pass) + ": " + esc(displayName(pass.winner, names)) + "</summary><p>" + esc(displayName(pass.rationale, names)) + "</p>"
+      + (Array.isArray(pass.evidence) ? "<ul>" + pass.evidence.map((item) => "<li>" + esc(displayName(item, names)) + "</li>").join("") + "</ul>" : "")
+      + "<div>" + tree({ presentation: pass.presentation, scores: pass.scores, issues: pass.issues, criteria: pass.criteria }, 0, labels) + "</div></details>";
+  }).join("");
 }
 function resultContent(data) {
   const state = obj(data.state), report = obj(data.report);
-  const labels = { ...obj(data.arm_labels), ...obj(report.arm_labels) };
+  const labels = setupLabels(data);
   const currentInvalidity = Array.isArray(state.invalidity_reasons) ? state.invalidity_reasons : [];
   const invalidated = currentInvalidity.length > 0;
   const invalidationNotice = invalidated ? '<div class="notice error"><strong>Interpretation invalidated</strong><p>' + esc(currentInvalidity.join("\n")) + "</p><p>Regenerate the report to update exported evidence. Recorded measurements remain available below.</p></div>" : "";
@@ -263,27 +289,27 @@ function resultContent(data) {
     const complete = report.measurement_complete === true && !invalidated;
     return "<h2>Comparison results</h2><p class='hint'>" + esc(report.design || "Descriptive paired evidence") + "</p>"
       + (invalidated ? invalidationNotice : '<div class="result-summary' + (complete ? "" : " warn") + '"><strong>' + (complete ? "Measurement complete" : "Measurement incomplete") + "</strong><p>" + esc(report.winner_reason || report.comparison_exclusion || "Interpret the available evidence with its validity gates.") + "</p>"
-      + (report.winner ? "<p>Recorded outcome: " + esc(report.winner) + "</p>" : "") + "</div>")
+      + (report.winner ? "<p>Recorded outcome: " + esc(displayName(report.winner, labels)) + "</p>" : "") + "</div>")
       + metricTable(report, state, labels)
       + (warnings.length ? '<ul class="warning-list">' + warnings.map((warning) => "<li>" + esc(warning) + "</li>").join("") + "</ul>" : "")
-      + criterionTable(report) + judgeSummary(report.judge)
-      + disclosure("Criterion evidence and grading", { contract: report.criteria, candidates: Object.fromEntries(Object.entries(obj(report.arms)).map(([name, arm]) => [name, obj(obj(arm).result).grade])) })
-      + disclosure("Source assessments and judge reasoning", report.judge)
-      + disclosure("Time, token and cost differences", { current_minus_stock_percent: report.current_minus_stock_percent, efficiency: report.efficiency, performance_breakdown: report.performance_breakdown })
-      + disclosure("Usage details and pricing provenance", { arms: Object.fromEntries(Object.entries(obj(report.arms)).map(([name, arm]) => [name, obj(arm).usage])), pricing: report.pricing })
-      + disclosure("Diagnostics and workflow evidence", { mekugi: report.mekugi_diagnostics_by_arm ?? report.mekugi_diagnostics, workflow: report.workflow_mechanisms })
-      + disclosure(invalidated ? "Retained report, regenerate after invalidation" : "Complete structured report", report);
+      + criterionTable(report, labels) + judgeSummary(report.judge, labels)
+      + disclosure("Criterion evidence and grading", { contract: report.criteria, setups: Object.fromEntries(Object.entries(obj(report.arms)).map(([name, arm]) => [name, obj(obj(arm).result).grade])) }, labels, obj(obj(report.judge).result).passes)
+      + disclosure("Source assessments and judge reasoning", report.judge, labels)
+      + disclosure("Time, token and cost differences", { current_minus_stock_percent: report.current_minus_stock_percent, efficiency: report.efficiency, performance_breakdown: report.performance_breakdown }, labels)
+      + disclosure("Usage details and pricing provenance", { arms: Object.fromEntries(Object.entries(obj(report.arms)).map(([name, arm]) => [name, obj(arm).usage])), pricing: report.pricing }, labels)
+      + disclosure("Diagnostics and workflow evidence", { mekugi: report.mekugi_diagnostics_by_arm ?? report.mekugi_diagnostics, workflow: report.workflow_mechanisms }, labels)
+      + disclosure(invalidated ? "Retained report, regenerate after invalidation" : "Complete structured report", report, labels);
   }
   if (data.entry.kind === "trials") {
     const rows = Object.entries(obj(report.current_minus_stock)).map(([name, value]) => {
       const stats = obj(value);
       return "<tr><th>" + esc(words(name)) + "</th><td>" + metric(obj(stats.stock).mean, 3) + "</td><td>" + metric(obj(stats.current).mean, 3) + "</td><td>" + metric(obj(stats.difference).mean, 3) + "</td><td>" + metric(obj(stats.percent).mean, 2) + "</td><td>" + metric(obj(stats.difference).n) + "</td></tr>";
     }).join("");
-    return "<h2>Trial-set results</h2><p>" + metric(report.eligible_pairs) + " eligible pairs of " + metric(report.planned_pairs) + " planned. Differences are B minus A.</p><p class='hint'>Unavailable metrics are excluded. These observations do not establish causality.</p>"
-      + '<div class="table-scroll" tabindex="0" role="region" aria-label="Trial statistics"><table><thead><tr><th>Metric</th><th>A mean</th><th>B mean</th><th>Difference mean</th><th>Percent mean</th><th>Pairs</th></tr></thead><tbody>' + rows + "</tbody></table></div>"
-      + disclosure("Distributions, medians and sample variation", report.current_minus_stock)
-      + disclosure("Pair eligibility, results and source assessments", report.pairs)
-      + disclosure("Complete trial report", report);
+    return "<h2>Trial-set results</h2><p>" + metric(report.eligible_pairs) + " eligible pairs of " + metric(report.planned_pairs) + " planned. Differences are " + esc(labels.current) + " minus " + esc(labels.stock) + ".</p><p class='hint'>Unavailable metrics are excluded. These observations do not establish causality.</p>"
+      + '<div class="table-scroll" tabindex="0" role="region" aria-label="Trial statistics"><table><thead><tr><th>Metric</th><th>' + esc(labels.stock) + ' mean</th><th>' + esc(labels.current) + ' mean</th><th>Difference mean</th><th>Percent mean</th><th>Pairs</th></tr></thead><tbody>' + rows + "</tbody></table></div>"
+      + disclosure("Distributions, medians and sample variation", report.current_minus_stock, labels)
+      + disclosure("Pair eligibility, results and source assessments", report.pairs, labels)
+      + disclosure("Complete trial report", report, labels);
   }
   if (data.entry.kind === "suite") {
     const rows = (report.rows || []).map((row) => "<tr><th>" + esc(row.task) + "</th><td>" + esc(row.setup) + "</td><td>" + metric(row.planned) + "</td><td>" + metric(row.measured) + "</td><td>" + metric(row.both_pass) + "</td></tr>").join("");
@@ -304,13 +330,14 @@ function actionFields(entry) {
 }
 function updateActionFields() {
   const command = $("a-action-command").value;
+  const setups = setupLabels(snapshot || {});
   const targetKeys = new Set(["run-dir", "trial-set", "suite-run"]);
   const fields = config.commands[command].filter((key) => !targetKeys.has(key));
   const labels = { arm: "Selected arm (optional)", "control-run": "Completed stock control directory (optional)", "control-bundle-sha256": "Control bundle SHA-256 (optional)", "recover-judge": "Recover eligible failed judge stages", "source-assessments": "Supplied source-assessment JSON (optional)", exclusions: "Usage exclusions JSON file", reason: "Invalidation reason", "output-dir": "Report output directory (optional)", count: "Fresh pair count", order: "Trial arm order", "auth-file": "Codex authentication file", "grok-auth-file": "Grok authentication file", "docker-bin": "Docker executable", "output-parent": "Output parent (optional)" };
   $("action-options").innerHTML = fields.map((key) => {
     if (key === "confirm-paid-inference") return check("I authorize paid inference for this action", key, "a");
     if (["recover-judge", "protect-mekugi"].includes(key)) return check(labels[key] || words(key), key, "a");
-    if (key === "arm") return select(labels[key], key, [["", "Both arms"], ["stock", "A only"], ["current", "B only"]], "", "", "a");
+    if (key === "arm") return select("Selected setup (optional)", key, [["", "Both setups"], ["stock", setups.stock], ["current", setups.current]], "", "", "a");
     if (key === "order") return select(labels[key], key, [["concurrent", "Concurrent"], ["alternating", "Alternating"]], "concurrent", "", "a");
     return field(labels[key] || words(key), key, key === "count" ? "2" : config.defaults[key] || "", key === "count" ? "number" : "text", "", "a");
   }).join("");
@@ -346,6 +373,7 @@ function readableLog(text) {
 }
 function renderSnapshot(data) {
   snapshot = data;
+  const labels = setupLabels(data);
   const entry = data.entry, state = obj(data.state), job = obj(entry.job);
   $("run-title").textContent = entry.title;
   $("run-directory").textContent = entry.directory || "Preparing the local environment; the evidence directory will appear here.";
@@ -355,8 +383,8 @@ function renderSnapshot(data) {
   const statuses = obj(state.arm_attempts);
   const errors = [job.error, state.error, obj(state.finishing).error, obj(state.judge).error].filter(Boolean);
   const phaseItems = entry.kind === "pair" ? [
-    ["A execution", obj(statuses.stock).status || "Not started"],
-    ["B execution", obj(statuses.current).status || "Not started"],
+    [labels.stock + " execution", obj(statuses.stock).status || "Not started"],
+    [labels.current + " execution", obj(statuses.current).status || "Not started"],
     ["Source assessment", obj(state.judge).status || "Not started"],
     ["Report finishing", obj(state.finishing).status || (data.report ? "Report available" : "Not started")],
   ] : [["Evidence", state.status || "Preparing"], ["Operation", job.status || "Attached"], ["Completed children", data.children.filter((child) => child.status === "complete").length + " of " + data.children.length], ["Report", data.report ? "Available" : "Not yet generated"]];
@@ -366,16 +394,17 @@ function renderSnapshot(data) {
   renderElapsed();
   const log = $("phase-log");
   const atBottom = log.scrollHeight - log.clientHeight - log.scrollTop < 40;
-  log.textContent = job.log || "No phase messages from this server operation. Attached runs expose persisted state and candidate logs below.";
+  log.textContent = job.log || "No phase messages from this server operation. Attached runs expose persisted state and setup output below.";
   if ($("follow-log").checked && atBottom) log.scrollTop = log.scrollHeight;
   const live = Object.entries(obj(data.live)).filter(([, text]) => text);
   const keys = live.map(([arm]) => arm).join(",");
   if (liveKeys !== keys) {
-    $("live-output").innerHTML = live.map(([arm]) => '<details class="panel"><summary>' + esc(arm.startsWith("build") ? words(arm) + " output" : arm === "stock" ? "A candidate output" : "B candidate output") + '</summary><pre class="log" data-live="' + esc(arm) + '"></pre></details>').join("");
+    $("live-output").innerHTML = live.map(([arm]) => '<details class="panel"><summary></summary><pre class="log" data-live="' + esc(arm) + '"></pre></details>').join("");
     liveKeys = keys;
   }
   for (const [arm, text] of live) {
     const element = $("live-output").querySelector('[data-live="' + arm + '"]');
+    element.previousElementSibling.textContent = (arm.startsWith("build") ? words(arm) : labels[arm] || "Setup unavailable") + " output";
     const wasAtBottom = element.scrollHeight - element.clientHeight - element.scrollTop < 40;
     element.textContent = readableLog(text);
     if ($("follow-log").checked && wasAtBottom) element.scrollTop = element.scrollHeight;
@@ -391,13 +420,14 @@ function renderSnapshot(data) {
     for (const detail of $("results").querySelectorAll("details")) if (opened.includes(detail.querySelector("summary").textContent)) detail.open = true;
     reportSignature = signature;
   }
-  if (stateSignature !== JSON.stringify(state)) {
-    $("state-details").innerHTML = '<div class="tree">' + tree(state) + "</div>"; stateSignature = JSON.stringify(state);
+  if (stateSignature !== JSON.stringify([state, labels])) {
+    $("state-details").innerHTML = '<div class="tree">' + tree(state, 0, labels) + "</div>"; stateSignature = JSON.stringify([state, labels]);
   }
   artifactItems = data.artifacts; renderArtifacts();
   if (actionEntry !== entry.id + entry.kind + Boolean(entry.directory)) {
     actionFields(entry); actionEntry = entry.id + entry.kind + Boolean(entry.directory);
   }
+  for (const option of $("a-arm")?.options || []) if (option.value) option.textContent = labels[option.value];
   $("start-action").disabled = busy || Boolean(activeId);
   $("updated-at").textContent = $("watch-enabled").checked ? "Updated " + new Date().toLocaleTimeString() : "Evidence updates paused. Operation status stays live.";
   $("watch-error").textContent = "";
@@ -459,6 +489,7 @@ function connectEvents() {
 }
 async function init() {
   try {
+    if (window.matchMedia("(max-width: 960px)").matches) $("evidence-nav").open = false;
     config = await api("config");
     drawLaunch();
     $("new-run").addEventListener("click", () => { selected = undefined; $("launch-view").hidden = false; $("watch-view").hidden = true; history.replaceState(null, "", "/"); connectEvents(); });
