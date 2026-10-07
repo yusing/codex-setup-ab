@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { BOOLEAN_FLAGS, COMMAND_OPTIONS } from "./cli-options";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { validateMekugiFlags } from "./mekugi";
@@ -11,12 +12,21 @@ import { remeterRun } from "./remeter";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { judgeRun } from "./judge";
 import { buildReport, invalidateRun } from "./report";
+import { runLaunch } from "./launch";
+import { serveWorkbench } from "./web-server";
 
 export const VERSION = "0.1.1";
 const DEFAULT_BASE = "bb9e740362fd86c9214f5c893c65ae6c46587a60";
 const DEFAULT_FORBIDDEN = "d50b9e6d7a2b01fc033a8aab523791876e4441b5";
 
 const HELP = `codex-ab ${VERSION}
+
+  serve [--host ADDRESS] [--port PORT]
+                                   Open the human workbench (default 127.0.0.1:4849)
+  launch [--preset NAME] [--task NAME] [--prepare-only]
+         [--model NAME] [--reasoning-effort LEVEL] [--journal-compaction MODE]
+         [--count N] [--order concurrent|alternating] [--confirm-paid-inference]
+                                   Agent-directed preset launch with the existing path overrides
 
 Prepare, run, grade, blindly judge, and report isolated Codex pairs or a pinned trial set.
 
@@ -85,33 +95,20 @@ Run and judge require the explicit model-execution confirmation flag.
 `;
 
 function options(command: string, args: string[]): Record<string, string | boolean> {
-  const allowed: Record<string, string[]> = {
-    "build-mekugi": ["source", "image", "output-parent", "docker-bin"],
-    prepare: ["auto-compact-limit", "profile", "model", "reasoning-effort", "source", "base", "forbidden", "task", "criteria", "task-pack", "output-parent", "current-home", "review-treatment", "comparison", "mekugi-flags", "mekugi-source", "mekugi-build", "protect-mekugi", "current-launcher", "mekugi-bin", "grok-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory"],
-    "prepare-trials": ["run-dir", "count", "order", "output-parent", "docker-bin"],
-    "prepare-suite": ["suite", "sources-file", "count", "comparison", "order", "output-parent", "current-home", "review-treatment", "mekugi-flags", "mekugi-source", "mekugi-build", "mekugi-bin", "codex-bin", "bun-bin", "image", "timeout", "cpus", "memory", "docker-bin"],
-    "run-suite": ["suite-run", "auth-file", "docker-bin", "confirm-paid-inference"],
-    "report-suite": ["suite-run"],
-    "run-trials": ["trial-set", "auth-file", "grok-auth-file", "docker-bin", "confirm-paid-inference"],
-    "report-trials": ["trial-set"],
-    preflight: ["run-dir", "docker-bin"],
-    run: ["run-dir", "auth-file", "grok-auth-file", "docker-bin", "arm", "control-run", "control-bundle-sha256", "confirm-paid-inference"],
-    finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference", "recover-judge"],
-    judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
-    remeter: ["run-dir", "exclusions"],
-    report: ["run-dir", "output-dir", "source-assessments"],
-    invalidate: ["run-dir", "reason"],
-  };
-  if (!Object.hasOwn(allowed, command)) throw new Error(`unknown command: ${command}`);
+  if (!Object.hasOwn(COMMAND_OPTIONS, command)) throw new Error(`unknown command: ${command}`);
   const parsed: Record<string, string | boolean> = {};
   for (let i = 0; i < args.length; i++) {
     const item = args[i];
     if (!item.startsWith("--")) throw new Error(`unexpected argument: ${item}`);
-    const key = item.slice(2);
-    if (!allowed[command].includes(key)) throw new Error(`unknown option for ${command}: ${item}`);
+    const separator = item.indexOf("=");
+    const key = item.slice(2, separator < 0 ? undefined : separator);
+    if (!COMMAND_OPTIONS[command].includes(key)) throw new Error(`unknown option for ${command}: ${item}`);
     if (Object.hasOwn(parsed, key)) throw new Error(`duplicate option: ${item}`);
-    if (key === "confirm-paid-inference" || key === "protect-mekugi" || key === "recover-judge") { parsed[key] = true; continue; }
-    const value = args[++i];
+    if (BOOLEAN_FLAGS.has(key)) {
+      if (separator >= 0) throw new Error(`${item} does not accept a value`);
+      parsed[key] = true; continue;
+    }
+    const value = separator >= 0 ? item.slice(separator + 1) : args[++i];
     if (!value || value.startsWith("--")) throw new Error(`${item} requires a value`);
     parsed[key] = value;
   }
@@ -133,6 +130,18 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (argv[0] === "--version" || argv[0] === "-V") { process.stdout.write(`${VERSION}\n`); return 0; }
   const command = argv[0];
   const o = options(command, argv.slice(1));
+  if (command === "serve") {
+    const port = Number(string(o, "port", "4849"));
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error("--port must be an integer from 1 to 65535");
+    const workbench = serveWorkbench(port, string(o, "host", "127.0.0.1"));
+    const stop = () => { void workbench.shutdown().then(() => process.exit(0)); };
+    process.once("SIGINT", stop); process.once("SIGTERM", stop);
+    return 0;
+  }
+  if (command === "launch") {
+    await runLaunch(o);
+    return 0;
+  }
   if (command === "build-mekugi") {
     const controller = new AbortController();
     const cancel = () => controller.abort();
@@ -274,5 +283,5 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 }
 
 if (import.meta.main) {
-  main().then(code => process.exit(code)).catch(error => { process.stderr.write(`codex-ab: ${error instanceof Error ? error.message : String(error)}\n`); process.exit(1); });
+  main().then(code => { if (process.argv[2] !== "serve") process.exit(code); }).catch(error => { process.stderr.write(`codex-ab: ${error instanceof Error ? error.message : String(error)}\n`); process.exit(1); });
 }

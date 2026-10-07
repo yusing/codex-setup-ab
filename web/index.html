@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Codex AB comparison workbench</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a href="/" class="brand">Codex <span>AB</span></a><span>Comparison workbench</span><span id="connection" role="status">Connecting to local service…</span></header>
+  <div class="workspace">
+    <aside aria-label="Runs and evidence">
+      <button id="new-run" class="primary">New comparison</button>
+      <h2>Runs and evidence</h2>
+      <p class="hint">Operations continue when you close this tab. Keep the local server running.</p>
+      <nav id="run-list" aria-label="Run list"><p>No runs yet. Set up a comparison or attach retained evidence.</p></nav>
+      <form id="attach-form">
+        <label for="attach-directory">Attach existing evidence</label>
+        <input id="attach-directory" name="directory" placeholder="/path/to/run-or-trial-set" required spellcheck="false">
+        <button type="submit">Attach directory</button>
+        <p id="attach-error" class="error" role="alert"></p>
+      </form>
+    </aside>
+    <main id="main">
+      <section id="launch-view">
+        <div class="page-heading"><div><h1>Set up a comparison</h1><p>Fresh, isolated arms. One task, two treatments.</p></div><span class="local-badge">Local workbench</span></div>
+        <div class="workflow-tabs" role="group" aria-label="Launch workflow">
+          <button data-workflow="pair" aria-pressed="true">Comparison or trials</button>
+          <button data-workflow="suite" aria-pressed="false">Task suite</button>
+          <button data-workflow="build" aria-pressed="false">Capture Mekugi build</button>
+        </div>
+        <form id="launch-form">
+          <div id="launch-fields"></div>
+          <div class="launch-footer">
+            <label class="check"><input type="checkbox" id="prepare-only" checked> Prepare only, without model inference</label>
+            <label id="consent-label" class="check consent" hidden><input type="checkbox" id="paid-consent"> I authorize paid model inference for this operation, including source assessment.</label>
+            <p id="inference-note" class="hint">Preparation may clone the NVM source and rebuild a missing or stale image. It makes no model requests.</p>
+            <div class="button-row"><button type="button" id="check-inputs">Check inputs</button><button type="submit" id="start-operation" class="primary">Prepare comparison</button></div>
+            <div id="input-status" class="notice" role="status" hidden></div>
+          </div>
+        </form>
+      </section>
+      <section id="watch-view" hidden>
+        <div class="page-heading"><div><h1 id="run-title">Run</h1><p id="run-directory" class="path"></p></div><button id="stop-operation" class="danger" hidden>Stop operation</button></div>
+        <div id="run-status" aria-live="polite"></div>
+        <div class="watch-controls"><label class="check"><input type="checkbox" id="watch-enabled" checked> Watch updates</label><label class="check"><input type="checkbox" id="follow-log" checked> Follow live output</label><span id="updated-at" class="hint"></span></div>
+        <div id="watch-error" class="error" role="alert"></div>
+        <section class="panel" aria-label="Operation phase log"><h2>Phase log</h2><pre id="phase-log" class="log" tabindex="0">Attach evidence or start an operation to see its phase messages.</pre></section>
+        <div id="live-output"></div>
+        <div id="children"></div>
+        <section id="results" class="results" aria-label="Results"></section>
+        <section class="panel" id="existing-actions"><h2>Existing-run actions</h2><p class="hint">Started runs are never restarted. Finishing and judge recovery use the existing audited CLI rules.</p><form id="action-form"><div id="action-fields"></div><div class="button-row"><button type="button" id="check-action">Check action inputs</button><button type="submit" class="primary" id="start-action">Start action</button></div><p id="action-status" role="status"></p></form></section>
+        <section class="panel"><div class="section-heading"><h2>Retained evidence</h2><input id="artifact-filter" type="search" aria-label="Filter evidence paths" placeholder="Filter reports, patches, logs…"></div><p id="artifact-note" class="hint"></p><div id="artifacts"></div></section>
+        <details class="panel"><summary>Run configuration and persisted state</summary><div id="state-details"></div></details>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

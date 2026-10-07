@@ -7,6 +7,7 @@
     "codex-ab": "./dist/codex-ab"
   },
   "scripts": {
+    "start": "bun cli.ts serve",
     "build": "bun build ./cli.ts --compile --outfile ./dist/codex-ab",
     "test": "bun test"
   },

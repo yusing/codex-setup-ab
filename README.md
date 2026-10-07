@@ -11,6 +11,10 @@ This is designed for a careful pilot, not a claim that one setup causes better r
 
 You need Bun 1.4 or later, Git, Python 3 for Mekugi export validation, Docker with BuildKit named-context support, access to the source commit, a standalone Codex binary and its matching `codex-code-mode-host` companion, and a mode-0600 Codex `auth.json`. The pinned Ubuntu 24.04 image copies Go 1.27.1 and Node 24.21.0 from public, digest-pinned official images; it does not inherit another benchmark image's runtime, wrappers, source, home, or credentials. It copies the chosen standalone Codex pair directly. Preparation records the CLI version plus both files' SHA-256 identities; preflight requires both container copies to match.
 
+For human-directed work, [start the Web UI](#launch-and-watch-in-the-web-ui). Pair
+preparation checks and builds the selected image automatically. The following manual
+build commands are for agent-directed setup.
+
 ```sh
 bun install
 bun run build
@@ -33,7 +37,71 @@ The harness follows the selected host Codex version, not a separately pinned CLI
 
 No model request occurs during the build or `prepare`. The `run` command includes two independent source-assessment passes after a completed pair. Each pass has two stages when the first harness succeeds, or three when one repair stage is needed; every stage allows at most three Sol launches on capacity errors. `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
 
-## Prepare an isolated pair
+## Launch and watch in the Web UI
+
+Start the dark-mode workbench from this repository:
+
+```sh
+bun install
+bun start
+```
+
+Open **http://localhost:4849**. `scripts/run.sh` also starts the Web UI and accepts only
+server options such as `--host ADDRESS` and `--port 4850`. Human-directed
+preparation, launch, watching, and result inspection belong in this workbench.
+The server binds to `127.0.0.1` by default. To bind to your Tailscale address:
+
+```sh
+bun start --host "$(tailscale ip -4)"
+```
+
+Open `http://<your-tailscale-ip>:4849` from a device in your tailnet. You can also
+use `--host 0.0.0.0` to listen on all IPv4 interfaces, or `--host ::` for IPv6.
+The workbench has no login and can control local files and paid runs. Bind only
+to trusted interfaces. Keep the server running while an operation is active.
+
+Choose a pinned task and comparison, set the source checkout, model, reasoning effort,
+and optional Mekugi settings, then **Check inputs**. The workbench explains incompatible
+combinations and missing local inputs before starting work. Advanced settings expose
+the existing preparation options, including custom task packs and task/criteria files.
+Choose preparation only for a model-free check, or explicitly consent to paid inference
+before starting a run. A repeat count of two or more prepares fresh trial pairs.
+The suite workflow accepts a suite manifest and source-mapping file.
+
+The run view shows phase messages, elapsed time, persisted run/arm/judge status,
+candidate output tails, and partial results while work continues. You can stop an
+active operation; cancellation retains available evidence and uses the runner's
+container cleanup. Closing a browser tab leaves the server operation running.
+Reload to reconnect, or attach an existing run, trial-set, or suite directory after
+restarting the server. Started runs are never restarted; the existing audited
+judge-recovery action remains available.
+
+Results include paired grades, time, token and estimated-cost comparisons, criterion
+evidence, judge reasoning, warnings, trial/suite aggregates, and retained reports,
+patches, and logs. Unknown metrics stay unknown. Each result is descriptive evidence,
+not a causal conclusion. Report generation, source assessments, usage correction,
+invalidation, preflight, and grading are available as existing-run actions in the UI.
+Mekugi build capture is available as a separate model-free operation.
+Explicit selection loads the selected run even when automatic watching is paused.
+Pausing evidence updates keeps operation status and Stop feedback live.
+Loaded or refreshed views use current invalidation reasons instead of winner claims
+from an older report. Regenerate the report to update exported evidence. Failed builds expose their available compiler
+logs and build outcome without requiring a successful provenance manifest.
+
+The workbench runs one operation at a time. Its run list is kept in server memory;
+benchmark evidence stays in the existing external run directories. Credential inputs
+are local file paths, never pasted credential contents. The browser does not serve
+private homes or authentication stores. Paid inference requires fresh consent for
+each operation. Checks and report-only actions do not grant this consent.
+
+For agent-directed preset launch, use `codex-ab launch --preset NAME` with the former
+task/model/reasoning/compaction flags and explicit `--confirm-paid-inference`.
+Use `--prepare-only` to stop before inference. Existing CLI commands and flags remain
+available to agents. The sections below document these agent-directed interfaces.
+
+## Agent-directed workflows
+
+### Prepare an isolated pair
 
 ```sh
 run_dir="$(./dist/codex-ab prepare \
@@ -137,11 +205,12 @@ previous reports remain unchanged.
 
 ## Stock Codex versus stock plus Mekugi
 
-The convenience runner builds the CLI and rebuilds a missing or stale local image from the selected host Codex pair, prepares the selected task and
-comparison, then starts the paid pair. The run command performs model-free preflight before inference:
+In the Web UI, select **Minimal Codex versus minimal Mekugi** and a task. Preparation
+checks the local image against the selected Codex pair and rebuilds a missing or stale
+image. The run performs model-free preflight before inference. The agent equivalent is:
 
 ```sh
-scripts/run.sh --preset stock-mekugi --task skills-mgr-agent-cli
+./dist/codex-ab launch --preset stock-mekugi --task skills-mgr-agent-cli --confirm-paid-inference
 ```
 
 Available tasks are `nvm-download-no-eval`, `session-retention`, and
@@ -155,27 +224,29 @@ Other presets are `stock-current`, `current-vs-current-mekugi`, and `codex-mekug
 Use `CODEX_AB_SKILLS_MGR_SOURCE` to select the skills manager task checkout
 (default `$HOME/projects/skills-mgr`). `CODEX_AB_MEKUGI_SOURCE` independently selects the
 Mekugi runtime checkout (default `$HOME/projects/mekugi`) and the source for `session-retention`;
-run `scripts/run.sh --help` for other path and image overrides.
+set the source, executable, image, and credential paths in the Web UI's settings.
 
 To select Mekugi's compaction mode explicitly:
 
 ```sh
 CODEX_AB_SKILLS_MGR_SOURCE=/path/to/skills-mgr \
-CODEX_AB_MEKUGI_SOURCE=/path/to/mekugi scripts/run.sh \
-  --preset stock-mekugi --task skills-mgr-agent-cli --journal-compaction auto
+CODEX_AB_MEKUGI_SOURCE=/path/to/mekugi ./dist/codex-ab launch \
+  --preset stock-mekugi --task skills-mgr-agent-cli --journal-compaction auto --confirm-paid-inference
 ```
 
 This command starts paid inference. `--journal-compaction auto|slice|off` accepts spaced or
 equals forms with `stock-mekugi`, `current-vs-current-mekugi`, and `codex-mekugi-grok`.
-Omitting it preserves Mekugi's default; `stock-current` rejects it. The dedicated
-[journal compaction comparison](#journal-compaction-comparison) remains a lower-level `prepare`
-comparison, separate from these presets.
+It also works with `stock-current --current-launcher mekugi`. Omitting it preserves
+Mekugi's default; direct-Codex comparisons reject it. The dedicated
+[journal compaction comparison](#journal-compaction-comparison) is available in the
+Web UI and through agent-directed `launch --preset journal-compaction` with
+`--auto-compact-limit N`; that comparison owns both arms' compaction modes.
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. Both arms receive the same minimal generated Codex configuration and the existing mise runtime and configuration, including referenced lock sidecars and migration completion records. Both access the same read-only host installation store at its original absolute path. A launches direct Codex through mise; B additionally receives the selected Mekugi executable and launches `mekugi codex` through mise. Neither arm receives current-home agent instructions, skills, hooks, roles, or a reviewer overlay. Both use the default service tier.
 
 Preparation does not install tools or copy their store, and no Dockerfile tool provisioning is needed. Preflight requires the configured tools to be available offline. Keep the host installation store available and unchanged while prepared runs or trial sets are in use; its read-only container mount does not prevent host-side updates. This tool access applies to `stock-mekugi`; the Grok comparison still omits the store, while `same-setup` retains the full current-home guidance in both arms.
 
-Use `scripts/run.sh --preset stock-mekugi --model gpt-6.1-sol --reasoning-effort high` to run a Sol/high pair. Mekugi runs the selected models without mentor handoff; the former mentor options and comparisons are no longer supported. Saved mentor runs cannot be processed by the current harness; retain their existing reports for historical results. The default model remains Astra. Reasoning defaults to medium for NVM and xhigh for the skills manager and session-retention tasks; the Grok preset defaults to high regardless of task. An explicit `--reasoning-effort` overrides these defaults. The selected image must contain the matching host Codex and code-mode-host binaries; the runner checks their versions and hashes before inference. Build the selected Mekugi executable before rerunning.
+Use the Web UI model and reasoning controls, or agent-directed `launch --preset stock-mekugi --model gpt-6.1-sol --reasoning-effort high --confirm-paid-inference`, to run a Sol/high pair. Mekugi runs the selected models without mentor handoff; the former mentor options and comparisons are no longer supported. Saved mentor runs cannot be processed by the current harness; retain their existing reports for historical results. The default model remains Astra. Reasoning defaults to medium for NVM and xhigh for the skills manager and session-retention tasks; the Grok preset defaults to high regardless of task. An explicit `--reasoning-effort` overrides these defaults. The selected image must contain the matching host Codex and code-mode-host binaries; the runner checks their versions and hashes before inference. Build the selected Mekugi executable before rerunning.
 
 Select the executable with `--mekugi-bin`, and optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated with the runner-bundled analyzer; `--mekugi-source` remains the required export-validation selector, not proof that the binary came from that checkout. The current-home Git snapshot is retained for configuration provenance, while the selected executable and runner-owned analyzer sources are captured separately. Only the configured mise tool setup reaches both minimal agent homes; other current-home runtime supplements and unused launcher executables are omitted. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
