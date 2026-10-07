@@ -140,6 +140,7 @@ th { font-weight: 500; }
 thead th { color: var(--muted); background: var(--field); }
 tbody tr:hover { background: var(--hover); }
 td.metric { text-align: right; white-space: nowrap; }
+.metric-change { display: block; color: var(--muted); font-size: 13px; margin-top: 4px; }
 td.a, th.a { border-left: 2px solid var(--blue); }
 td.b, th.b { border-left: 2px solid var(--teal); }
 th.a { color: var(--blue); }
@@ -154,6 +155,14 @@ th.b { color: var(--teal); }
 .tree dt { color: var(--muted); overflow-wrap: anywhere; }
 .tree dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .tree pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; max-height: 400px; overflow-y: auto; }
+.assessment-pass { margin: 16px 0 24px; padding-left: 16px; border-left: 2px solid var(--line); overflow-wrap: anywhere; }
+.assessment-pass h4 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+.assessment-pass ul { padding-left: 22px; max-width: 72ch; }
+.assessment-pass li + li { margin-top: 8px; }
+.assessment-issues strong { color: var(--warning); }
+.criterion-finding { min-width: 180px; max-width: 54ch; overflow-wrap: anywhere; }
+.criterion-finding + .criterion-finding { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.criterion-finding p { margin-top: 4px; }
 .section-heading { display: flex; justify-content: space-between; gap: 20px; align-items: center; }
 .section-heading input { max-width: 330px; }
 #artifacts a { overflow-wrap: anywhere; }

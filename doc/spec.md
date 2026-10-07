@@ -36,6 +36,12 @@ and grouped run settings. Navigation, forms, and results adapt to narrow screens
 with visible keyboard focus. Fonts are served locally, including from the
 standalone executable; the browser does not contact an external font service.
 
+Pair results show the outcome, key measurements and percentage differences,
+source-assessment reasoning and issues, and criterion decisions directly.
+Readers do not need to expand sections to understand the result. Token breakdowns,
+execution evidence, pricing provenance, and diagnostics remain in one optional
+technical report and the retained evidence downloads.
+
 Setup output renders Codex and Mekugi agent messages as Markdown, including lists,
 links, tables, and code blocks. Tool activity uses short status messages rather than raw event
 JSON or command transport payloads. Incomplete log records wait for a complete

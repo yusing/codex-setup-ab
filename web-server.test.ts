@@ -159,6 +159,7 @@ test("source assessments replace numbered identities using each pass's presentat
   const directory = await pair();
   const report = {
     arm_labels: { stock: "Direct Codex", current: "Codex + Mekugi" }, winner: "current",
+    current_minus_stock_percent: { agent_elapsed_ms: 8.33, estimated_api_usd: -12.5, total_tokens: null },
     criteria: { contract: { criteria: [{ id: "checks", description: "Behavioral checks" }] } },
     arms: { stock: { result: { grade: { semantic: {
       "pass-1": [{ criterion: "checks", status: "pass", basis: "executed", reasoning: "Candidate-1 met the criterion", check: { result: "Candidate-1 check succeeded" } }],
@@ -185,6 +186,18 @@ test("source assessments replace numbered identities using each pass's presentat
   expect(rendered).not.toContain("Codex + Mekugi met the criterion");
   expect(rendered).toContain("Recorded outcome: Codex + Mekugi");
   expect(rendered).not.toMatch(/candidate[-_ ]([12])|>A[: ]|>B[: ]/i);
+  const overview = rendered.split('<details class="tree">')[0];
+  expect(overview).not.toContain("<details");
+  expect(overview).toContain("Direct Codex inspected &lt;main&gt;");
+  expect(overview).toContain("Direct Codex added checks");
+  expect(overview).toContain("constructor");
+  expect(overview).toContain("Direct Codex met the criterion");
+  expect(overview).toContain("+8.33%");
+  expect(overview).toContain("-12.5%");
+  expect(overview).toContain("Not available");
+  expect(overview).toContain("Change compares Codex + Mekugi with Direct Codex");
+  expect(rendered).toContain("<summary>Technical report</summary>");
+  expect(rendered).not.toMatch(/<summary>(Criterion evidence and grading|Source assessments and judge reasoning|Time, token and cost differences|Usage details and pricing provenance|Diagnostics and workflow evidence)/);
   expect(input.report).toEqual(report);
 });
 

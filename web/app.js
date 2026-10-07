@@ -242,14 +242,15 @@ function metricTable(report, state, labels) {
   const grade = (data) => typeof obj(data.result.grade).passed === "boolean" ? data.result.grade.passed ? "Passed" : "Failed" : "Not graded";
   const rows = [
     ["Behavioral grade", grade(a), grade(b)],
-    ["Agent time", duration(a.result.agent_elapsed_ms), duration(b.result.agent_elapsed_ms)],
-    ["Grader time", duration(obj(a.result.grade).elapsed_ms), duration(obj(b.result.grade).elapsed_ms)],
-    ...["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens"].map((name) => [words(name), metric(a.totals[name]), metric(b.totals[name])]),
-    ["Command time", metric(a.totals.command_seconds, 2) + (typeof a.totals.command_seconds === "number" ? " s" : ""), metric(b.totals.command_seconds, 2) + (typeof b.totals.command_seconds === "number" ? " s" : "")],
-    ["Estimated API cost", typeof a.totals.estimated_api_usd === "number" ? "$" + metric(a.totals.estimated_api_usd, 6) : "Unknown", typeof b.totals.estimated_api_usd === "number" ? "$" + metric(b.totals.estimated_api_usd, 6) : "Unknown"],
+    ["Agent time", duration(a.result.agent_elapsed_ms), duration(b.result.agent_elapsed_ms), "agent_elapsed_ms"],
+    ["Estimated API cost", typeof a.totals.estimated_api_usd === "number" ? "$" + metric(a.totals.estimated_api_usd, 6) : "Unknown", typeof b.totals.estimated_api_usd === "number" ? "$" + metric(b.totals.estimated_api_usd, 6) : "Unknown", "estimated_api_usd"],
+    ["Total tokens", metric(a.totals.total_tokens), metric(b.totals.total_tokens), "total_tokens"],
+    ["Command time", metric(a.totals.command_seconds, 2) + (typeof a.totals.command_seconds === "number" ? " s" : ""), metric(b.totals.command_seconds, 2) + (typeof b.totals.command_seconds === "number" ? " s" : ""), "command_seconds"],
   ];
+  const changes = obj(report.current_minus_stock_percent);
+  const change = (key) => typeof changes[key] === "number" && Number.isFinite(changes[key]) ? (changes[key] > 0 ? "+" : "") + metric(changes[key], 2) + "%" : "Not available";
   return '<div class="table-scroll" tabindex="0" role="region" aria-label="Pair measurements"><table><thead><tr><th>Measurement</th><th class="a">' + esc(labels.stock) + '</th><th class="b">' + esc(labels.current) + "</th></tr></thead><tbody>"
-    + rows.map(([label, av, bv]) => "<tr><th>" + esc(label) + '</th><td class="metric a">' + esc(av) + '</td><td class="metric b">' + esc(bv) + "</td></tr>").join("") + "</tbody></table></div>";
+    + rows.map(([label, av, bv, key]) => "<tr><th>" + esc(label) + '</th><td class="metric a">' + esc(av) + '</td><td class="metric b">' + esc(bv) + (key ? '<span class="metric-change">' + esc(change(key)) + "</span>" : "") + "</td></tr>").join("") + '</tbody></table></div><p class="hint">Change compares ' + esc(labels.current) + " with " + esc(labels.stock) + ". Positive percentages mean more time, cost, or tokens, not better quality.</p>";
 }
 function criterionTable(report, labels) {
   const contract = obj(obj(report.criteria).contract);
@@ -259,7 +260,7 @@ function criterionTable(report, labels) {
     const grade = obj(obj(obj(report.arms)[arm]).result).grade;
     const matches = Object.entries(obj(obj(grade).semantic)).flatMap(([key, items]) => {
       const names = semanticNames(key, obj(obj(report.judge).result).passes, labels);
-      return (Array.isArray(items) ? items : []).filter((item) => obj(item).criterion === id).map((item) => '<details><summary>' + esc(words(item.status)) + " · " + esc(item.basis) + "</summary><p>" + esc(displayName(item.reasoning, names)) + '</p><div class="tree">' + tree(item.execution ?? item.check, 0, names) + "</div></details>");
+      return (Array.isArray(items) ? items : []).filter((item) => obj(item).criterion === id).map((item) => '<div class="criterion-finding"><strong>' + esc(words(item.status)) + '</strong><p class="hint">' + esc(words(key)) + ": " + esc(item.basis) + "</p><p>" + esc(displayName(item.reasoning, names)) + "</p></div>");
     });
     return matches.join("") || '<span class="hint">Not assessed</span>';
   };
@@ -271,9 +272,9 @@ function judgeSummary(judge, labels) {
   if (!Array.isArray(result.passes) || !result.passes.length) return "";
   return '<h3>Source assessment</h3>' + result.passes.map((pass) => {
     const names = assessmentNames(pass, labels);
-    return '<details class="tree"><summary>Pass ' + esc(pass.pass) + ": " + esc(displayName(pass.winner, names)) + "</summary><p>" + esc(displayName(pass.rationale, names)) + "</p>"
+    return '<section class="assessment-pass"><h4>Pass ' + esc(pass.pass) + ": " + esc(displayName(pass.winner, names)) + "</h4><p>" + esc(displayName(pass.rationale || "No reasoning recorded for this pass.", names)) + "</p>"
       + (Array.isArray(pass.evidence) ? "<ul>" + pass.evidence.map((item) => "<li>" + esc(displayName(item, names)) + "</li>").join("") + "</ul>" : "")
-      + "<div>" + tree({ presentation: pass.presentation, scores: pass.scores, issues: pass.issues, criteria: pass.criteria }, 0, labels) + "</div></details>";
+      + (Array.isArray(pass.issues) && pass.issues.length ? '<ul class="assessment-issues">' + pass.issues.map((issue) => '<li><strong>' + esc(displayName(issue.candidate, names)) + (issue.severity ? ": " + esc(issue.severity) : "") + "</strong><p>" + esc(displayName(issue.detail, names)) + "</p></li>").join("") + "</ul>" : "") + "</section>";
   }).join("");
 }
 function resultContent(data) {
@@ -292,13 +293,8 @@ function resultContent(data) {
       + (report.winner ? "<p>Recorded outcome: " + esc(displayName(report.winner, labels)) + "</p>" : "") + "</div>")
       + metricTable(report, state, labels)
       + (warnings.length ? '<ul class="warning-list">' + warnings.map((warning) => "<li>" + esc(warning) + "</li>").join("") + "</ul>" : "")
-      + criterionTable(report, labels) + judgeSummary(report.judge, labels)
-      + disclosure("Criterion evidence and grading", { contract: report.criteria, setups: Object.fromEntries(Object.entries(obj(report.arms)).map(([name, arm]) => [name, obj(obj(arm).result).grade])) }, labels, obj(obj(report.judge).result).passes)
-      + disclosure("Source assessments and judge reasoning", report.judge, labels)
-      + disclosure("Time, token and cost differences", { current_minus_stock_percent: report.current_minus_stock_percent, efficiency: report.efficiency, performance_breakdown: report.performance_breakdown }, labels)
-      + disclosure("Usage details and pricing provenance", { arms: Object.fromEntries(Object.entries(obj(report.arms)).map(([name, arm]) => [name, obj(arm).usage])), pricing: report.pricing }, labels)
-      + disclosure("Diagnostics and workflow evidence", { mekugi: report.mekugi_diagnostics_by_arm ?? report.mekugi_diagnostics, workflow: report.workflow_mechanisms }, labels)
-      + disclosure(invalidated ? "Retained report, regenerate after invalidation" : "Complete structured report", report, labels);
+      + judgeSummary(report.judge, labels) + criterionTable(report, labels)
+      + disclosure(invalidated ? "Technical report, regenerate after invalidation" : "Technical report", report, labels);
   }
   if (data.entry.kind === "trials") {
     const rows = Object.entries(obj(report.current_minus_stock)).map(([name, value]) => {
