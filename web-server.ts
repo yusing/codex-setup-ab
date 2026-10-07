@@ -8,6 +8,7 @@ import { COMPARISONS, launchConfiguration, launchDefaults, taskCatalog } from ".
 import { exec } from "./process";
 import { loadTaskPack } from "./task-pack";
 import { armLabels } from "./arm-labels";
+import { renderSetupOutput } from "./web-output";
 import type { RunState } from "./types";
 import html from "./web/index.html" with { type: "text" };
 import css from "./web/style.css" with { type: "text" };
@@ -72,9 +73,11 @@ async function tail(root: string, path: string): Promise<string> {
     const file = await open(await safeFile(root, path), constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const size = (await file.stat()).size;
-      const buffer = Buffer.alloc(Math.min(size, 16000));
-      await file.read(buffer, 0, buffer.length, Math.max(0, size - buffer.length));
-      return buffer.toString("utf8");
+      const buffer = Buffer.alloc(Math.min(size, 16001));
+      const start = Math.max(0, size - buffer.length);
+      await file.read(buffer, 0, buffer.length, start);
+      const text = buffer.toString("utf8");
+      return start && path.endsWith(".jsonl") ? text.slice(text.indexOf("\n") + 1) : text;
     } finally { await file.close(); }
   } catch { return ""; }
 }
@@ -316,7 +319,8 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       comparison: labelState.comparison as RunState["comparison"],
       execution: object(labelState.execution) as RunState["execution"],
     }) : undefined;
-    return { entry, state, report, arm_labels: labels, artifacts, children, live };
+    const live_html = entry.kind === "pair" ? Object.fromEntries(Object.entries(live).map(([arm, text]) => [arm, renderSetupOutput(text)])) : {};
+    return { entry, state, report, arm_labels: labels, artifacts, children, live, live_html };
   }
   function events(req: Request, entry?: Entry): Response {
     const encoder = new TextEncoder();

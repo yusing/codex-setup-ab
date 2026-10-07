@@ -362,15 +362,6 @@ function renderArtifacts() {
   $("artifact-note").textContent = artifactItems.length ? "Showing " + matches.length + " of " + artifactItems.length + " evidence files (up to 500). Private homes and authentication stores stay excluded." : "Reports, patches and logs appear as the CLI writes them.";
   $("artifacts").innerHTML = "<ul>" + matches.map((file) => '<li><a href="/api/entries/' + selected + "/artifacts?path=" + encodeURIComponent(file.path) + '">' + esc(file.path) + '</a> <span class="hint">(' + metric(file.bytes) + " bytes)</span></li>").join("") + "</ul>";
 }
-function readableLog(text) {
-  return String(text).split("\n").map((line) => {
-    try {
-      const value = JSON.parse(line);
-      const item = obj(value.item);
-      return (value.type || "event") + (item.text ? ": " + item.text : ": " + line);
-    } catch { return line; }
-  }).join("\n");
-}
 function renderSnapshot(data) {
   snapshot = data;
   const labels = setupLabels(data);
@@ -399,14 +390,18 @@ function renderSnapshot(data) {
   const live = Object.entries(obj(data.live)).filter(([, text]) => text);
   const keys = live.map(([arm]) => arm).join(",");
   if (liveKeys !== keys) {
-    $("live-output").innerHTML = live.map(([arm]) => '<details class="panel"><summary></summary><pre class="log" data-live="' + esc(arm) + '"></pre></details>').join("");
+    $("live-output").innerHTML = live.map(([arm]) => '<details class="panel"><summary></summary><div tabindex="0" role="region" class="' + (entry.kind === "pair" ? "rendered-output" : "log") + '" data-live="' + esc(arm) + '"></div></details>').join("");
     liveKeys = keys;
   }
   for (const [arm, text] of live) {
     const element = $("live-output").querySelector('[data-live="' + arm + '"]');
     element.previousElementSibling.textContent = (arm.startsWith("build") ? words(arm) : labels[arm] || "Setup unavailable") + " output";
+    element.setAttribute("aria-label", element.previousElementSibling.textContent);
     const wasAtBottom = element.scrollHeight - element.clientHeight - element.scrollTop < 40;
-    element.textContent = readableLog(text);
+    if (entry.kind === "pair") {
+      const html = obj(data.live_html)[arm] || '<p class="hint">Waiting for readable output…</p>';
+      if (element.innerHTML !== html) element.innerHTML = html;
+    } else if (element.textContent !== text) element.textContent = text;
     if ($("follow-log").checked && wasAtBottom) element.scrollTop = element.scrollHeight;
   }
   if (childSignature !== JSON.stringify(data.children)) {

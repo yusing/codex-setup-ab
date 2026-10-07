@@ -36,6 +36,14 @@ and grouped run settings. Navigation, forms, and results adapt to narrow screens
 with visible keyboard focus. Fonts are served locally, including from the
 standalone executable; the browser does not contact an external font service.
 
+Setup output renders Codex and Mekugi agent messages as Markdown, including lists,
+links, tables, and code blocks. Tool activity uses short status messages rather than raw event
+JSON or command transport payloads. Incomplete log records wait for a complete
+event; raw evidence remains available for download. Embedded HTML is displayed
+as text, unsafe links are inactive, and images do not trigger network requests.
+Build output stays plain text. Live updates retain open panels and follow-scroll
+behavior.
+
 ## Stock Codex versus stock plus Mekugi
 
 In the Web UI, select **Minimal Codex versus minimal Mekugi** and a task. Preparation

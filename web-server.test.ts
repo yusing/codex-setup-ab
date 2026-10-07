@@ -188,6 +188,58 @@ test("source assessments replace numbered identities using each pass's presentat
   expect(input.report).toEqual(report);
 });
 
+test("setup output renders Markdown and activity without exposing event payloads", async () => {
+  const directory = await pair();
+  const events = [
+    { type: "thread.started", thread_id: "hidden-thread" },
+    { type: "item.started", item: { id: "tool", type: "command_execution", command: "mjournal hidden-transport", status: "in_progress" } },
+    { type: "item.completed", item: { id: "tool", type: "command_execution", command: "mjournal hidden-transport", aggregated_output: '{"items":["/3"]}', exit_code: 0 } },
+    { type: "item.updated", item: { id: "answer", type: "agent_message", text: "Partial answer" } },
+    { type: "item.completed", item: { id: "answer", type: "agent_message", text: '# Result\n\n**All 26 tests passed.**\n\n- Concurrent writers\n- Rollback checks\n\n```sh\npython3 -m unittest discover -s tests -v\n```\n\n[Documentation](https://example.org/docs)\n\n| Check | Result |\n| --- | --- |\n| CLI | Passed |' } },
+    { type: "item.completed", item: { type: "command_execution", exit_code: 2 } },
+    { type: "turn.failed", error: { message: "Process <failed>" } },
+    { type: "unknown", private_payload: "hidden-payload" },
+  ];
+  const raw = events.map(event => JSON.stringify(event)).join("\n") + "\n";
+  await file(join(directory, "artifacts/current/codex.jsonl"), raw);
+  const entry = await attach(directory);
+  const snapshot = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
+  const rendered = snapshot.live_html.current;
+  expect(rendered).toContain("<h1>Result</h1>");
+  expect(rendered).toContain("<strong>All 26 tests passed.</strong>");
+  expect(rendered).toContain("<li>Concurrent writers</li>");
+  expect(rendered).toContain("<pre><code>python3 -m unittest discover -s tests -v\n</code></pre>");
+  expect(rendered).toContain('href="https://example.org/docs"');
+  expect(rendered).toContain("<th>Check</th>");
+  expect(rendered).toContain("Command completed (exit 0)");
+  expect(rendered).toContain("Command failed (exit 2)");
+  expect(rendered).toContain("Process &lt;failed&gt;");
+  expect(rendered).not.toMatch(/hidden-|aggregated_output|item.completed|Partial answer|in progress/);
+  expect(snapshot.live.current).toBe(raw);
+  expect(await (await fetch(`${origin}/api/entries/${entry.id}/artifacts?path=artifacts/current/codex.jsonl`)).text()).toBe(raw);
+});
+
+test("Markdown output escapes active content and handles bounded and partial event records", async () => {
+  const directory = await pair();
+  const message = (text: string) => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text } });
+  const path = join(directory, "artifacts/stock/codex.jsonl");
+  const unsafe = '<script>alert(1)</script>\n\n<img src=x onerror=alert(2)>\n\n[bad](javascript:alert%281%29) [encoded](jav&#x61;script:alert%281%29) ![Image label](https://example.org/tracker)\n\n`<inline>`\n\n```html\n<img onerror="bad">\n```';
+  const malformedTypes = [{ type: { toString: null } }, { type: "item.completed", item: { type: { toString: null } } }];
+  await file(path, message("old-prefix".repeat(2000)) + "\n" + malformedTypes.map(event => JSON.stringify(event)).join("\n") + "\n" + message(unsafe) + '\n{"type":"item.completed","item":');
+  const entry = await attach(directory);
+  const stream = await subscribe(entry.id);
+  try {
+    const rendered = (await stream.next("snapshot")).live_html.stock;
+    expect(rendered).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(rendered).toContain("<code>&lt;inline&gt;</code>");
+    expect(rendered).toContain('<pre><code>&lt;img onerror=&quot;bad&quot;&gt;\n</code></pre>');
+    expect(rendered).toContain("Image label");
+    expect(rendered).not.toMatch(/<script|<img|href="javascript|old-prefix|item.completed|tracker/);
+    await file(path, message("## Live update\n\nReadable **Markdown**.") + "\n");
+    expect((await stream.next("snapshot", data => data.live_html.stock.includes("Live update"))).live_html.stock).toContain("<strong>Markdown</strong>");
+  } finally { stream.close(); }
+});
+
 test("artifact access exposes evidence while rejecting private files, traversal, and symlinks", async () => {
   const directory = await pair();
   await file(join(directory, "reports/report.md"), "# Recorded outcome\n");

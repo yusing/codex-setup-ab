@@ -116,6 +116,22 @@ label.consent { background: var(--selected); border-left: 3px solid var(--blue);
 .phases span { font-size: 14px; color: var(--muted); }
 .watch-controls { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
 .log { background: var(--field); border: 1px solid var(--line); border-radius: var(--radius-control); padding: 16px; max-height: 330px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font: 13px/1.7 ui-monospace, monospace; }
+.rendered-output { background: var(--field); border: 1px solid var(--line); border-radius: var(--radius-control); padding: 20px; max-height: 480px; overflow: auto; overflow-wrap: anywhere; font-size: 16px; line-height: 1.65; }
+.output-message + .output-message { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 20px; }
+.output-message > :first-child { margin-top: 0; }
+.output-message > :last-child { margin-bottom: 0; }
+.output-message p, .output-message ul, .output-message ol, .output-message pre, .output-message blockquote { margin: 12px 0; }
+.output-message h1, .output-message h2, .output-message h3, .output-message h4, .output-message h5, .output-message h6 { margin: 20px 0 10px; font-weight: 600; line-height: 1.35; letter-spacing: normal; }
+.output-message h1 { font-size: 24px; }
+.output-message h2 { font-size: 21px; }
+.output-message h3, .output-message h4, .output-message h5, .output-message h6 { font-size: 18px; }
+.output-message code { font: .875em/1.6 ui-monospace, monospace; background: var(--paper); border-radius: 4px; padding: 2px 5px; }
+.output-message pre { padding: 14px 16px; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-control); overflow: auto; white-space: pre-wrap; }
+.output-message pre code { padding: 0; background: none; }
+.output-message blockquote { border-left: 3px solid var(--control-line); padding-left: 16px; color: var(--muted); }
+.output-message ul, .output-message ol { padding-left: 24px; }
+.output-message li + li { margin-top: 4px; }
+.output-activity { color: var(--muted); font-size: 14px; margin: 12px 0; }
 .path { overflow-wrap: anywhere; font-size: 14px; }
 .table-scroll { overflow-x: auto; border-radius: var(--radius-control); }
 table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 16px 0; font-variant-numeric: tabular-nums; }
