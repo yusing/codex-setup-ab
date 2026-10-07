@@ -7,6 +7,8 @@ import { BOOLEAN_FLAGS, COMMAND_OPTIONS, type CliOptions } from "./cli-options";
 import { COMPARISONS, launchConfiguration, launchDefaults, taskCatalog } from "./launch";
 import { exec } from "./process";
 import { loadTaskPack } from "./task-pack";
+import { armLabels } from "./arm-labels";
+import type { RunState } from "./types";
 import html from "./web/index.html" with { type: "text" };
 import css from "./web/style.css" with { type: "text" };
 import javascript from "./web/app.js" with { type: "text" };
@@ -307,7 +309,11 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       live.build = await tail(entry.directory, "build.stdout");
       live["build stderr"] = await tail(entry.directory, "build.stderr");
     }
-    return { entry, state, report, artifacts, children, live };
+    const labels = entry.kind === "pair" ? armLabels({
+      comparison: state.comparison as RunState["comparison"],
+      execution: object(state.execution) as RunState["execution"],
+    }) : undefined;
+    return { entry, state, report, arm_labels: labels, artifacts, children, live };
   }
   function events(req: Request, entry?: Entry): Response {
     const encoder = new TextEncoder();

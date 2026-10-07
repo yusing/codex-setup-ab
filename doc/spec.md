@@ -23,6 +23,11 @@ randomized causal estimates. See the [CLI guide](cli.md) for repeated runs and t
 | `journal-compaction` | Model-written versus router compaction with the same Mekugi setup. |
 | `duplicate-output` | Mekugi duplicate-output projection off versus on. |
 
+The Web UI's pair measurement headers name the actual A and B arms, including
+their launcher, setup, or comparison treatment. These names are available in
+partial results before a report is generated. Generated reports retain their
+recorded arm names.
+
 ## Stock Codex versus stock plus Mekugi
 
 In the Web UI, select **Minimal Codex versus minimal Mekugi** and a task. Preparation

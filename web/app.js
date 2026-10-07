@@ -214,8 +214,7 @@ function tree(value, depth = 0) {
 function disclosure(title, value) {
   return '<details class="tree"><summary>' + esc(title) + "</summary><div>" + tree(value) + "</div></details>";
 }
-function metricTable(report, state) {
-  const labels = obj(report.arm_labels);
+function metricTable(report, state, labels) {
   const arms = obj(report.arms);
   const results = obj(state.results);
   const values = (arm) => ({ result: obj(obj(arms[arm]).result ?? results[arm]), totals: obj(obj(obj(arms[arm]).usage).totals) });
@@ -253,18 +252,19 @@ function judgeSummary(judge) {
 }
 function resultContent(data) {
   const state = obj(data.state), report = obj(data.report);
+  const labels = { ...obj(data.arm_labels), ...obj(report.arm_labels) };
   const currentInvalidity = Array.isArray(state.invalidity_reasons) ? state.invalidity_reasons : [];
   const invalidated = currentInvalidity.length > 0;
   const invalidationNotice = invalidated ? '<div class="notice error"><strong>Interpretation invalidated</strong><p>' + esc(currentInvalidity.join("\n")) + "</p><p>Regenerate the report to update exported evidence. Recorded measurements remain available below.</p></div>" : "";
   if (data.entry.kind === "build") return "<h2>Captured build</h2><p class='hint'>Build identity is available when capture succeeds. Failed builds retain their available logs.</p>" + disclosure("Build identity and retained outcome", state);
-  if (!Object.keys(report).length) return "<h2>Partial results</h2>" + invalidationNotice + "<p class='hint'>The report appears when the CLI generates it. Collected grades remain visible while work continues.</p>" + (data.entry.kind === "pair" ? metricTable({}, state) : "");
+  if (!Object.keys(report).length) return "<h2>Partial results</h2>" + invalidationNotice + "<p class='hint'>The report appears when the CLI generates it. Collected grades remain visible while work continues.</p>" + (data.entry.kind === "pair" ? metricTable({}, state, labels) : "");
   if (data.entry.kind === "pair") {
     const warnings = [...new Set([...currentInvalidity, ...(report.invalidity_reasons || []), ...Object.values(obj(report.arms)).flatMap((arm) => obj(arm.usage).warnings || [])])];
     const complete = report.measurement_complete === true && !invalidated;
     return "<h2>Comparison results</h2><p class='hint'>" + esc(report.design || "Descriptive paired evidence") + "</p>"
       + (invalidated ? invalidationNotice : '<div class="result-summary' + (complete ? "" : " warn") + '"><strong>' + (complete ? "Measurement complete" : "Measurement incomplete") + "</strong><p>" + esc(report.winner_reason || report.comparison_exclusion || "Interpret the available evidence with its validity gates.") + "</p>"
       + (report.winner ? "<p>Recorded outcome: " + esc(report.winner) + "</p>" : "") + "</div>")
-      + metricTable(report, state)
+      + metricTable(report, state, labels)
       + (warnings.length ? '<ul class="warning-list">' + warnings.map((warning) => "<li>" + esc(warning) + "</li>").join("") + "</ul>" : "")
       + criterionTable(report) + judgeSummary(report.judge)
       + disclosure("Criterion evidence and grading", { contract: report.criteria, candidates: Object.fromEntries(Object.entries(obj(report.arms)).map(([name, arm]) => [name, obj(obj(arm).result).grade])) })
@@ -384,7 +384,7 @@ function renderSnapshot(data) {
     $("children").innerHTML = data.children.map((child) => '<button data-entry="' + child.id + '"><strong>' + esc(child.title) + "</strong> · " + esc(child.status || "preparing") + (child.error ? '<span class="error"> ' + esc(child.error) + "</span>" : "") + "</button>").join("");
     childSignature = JSON.stringify(data.children);
   }
-  const signature = JSON.stringify([data.report, entry.kind === "build" ? state : state.results, state.invalidity_reasons]);
+  const signature = JSON.stringify([data.report, data.arm_labels, entry.kind === "build" ? state : state.results, state.invalidity_reasons]);
   if (reportSignature !== signature) {
     const opened = [...$("results").querySelectorAll("details[open]")].map((element) => element.querySelector("summary").textContent);
     $("results").innerHTML = resultContent(data);

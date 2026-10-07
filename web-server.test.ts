@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { serveWorkbench } from "./web-server";
 
 let root: string;
@@ -117,6 +118,32 @@ test("attached evidence retains report data, arm logs, hierarchy, and stable ent
     expect((await attach(selected)).kind).toBe(kind!);
   }
   expect((await (await fetch(origin + "/api/entries")).json()).entries).toHaveLength(5);
+});
+
+test("pair measurement headers use actual arms before reporting and retain recorded report labels", async () => {
+  const directory = await pair();
+  const state = { schema_version: 1, comparison: "same-setup", execution: { current_launcher: "mekugi" } };
+  await file(join(directory, "run.json"), JSON.stringify(state));
+  const entry = await attach(directory);
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const render = (input: unknown): string => runInNewContext(source + "\nresultContent(input)", { input });
+  const stream = await subscribe(entry.id);
+  try {
+    const partial = await stream.next("snapshot");
+    expect(render(partial)).toContain('A: Codex (current-home setup)</th>');
+    expect(render(partial)).toContain('B: Codex + Mekugi (current-home setup)</th>');
+    await file(join(directory, "run.json"), JSON.stringify({ ...state, comparison: "duplicate-output" }));
+    const updated = await stream.next("snapshot", data => data.state.comparison === "duplicate-output");
+    expect(render(updated)).toContain('A: Codex + Mekugi (duplicate output off)</th>');
+    expect(render(updated)).toContain('B: Codex + Mekugi (duplicate output on)</th>');
+    await file(join(directory, "reports/report.json"), JSON.stringify({ winner: "current" }));
+    const unlabeled = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
+    expect(render(unlabeled)).toContain('B: Codex + Mekugi (duplicate output on)</th>');
+    await file(join(directory, "reports/report.json"), JSON.stringify({ arm_labels: { stock: "Recorded <A>", current: "Recorded B" } }));
+    const labeled = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
+    expect(render(labeled)).toContain('A: Recorded &lt;A&gt;</th>');
+    expect(render(labeled)).toContain('B: Recorded B</th>');
+  } finally { stream.close(); }
 });
 
 test("artifact access exposes evidence while rejecting private files, traversal, and symlinks", async () => {
