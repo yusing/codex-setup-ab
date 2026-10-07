@@ -19,13 +19,14 @@ derives additional checks from the prompt and each candidate's actual interface.
 
 ## Run a comparison
 
+Build the CLI using the [build guide](../../doc/cli.md#prerequisites-and-build).
 Supply a local skills-mgr checkout containing the pinned base, then run from the
 benchmark repository:
 
 ```sh
 CODEX_AB_SKILLS_MGR_SOURCE=/path/to/skills-mgr \
-CODEX_AB_MEKUGI_SOURCE=/path/to/mekugi scripts/run.sh \
-  --preset stock-mekugi --task skills-mgr-agent-cli
+CODEX_AB_MEKUGI_SOURCE=/path/to/mekugi ./dist/codex-ab launch \
+  --preset stock-mekugi --task skills-mgr-agent-cli --confirm-paid-inference
 ```
 
 This command can build the benchmark image, prepares the pair, performs preflight,
@@ -40,9 +41,9 @@ The preset runner gives this task a 7200-second agent timeout and defaults to
 `--journal-compaction auto|slice|off`; omission preserves Mekugi's default.
 
 For model-free preparation, use the manifest directly with `prepare --task-pack`
-and `--source`, then run `preflight`. See the main README's
-[portable task pack guide](../../README.md#portable-task-packs) for the workflow
-and [comparison options](../../README.md#stock-codex-versus-stock-plus-mekugi).
+and `--source`, then run `preflight`. See the
+[portable task pack guide](../../doc/cli.md#portable-task-packs) for the workflow
+and [comparison options](../../doc/spec.md#stock-codex-versus-stock-plus-mekugi).
 
 ## Qualification limits
 

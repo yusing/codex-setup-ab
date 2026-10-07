@@ -26,8 +26,8 @@ in the workbench.
 
 ## Agent-directed preparation without inference
 
-Build the benchmark CLI and container image as described in the main
-[README](../../README.md#prerequisites-and-build). From the benchmark root:
+Build the benchmark CLI and container image as described in the
+[CLI build guide](../../doc/cli.md#prerequisites-and-build). From the benchmark root:
 
 Use `./dist/codex-ab launch --task booking-ledger --prepare-only` for the same seed
 creation and task defaults as the Web UI. The existing launch flags can override
@@ -78,7 +78,7 @@ Each agent has a **55-minute maximum**, strictly below 60 minutes. Preparation,
 preflight, and judges have separate budgets; total experiment time can exceed an
 hour. The task is intended for sustained project work, but its actual duration
 has not been measured and candidates can finish early. For repetitions, use
-the existing [trial workflow](../../README.md#repeat-a-pinned-comparison) with a
+the existing [trial workflow](../../doc/cli.md#repeat-a-pinned-comparison) with a
 fresh unused prepared pair. Keep model, effort, launcher identity, reset mode,
 and concurrent/sequential schedule fixed within a comparison.
 
