@@ -93,7 +93,10 @@ build_dir="$(./dist/codex-ab build-mekugi \
 ```
 
 This model-free command uses the comparison runner's bundled Mekugi source-exclusion rules. It
-retains a source archive, the archiver, build command/logs, immutable builder-image identity,
+excludes generated binaries, dependency `node_modules` trees, nested Claude worktrees,
+and Backpass state while retaining dirty source and compiled embedded assets. The
+compiled executable omits debug symbols.
+It retains a source archive, the archiver, build command/logs, immutable builder-image identity,
 and the executable hash in a private temporary directory. Compilation consumes the archive
 inside a container without host credentials. Dependency downloads are allowed during this build;
 no model request is made. Failed builds retain their available evidence.

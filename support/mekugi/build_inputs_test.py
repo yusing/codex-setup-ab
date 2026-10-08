@@ -14,11 +14,15 @@ class BuildInputsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / 'source'
-            for name in ('.git', 'benchmarks/repos', 'benchmarks/results'):
+            for name in ('.git', 'benchmarks/repos', 'benchmarks/results', 'bin',
+                         '.claude/worktrees', '.backpass', 'plugins/node_modules'):
                 (source / name).mkdir(parents=True, exist_ok=True)
                 (source / name / 'private').write_text('not a build input')
             implementation = source / 'implementation.go'
             implementation.write_text('uncommitted implementation')
+            embedded = source / 'internal/toolplugin/shared_core.wasm'
+            embedded.parent.mkdir(parents=True)
+            embedded.write_bytes(b'compiled embedded asset')
             first = root / 'first.tar'
             subprocess.run(['python3', HELPER, source, first, root / 'first'], check=True)
             implementation.write_text('different uncommitted implementation')
@@ -28,6 +32,8 @@ class BuildInputsTest(unittest.TestCase):
                                 hashlib.sha256(second.read_bytes()).digest())
             self.assertEqual((root / 'first/implementation.go').read_text(),
                              'uncommitted implementation')
+            self.assertEqual((root / 'first/internal/toolplugin/shared_core.wasm').read_bytes(),
+                             embedded.read_bytes())
             with tarfile.open(first) as archive:
                 self.assertFalse(any('private' in name for name in archive.getnames()))
 

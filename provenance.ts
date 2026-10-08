@@ -32,7 +32,7 @@ export async function buildMekugi(options: { source: string; image: string; outp
   const imageId = (await checked([docker, "image", "inspect", "--format", "{{.Id}}", options.image], { signal: options.signal })).stdout.trim();
   if (!/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new Error("build requires an immutable container image");
   await mkdir(join(directory, "bin"));
-  const command = ["sh", "-lc", "mkdir /tmp/build && python3 -c 'import tarfile; tarfile.open(\"/source.tar\").extractall(\"/tmp/build\", filter=\"data\")' && cd /tmp/build && go version && go build -trimpath -buildvcs=false -o /output/mekugi ./cmd/mekugi"];
+  const command = ["sh", "-lc", "mkdir /tmp/build && python3 -c 'import tarfile; tarfile.open(\"/source.tar\").extractall(\"/tmp/build\", filter=\"data\")' && cd /tmp/build && go version && go build -trimpath -buildvcs=false '-ldflags=-s -w' -o /output/mekugi ./cmd/mekugi"];
   process.stderr.write(`[build] compiling Mekugi from frozen inputs with ${imageId}\n`);
   const result = await runOwnedContainer({
     docker, name: `codex-ab-build-${directory.split("/").at(-1)}`, signal: options.signal, timeoutMs: 900000,
