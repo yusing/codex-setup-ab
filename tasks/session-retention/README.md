@@ -11,13 +11,12 @@ This benchmark asks both arms to add automatic, session-aware retention to Mekug
 
 The task covers the ownership, retention, lease, legacy-record, change-ID, capacity-error, compatibility, documentation, and test outcomes stated in the prompt. The evaluator should assess those observable outcomes rather than requiring the excluded solution's internal structure.
 
-## Prepare an isolated launcher comparison
+## Prepare an isolated setup comparison
 
-Use `stock-mekugi` to isolate the Mekugi launcher and tool treatment. Both arms receive the same minimal generated Codex configuration; the stock arm launches Codex directly and the current arm launches it through the selected Mekugi executable.
+Use `stock-current` to compare minimal and current-home guidance, with both arms launching bare Codex. This task modifies Mekugi itself, so the preset launcher rejects Mekugi comparisons for it. Use a [separate-project task](../../doc/spec.md#stock-codex-versus-stock-plus-mekugi) to compare launchers. Follow the [build guide](../../doc/cli.md#prerequisites-and-build) before preparation.
 
 ```sh
 mekugi_source="${MEKUGI_SOURCE:-$HOME/projects/mekugi}"
-mekugi_bin="${MEKUGI_BIN:-$HOME/go/bin/mekugi}"
 
 run_dir="$(./dist/codex-ab prepare \
   --profile mekugi \
@@ -26,10 +25,9 @@ run_dir="$(./dist/codex-ab prepare \
   --forbidden d49862486236d8a507bc0986aa1d543481f8fb61 \
   --task tasks/session-retention/task.md \
   --criteria tasks/session-retention/criteria.json \
-  --comparison stock-mekugi \
-  --mekugi-source "$mekugi_source" \
-  --current-launcher mekugi \
-  --mekugi-bin "$mekugi_bin" \
+  --comparison stock-current \
+  --current-home "$HOME" \
+  --current-launcher codex \
   --reasoning-effort xhigh \
   --timeout 3600 \
   --image codex-ab:0.1.0)"

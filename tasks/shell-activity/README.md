@@ -11,7 +11,7 @@ A new task from session `01a08c0f-f3b2-7dd0-8d82-d1a3ea91bbe5`, distinct from th
 
 The user asked for “Still Running” and “Running stored script” with a short excerpt of the actual command. The task makes the associated correlation, missing-source, Unicode, and transport-preservation contracts explicit. The evaluator uses pre-existing request/response interfaces rather than implementation-specific new helpers.
 
-Both arms start from the same historical source, whose package and protocol names still say Hpatch. Do not rebrand that immutable source or expose later solution commits. A is the minimal setup; B is the current-home snapshot with the continuous-review v2 overlay, launched through bare Codex. The runner automatically runs semantic checks, judges source quality, audits interactions, and produces a checksummed report bundle.
+Both arms start from the same historical source, whose package and protocol names still say Hpatch. Do not rebrand that immutable source or expose later solution commits. The stock arm uses the minimal setup; the current arm uses the current-home snapshot, launched through bare Codex. The runner automatically runs semantic checks, judges source quality, audits interactions, and produces a checksummed report bundle.
 
 
 ## Evaluation
@@ -20,7 +20,7 @@ The task-derived criteria cover command correlation, retained source lookup, mis
 
 ## Run
 
-Build the bare image using the root README, then prepare with the explicit task and source identities above:
+Follow the [build guide](../../doc/cli.md#prerequisites-and-build), then prepare with the explicit task and source identities above. Replace the example source and home paths with your local checkouts. Historical continuous-review overlays are no longer bundled.
 
 ```sh
 ./dist/codex-ab prepare \
@@ -31,7 +31,7 @@ Build the bare image using the root README, then prepare with the explicit task 
   --task tasks/shell-activity/task.md \
   --criteria tasks/shell-activity/criteria.json \
   --current-home /home/ubuntu \
-  --review-treatment treatments/continuous-review-v2-current-home \
+  --comparison stock-current \
   --current-launcher codex \
   --reasoning-effort medium \
   --image codex-ab:0.1.1

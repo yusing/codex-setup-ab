@@ -7,6 +7,6 @@
     "noEmit": true,
     "types": ["bun-types"]
   },
-  "include": ["*.ts"],
-  "exclude": ["*.test.ts"]
+  "include": ["*.ts", "scripts/*.ts"],
+  "exclude": ["**/*.test.ts"]
 }

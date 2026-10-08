@@ -37,6 +37,69 @@ The harness follows the selected host Codex version, not a separately pinned CLI
 
 No model request occurs during the build or `prepare`. The `run` command includes two independent source-assessment passes after a completed pair. Each pass has two stages when the first harness succeeds, or three when one repair stage is needed; every stage allows at most three Sol launches on capacity errors. `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
 
+## Find and inspect retained evidence
+
+Prefer the absolute directory from the Web UI's **Copy evidence reference** action.
+Workbench entry IDs belong to the running server, not the persisted benchmark identity.
+If you have only an entry ID, query that server's current entries instead of scanning
+repositories, temporary homes, or provider captures:
+
+```sh
+curl -fsS http://localhost:4849/api/entries | python3 -c '
+import json, sys
+entry_id = sys.argv[1]
+matches = [entry for entry in json.load(sys.stdin)["entries"] if entry["id"] == entry_id]
+if not matches:
+    sys.exit("Entry not found. Ask for the retained evidence directory; the server may have restarted.")
+for entry in matches:
+    print(json.dumps({key: entry.get(key) for key in ("id", "title", "kind", "directory")}, indent=2))
+' 'ENTRY_ID'
+```
+
+Use the actual host and port if they differ. After a server restart, attach the retained
+directory again; an old entry ID alone cannot recover its path. Run directories are
+private: share selected measurements and artifact paths, not authentication homes or
+raw provider captures.
+
+For a pair, this read-only recipe emits selected measurements and a small artifact index.
+It accepts directory paths containing spaces and preserves missing evidence as `null`.
+It performs no inference, report regeneration, or recursive scan:
+
+```sh
+python3 - '/absolute/path/to/run' <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+def load(relative):
+    path = root / relative
+    return json.loads(path.read_text()) if path.is_file() else {}
+state = json.loads((root / "run.json").read_text())
+report = load("reports/report.json")
+def arm_summary(arm):
+    recorded = (report.get("arms") or {}).get(arm) or {}
+    result = (state.get("results") or {}).get(arm) or recorded.get("result") or {}
+    usage = recorded.get("usage") or {}
+    return {"exit_code": result.get("exit_code"),
+            "agent_elapsed_ms": result.get("agent_elapsed_ms"),
+            "checks_passed": (result.get("grade") or {}).get("passed"),
+            "usage_complete": usage.get("complete"), "totals": usage.get("totals")}
+artifacts = ["run.json", "reports/report.md", "reports/report.json"]
+for arm in ("stock", "current"):
+    artifacts += [f"artifacts/{arm}/codex.jsonl", f"artifacts/{arm}/codex.stderr",
+                  f"artifacts/{arm}/changes.patch"]
+print(json.dumps({"directory": str(root), "run_id": state.get("id"),
+    "status": state.get("status"), "error": str(state["error"])[:300] if state.get("error") else None,
+    "validity": report.get("validity"), "winner": report.get("winner"),
+    "arms": {arm: arm_summary(arm) for arm in ("stock", "current")},
+    "warnings": [str(warning)[:300] for warning in (report.get("warnings") or [])[:10]],
+    "artifacts": [str(root / path) for path in artifacts if (root / path).is_file()]}, indent=2))
+PY
+```
+
+Then open the specific report section or bounded log tail that answers the question.
+Trial and suite directories instead contain `trials.json` or `suite.json`; use their
+recorded child directories to inspect individual pairs. The [contract](contract.md#report)
+describes the retained evidence and measurement limitations.
+
 ## Repeat a pinned comparison
 
 Start from an unused prepared pair. `prepare-trials` runs model-free preflight, pins the immutable

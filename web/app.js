@@ -359,12 +359,26 @@ function renderArtifacts() {
   $("artifact-note").textContent = artifactItems.length ? "Showing " + matches.length + " of " + artifactItems.length + " evidence files (up to 500). Private homes and authentication stores stay excluded." : "Reports, patches and logs appear as the CLI writes them.";
   $("artifacts").innerHTML = "<ul>" + matches.map((file) => '<li><a href="/api/entries/' + selected + "/artifacts?path=" + encodeURIComponent(file.path) + '">' + esc(file.path) + '</a> <span class="hint">(' + metric(file.bytes) + " bytes)</span></li>").join("") + "</ul>";
 }
+async function copyReference() {
+  const field = $("run-reference"), reference = field.value;
+  if (!reference) return;
+  try {
+    await navigator.clipboard.writeText(reference);
+    if (field.value === reference) showNotice("reference-status", "Evidence reference copied, including the absolute directory.");
+  } catch {
+    if (field.value !== reference) return;
+    field.hidden = false; field.focus(); field.select();
+    showNotice("reference-status", "Clipboard unavailable. Copy the selected reference below.");
+  }
+}
 function renderSnapshot(data) {
   snapshot = data;
   const labels = setupLabels(data);
   const entry = data.entry, state = obj(data.state), job = obj(entry.job);
   $("run-title").textContent = entry.title;
   $("run-directory").textContent = entry.directory || "Preparing the local environment; the evidence directory will appear here.";
+  $("copy-reference").disabled = !entry.directory;
+  $("run-reference").value = entry.directory ? `${entry.title}\nEvidence directory: ${entry.directory}\nWorkbench entry: ${entry.id}` : "";
   $("stop-operation").hidden = activeId !== entry.id;
   $("stop-operation").disabled = job.status === "stopping";
   $("stop-operation").textContent = job.status === "stopping" ? "Stopping and retaining evidence…" : "Stop operation";
@@ -430,6 +444,9 @@ async function selectEntry(id) {
   $("start-action").disabled = true; $("existing-actions").hidden = true;
   $("run-title").textContent = "Loading selected evidence…";
   $("run-directory").textContent = "";
+  $("copy-reference").disabled = true;
+  $("run-reference").value = ""; $("run-reference").hidden = true;
+  $("reference-status").hidden = true;
   for (const element of ["run-status", "results", "action-fields", "live-output", "children", "artifacts", "state-details"]) $(element).replaceChildren();
   $("phase-log").textContent = "Loading selected evidence…";
   liveKeys = undefined; childSignature = undefined; artifactSignature = undefined;
@@ -506,6 +523,7 @@ async function init() {
       try { await api("entries/" + selected + "/stop", {}); }
       catch (error) { $("watch-error").textContent = error.message; $("stop-operation").disabled = false; }
     });
+    $("copy-reference").addEventListener("click", copyReference);
     $("artifact-filter").addEventListener("input", renderArtifacts);
     $("watch-enabled").addEventListener("change", () => { if ($("watch-enabled").checked && latestSnapshot) renderSnapshot(latestSnapshot); else $("updated-at").textContent = "Evidence updates paused. Operation status stays live."; });
     const hash = location.hash.slice(1);

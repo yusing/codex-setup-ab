@@ -47,7 +47,9 @@
         </form>
       </section>
       <section id="watch-view" hidden>
-        <div class="page-heading"><div><h1 id="run-title">Run</h1><p id="run-directory" class="path"></p></div><button id="stop-operation" class="danger" hidden>Stop operation</button></div>
+        <div class="page-heading"><div><h1 id="run-title">Run</h1><p id="run-directory" class="path"></p></div><div class="button-row"><button id="copy-reference" type="button" disabled>Copy evidence reference</button><button id="stop-operation" class="danger" hidden>Stop operation</button></div></div>
+        <p id="reference-status" class="hint" role="status" hidden></p>
+        <textarea id="run-reference" aria-label="Evidence reference to copy" rows="3" readonly hidden></textarea>
         <div id="run-status" aria-live="polite"></div>
         <div class="watch-controls"><label class="check"><input type="checkbox" id="watch-enabled" checked> Watch updates</label><label class="check"><input type="checkbox" id="follow-log" checked> Follow live output</label><span id="updated-at" class="hint"></span></div>
         <div id="watch-error" class="error" role="alert"></div>

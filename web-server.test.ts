@@ -129,6 +129,23 @@ test("workbench serves its interface font locally", async () => {
   expect(await (await fetch(origin + "/fonts/OFL.txt")).text()).toContain("SIL OPEN FONT LICENSE");
 });
 
+test.each([false, true])("evidence references preserve the absolute path when clipboard denied is %s", async denied => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const reference = "Booking Ledger\nEvidence directory: /tmp/evidence with spaces\nWorkbench entry: entry-id";
+  let copied = "", focused = false, selected = false;
+  const field = { value: reference, hidden: true, focus: () => { focused = true; }, select: () => { selected = true; } };
+  const status = { hidden: true, textContent: "", classList: { toggle() {} } };
+  await runInNewContext(source + "\ncopyReference()", {
+    document: { getElementById: (id: string) => id === "run-reference" ? field : status },
+    navigator: { clipboard: { writeText: async (text: string) => { if (denied) throw new Error("Clipboard denied"); copied = text; } } },
+  });
+  expect(copied).toBe(denied ? "" : reference);
+  expect(field.hidden).toBe(!denied);
+  expect(focused && selected).toBe(denied);
+  expect(status.hidden).toBe(false);
+  expect(status.textContent).toContain(denied ? "Copy the selected reference" : "Evidence reference copied");
+});
+
 test("pair measurement headers use actual arms before reporting and retain recorded report labels", async () => {
   const directory = await pair();
   const state = { schema_version: 1, comparison: "same-setup", execution: { current_launcher: "mekugi" } };

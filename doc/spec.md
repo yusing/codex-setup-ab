@@ -60,9 +60,14 @@ image. The run performs model-free preflight before inference. The agent equival
 ./dist/codex-ab launch --preset stock-mekugi --task skills-mgr-agent-cli --confirm-paid-inference
 ```
 
-Available tasks are `nvm-download-no-eval`, `session-retention`, and
-[skills-mgr-agent-cli](../tasks/skills-mgr-agent-cli/README.md); omitting `--task` keeps the NVM
-default. The skills manager task asks for agent-friendly, non-interactive skill management,
+Available pinned tasks are `nvm-download-no-eval`, `gin-context-copy`,
+`flask-ipv6-server-name`, `express-transfer-encoding`,
+[skills-mgr-agent-cli](../tasks/skills-mgr-agent-cli/README.md),
+[booking-ledger](../tasks/booking-ledger/README.md), and
+[session-retention](../tasks/session-retention/README.md). The `custom` choice accepts
+a portable pack or explicit task inputs. The Web UI and CLI share the
+[launch catalog](../launch.ts); omitting `--task` keeps the NVM default.
+The skills manager task asks for agent-friendly, non-interactive skill management,
 leaving the interface and implementation design open. It uses a two-hour agent timeout;
 long-horizon runtime and compaction frequency have not been measured, and compaction is not guaranteed.
 `session-retention` is available only with `stock-current`. All Mekugi presets reject that

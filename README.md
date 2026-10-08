@@ -87,6 +87,11 @@ are local file paths, never pasted credential contents. The browser does not ser
 private homes or authentication stores. Paid inference requires fresh consent for
 each operation. Checks and report-only actions do not grant this consent.
 
+Use **Copy evidence reference** in the run view when asking an agent to inspect results.
+The reference includes the absolute evidence directory and the current workbench entry ID.
+If the browser blocks clipboard access, the UI selects the reference for manual copying.
+Entry IDs expire when the server restarts; the retained directory is the reusable reference.
+
 For agent-directed preset launch, use `codex-ab launch --preset NAME` with
 task/model/reasoning/compaction flags and explicit `--confirm-paid-inference`.
 Use `--prepare-only` to stop before inference. Existing CLI commands and flags remain
@@ -108,6 +113,26 @@ and the host tool store unchanged while runs or trial sets use them.
 ## Development
 
 ```sh
-bun test
+bun run check
 bun run build
 ```
+
+`check` validates repository-relative documentation paths, typechecks production
+TypeScript, and runs the existing tests. CI runs the same command and builds the CLI.
+Live Docker and Mekugi tests remain opt-in; ordinary checks use no paid inference.
+
+### Source ownership and focused checks
+
+| Change | Start here | Focused tests |
+| --- | --- | --- |
+| UI rendering and evidence watching | [Browser app](web/app.js), [server](web-server.ts) | `bun test web-server.test.ts` |
+| Task choices, presets, and launch defaults | [Launch catalog](launch.ts), [CLI options](cli-options.ts) | `bun test preset.test.ts task-pack.test.ts` |
+| Execution, grading, and recovery | [Workflow](workflow.ts), [runner](runner.ts), [semantic judge](semantic-judge.ts) | `bun test runner.test.ts semantic.test.ts` |
+| Setup snapshots and isolation | [Preparation](prepare.ts), [snapshot verification](snapshot.ts), [isolation](isolation.ts) | `bun test snapshot.test.ts container.test.ts toolhost.test.ts` |
+| Usage, cost, and retained reports | [Usage](usage.ts), [diagnostics](diagnostics.ts), [report](report.ts) | `bun test usage.test.ts diagnostics.test.ts cache-diagnostics.test.ts` |
+| Documentation navigation | [Path checker](scripts/check-docs.ts) | `bun test scripts/check-docs.test.ts` |
+
+Start searches in the owning files and use symbol outlines before whole-file reads.
+Retained benchmark directories contain large generated evidence, not harness source.
+For result-ID lookup and bounded evidence inspection, see the
+[inspection guide](doc/cli.md#find-and-inspect-retained-evidence).

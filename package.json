@@ -9,7 +9,10 @@
   "scripts": {
     "start": "bun cli.ts serve",
     "build": "bun build ./cli.ts --compile --outfile ./dist/codex-ab",
-    "test": "bun test"
+    "test": "bun test",
+    "check:docs": "bun scripts/check-docs.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run check:docs && bun run typecheck && bun test"
   },
   "devDependencies": {
     "@types/bun": "1.4.2",
