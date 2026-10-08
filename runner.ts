@@ -5,7 +5,7 @@ import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedNetwork } from "./container";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
-import { executorOwnership, protectedArgs, protectedPreflight } from "./isolation";
+import { executorOwnership, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { readState, writeState, withRunLock } from "./state";
 import { isPairedMekugiComparison, mekugiArmFlags, MEKUGI_METRICS_WRAPPER } from "./mekugi";
@@ -31,7 +31,6 @@ async function currentSetupMounts(runDir: string, state: RunState, arm: ArmName 
   const usesCurrentSetup = state.comparison === "same-setup" || state.comparison === "stock-mekugi" || isPairedMekugiComparison(state.comparison)
     || (arm === "current" && state.comparison !== "codex-mekugi-grok");
   if (!usesCurrentSetup) return [];
-  const installs = resolve(runDir, state.runtime_tools.current_setup_installs);
   const mounts: string[] = [];
   if (state.comparison === "duplicate-output") {
     const snapshot = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8")) as { source_home?: string };
@@ -41,7 +40,7 @@ async function currentSetupMounts(runDir: string, state: RunState, arm: ArmName 
       mounts.push("-v", `${home ?? resolve(runDir, state.arms[arm].home_template)}:${sourceHome}${home ? "" : ":ro"}`);
     }
   }
-  return [...mounts, "-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`];
+  return [...mounts, ...await miseToolMounts(runDir, state)];
 }
 
 function imageRef(state: RunState): string { return dependencyImage(state); }

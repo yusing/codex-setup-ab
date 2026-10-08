@@ -1106,6 +1106,35 @@ test("preflight rejects changes inside the current setup tool store", async () =
   await file(resolve(run, state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner"), "changed after preparation\n", 0o755);
   await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("current setup installations changed");
 });
+
+test("Rust tools outside the mise store are recorded, mounted read-only, and verified", async () => {
+  const privateHome = join(root, "rust-runtime-home");
+  await cp(home, privateHome, { recursive: true });
+  const cargoBin = join(privateHome, ".cargo/bin"), rustup = join(privateHome, ".rustup");
+  await file(join(cargoBin, "rustup"), "rustup fixture", 0o755);
+  await symlink("rustup", join(cargoBin, "rustc"));
+  await file(join(rustup, "toolchains/fixture/bin/rustc"), "rustc fixture", 0o755);
+  await mkdir(join(privateHome, ".local/share/mise/installs/rust"));
+  await symlink(cargoBin, join(privateHome, ".local/share/mise/installs/rust/1"));
+  const run = await prepared(30, "codex", privateHome);
+  const state = await readState(run);
+  const manifest = JSON.parse(await readFile(join(run, state.runtime_tools.current_setup_files), "utf8"));
+  expect(manifest.rust.cargo_files.every((file: { sha256?: string }) => file.sha256 === undefined)).toBe(true);
+  const auth = join(root, "rust-auth.json"); await file(auth, "{}", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
+  const calls = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" create ") && line.includes("MISE_INSTALLS_DIR="));
+  expect(calls.length).toBeGreaterThan(1);
+  for (const call of calls) {
+    expect(call).toContain(`${cargoBin}:${cargoBin}:ro`);
+    expect(call).toContain(`${cargoBin}:/home/ubuntu/.cargo/bin:ro`);
+    expect(call).toContain(`${rustup}:${rustup}:ro`);
+    expect(call).toContain(`RUSTUP_HOME=${rustup}`);
+    expect(call).toContain("MISE_AUTO_INSTALL=0");
+  }
+  await file(join(rustup, "toolchains/fixture/bin/rustc"), "changed toolchain");
+  await expect(verifyPreparedInputs(run, await readState(run))).rejects.toThrow("Rust runtime changed");
+});
 test("Mekugi rejects changed controls and snapshot files before Docker is invoked", async () => {
   for (const path of ["control/task.md", "evaluator/criteria.json", "snapshots/runtime/bin/bun", "snapshots/current/home/ubuntu/AGENTS.md", "snapshots/stock/home/ubuntu/AGENTS.md"]) {
     const run = await prepared();

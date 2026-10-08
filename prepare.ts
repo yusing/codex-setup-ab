@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { checked, exec } from "./process";
-import { recordToolStore, verifySnapshotIdentities, type SnapshotFile } from "./snapshot";
+import { recordToolStore, verifySnapshotIdentities, type SnapshotFile, type ToolStoreManifest } from "./snapshot";
 import { ISOLATION_SCRIPTS } from "./isolation";
 import { readMekugiBuild } from "./provenance";
 import { loadTaskPack } from "./task-pack";
@@ -220,13 +220,17 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   if (await sha256(setupFilesPath) !== state.runtime_tools.current_setup_files_sha256) {
     throw new Error("snapshotted current setup file manifest changed");
   }
-  const setupFiles = JSON.parse(await readFile(setupFilesPath, "utf8")) as { files: SnapshotFile[] };
+  const setupFiles = JSON.parse(await readFile(setupFilesPath, "utf8")) as ToolStoreManifest;
   const hasIdentities = Array.isArray(setupFiles.files) && setupFiles.files.every(file => file.identity !== undefined);
   const setupIsUnchanged = hasIdentities
     ? await verifySnapshotIdentities(setupInstalls, setupFiles.files)
     : JSON.stringify(await manifest(setupInstalls)) === JSON.stringify(setupFiles.files);
   if (!setupIsUnchanged) {
     throw new Error("current setup installations changed");
+  }
+  if (setupFiles.rust && (!await verifySnapshotIdentities(setupFiles.rust.cargo_bin, setupFiles.rust.cargo_files)
+    || !await verifySnapshotIdentities(setupFiles.rust.rustup, setupFiles.rust.rustup_files))) {
+    throw new Error("current setup Rust runtime changed");
   }
   const mekugiTemplate = state.comparison === "codex-mekugi-grok" ? join(runDir, state.arms.stock.home_template) : join(runDir, state.arms.current.home_template);
   if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
@@ -631,7 +635,15 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     progress(`recorded metadata for ${setupFiles.length} tool-store entries; no installed tools read or copied`);
   }
   const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json");
-  await writeFile(currentSetupFiles, `${JSON.stringify({ files: setupFiles }, null, 2)}\n`);
+  const toolManifest: ToolStoreManifest = { files: setupFiles };
+  const cargoBin = join(await realpath(options.currentHome), ".cargo/bin");
+  if (setupFiles.some(file => file.path.startsWith("rust/") && file.type === "symlink" && file.target === cargoBin)) {
+    const rustup = join(await realpath(options.currentHome), ".rustup");
+    progress("recording metadata for read-only Cargo binaries and Rustup runtime (no content reads)");
+    toolManifest.rust = { cargo_bin: cargoBin, rustup,
+      cargo_files: await recordToolStore(cargoBin), rustup_files: await recordToolStore(rustup) };
+  }
+  await writeFile(currentSetupFiles, `${JSON.stringify(toolManifest, null, 2)}\n`);
 
   const snapshotDocument = JSON.parse(await readFile(snapshotManifest, "utf8")) as { created_at?: unknown };
   if (typeof snapshotDocument.created_at !== "string") throw new Error("current snapshot manifest has no capture timestamp");

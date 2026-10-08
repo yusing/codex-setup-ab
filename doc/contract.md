@@ -32,6 +32,14 @@ Runtime supplements are copied separately: installed hooks, materialized skills,
 
 The clone preserves absolute `/home/ubuntu` paths inside its container. `snapshot-manifest.json` records the configuration commit and tree, overlaid tracked paths, a SHA-256 for every regular setup file (excluding Git metadata), literal symlink targets, and portability adaptations. The installed-tool metadata manifest and copied setup manager are also verified before launch. Preflight requires every configured tool to be present and checks the general setup tools with networking disabled. It additionally exercises the `use-modern-go` remote skill and registered Go-guidelines hook when the task workspace contains `go.mod`. For Mekugi, it checks the snapshotted executable and launches `mekugi codex --version` offline. This checks launcher startup, not a complete model-to-tool request. An incomplete setup fails before inference instead of being silently bypassed.
 
+When mise's Rust installation links to the source home's `.cargo/bin`, preparation
+also records metadata for those binaries and the `.rustup` runtime without reading
+their contents. Containers mount both read-only, expose Cargo binaries in the
+isolated home, and select the captured Rustup runtime. Cargo caches stay private
+to each arm. Keep these host runtime paths unchanged too. Mise automatic installs
+are disabled against the read-only stores; missing tools must be resolved before
+preparing a new run.
+
 Each arm sees only its own clone, caches, and private home. The host installed-tool store is mounted read-only into the current arm for `stock-current`, into both arms for `stock-mekugi`, `same-setup`, `journal-compaction`, and `duplicate-output`, and into neither arm for `codex-mekugi-grok`. Agent logs and captured patches stay outside its writable mounts. Behavioral criteria are fixed before execution; adaptive checks are authored after both candidates stop and run in separate evaluator workspaces.
 
 Validate the image and snapshotted dependencies without making a model request:

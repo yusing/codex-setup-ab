@@ -1,12 +1,21 @@
 import { dependencyImage } from "./dependencies";
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { MEKUGI_METRICS_WRAPPER } from "./mekugi";
 import { runOwnedContainer } from "./container";
 import type { RunState } from "./types";
+import type { ToolStoreManifest } from "./snapshot";
 
 export const ISOLATION_SCRIPTS = ["isolated-codex.sh", "agent-mounts.sh", "agent-check.py"] as const;
+
+export async function miseToolMounts(runDir: string, state: RunState): Promise<string[]> {
+  const installs = resolve(runDir, state.runtime_tools.current_setup_installs);
+  const { rust } = JSON.parse(await readFile(join(runDir, state.runtime_tools.current_setup_files), "utf8")) as ToolStoreManifest;
+  return ["-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`, "-e", "MISE_AUTO_INSTALL=0",
+    ...(rust ? ["-v", `${rust.cargo_bin}:${rust.cargo_bin}:ro`, "-v", `${rust.cargo_bin}:/home/ubuntu/.cargo/bin:ro`,
+      "-v", `${rust.rustup}:${rust.rustup}:ro`, "-e", `RUSTUP_HOME=${rust.rustup}`] : [])];
+}
 
 export function protectedArgs(runDir: string, state: RunState, runtime: string): string[] {
   if (!state.protected_runtime) return [];
@@ -66,11 +75,10 @@ print('CODEX_AB_PROTECTED_RUNTIME_OK')
   const paths = [workspace, home, runtime, exports];
   try {
     await executorOwnership(docker, state, `${state.id}-isolation-own`, paths, false);
-    const installs = resolve(runDir, state.runtime_tools.current_setup_installs);
     const common = [...protectedArgs(runDir, state, runtime), "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
         "-v", `${workspace}:/workspace`, "-v", `${home}:/home/ubuntu`,
         "-v", `${exports}:/mekugi-exports`, "-v", `${join(directory, "modules")}:/go/pkg/mod:ro`,
-        "-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`];
+        ...await miseToolMounts(runDir, state)];
     const command = [dependencyImage(state), "mise", "exec", "--", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...(state.mekugi_flags ?? []),
       ...(state.mekugi_flags?.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]), "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"];
     const result = await runOwnedContainer({ docker, name: `${state.id}-isolation-probe`, signal, timeoutMs: 180000,

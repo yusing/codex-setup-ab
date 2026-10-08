@@ -59,9 +59,12 @@ export async function verifySnapshotIdentities(root: string, expected: SnapshotF
   return valid && seen === expected.length;
 }
 
-/**
- * Record metadata for a read-only host mount without reading tool payloads.
- */
+export interface ToolStoreManifest {
+  files: SnapshotFile[];
+  rust?: { cargo_bin: string; rustup: string; cargo_files: SnapshotFile[]; rustup_files: SnapshotFile[] };
+}
+
+/** Record metadata for a read-only host mount without reading tool payloads. */
 export async function recordToolStore(source: string): Promise<SnapshotFile[]> {
   const files: SnapshotFile[] = [];
   let lastProgress = performance.now();
