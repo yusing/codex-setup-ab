@@ -7,7 +7,7 @@ import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from
 import candidateSource from "./candidate-script.txt" with { type: "text" };
 import { executorOwnership, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
-import { readState, writeState, withRunLock } from "./state";
+import { armExecutionSucceeded, readState, writeState, withRunLock } from "./state";
 import { isPairedMekugiComparison, mekugiArmFlags, MEKUGI_METRICS_WRAPPER } from "./mekugi";
 import { importControl } from "./control";
 import { armLabels } from "./arm-labels";
@@ -437,7 +437,14 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         attempt.finished_at = new Date().toISOString();
         if (item.status === "fulfilled") {
           state.results![arm] = item.value;
-          attempt.status = "stopped";
+          const result = item.value;
+          attempt.status = armExecutionSucceeded(result) ? "stopped" : "failed";
+          if (attempt.status === "failed") {
+            attempt.error = result.lifecycle_error ?? (result.canceled ? "agent canceled" : result.timed_out ? "agent timed out" : `agent exited with code ${result.exit_code}`);
+            const message = `${displayArm(arm)}: ${attempt.error}; see ${result.stderr_path}`;
+            state.error = state.error ? `${state.error}; ${message}` : message;
+            progress(message);
+          }
         } else {
           attempt.status = "failed";
           attempt.error = String(item.reason);
@@ -457,7 +464,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     const collectionFailure = collected.find(result => result.status === "rejected");
     if (collectionFailure?.status === "rejected") state.error = String(collectionFailure.reason);
     await writeState(runDir, state);
-    if (!controller.signal.aborted && selectedArms.every(arm => state.results?.[arm] && !state.results[arm]!.lifecycle_error && !state.results[arm]!.collection_error)) {
+    if (!controller.signal.aborted && selectedArms.every(arm => armExecutionSucceeded(state.results?.[arm]))) {
       progress(`${options.arm ? "selected agent" : "both agents"} stopped; starting evaluator-only grading`);
       const graded = await Promise.allSettled(selectedArms.map(async arm => {
         const result = state.results![arm]!;
@@ -470,7 +477,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     for (const result of Object.values(state.results)) {
       if (result?.collection_error) state.error = state.error ? `${state.error}; ${result.collection_error}` : result.collection_error;
     }
-    state.status = !controller.signal.aborted && selectedArms.every(arm => state.results?.[arm] && !state.results[arm]!.lifecycle_error && !state.results[arm]!.collection_error && state.results[arm]!.grade) ? "complete" : "partial";
+    state.status = !controller.signal.aborted && selectedArms.every(arm => armExecutionSucceeded(state.results?.[arm]) && state.results![arm]!.grade) ? "complete" : "partial";
     await writeState(runDir, state);
     return state;
   } catch (error) {

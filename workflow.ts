@@ -4,7 +4,7 @@ import { runPairUnlocked, type RunOptions } from "./runner";
 import { assertRecoverableJudge, judgeRunUnlocked } from "./judge";
 import { buildReportUnlocked } from "./report";
 import { collectBundle, finalizeBundle } from "./bundle";
-import { readState, withRunLock, writeState } from "./state";
+import { armExecutionSucceeded, readState, withRunLock, writeState } from "./state";
 
 /** The lock covers execution and finishing, including paid source assessment. */
 async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: boolean }, mode: "run" | "finish"): Promise<void> {
@@ -19,7 +19,8 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
     const initial = await readState(runDir);
     if (mode === "run" && (initial.status !== "prepared" || initial.finishing)) throw new Error("prepare a new run instead of resuming or restarting it");
     if (mode === "finish") {
-      if (initial.status !== "complete" || initial.finishing?.status !== "failed") throw new Error("finish requires complete execution with failed finishing");
+      if (initial.status !== "complete" || initial.finishing?.status !== "failed"
+        || !(initial.selected_arms ?? ["stock", "current"]).every(arm => armExecutionSucceeded(initial.results?.[arm]))) throw new Error("finish requires complete execution with failed finishing");
       if (options.recoverJudge && initial.judge?.status !== "failed") throw new Error("judge recovery requires a failed judge attempt");
       if (options.recoverJudge) await assertRecoverableJudge(runDir, initial);
       if (initial.judge && initial.judge.status !== "complete") {
@@ -40,7 +41,9 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
       failure = error;
     }
     const state = await readState(runDir);
-    if (state.status !== "complete") failure ??= new Error(state.error ?? "benchmark execution incomplete");
+    if (state.status !== "complete" || !(state.selected_arms ?? ["stock", "current"]).every(arm => armExecutionSucceeded(state.results?.[arm]))) {
+      failure ??= new Error(state.error ?? "benchmark execution incomplete");
+    }
     state.finishing = { status: "running", started_at: new Date().toISOString(), bundle_path: "reports/bundle" };
     await writeState(runDir, state);
     try {

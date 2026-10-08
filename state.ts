@@ -1,7 +1,12 @@
 import { createReadStream } from "node:fs";
 import { chmod, mkdir, rename, rmdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { RunState } from "./types";
+import type { ArmResult, RunState } from "./types";
+
+export function armExecutionSucceeded(result: ArmResult | undefined): result is ArmResult {
+  return result !== undefined && result.exit_code === 0 && !result.timed_out && !result.canceled
+    && !result.lifecycle_error && !result.collection_error;
+}
 
 /** Serialize whole lifecycle operations, not just their final state writes. */
 export async function withRunLock<T>(runDir: string, operation: () => Promise<T>): Promise<T> {

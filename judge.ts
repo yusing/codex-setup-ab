@@ -1,7 +1,7 @@
 import { access, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { JUDGE_MODEL, runSemanticJudge } from "./semantic-judge";
-import { readState, withRunLock, writeState } from "./state";
+import { armExecutionSucceeded, readState, withRunLock, writeState } from "./state";
 import { embeddedFallbackPricing, fetchPricing, type PricingSnapshot } from "./usage";
 import type { ArmName, CommandEvidence, JudgePass, JudgeReport, RunState } from "./types";
 
@@ -171,6 +171,7 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
   const state = await readState(runDir);
   if (state.invalidity_reasons?.length) throw new Error(`judge refuses an infrastructure-invalid run: ${state.invalidity_reasons.join("; ")}`);
   if (state.status !== "complete" || !state.results?.stock || !state.results.current) throw new Error("judge requires a complete pair");
+  if (![state.results.stock, state.results.current].every(armExecutionSucceeded)) throw new Error("judge requires successful agent execution in both arms");
   if (recover) await assertRecoverableJudge(runDir, state);
   else if (state.judge) throw new Error("judge already started for this immutable run; it cannot be resumed or retried");
   const auth = resolve(authFile);

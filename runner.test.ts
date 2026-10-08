@@ -12,7 +12,7 @@ import { readState, writeState, sha256 } from "./state";
 import { MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import { gradeArm, preflightRun, runPair } from "./runner";
 import { prepareSemanticAssessment } from "./semantic-assessment";
-import { assertRecoverableJudge } from "./judge";
+import { assertRecoverableJudge, judgeRun } from "./judge";
 import * as bundles from "./bundle";
 import { buildReport } from "./report";
 import { embeddedFallbackPricing, type PricingSnapshot } from "./usage";
@@ -1265,6 +1265,9 @@ test("runner records timeouts and stops its exact session containers", async () 
   const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
   expect(state.results?.stock?.timed_out).toBe(true);
   expect(state.results?.current?.timed_out).toBe(true);
+  expect(state.status).toBe("partial");
+  expect(state.results?.stock?.grade).toBeUndefined();
+  expect(state.results?.current?.grade).toBeUndefined();
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain(`rm --force codex-ab-${state.id}-stock`);
   expect(log).toContain(`rm --force codex-ab-${state.id}-current`);
@@ -1415,6 +1418,36 @@ test("benchmark preserves a partial report and bundle after non-inference prepar
   expect(await Bun.file(join(run, "reports/bundle/report.json")).exists()).toBe(true);
   expect(await readFile(fake.log, "utf8")).not.toContain("-judge-1");
 }, 30_000);
+
+test("failed agent execution preserves evidence and skips graders, judges and finishing retries", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture://pricing", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const auth = join(root, "failed-agent-auth.json"); await file(auth, "{}", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  await file(fake.path, (await readFile(fake.path, "utf8")).replace("      *-stock|*-current)", "      *-stock) echo launcher-failed >&2; status=9 ;;\n      *-current)"));
+  await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("agent exited with code 9");
+  const failed = await readState(run);
+  expect(failed.status).toBe("partial");
+  expect(failed.arm_attempts?.stock?.status).toBe("failed");
+  expect(failed.results?.stock?.exit_code).toBe(9);
+  expect(failed.results?.stock?.grade).toBeUndefined();
+  expect(failed.results?.current?.grade).toBeUndefined();
+  expect(failed.finishing?.status).toBe("failed");
+  expect(await readFile(join(run, failed.results!.stock!.stderr_path), "utf8")).toContain("launcher-failed");
+  expect(await Bun.file(join(run, failed.results!.stock!.patch_path)).exists()).toBe(true);
+  expect(await Bun.file(join(run, "reports/bundle/report.json")).exists()).toBe(true);
+  const log = await readFile(fake.log, "utf8");
+  expect(log).not.toContain("-grade-verify");
+  expect(log).not.toContain("-judge-");
+  // Older runners incorrectly marked nonzero exits complete.
+  failed.status = "complete";
+  await writeState(run, failed);
+  await expect(judgeRun(run, auth, fake.path)).rejects.toThrow("successful agent execution");
+  await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("complete execution");
+  expect(await readFile(fake.log, "utf8")).toBe(log);
+});
 
 for (const fault of ["integrity", "cancel"] as const) {
   test(`finishing ${fault} cannot leave a successful bundled outcome`, async () => {
