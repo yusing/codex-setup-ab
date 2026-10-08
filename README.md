@@ -53,8 +53,10 @@ the existing preparation options, including custom task packs and task/criteria 
 Booking Ledger is available in the task selector. Leave its source checkout blank
 to create a clean synthetic seed during preparation. Its defaults use minimal Codex
 versus minimal Mekugi, auto journal compaction, xhigh reasoning, and a 55-minute limit.
-Choose preparation only for a model-free check, or explicitly consent to paid inference
-before starting a run. A repeat count of two or more prepares fresh trial pairs.
+Preparation only is off by default; explicitly consent to paid inference before
+starting a run, or select preparation only for a model-free check. Enter optional
+Mekugi flags as space-separated text, for example `--mode=mekugi --duplicate-output=false`.
+A repeat count of two or more prepares fresh trial pairs.
 The suite workflow accepts a suite manifest and source-mapping file.
 
 The run view shows phase messages, elapsed time, persisted run/arm/judge status,

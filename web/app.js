@@ -71,7 +71,7 @@ function sharedFields() {
 function drawLaunch() {
   const defaults = config.defaults;
   $("input-status").hidden = true;
-  $("prepare-only").checked = true;
+  $("prepare-only").checked = false;
   $("paid-consent").checked = false;
   for (const button of document.querySelectorAll("[data-workflow]")) button.setAttribute("aria-pressed", String(button.dataset.workflow === workflow));
   let fields;
@@ -96,7 +96,7 @@ function drawLaunch() {
       + field("Mekugi source", "mekugi-source", defaults["mekugi-source"])
       + field("Mekugi executable", "mekugi-bin", defaults["mekugi-bin"])
       + field("Captured Mekugi build (optional)", "mekugi-build", "", "text", "Owns its executable and source when supplied.")
-      + field("Mekugi flags (JSON array, optional)", "mekugi-flags", "", "text", 'For example ["--mode=mekugi","--duplicate-output=on"].')
+      + field("Mekugi flags (optional)", "mekugi-flags", "", "text", "Space-separated flags, for example --mode=mekugi --duplicate-output=false.")
       + field("Grok executable", "grok-bin", defaults["grok-bin"])
       + field("Reviewer treatment (optional)", "review-treatment", "", "text", "Use an existing reviewer overlay path.")
       + '</div>' + check("Use protected Mekugi runtime", "protect-mekugi") + '</details>'
@@ -185,6 +185,7 @@ function updateConsent() {
 }
 function launchRequest() {
   const options = formOptions($("launch-form"));
+  if (options["mekugi-flags"]) options["mekugi-flags"] = JSON.stringify(options["mekugi-flags"].trim().split(/\s+/));
   const command = workflow === "pair" ? "launch" : workflow === "suite" ? "prepare-suite" : "build-mekugi";
   const body = { command, options };
   if (workflow === "pair") {

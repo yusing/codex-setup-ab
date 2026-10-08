@@ -401,6 +401,18 @@ test("invalid launch inputs fail before creating a job, and paid consent is fres
   expect(entries.entries[0].job).toBeUndefined();
 });
 
+test("web launch translates space-separated Mekugi flags to CLI arguments", async () => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const elements = { "launch-form": { querySelectorAll: () => [] }, "prepare-only": { checked: false }, "paid-consent": { checked: true } };
+  const body = runInNewContext(source + '\nlaunchRequest()', {
+    document: { getElementById: (id: keyof typeof elements) => elements[id] },
+    FormData: class { *[Symbol.iterator]() { yield ["mekugi-flags", " --mode=mekugi  --duplicate-output=false "]; } },
+  });
+  expect(body).toEqual({ command: "launch", options: {
+    "mekugi-flags": '["--mode=mekugi","--duplicate-output=false"]', "confirm-paid-inference": true,
+  } });
+});
+
 test("Booking Ledger checks and launch use its synthetic seed without paid inference", async () => {
   const codex = join(root, "codex");
   for (const path of [codex, join(root, "codex-code-mode-host")]) {
