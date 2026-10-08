@@ -1,5 +1,5 @@
 import { dependencyImage } from "./dependencies";
-import { join, posix } from "node:path";
+import { join, posix, resolve } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { runOwnedContainer } from "./container";
 import type { ArmName, CommandEvidence, RunState } from "./types";
@@ -182,9 +182,9 @@ export async function executeSemanticCheck(options: {
       "-e", "PYTHONDONTWRITEBYTECODE=1", "-v", `${options.candidate}:/candidate:ro`,
       "-v", `${harnessPath}:/harness.json:ro`,
       ...(options.arm && !state.dependency_image ? ["-v", `${join(runDir, "arms", options.arm, "grader-go-pkg-cache")}:/home/ubuntu/go/pkg:ro`,
-        "-v", `${join(runDir, state.runtime_tools.bun)}:/usr/local/bin/bun:ro`,
+        "-v", `${resolve(runDir, state.runtime_tools.bun)}:/usr/local/bin/bun:ro`,
         ...(state.profile !== "godoxy-icons" ? ["-v", `${join(runDir, "arms", options.arm, "grader-bun-cache")}:/home/ubuntu/.bun/install/cache:ro`] : [])] : []),
-      ...(state.dependency_image ? ["-v", `${join(runDir, state.runtime_tools.bun)}:/usr/local/bin/bun:ro`] : []),
+      ...(state.dependency_image ? ["-v", `${resolve(runDir, state.runtime_tools.bun)}:/usr/local/bin/bun:ro`] : []),
       dependencyImage(state), "python3", "-c", CHECK_PROGRAM],
   });
   const execution: CommandEvidence = {

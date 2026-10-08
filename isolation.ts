@@ -1,18 +1,28 @@
 import { dependencyImage } from "./dependencies";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { MEKUGI_METRICS_WRAPPER } from "./mekugi";
 import { runOwnedContainer } from "./container";
-import type { RunState } from "./types";
-import type { ToolStoreManifest } from "./snapshot";
+import type { ArmName, RunState } from "./types";
+import { readToolStoreManifest } from "./snapshot";
 
 export const ISOLATION_SCRIPTS = ["isolated-codex.sh", "agent-mounts.sh", "agent-check.py"] as const;
 
+export function launcherMounts(runDir: string, state: RunState, arm: ArmName): string[] {
+  if (!state.runtime_tools.shared_binaries) return [];
+  const grok = state.comparison === "codex-mekugi-grok" && arm === "current";
+  const mekugi = state.comparison === "codex-mekugi-grok" ? arm === "stock"
+    : arm === "current" && state.execution.current_launcher === "mekugi" || ["same-setup", "journal-compaction", "duplicate-output"].includes(state.comparison ?? "");
+  if (grok) return ["-v", `${resolve(runDir, state.runtime_tools.grok_source!)}:/home/ubuntu/.grok/bin/grok:ro`];
+  return mekugi ? ["-v", `${resolve(runDir, state.runtime_tools.mekugi_source!)}:/home/ubuntu/.local/bin/mekugi:ro`] : [];
+}
+
 export async function miseToolMounts(runDir: string, state: RunState): Promise<string[]> {
   const installs = resolve(runDir, state.runtime_tools.current_setup_installs);
-  const { rust } = JSON.parse(await readFile(join(runDir, state.runtime_tools.current_setup_files), "utf8")) as ToolStoreManifest;
+  const { rust } = await readToolStoreManifest(join(runDir, state.runtime_tools.current_setup_files));
   return ["-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`, "-e", "MISE_AUTO_INSTALL=0",
+    ...(state.runtime_tools.current_setup_mise_source ? ["-v", `${state.runtime_tools.current_setup_mise_source}:/home/ubuntu/.local/bin/mise:ro`] : []),
     ...(rust ? ["-v", `${rust.cargo_bin}:${rust.cargo_bin}:ro`, "-v", `${rust.cargo_bin}:/home/ubuntu/.cargo/bin:ro`,
       "-v", `${rust.rustup}:${rust.rustup}:ro`, "-e", `RUSTUP_HOME=${rust.rustup}`] : [])];
 }
@@ -78,7 +88,7 @@ print('CODEX_AB_PROTECTED_RUNTIME_OK')
     const common = [...protectedArgs(runDir, state, runtime), "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
         "-v", `${workspace}:/workspace`, "-v", `${home}:/home/ubuntu`,
         "-v", `${exports}:/mekugi-exports`, "-v", `${join(directory, "modules")}:/go/pkg/mod:ro`,
-        ...await miseToolMounts(runDir, state)];
+        ...await miseToolMounts(runDir, state), ...launcherMounts(runDir, state, "current")];
     const command = [dependencyImage(state), "mise", "exec", "--", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...(state.mekugi_flags ?? []),
       ...(state.mekugi_flags?.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]), "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"];
     const result = await runOwnedContainer({ docker, name: `${state.id}-isolation-probe`, signal, timeoutMs: 180000,

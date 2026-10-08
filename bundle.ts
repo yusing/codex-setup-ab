@@ -100,7 +100,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   await copy("reports/report.json", "report.json");
   await copy("reports/report.md", "report.md");
   await copy(state.snapshot_manifest, "snapshot-manifest.json");
-  await copy(state.runtime_tools.current_setup_files, "mise-files.json");
+  await copy(state.runtime_tools.current_setup_files, state.runtime_tools.current_setup_files.endsWith(".gz") ? "mise-files.json.gz" : "mise-files.json");
   await copy(state.task.path, "task.md");
   if (state.mekugi_exports) {
     for (const [source, target] of [[state.mekugi_exports.capture, "mekugi-capture.jsonl"],

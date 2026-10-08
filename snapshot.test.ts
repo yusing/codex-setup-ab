@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { chmod, cp, lstat, mkdir, mkdtemp, readlink, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordToolStore, verifySnapshotIdentities } from "./snapshot";
+import { gzipSync } from "node:zlib";
+import { readToolStoreManifest, recordToolStore, verifySnapshotIdentities } from "./snapshot";
 
 async function createStore(root: string): Promise<string> {
   const store = join(root, "store");
@@ -48,6 +49,21 @@ test("records sorted metadata without creating a destination or hashing payloads
       ctime_ns: String(actual.ctimeNs),
     });
     expect(await Bun.file(destination).exists()).toBe(false);
+  });
+});
+
+test("compressed and legacy tool manifests preserve all identity records", async () => {
+  await withTemporaryRoot("codex-ab-metadata-format-", async root => {
+    const store = await createStore(root);
+    const manifest = { files: await recordToolStore(store) };
+    for (const suffix of [".json", ".json.gz"]) {
+      const path = join(root, "metadata" + suffix);
+      const json = JSON.stringify(manifest);
+      await writeFile(path, suffix.endsWith(".gz") ? gzipSync(json) : json);
+      const decoded = await readToolStoreManifest(path);
+      expect(decoded).toEqual(manifest);
+      expect(await verifySnapshotIdentities(store, decoded.files)).toBe(true);
+    }
   });
 });
 

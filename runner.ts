@@ -5,7 +5,7 @@ import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedNetwork } from "./container";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
-import { executorOwnership, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
+import { executorOwnership, launcherMounts, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { armExecutionSucceeded, readState, writeState, withRunLock } from "./state";
 import { isPairedMekugiComparison, mekugiArmFlags, MEKUGI_METRICS_WRAPPER } from "./mekugi";
@@ -30,8 +30,8 @@ function containerArgs(state: RunState): string[] {
 async function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current", home?: string): Promise<string[]> {
   const usesCurrentSetup = state.comparison === "same-setup" || state.comparison === "stock-mekugi" || isPairedMekugiComparison(state.comparison)
     || (arm === "current" && state.comparison !== "codex-mekugi-grok");
-  if (!usesCurrentSetup) return [];
-  const mounts: string[] = [];
+  const mounts = launcherMounts(runDir, state, arm);
+  if (!usesCurrentSetup) return mounts;
   if (state.comparison === "duplicate-output") {
     const snapshot = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8")) as { source_home?: string };
     const sourceHome = snapshot.source_home;
@@ -141,14 +141,14 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     const mekugiHome = resolve(runDir, state.comparison === "codex-mekugi-grok" ? state.arms.stock.home_template : state.arms.current.home_template);
     progress(state.comparison === "codex-mekugi-grok" ? "checking the isolated Codex+Mekugi and Grok setups offline" : "checking the minimal stock-plus-Mekugi setup offline");
     const dependencies = await runOwnedContainer({ docker, name: `${prefix}-setup`, signal, createArgs: ["--network", "none",
-      "-v", `${mekugiHome}:/setup:ro`, ...await currentSetupMounts(runDir, state), image, "sh", "-lc",
+      "-v", `${mekugiHome}:/setup:ro`, ...await currentSetupMounts(runDir, state, state.comparison === "codex-mekugi-grok" ? "stock" : "current"), image, "sh", "-lc",
       "cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && test -r /home/ubuntu/.codex/config.toml && test -x /home/ubuntu/.local/bin/mekugi"
         + (state.comparison === "stock-mekugi" ? " && cd /home/ubuntu && missing_tools=\"$(mise ls --current --missing --no-header)\" && if test -n \"$missing_tools\"; then printf 'missing configured tools: %s\\n' \"$missing_tools\" >&2; exit 1; fi && mise exec -- sh -c 'command -v codex >/dev/null'" : "")] });
     if (dependencies.exitCode !== 0) throw new Error(`stock-plus-Mekugi setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
     if (state.comparison === "codex-mekugi-grok") {
       const grokHome = resolve(runDir, state.arms.current.home_template);
       const grokCheck = await runOwnedContainer({ docker, name: `${prefix}-grok`, signal, createArgs: ["--network", "none",
-        "-v", `${grokHome}:/setup:ro`, image, "sh", "-lc",
+        "-v", `${grokHome}:/setup:ro`, ...launcherMounts(runDir, state, "current"), image, "sh", "-lc",
         "cp -a /setup/. /home/ubuntu/ && test -x /home/ubuntu/.grok/bin/grok && /home/ubuntu/.grok/bin/grok --version"] });
       await writeFile(join(runDir, "artifacts/preflight-grok.json"), JSON.stringify(grokCheck, null, 2));
       if (grokCheck.exitCode !== 0) throw new Error(`isolated Grok executable cannot run offline: ${[grokCheck.stdout.trim(), grokCheck.stderr.trim()].filter(Boolean).join("; ")}`);
@@ -179,7 +179,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
       const flags = mekugiArmFlags(state, arm);
       const launch = await runOwnedContainer({ docker, name: `${prefix}-mekugi${paired ? `-${arm}` : ""}`, signal, timeoutMs: 30000,
         createArgs: ["--network", "none", "-v", `${state.comparison === "codex-mekugi-grok" ? resolve(runDir, state.arms.stock.home_template) : currentHome}:/setup:ro`,
-          "-v", `${exports}:/mekugi-exports`, ...await currentSetupMounts(runDir, state, arm), image, "sh", "-lc",
+          "-v", `${exports}:/mekugi-exports`, ...await currentSetupMounts(runDir, state, state.comparison === "codex-mekugi-grok" ? "stock" : arm), image, "sh", "-lc",
           'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && exec "$@"',
           "preflight", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...flags,
           ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),

@@ -1,5 +1,6 @@
-import { lstat, readdir, readlink } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { join, relative } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { sha256 } from "./state";
 
 export interface SnapshotIdentity {
@@ -62,6 +63,11 @@ export async function verifySnapshotIdentities(root: string, expected: SnapshotF
 export interface ToolStoreManifest {
   files: SnapshotFile[];
   rust?: { cargo_bin: string; rustup: string; cargo_files: SnapshotFile[]; rustup_files: SnapshotFile[] };
+}
+
+export async function readToolStoreManifest(path: string): Promise<ToolStoreManifest> {
+  const bytes = await readFile(path);
+  return JSON.parse((path.endsWith(".gz") ? gunzipSync(bytes) : bytes).toString("utf8")) as ToolStoreManifest;
 }
 
 /** Record metadata for a read-only host mount without reading tool payloads. */

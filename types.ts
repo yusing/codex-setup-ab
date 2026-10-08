@@ -91,6 +91,9 @@ export interface RunState {
     current_setup_files: string;
     current_setup_files_sha256: string;
     current_setup_mise_sha256?: string;
+    current_setup_mise_source?: string;
+    /** New runs bind captured host executables read-only instead of copying them. */
+    shared_binaries?: boolean;
     preflight_cache?: { go_build: string; go_pkg: string; bun?: string; source_run: string };
     codex_code_mode_host_sha256: string;
     mekugi_source?: string;

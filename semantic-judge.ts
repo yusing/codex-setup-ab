@@ -1,4 +1,4 @@
-import { chmod, copyFile, cp, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { runOwnedContainer, withOwnedNetwork } from "./container";
@@ -66,7 +66,8 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
           const relative = `evaluator/judge/pass-${pass}-${stage}-${number}`;
           const root = join(runDir, relative);
           const home = join(root, "home/ubuntu");
-          await cp(join(runDir, "snapshots/stock/home/ubuntu"), home, { recursive: true, verbatimSymlinks: true });
+          await mkdir(join(home, ".codex"), { recursive: true, mode: 0o700 });
+          await copyFile(join(runDir, "snapshots/stock/home/ubuntu/.codex/config.toml"), join(home, ".codex/config.toml"));
           await copyFile(auth, join(home, ".codex/auth.json"));
           await chmod(join(home, ".codex/auth.json"), 0o600);
           const schemaPath = join(root, "schema.json");
