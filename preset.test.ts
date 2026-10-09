@@ -92,7 +92,7 @@ test("feature comparisons, repeat preparation, and custom task contracts use the
   expect(custom.prepare.taskPath).toBe("/prompt.md");
 });
 
-test("sqlite-utils history uses its pinned pack, cloned source and documented runtime defaults", () => {
+test("sqlite-utils upgrade uses its pinned pack, cloned source and documented runtime defaults", () => {
   const options = launchConfiguration({ task: "sqlite-utils-history", "prepare-only": true });
   expect(options.prepare.source).toEndWith("codex-ab-sqlite-utils-source");
   expect(options.prepare.comparison).toBe("stock-mekugi");

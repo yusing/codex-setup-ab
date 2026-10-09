@@ -1,109 +1,130 @@
-# sqlite-utils row history benchmark
+# sqlite-utils multi-commit upgrade benchmark
 
-This task compares stock Codex with minimally configured Codex through Mekugi,
-with journal context reset enabled, on a long brownfield change. Candidates add
-opt-in, trigger-based row history to [sqlite-utils](https://github.com/simonw/sqlite-utils)
-at upstream commit `85b1be10c81d9dd3567e36faf8dd411e4a8789bd`. The
-[candidate prompt](task.md) fixes the API and CLI names, the history model, and
-project rules; the [task pack](manifest.json) binds its exact bytes to the
-criteria. The implementation design remains open.
+This task compares minimal Codex with minimal Codex through Mekugi on a real
+brownfield upgrade. Candidates reproduce the user-visible outcomes of **19
+upstream commits**, spanning schema parsing, introspection, transform fidelity,
+strict-table types, input handling, CLI fixes, tests, and documentation.
+The [prompt](task.md) states outcomes without prescribing the reference
+implementation. Equivalent designs and safe improvements are welcome;
+reference limitations are permitted, not mandatory. The
+[task pack](manifest.json) binds these outcomes to evaluation criteria.
 
-## Why this task
+## Baseline and reference provenance
 
-Two pilot pairs of an earlier greenfield Booking Ledger task finished in 13 to 17
-minutes with 11 to 14 model requests and context peaking between 50,000 and
-73,000 tokens. The agents wrote whole applications in a few large patches and
-observed little, so a larger greenfield specification only added output.
+Repository: [simonw/sqlite-utils](https://github.com/simonw/sqlite-utils).
 
-This task makes observation necessary. History must survive `transform()`,
-`extract()`, `add_column()`, `rename_table()`, `drop()`, and `duplicate()`, and
-coexist with cached counts and full-text search triggers. These live in
-`sqlite_utils/db.py` (about 5,500 lines) and `sqlite_utils/cli.py` (about 3,800
-lines). Documentation changes land in the large `docs/python-api.rst` and
-`docs/cli.rst`, with cog-generated CLI reference content. The project rules
-(compatibility, quality gates, documentation, changelog, identifier quoting,
-atomicity, CLI conventions, and tests) apply to every part, including parts
-usually done last. That makes requirement drift after a context reset visible.
-Its context growth has not been measured.
+- Baseline: [`6a456830ca33eb5edaa634a9b0febe5d71bea2be`](https://github.com/simonw/sqlite-utils/commit/6a456830ca33eb5edaa634a9b0febe5d71bea2be), July 25, 2026.
+- Reference endpoint: [`e4935e064407bc995f77795c025c33cef52d742e`](https://github.com/simonw/sqlite-utils/commit/e4935e064407bc995f77795c025c33cef52d742e), August 13, 2026.
+- First excluded solution commit: `f726ea4a65c3ce9eaff67057908ee8f2fe7f81e0`.
+  Candidate clones contain only the baseline history, not these later commits.
+- Model cutoffs checked October 9, 2026: [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra)
+  and [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
+  both disclose April 30, 2026. The baseline is later than both cutoffs.
+  Check the cutoff again when selecting another model or a changed model snapshot.
 
-## Launch in the Web UI
+The selected ancestry range contains these actual commits. The behavior column
+maps them to the fixed criteria; test refactors and release-note aggregation do
+not require an identical patch.
 
-Open the workbench described in the main [README](../../README.md#launch-and-watch-in-the-web-ui)
-and select **sqlite-utils row history**. The default source checkout is
-`codex-ab-sqlite-utils-source` in the system temporary directory, or
-`CODEX_AB_SQLITE_UTILS_SOURCE` when set. A missing checkout is cloned from the
-upstream repository when preparation starts; an existing checkout must contain
-the base commit. Preparation checks that the arm clones lack the following
-upstream commit, which serves as the excluded-history sentinel. **Check inputs**
-does not clone or start inference.
+| Step | Commit | Upstream change | Criterion |
+| --- | --- | --- | --- |
+| 01 | `f726ea4` | Transform tables referenced by views | `views-and-transactions` |
+| 02 | `3db0c57` | CHECK introspection and SQL parsing | `checks-and-parser` |
+| 03 | `2303b80` | Preserve CHECK constraints through transforms | `check-transforms` |
+| 04 | `b432e68` | Use sqlite_master for older SQLite compatibility | `checks-and-parser` |
+| 05 | `b37b8cf` | Preserve column comments through transforms | `comments-and-indexes` |
+| 06 | `2d3c6b9` | Quote FTS tokenizer arguments | `input-query-identifiers` |
+| 07 | `43d5d33` | Offset without limit | `input-query-identifiers` |
+| 08 | `38fe466` | Use explicit table/view access in tests | `tests-types-docs` |
+| 09 | `ebb04a9` | Type-checking fixes | `tests-types-docs` |
+| 10 | `25c632f` | Empty input handling | `input-query-identifiers` |
+| 11 | `c5063f6` | Quote convert --dry-run identifiers | `input-query-identifiers` |
+| 12 | `e6be626` | Quote indexes/xindexes identifiers | `input-query-identifiers` |
+| 13 | `88b48fa` | Decode TRUE/FALSE/NULL defaults | `input-query-identifiers` |
+| 14 | `e4784ec` | Changelog updates | `tests-types-docs` |
+| 15 | `57192ef` | Preserve indexes on renamed columns | `comments-and-indexes` |
+| 16 | `fcfccea` | ANY columns across API, CLI, transform and extract | `any-types-and-cli` |
+| 17 | `2b52b5e` | Preserve AUTOINCREMENT and sequence state | `autoincrement-and-unique` |
+| 18 | `75ba588` | Preserve composite UNIQUE constraints | `autoincrement-and-unique` |
+| 19 | `e4935e0` | Empty TEXT becomes NULL on numeric transforms | `numeric-transforms` |
 
-The task selects minimal Codex versus minimal Mekugi with auto journal compaction.
-Its defaults are xhigh reasoning, a 3300-second limit for each agent, and a shared
-200,000-token auto-compact limit for both agents. Comparison and runtime overrides
-remain available. Choose preparation only, or give fresh paid-inference consent.
+Candidates make one commit per numbered prompt outcome, in this order, with
+subjects beginning `upgrade-01:` through `upgrade-19:`. The step column maps
+each candidate commit to its reference commit for comparison. Tests and
+documentation belong with the relevant change; the changelog step records
+changes completed at that point. Candidate Git history remains in the retained
+arm repositories. The generic judge evaluates the final tree, not individual
+commits or commit correspondence.
 
-Dependency preparation installs pinned runtime and development packages,
-including pytest, hypothesis, cog, black, flake8, and mypy, into
-`/opt/codex-ab-deps/python`. Agents have no package network access and use that
-environment, as the prompt states.
+Expected outcomes come from these commits' implementation, regression tests,
+and documentation, not additional synthetic restrictions. There is no blanket
+ban on new SQL or metadata reads. Existing tests may change when the upstream
+behavior changes, while unaffected coverage must remain meaningful.
 
-## Agent-directed launch
+## Why this is a long-session task
+
+The reference range adds an approximately 900-line schema parser and changes
+the large database and CLI modules. Its net diff covers 58 files, with 4,195
+added and 1,383 removed lines, including extensive parser, transform, API and
+CLI tests and reader documentation. Implementing the interacting behaviors
+requires sustained source inspection, integration, and validation rather than
+one isolated feature.
+
+This workload is intended to give journal reset an opportunity to occur. Size
+does not guarantee a reset, and no new candidate run has yet measured its
+duration, context growth, or reset frequency.
+
+## Launch and environment
+
+Open the workbench from the main [README](../../README.md#launch-and-watch-in-the-web-ui)
+and select **sqlite-utils multi-commit upgrade**. The retained task identifier
+is `sqlite-utils-history`; this preserves CLI and historical evidence references,
+but new preparations use this upstream upgrade instead of the former synthetic
+row-history prompt. Existing run snapshots remain unchanged and are not
+comparable as repetitions of the new task.
+
+The default source checkout is `codex-ab-sqlite-utils-source` in the system
+temporary directory, or `CODEX_AB_SQLITE_UTILS_SOURCE` when set. Preparation
+clones a missing checkout and verifies the baseline and excluded solution
+commit. **Check inputs** does not clone or start inference.
 
 ```sh
 ./dist/codex-ab launch --task sqlite-utils-history --prepare-only
 ./dist/codex-ab launch --task sqlite-utils-history --confirm-paid-inference
 ```
 
-The first command clones the source if needed and prepares a pair without
-inference. The second starts paid inference for both agents and the two blind
-semantic assessments. Each agent has a **55-minute maximum**, strictly below
-60 minutes. Preparation, preflight, and judges have separate budgets. Keep model,
-effort, launcher identity, reset mode, and schedule fixed within a comparison, and
-use the existing [trial workflow](../../doc/cli.md#repeat-a-pinned-comparison) for
-repetitions.
+Defaults remain minimal Codex versus minimal Mekugi, auto journal compaction,
+xhigh reasoning, a shared 200,000-token auto-compact limit, and a 55-minute
+maximum per candidate. Preparation and judges have separate budgets. Optional
+model, reasoning, timeout, and compaction overrides remain available. Keep the
+recorded Mekugi executable unchanged while a run uses it.
 
-Keep the Mekugi executable recorded at preparation unchanged until the run
-finishes. Finishing re-verifies it before judging, and a rebuilt executable stops
-the judges.
+Pinned Python runtime and development dependencies are installed into
+`/opt/codex-ab-deps/python`. Candidate and offline evaluator work has no package
+network access. The judges adapt checks to each candidate without access to
+the reference implementation; the provenance range supports task authoring
+and reference validation, not a candidate shortcut.
 
-## Assess the outcome
+## Validation and interpretation
 
-The predetermined existing-test gate runs every test file present at the base
-commit; it shows compatibility, not that the feature works. The judges run the
-candidate's tests, the quality gates, and adaptive API and CLI checks against the
-fixed criteria. Inspect each pass's per-criterion decisions, executed evidence,
-and disagreements before using an aggregate winner. Record:
+Run the full candidate suite and the repository's quality and cog checks, then
+inspect both blind passes' criterion evidence and disagreements. A successful
+baseline suite establishes the starting environment. A successful reference
+suite establishes attainable upstream behavior under that environment; it
+does not prove judge quality or a treatment advantage.
 
-- **Quality:** coherent use of existing helpers, readable trigger generation,
-  docstrings and type hints, and tests that can detect product failures.
-- **Correctness:** recorded ops and versions, no-op and rowid-changing updates,
-  replace behavior, BLOB encoding, reconcile, restore, prune, schema-change
-  integration, odd identifiers, and atomic failures.
-- **Completeness:** every API member, CLI command and option, documentation
-  section, changelog entry, regenerated cog output, and test file.
-- **Drift:** a project rule or history requirement contradicted or omitted in
-  code, CLI behavior, tests, or documentation. Tie each finding to that
-  requirement; distinguish a missing part from an incorrect one.
+On October 9, 2026, both the baseline and reference full suites passed offline
+using the pinned Python dependency environment from the earlier run. The
+reference had **1,488 passed and 16 skipped** tests and passed black, flake8,
+mypy, and cog checks. Sources were mounted read-only, Docker networking was
+disabled, and validation made no model requests. The skipped tests required
+optional environment capabilities. The manifest's `qualification: not-run`
+describes the adaptive-judge contract's lack of a prequalified hidden oracle;
+these upstream reference checks do not change that claim.
 
-## Qualify journal reset evidence
-
-`auto` resets the journal when Codex requests compaction. The shared
-200,000-token limit makes both agents compact at the same context size: stock
-Codex uses provider compaction and Mekugi uses journal reset. A session that stays
-below the limit produces no reset, and the limit does not guarantee slice
-continuation. Retain validated Mekugi capture, journal and compaction evidence,
-and the request timeline. To call a result a **post-journal-reset** observation,
-establish a successful root reset from journal evidence followed by continued root
-work on this change. A flag, journal write, child reset, provider-authored
-compaction, or counter alone does not prove that sequence. Use the timeline to
-locate later edits and check them against the project rules.
-
-Report no observed reset and unavailable reset evidence separately. Keep these
-runs in the general stock-versus-Mekugi comparison, but do not treat them as
-post-reset evidence. Do not discard timed-out or incomplete candidates; retain
-their partial work and distinguish product gaps from infrastructure failures.
-This comparison changes the whole launcher and tool treatment, so it cannot
-isolate the causal effect of journal reset.
-
-Qualification remains `not-run`: structural checks do not establish live reset
-behavior, completion time, judge quality, or a treatment advantage.
+For a **post-journal-reset** claim, establish a successful root reset in the
+retained Mekugi exports followed by continued root work. Flags, journal
+writes, child resets, or task size do not establish that sequence. Report zero
+observed resets and unavailable telemetry separately. Keep such runs in the
+general setup comparison, without describing them as post-reset evidence.
+This whole-launcher comparison does not isolate journal reset's causal effect.

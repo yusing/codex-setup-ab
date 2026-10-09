@@ -50,7 +50,7 @@ Choose a pinned task and comparison, set the source checkout, model, reasoning e
 and optional Mekugi settings, then **Check inputs**. The workbench explains incompatible
 combinations and missing local inputs before starting work. Advanced settings expose
 the existing preparation options, including custom task packs and task/criteria files.
-Tasks with a pinned upstream repository, such as NVM and sqlite-utils row history,
+Tasks with a pinned upstream repository, such as NVM and sqlite-utils multi-commit upgrade,
 clone a missing source checkout during preparation. The sqlite-utils task defaults to
 minimal Codex versus minimal Mekugi, auto journal compaction, a shared 200,000-token
 auto-compact limit, xhigh reasoning, and a 55-minute limit.
@@ -104,7 +104,7 @@ available to agents. See the [CLI guide](doc/cli.md) and [contract](doc/contract
 - [Specification](doc/spec.md): comparison scope, treatments, and benchmark intent.
 - [Contract](doc/contract.md): isolation, criteria schema, judging, accounting, and failure behavior.
 - [CLI guide](doc/cli.md): manual builds, repeated comparisons, task packs, suites, and control reuse.
-- [sqlite-utils row history](tasks/sqlite-utils-history/README.md): a long-session brownfield quality and requirement-retention task.
+- [sqlite-utils multi-commit upgrade](tasks/sqlite-utils-history/README.md): a post-cutoff, 19-commit brownfield task for quality and requirement retention.
 
 Started runs and trial sets do not restart or resume. Cancellation preserves available
 evidence; prepare a fresh pair for another attempt. Limited judge recovery is documented

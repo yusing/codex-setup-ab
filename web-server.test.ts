@@ -445,7 +445,7 @@ test("a pinned-repository task check announces the clone without starting work",
   expect(catalog.find((task: { id: string }) => task.id === "sqlite-utils-history")).toMatchObject({ repository: "https://github.com/simonw/sqlite-utils.git", preset: "stock-mekugi", journalCompaction: "auto", compactLimit: 200000 });
   const checked = await post("/api/check", { command: "launch", options });
   expect(checked.status).toBe(200);
-  expect((await checked.json()).warnings).toContain(`The sqlite-utils row history checkout will be cloned to ${source} from https://github.com/simonw/sqlite-utils.git`);
+  expect((await checked.json()).warnings).toContain(`The sqlite-utils multi-commit upgrade checkout will be cloned to ${source} from https://github.com/simonw/sqlite-utils.git`);
   expect((await (await fetch(origin + "/api/entries")).json()).entries).toEqual([]);
   expect((await post("/api/check", { command: "launch", options: { ...options, task: "session-retention" } })).status).toBe(400);
 });

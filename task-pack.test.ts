@@ -66,18 +66,19 @@ test("checked-in standalone criteria bind their task prompts", async () => {
   }
 });
 
-test("sqlite-utils history pins an upstream base and the following upstream commit", async () => {
+test("sqlite-utils upgrade pins the pre-upgrade base and excludes its first solution commit", async () => {
   const pack = await loadTaskPack(join(import.meta.dir, "tasks/sqlite-utils-history/manifest.json"));
   expect(pack.manifest.source).toEqual({
     repository: "https://github.com/simonw/sqlite-utils.git",
-    base_commit: "85b1be10c81d9dd3567e36faf8dd411e4a8789bd",
-    forbidden_commit: "6bc1d33d583c54bd69fbdd2071117e2d38c354a1",
+    base_commit: "6a456830ca33eb5edaa634a9b0febe5d71bea2be",
+    forbidden_commit: "f726ea4a65c3ce9eaff67057908ee8f2fe7f81e0",
   });
   expect(pack.contract.qualification).toBe("not-run");
   expect(pack.contract.allowed_paths).toBeUndefined();
-  expect(pack.contract.existing_tests).toContain("git ls-tree -r --name-only 85b1be10c81d9dd3567e36faf8dd411e4a8789bd -- tests");
+  expect(pack.contract.existing_tests).toBe("PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 /opt/codex-ab-deps/python/bin/python -m pytest -p no:cacheprovider -q");
   expect(pack.contract.criteria.map(criterion => criterion.id)).toEqual([
-    "history-recording", "enable-disable", "read-restore-prune", "schema-changes", "cli",
-    "compatibility", "identifiers-atomicity", "documentation", "quality-and-tests", "requirement-retention",
+    "views-and-transactions", "checks-and-parser", "check-transforms", "comments-and-indexes",
+    "autoincrement-and-unique", "any-types-and-cli", "numeric-transforms", "input-query-identifiers",
+    "tests-types-docs", "integrated-upgrade",
   ]);
 });

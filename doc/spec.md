@@ -208,13 +208,16 @@ exports from executor writes; the optional [protected runtime](contract.md#prote
 
 ## Long-session quality and requirement-retention task
 
-The [sqlite-utils row history benchmark](../tasks/sqlite-utils-history/README.md)
-asks candidates to add trigger-based row history to a pinned upstream sqlite-utils
-checkout, across its Python API, CLI, schema-change operations, documentation,
-changelog, and tests. It focuses on quality, correctness, completeness, and
-requirement drift: fixed project rules must still hold in work done late in a long
-session. The change requires reading large existing modules and documentation, so
-context grows from observation rather than from generated code. Its launch defaults
+The [sqlite-utils multi-commit upgrade benchmark](../tasks/sqlite-utils-history/README.md)
+asks candidates to reproduce the behavior of 19 actual upstream commits after a
+post-model-cutoff baseline. It spans schema parsing and introspection, transform
+fidelity, strict-table types, input handling, CLI fixes, tests, and documentation.
+The reference commits define realistic requirements and an expected outcome at
+least as good as their behavior, rather than synthetic compatibility restrictions.
+The task retains the `sqlite-utils-history` identifier for existing references;
+historical row-history runs keep their captured controls and form a different task.
+The integrated upgrade requires reading large existing modules and documentation.
+Its launch defaults
 compare stock Codex with Mekugi journal context reset enabled, give both agents a
 shared 200,000-token auto-compact limit, and cap each agent at 55 minutes. Reset
 occurrence and project duration remain unmeasured; post-reset claims require observed
