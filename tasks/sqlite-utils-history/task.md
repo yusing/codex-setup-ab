@@ -51,7 +51,7 @@ Make one corresponding commit for each numbered outcome, in that order, with
 subjects beginning `upgrade-01:` through `upgrade-19:`. Include relevant tests
 and API/CLI documentation with each change. Collect initial changelog entries
 in step 14 and update them with subsequent changes. Keep these commits separate
-so each step can be compared independently; do not create empty marker commits.
+and independently reviewable; do not create empty marker commits.
 Report any unfinished steps rather than claiming them complete.
 
 Update affected API/CLI documentation, generated reference, and the Unreleased
@@ -62,11 +62,11 @@ black, flake8, mypy, and cog checks.
 ## Environment
 
 Runtime and development dependencies are preinstalled in
-`/opt/codex-ab-deps/python`; there is no network access. Use that environment
+`/opt/task-deps/python`; there is no network access. Use that environment
 with `PYTHONPATH=.` from the repository root. For example:
 
 ```sh
-PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 /opt/codex-ab-deps/python/bin/python -m pytest -p no:cacheprovider -q
+PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 /opt/task-deps/python/bin/python -m pytest -p no:cacheprovider -q
 ```
 
 Run the CLI with the same Python interpreter using `-m sqlite_utils`.

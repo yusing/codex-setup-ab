@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed before inference if the benchmark executor can escape isolation."""
+"""Fail closed before inference if the task executor can escape isolation."""
 import os
 import socket
 import subprocess
@@ -9,7 +9,7 @@ from urllib.request import urlopen
 
 
 def fail(message):
-    raise SystemExit("benchmark isolation: " + message)
+    raise SystemExit("executor isolation: " + message)
 
 
 try:
@@ -72,11 +72,11 @@ finally:
             os.unlink(temp_executable)
         except OSError:
             pass
-for path in (os.environ["MEKUGI_RUNTIME_DIR"], os.environ["XDG_STATE_HOME"], os.environ["BENCH_ARTIFACT_DIR"], "/benchmark-agent-issue-reports", "/root/.config"):
+for path in (os.environ["MEKUGI_RUNTIME_DIR"], os.environ["XDG_STATE_HOME"], os.environ["MEKUGI_EXPORT_DIR"], "/agent-issue-reports", "/root/.config"):
     if not os.statvfs(path).f_flag & os.ST_RDONLY:
         fail("trusted artifacts are writable")
 # The configured listener must work. Everything else, including other loopback
-# ports, IPv6, DNS and other arm containers, is blocked by the OUTPUT policy.
+# ports, IPv6, DNS and other containers, is blocked by the OUTPUT policy.
 with urlopen(os.environ["MEKUGI_BASE_URL"].removesuffix("/v1") + "/api/metrics", timeout=5) as response:
     if response.status != 200:
         fail("assigned router is unavailable")

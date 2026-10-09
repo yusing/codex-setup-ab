@@ -9,7 +9,7 @@ const FLAGS = new Set(["mode", "ansi-faint", "post-compact-recovery", "journal-c
  * Export sanitized metrics for this capture, leaving private debug bundles at their owner.
  * Older binaries write bundles and an optional native usage report under TMPDIR.
  */
-export const MEKUGI_METRICS_WRAPPER = 'temp_dir=$(mktemp -d "${MEKUGI_DEBUG_TMPDIR:-/tmp}/codex-ab-mekugi.XXXXXX") || exit; '
+export const MEKUGI_METRICS_WRAPPER = 'temp_dir=$(mktemp -d "${MEKUGI_DEBUG_TMPDIR:-/tmp}/task-runtime.XXXXXX") || exit; '
   + 'exec 3<&0; TMPDIR="$temp_dir" "$@" <&3 3<&- & child=$!; exec 3<&-; '
   + 'trap \'kill -TERM "$child" 2>/dev/null || :\' TERM INT; '
   + 'while :; do wait "$child"; status=$?; kill -0 "$child" 2>/dev/null || break; done; '

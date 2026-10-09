@@ -45,7 +45,7 @@ RUN chmod 0755 /usr/local/bin/codex /usr/local/bin/codex-code-mode-host \
     && ! command -v hpatch \
     && ! command -v mekugi \
     && /usr/local/bin/codex --version \
-    && install -d /usr/local/libexec /root/.config /benchmark-agent-issue-reports /go/pkg/mod \
+    && install -d /usr/local/libexec /root/.config /agent-issue-reports /go/pkg/mod \
     && ln /usr/local/bin/codex /usr/local/libexec/codex-real
 
 ARG BENCH_UID=1000

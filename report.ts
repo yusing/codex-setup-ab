@@ -182,7 +182,7 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
     ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi");
   for (const arm of ARMS) {
     const grokHome = state.arm_attempts?.[arm]?.grok_home;
-    const codexHome = state.arm_attempts?.[arm]?.codex_home ?? (state.results?.[arm] ? `arms/${arm}/home/ubuntu/.codex` : undefined);
+    const codexHome = state.arm_attempts?.[arm]?.codex_home ?? (state.results?.[arm] ? join(dirname(state.arms[arm].repository), "home/ubuntu/.codex") : undefined);
     if (state.comparison === "codex-mekugi-grok" && arm === "current" && grokHome) usage[arm] = await meterGrokHome(resolve(runDir, grokHome), pricing);
     else if (codexHome) usage[arm] = await meterRollouts(resolve(runDir, codexHome), pricing, undefined, isMekugiArm(arm) ? "native" : "rollout");
   }
@@ -196,7 +196,7 @@ export async function buildReportUnlocked(runDirectory: string, options: ReportO
     const exports = diagnosticsByArm?.[arm] ?? mekugiDiagnostics;
     const kept = exports?.status === "valid" ? applyMekugiProviderUsage(metered, exports.metrics, pricing) : exports?.reason ?? "exports were not requested";
     if (kept !== null) {
-      const codexHome = state.arm_attempts?.[arm]?.codex_home ?? `arms/${arm}/home/ubuntu/.codex`;
+      const codexHome = state.arm_attempts?.[arm]?.codex_home ?? join(dirname(state.arms[arm].repository), "home/ubuntu/.codex");
       metered = usage[arm] = await meterRollouts(resolve(runDir, codexHome), pricing);
       // A validator traceback stays in mekugi_diagnostics.reason; the warning keeps its final error line.
       metered.warnings.push(`Mekugi provider-attempt accounting is unavailable (${kept.trim().split("\n").at(-1)}); tokens and requests use the Codex rollout, which omits router-side attempts`);

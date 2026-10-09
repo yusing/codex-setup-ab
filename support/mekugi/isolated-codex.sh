@@ -2,14 +2,14 @@
 set -euo pipefail
 : "${MEKUGI_BASE_URL:?Codex must be launched by mekugi}"
 : "${MEKUGI_RUNTIME_DIR:?}"
-: "${BENCH_ARTIFACT_DIR:?}"
+: "${MEKUGI_EXPORT_DIR:?}"
 export TMPDIR=/tmp
 port=${MEKUGI_BASE_URL#http://127.0.0.1:}
 port=${port%/v1}
-[[ $port =~ ^[0-9]+$ ]] || { echo 'benchmark: invalid private listener' >&2; exit 1; }
+[[ $port =~ ^[0-9]+$ ]] || { echo 'executor: invalid private listener' >&2; exit 1; }
 executor_gid=$(stat -c %g .)
 [[ $executor_gid =~ ^[1-9][0-9]*$ ]] || {
- echo 'benchmark: workspace must have a non-root group' >&2
+ echo 'executor: workspace must have a non-root group' >&2
  exit 1
 }
 export MEKUGI_EXECUTOR_GID=$executor_gid

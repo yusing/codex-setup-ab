@@ -70,7 +70,7 @@ async function writeSet(directory: string, set: TrialSet): Promise<void> {
 }
 export async function readTrialSet(directory: string): Promise<TrialSet> {
   const set = JSON.parse(await readFile(join(directory, "trials.json"), "utf8")) as TrialSet;
-  if (set.schema !== "codex-ab.trials.v1" || !/^codex-ab-trials-[A-Za-z0-9]+$/.test(set.id)
+  if (set.schema !== "codex-ab.trials.v1" || !/^(?:codex-ab-trials|task-runs)-[A-Za-z0-9]+$/.test(set.id)
     || !["concurrent", "alternating"].includes(set.schedule) || !Array.isArray(set.trials) || set.trials.length < 2
     || digest(set.controls) !== set.controls_sha256
     || digest({ controls: set.controls_sha256, count: set.trials.length, schedule: set.schedule }) !== set.plan_sha256 || !/^sha256:[0-9a-f]{64}$/.test(set.controls.image_id ?? "")) {
@@ -110,7 +110,7 @@ export async function prepareTrials(options: {
     state.pricing ??= await fetchPricing();
     const controls = trialControls(state);
     const controlsSha256 = digest(controls);
-    const directory = await mkdtemp(join(options.outputParent ?? tmpdir(), "codex-ab-trials-"));
+    const directory = await mkdtemp(join(options.outputParent ?? tmpdir(), "task-runs-"));
     const set: TrialSet = {
       schema: "codex-ab.trials.v1", id: basename(directory), created_at: new Date().toISOString(),
       status: "preparing", schedule, controls, controls_sha256: controlsSha256,
@@ -128,7 +128,7 @@ export async function prepareTrials(options: {
         const target = join(directory, trial.run_dir);
         await mkdir(target, { recursive: true, mode: 0o700 });
         // Never copy executed arm homes, auth, reports, probe state or operation locks.
-        const paths = ["seed.git", "control", "evaluator", "snapshots", "arms/stock/repo", "arms/current/repo",
+        const paths = ["seed.git", "control", "evaluator", "snapshots", state.arms.stock.repository, state.arms.current.repository,
           ...(state.mekugi_build?.files.map(file => file.path) ?? []),
           ...(!state.dependency_image && state.runtime_tools.preflight_cache ? ["artifacts/preflight-cache"] : [])];
         for (const path of paths) {

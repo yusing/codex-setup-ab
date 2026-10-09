@@ -297,7 +297,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     const paths = entry.kind === "trials" && Array.isArray(state.trials) ? state.trials.map(value => object(value).run_dir)
       : entry.kind === "suite" && Array.isArray(state.sets) ? state.sets.map(value => object(value).trial_set) : [];
     for (const path of paths) {
-      if (typeof path !== "string" || !(entry.kind === "trials" ? /^runs\/\d+$/.test(path) : /^codex-ab-trials-[A-Za-z0-9]+$/.test(path))) continue;
+      if (typeof path !== "string" || !(entry.kind === "trials" ? /^runs\/\d+$/.test(path) : /^(?:codex-ab-trials|task-runs)-[A-Za-z0-9]+$/.test(path))) continue;
       try {
         const root = await realpath(join(entry.directory, path));
         if (relative(entry.directory, root).startsWith("..")) continue;
@@ -363,7 +363,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       const pending = entry.kind === "trials" && Array.isArray(state.trials) ? state.trials.map(value => object(value).run_dir)
         : entry.kind === "suite" && Array.isArray(state.sets) ? state.sets.map(value => object(value).trial_set) : [];
       for (const path of pending) {
-        if (typeof path !== "string" || !(entry.kind === "trials" ? /^runs\/\d+$/.test(path) : /^codex-ab-trials-[A-Za-z0-9]+$/.test(path))) continue;
+        if (typeof path !== "string" || !(entry.kind === "trials" ? /^runs\/\d+$/.test(path) : /^(?:codex-ab-trials|task-runs)-[A-Za-z0-9]+$/.test(path))) continue;
         const directory = join(root, path);
         const info = await lstat(directory).catch(() => undefined);
         if (info?.isDirectory()) paths.set(directory, false);

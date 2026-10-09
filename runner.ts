@@ -1,6 +1,6 @@
 import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories } from "./dependencies";
 import { chmod, copyFile, cp, lstat, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedNetwork } from "./container";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
@@ -57,7 +57,7 @@ async function inspectCandidate(docker: string, runDir: string, state: RunState,
 }
 
 async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string, grokAuthFile?: string): Promise<{ home: string; output: string }> {
-  const armRoot = join(runDir, "arms", arm);
+  const armRoot = dirname(resolve(runDir, state.arms[arm].repository));
   const home = join(armRoot, "home/ubuntu");
   const output = join(runDir, "artifacts", arm);
   await cp(join(runDir, state.arms[arm].home_template), home, { recursive: true, force: false, verbatimSymlinks: true });
@@ -281,13 +281,15 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
-  const exportArgs = state.mekugi_exports_by_arm?.[arm] || (arm === exportArm && state.mekugi_exports)
+  const exports = state.mekugi_exports_by_arm?.[arm] ?? (arm === exportArm ? state.mekugi_exports : undefined);
+  const exportArgs = exports
     ? ["--capture-output=/mekugi-exports/capture.jsonl", ...(state.mekugi_flags?.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"])] : [];
-  const exportMount = exportArgs.length ? ["-v", `${join(output, "mekugi")}:/mekugi-exports`] : [];
-  if (exportArgs.length) await mkdir(join(output, "mekugi"), { recursive: true, mode: 0o700 });
+  const exportRoot = exports ? dirname(resolve(runDir, exports.capture)) : undefined;
+  const exportMount = exportRoot ? ["-v", `${exportRoot}:/mekugi-exports`] : [];
+  if (exportRoot) await mkdir(exportRoot, { recursive: true, mode: 0o700 });
   const protectedArm = arm === "current" && state.protected_runtime;
-  const runtime = join(output, "runtime");
-  const ownedPaths = [repository, home, join(output, "mekugi"), runtime];
+  const runtime = join(dirname(repository), "runtime");
+  const ownedPaths = [repository, home, ...(exportRoot ? [exportRoot] : []), runtime];
   if (protectedArm) await mkdir(runtime, { recursive: true });
   const grokArm = state.comparison === "codex-mekugi-grok" && arm === "current";
   const mekugiArm = isPairedMekugiComparison(state.comparison) || (state.comparison === "codex-mekugi-grok" ? arm === "stock" : arm === "current" && state.execution.current_launcher === "mekugi");
@@ -416,15 +418,15 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     const order = state.arm_order ?? "concurrent";
     if (!["concurrent", "stock-first", "current-first"].includes(order)) throw new Error("invalid arm execution order");
     progress(`agent execution order: ${order === "concurrent" ? "concurrent" : order === "stock-first" ? `${displayArm("stock")} first` : `${displayArm("current")} first`}`);
-    state.arm_attempts = imported ? { stock: { codex_home: "arms/stock/home/ubuntu/.codex", container: imported.container,
+    state.arm_attempts = imported ? { stock: { codex_home: join(dirname(state.arms.stock.repository), "home/ubuntu/.codex"), container: imported.container,
       started_at: imported.started_at, finished_at: imported.finished_at, status: "stopped" } } : {};
     const batches: ArmName[][] = order === "concurrent" ? [activeArms]
       : (order === "stock-first" ? arms : [...arms].reverse()).filter(arm => activeArms.includes(arm)).map(arm => [arm]);
     for (const batch of batches) {
       if (controller.signal.aborted) break;
       for (const arm of batch) state.arm_attempts[arm] = {
-        codex_home: `arms/${arm}/home/ubuntu/.codex`,
-        grok_home: state.comparison === "codex-mekugi-grok" ? `arms/${arm}/home/ubuntu/.grok` : undefined,
+        codex_home: relative(runDir, join(setups[arm]!.home, ".codex")),
+        grok_home: state.comparison === "codex-mekugi-grok" ? relative(runDir, join(setups[arm]!.home, ".grok")) : undefined,
         container: `codex-ab-${state.id}-${arm}`,
         started_at: new Date().toISOString(),
         status: "started",

@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { controlIdentity, importControl } from "./control";
 import { writeBundleManifest } from "./bundle";
 import { runPair } from "./runner";
@@ -96,13 +96,17 @@ async function publishedControl(paired = false) {
   const sourceRun = join(directory, "source-run");
   const targetRun = join(directory, "target-run");
   const bundle = join(sourceRun, "reports/bundle");
-  const sessions = join(sourceRun, "arms/stock/home/ubuntu/.codex/sessions");
+  const source = state("published-control");
+  if (paired) {
+    source.arms.stock.repository = "sessions/source/repo";
+    source.arm_attempts!.stock!.codex_home = "sessions/source/home/ubuntu/.codex";
+  }
+  const sessions = join(sourceRun, source.arm_attempts!.stock!.codex_home, "sessions");
   await mkdir(bundle, { recursive: true });
   await mkdir(sessions, { recursive: true });
   await mkdir(join(sourceRun, "artifacts/stock"), { recursive: true });
   await mkdir(targetRun, { recursive: true });
 
-  const source = state("published-control");
   if (paired) {
     source.selected_arms = ["stock", "current"];
     source.results!.current = { ...source.results!.stock!, arm: "current", anonymous_id: "candidate-2" };
@@ -116,13 +120,14 @@ async function publishedControl(paired = false) {
   await writeFile(join(bundle, "run.json"), await readFile(join(sourceRun, "run.json")));
   await writeFile(join(bundle, "stock-changes.patch"), "diff --git a/file b/file\n");
   await writeFile(join(bundle, "rollout-files.json"), JSON.stringify({ stock: [{ path: "rollout.jsonl", sha256: await sha256(rolloutPath) }] }));
-  const measured = await meterRollouts(join(sourceRun, "arms/stock/home/ubuntu/.codex"), pricing);
+  const measured = await meterRollouts(join(sourceRun, source.arm_attempts!.stock!.codex_home), pricing);
   await writeFile(join(bundle, "report.json"), JSON.stringify({
     validity: "valid", arms: { stock: { usage: { complete: measured.complete, totals: measured.totals } } },
   }));
   await writeBundleManifest(bundle);
   const bundleSha256 = await sha256(join(bundle, "MANIFEST.sha256"));
   const treatment = state("treatment-run");
+  treatment.arms.stock.repository = "sessions/destination/repo";
   return { directory, sourceRun, targetRun, bundle, bundleSha256, rolloutPath, source, treatment };
 }
 
@@ -183,7 +188,7 @@ test.each([false, true])("importControl carries a verified stock result into a m
   });
   expect(await readFile(join(fixture.targetRun, "artifacts/stock/changes.patch"), "utf8"))
     .toBe("diff --git a/file b/file\n");
-  expect(await readFile(join(fixture.targetRun, "arms/stock/home/ubuntu/.codex/sessions/rollout.jsonl"), "utf8"))
+  expect(await readFile(join(fixture.targetRun, dirname(fixture.treatment.arms.stock.repository), "home/ubuntu/.codex/sessions/rollout.jsonl"), "utf8"))
     .toBe(rollout);
 });
 

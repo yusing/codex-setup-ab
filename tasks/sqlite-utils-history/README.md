@@ -100,7 +100,7 @@ model, reasoning, timeout, and compaction overrides remain available. Keep the
 recorded Mekugi executable unchanged while a run uses it.
 
 Pinned Python runtime and development dependencies are installed into
-`/opt/codex-ab-deps/python`. Candidate and offline evaluator work has no package
+`/opt/task-deps/python`. Candidate and offline evaluator work has no package
 network access. The judges adapt checks to each candidate without access to
 the reference implementation; the provenance range supports task authoring
 and reference validation, not a candidate shortcut.

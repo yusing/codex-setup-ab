@@ -37,9 +37,9 @@ liveTest("real workload reuses dependency image offline with isolated writes and
     const preparation = `cp -a /baseline /tmp/work && cd /tmp/work && ${state.criteria!.contract.preparation}`;
     const run = (suffix: string, args: string[], command: string) => runOwnedContainer({ docker, name: `codex-ab-deps-live-${process.pid}-${suffix}`, timeoutMs: 600_000,
       createArgs: [...common, ...args, dependencyImage(state), "sh", "-lc", command] });
-    const a = await run("agent", ["-v", `${join(root, "repo")}:/workspace`, "-v", `${join(root, "home-a")}:/home/ubuntu`], `${state.criteria!.contract.preparation} && go test ./internal/router/toolplugin && printf changed > /opt/codex-ab-deps/bun/private-write`);
+    const a = await run("agent", ["-v", `${join(root, "repo")}:/workspace`, "-v", `${join(root, "home-a")}:/home/ubuntu`], `${state.criteria!.contract.preparation} && go test ./internal/router/toolplugin && printf changed > /opt/task-deps/bun/private-write`);
     expect(a.exitCode, a.stderr).toBe(0);
-    const b = await run("sibling", ["-v", `${join(root, "repo-b")}:/workspace`, "-v", `${join(root, "home-b")}:/home/ubuntu`], `${state.criteria!.contract.preparation} && test ! -e /opt/codex-ab-deps/bun/private-write`);
+    const b = await run("sibling", ["-v", `${join(root, "repo-b")}:/workspace`, "-v", `${join(root, "home-b")}:/home/ubuntu`], `${state.criteria!.contract.preparation} && test ! -e /opt/task-deps/bun/private-write`);
     expect(b.exitCode, b.stderr).toBe(0);
     const before = Number((await checked(["du", "-sb", root])).stdout.split(/\s/)[0]);
     for (const repo of ["repo", "repo-b"]) {
@@ -57,7 +57,7 @@ liveTest("real workload reuses dependency image offline with isolated writes and
       expect(await Bun.file(join(capture, "discarded-dependencies.json")).json()).toEqual(directories);
     }
     const grader = await run("grader", ["--read-only", "--tmpfs", "/tmp:exec,size=4g,mode=1777", "-e", "GOCACHE=/tmp/go-build", "-e", "GOPROXY=off", "-e", "GOSUMDB=off"],
-      `${preparation} && test ! -e /opt/codex-ab-deps/bun/private-write && go test ./internal/router/toolplugin`);
+      `${preparation} && test ! -e /opt/task-deps/bun/private-write && go test ./internal/router/toolplugin`);
     expect(grader.exitCode, grader.stderr).toBe(0);
     const bytes = Number((await checked(["du", "-sb", root])).stdout.split(/\s/)[0]);
     expect(bytes).toBeLessThan(1_000_000_000);

@@ -7,14 +7,14 @@ import type { RunState } from "./types";
 
 // Outside HOME and /workspace: private bind mounts must not hide image caches.
 export const DEPENDENCY_ENV = [
-  "GOCACHE=/opt/codex-ab-deps/go-build",
+  "GOCACHE=/opt/task-deps/go-build",
   "GOMODCACHE=/go/pkg/mod",
-  "BUN_INSTALL_CACHE_DIR=/opt/codex-ab-deps/bun",
+  "BUN_INSTALL_CACHE_DIR=/opt/task-deps/bun",
 ];
 
 export function dependencyKey(state: RunState, baseImage: string): string {
   return createHash("sha256").update(JSON.stringify({
-    version: 1, baseImage, tree: state.source.base_tree, commit: state.source.base_commit,
+    version: 3, baseImage, tree: state.source.base_tree, commit: state.source.base_commit,
     submodules: state.submodules?.map(({ path, sha }) => ({ path, sha })),
     preparation: state.criteria?.contract.preparation, bun: state.runtime_tools.bun_sha256,
     uid: state.operator.uid, gid: state.operator.gid,
@@ -31,13 +31,15 @@ export async function ensureDependencyImage(docker: string, runDir: string, stat
   const buildBase = `codex-ab-base:${base.replace("sha256:", "")}`;
   const recipe = [
     `FROM ${buildBase} AS dependencies`, "USER root",
-    "RUN mkdir -p /opt/codex-ab-deps/go-build /opt/codex-ab-deps/bun /go/pkg/mod",
-    `RUN chown -R ${state.operator.uid}:${state.operator.gid} /opt/codex-ab-deps /go/pkg/mod`,
+    "RUN mkdir -p /opt/task-deps/go-build /opt/task-deps/bun /go/pkg/mod",
+    `RUN chown -R ${state.operator.uid}:${state.operator.gid} /opt/task-deps /go/pkg/mod`,
     `COPY --chown=${state.operator.uid}:${state.operator.gid} baseline /workspace`,
     "COPY --chmod=755 bun /usr/local/bin/bun", "COPY prepare.sh /prepare.sh",
     `USER ${state.operator.uid}:${state.operator.gid}`, "WORKDIR /workspace",
     `ENV ${DEPENDENCY_ENV.join(" ")}`, "RUN sh /prepare.sh",
-    `FROM ${buildBase}`, "COPY --from=dependencies /opt/codex-ab-deps /opt/codex-ab-deps",
+    `FROM ${buildBase}`, "USER root",
+    "RUN if [ -d /benchmark-agent-issue-reports ]; then rmdir /benchmark-agent-issue-reports; fi && mkdir -p /agent-issue-reports",
+    `USER ${state.operator.uid}:${state.operator.gid}`, "COPY --from=dependencies /opt/task-deps /opt/task-deps",
     "COPY --from=dependencies /go/pkg/mod /go/pkg/mod", `ENV ${DEPENDENCY_ENV.join(" ")}`, "",
   ].join("\n");
 

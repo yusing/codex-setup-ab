@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { prepare, verifyPreparedInputs, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { prepareTrials, readTrialSet, reportTrials, runTrials } from "./trials";
@@ -149,7 +149,7 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   expect(launches.some(line => line.includes(" mise exec -- codex exec "))).toBe(true);
   expect(launches.some(line => line.includes(" mise exec -- sh -c ") && line.includes("mekugi --mode=mekugi --capture-output=/mekugi-exports/capture.jsonl --debug codex exec "))).toBe(true);
   expect(launches.every(line => line.includes(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`))).toBe(true);
-  expect(await readlink(join(run, "arms/current/home/ubuntu/linked-guidance"))).toBe("AGENTS.md");
+  expect(await readlink(join(run, dirname(state.arms.current.repository), "home/ubuntu/linked-guidance"))).toBe("AGENTS.md");
   await file(join(run, "reports/report.json"), "{}");
   await file(join(run, "reports/report.md"), "fixture report");
   await file(join(run, state.mekugi_exports!.capture), "retained capture");
@@ -293,7 +293,7 @@ for (const comparison of ["journal-compaction", "duplicate-output"] as const) {
     expect(state.mekugi_exports).toBeUndefined();
     for (const arm of ["stock", "current"] as const) {
       expect(state.mekugi_exports_by_arm?.[arm]).toMatchObject({
-        capture: `artifacts/${arm}/mekugi/capture.jsonl`, metrics: `artifacts/${arm}/mekugi/metrics.json`,
+        capture: join(dirname(state.arms[arm].repository), "exports/capture.jsonl"), metrics: join(dirname(state.arms[arm].repository), "exports/metrics.json"),
       });
     }
     await verifyPreparedInputs(run, state);
@@ -323,11 +323,11 @@ for (const comparison of ["journal-compaction", "duplicate-output"] as const) {
       expect(preflight).toContain(`${join(run, "artifacts/preflight-mekugi", arm)}:/mekugi-exports`);
       if (comparison === "duplicate-output") {
         expect(preflight).toContain(`${join(run, state.arms[arm].home_template)}:${snapshot.source_home}:ro`);
-        expect(launch).toContain(`${join(run, "arms", arm, "home/ubuntu")}:${snapshot.source_home}`);
+        expect(launch).toContain(`${join(run, dirname(state.arms[arm].repository), "home/ubuntu")}:${snapshot.source_home}`);
         expect(launch).not.toContain(`${snapshot.source_home}:${snapshot.source_home}`);
       }
       expect(log.indexOf(preflight)).toBeLessThan(log.indexOf(launch));
-      expect(launch).toContain(`${join(run, `artifacts/${arm}/mekugi`)}:/mekugi-exports`);
+      expect(launch).toContain(`${dirname(join(run, state.mekugi_exports_by_arm![arm]!.capture))}:/mekugi-exports`);
       expect(launch).toContain(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`);
     }
   }, 30_000);
@@ -570,6 +570,9 @@ test("protected runtime snapshots owner scripts without changing the direct arm"
   const state = await readState(run);
   expect(state.protected_runtime?.boundary).toBe("direct-egress-vs-router-only");
   expect(state.protected_runtime?.scripts).toHaveLength(3);
+  for (const script of state.protected_runtime!.scripts) {
+    expect(await readFile(join(run, script.path), "utf8")).not.toMatch(/BENCH|benchmark|codex-ab/);
+  }
   expect(state.execution.current_launcher).toBe("mekugi");
   expect(state.arms.stock.home_template).toBe(state.arms.current.home_template);
   await verifyPreparedInputs(run, state);
@@ -854,6 +857,8 @@ test("prepare makes base-only independent clones and an audited secret-free snap
     const repo = join(run, state.arms[arm].repository);
     expect((await checked(["git", "-C", repo, "rev-parse", "HEAD"])).stdout.trim()).toBe(base);
     expect((await checked(["git", "-C", repo, "remote"])).stdout.trim()).toBe("");
+    expect((await checked(["git", "-C", repo, "branch", "--show-current"])).stdout.trim()).toBe("work");
+    expect(state.arms[arm].repository).toMatch(/^sessions\/[0-9a-f-]+\/repo$/);
     expect((await Bun.spawn(["git", "-C", repo, "cat-file", "-e", `${future}^{commit}`]).exited)).not.toBe(0);
   }
   const manifest = await readFile(join(run, state.snapshot_manifest), "utf8");
@@ -875,7 +880,7 @@ test("prepare makes base-only independent clones and an audited secret-free snap
   expect(state.runtime_tools.current_setup_files_sha256).toMatch(/^[0-9a-f]{64}$/);
   expect(await Bun.file(resolve(run, state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner")).exists()).toBe(true);
   expect(await Bun.file(join(run, state.criteria!.path)).exists()).toBe(true);
-  expect(await Bun.file(join(run, "arms/stock/repo/criteria.json")).exists()).toBe(false);
+  expect(await Bun.file(join(run, state.arms.stock.repository, "criteria.json")).exists()).toBe(false);
 });
 
 
@@ -1798,9 +1803,9 @@ test("trial CLI pins fresh pairs, alternates launches, and retains self-containe
   const snapshot = initial.arms.current.home_template;
   const original = await stat(join(prototype, snapshot, ".codex/AGENTS.md"));
   expect((await stat(join(first, snapshot, ".codex/AGENTS.md"))).ino).not.toBe(original.ino);
-  expect((await stat(join(first, "arms/stock/repo/internal/router/router.go"))).ino)
-    .not.toBe((await stat(join(second, "arms/stock/repo/internal/router/router.go"))).ino);
-  expect(await Bun.file(join(first, "arms/stock/home/ubuntu/.codex/auth.json")).exists()).toBe(false);
+  expect((await stat(join(first, firstState.arms.stock.repository, "internal/router/router.go"))).ino)
+    .not.toBe((await stat(join(second, secondState.arms.stock.repository, "internal/router/router.go"))).ino);
+  expect(await Bun.file(join(first, dirname(firstState.arms.stock.repository), "home/ubuntu/.codex/auth.json")).exists()).toBe(false);
   const auth = join(root, "trials-auth.json"); await file(auth, "{}\n", 0o600);
   await expect(main(["run-trials", "--trial-set", directory])).rejects.toThrow("confirm-paid-inference");
   const executed = await checked(["bun", join(import.meta.dir, "cli.ts"), "run-trials", "--trial-set", directory,

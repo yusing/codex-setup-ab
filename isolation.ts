@@ -38,7 +38,7 @@ export function protectedArgs(runDir: string, state: RunState, runtime: string):
     "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin:/usr/sbin:/sbin",
     "-e", "MEKUGI_RUNTIME_DIR=/mekugi-runtime", "-e", "XDG_STATE_HOME=/mekugi-runtime/state",
     "-e", "MEKUGI_DEBUG_TMPDIR=/mekugi-debug",
-    "-e", "BENCH_ARTIFACT_DIR=/mekugi-exports", "-e", "GOCACHE=/tmp/go-build",
+    "-e", "MEKUGI_EXPORT_DIR=/mekugi-exports", "-e", "GOCACHE=/tmp/go-build",
     "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
     "-v", `${runtime}:/mekugi-runtime`,
     ...state.protected_runtime.scripts.flatMap((file, index) => ["-v", `${join(runDir, file.path)}:${destinations[index]}:ro`])];
@@ -68,7 +68,7 @@ export async function protectedPreflight(docker: string, runDir: string, state: 
   const probe = join(directory, "probe.py");
   await writeFile(probe, `#!/usr/bin/env python3
 import os, pathlib, subprocess, urllib.request
-for directory in [os.environ['MEKUGI_RUNTIME_DIR'], os.environ['BENCH_ARTIFACT_DIR'], os.environ['MEKUGI_DEBUG_TMPDIR']]:
+for directory in [os.environ['MEKUGI_RUNTIME_DIR'], os.environ['MEKUGI_EXPORT_DIR'], os.environ['MEKUGI_DEBUG_TMPDIR']]:
     try:
         pathlib.Path(directory, 'executor-tamper').write_text('bad')
     except OSError:

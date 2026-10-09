@@ -1,4 +1,5 @@
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
@@ -147,7 +148,8 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     if (state.arms.current.home_template !== "snapshots/current/home/ubuntu") throw new Error(`${state.comparison} setup identity changed`);
     for (const arm of ["stock", "current"] as const) {
       const item = state.mekugi_exports_by_arm?.[arm];
-      if (!item || item.capture !== `artifacts/${arm}/mekugi/capture.jsonl` || item.metrics !== `artifacts/${arm}/mekugi/metrics.json`) throw new Error(`${state.comparison} per-arm exports changed`);
+      const exportRoot = state.arms[arm].repository.startsWith("sessions/") ? join(dirname(state.arms[arm].repository), "exports") : `artifacts/${arm}/mekugi`;
+      if (!item || item.capture !== join(exportRoot, "capture.jsonl") || item.metrics !== join(exportRoot, "metrics.json")) throw new Error(`${state.comparison} per-arm exports changed`);
     }
     if (state.mekugi_exports_by_arm!.stock!.validator.sha256 !== state.mekugi_exports_by_arm!.current!.validator.sha256
       || state.mekugi_exports_by_arm!.stock!.reader.sha256 !== state.mekugi_exports_by_arm!.current!.reader.sha256) throw new Error(`${state.comparison} export validation identity changed`);
@@ -427,12 +429,12 @@ export async function verifyRepositoryIsolation(repository: string): Promise<voi
 
 export async function initializeSubmodules(repository: string, submodules: NonNullable<RunState["submodules"]>): Promise<void> {
   for (const sub of submodules) {
-    const seed = await mkdtemp(join(tmpdir(), "codex-ab-submodule-"));
+    const seed = await mkdtemp(join(tmpdir(), "task-source-"));
     try {
       await checked(["git", "init", "--bare", seed]);
-      await checked(["git", "-C", seed, "fetch", "--depth=1", pathToFileURL(sub.source).href, `${sub.sha}:refs/heads/benchmark`]);
+      await checked(["git", "-C", seed, "fetch", "--depth=1", pathToFileURL(sub.source).href, `${sub.sha}:refs/heads/work`]);
       const target = join(repository, sub.path);
-      await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "benchmark", seed, target]);
+      await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "work", seed, target]);
       await checked(["git", "-C", target, "remote", "remove", "origin"]);
       await checked(["git", "-C", repository, "submodule", "init", "--", sub.path]);
     } finally {
@@ -569,10 +571,10 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const serviceTier = isolatedGuidance ? "default" : configured("service_tier");
   if (!serviceTier) throw new Error("current setup does not declare service_tier");
   if (!(await exists(join(source, ".git")))) throw new Error(`source is not a Git worktree: ${source}`);
-  const runDir = await mkdtemp(join(options.outputParent ?? tmpdir(), "codex-ab-"));
+  const runDir = await mkdtemp(join(options.outputParent ?? tmpdir(), "task-run-"));
   await chmod(runDir, 0o700);
   progress(`created isolated run ${runDir}`);
-  for (const dir of ["control", "evaluator", "arms", "snapshots", "artifacts"]) await mkdir(join(runDir, dir), { recursive: true });
+  for (const dir of ["control", "evaluator", "sessions", "snapshots", "artifacts"]) await mkdir(join(runDir, dir), { recursive: true });
   await copyFile(taskPath, join(runDir, "control/task.md"));
   if (criteriaContract) await writeFile(join(runDir, "evaluator/criteria.json"), JSON.stringify(criteriaContract, null, 2));
   if (pack) await writeFile(join(runDir, "evaluator/task-pack.json"), JSON.stringify(pack.snapshot, null, 2));
@@ -599,10 +601,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       join(directory, "source.tar"), options.mekugiSource]);
     buildProvenance = { identity: build, files };
   }
+  const repositories = { stock: join("sessions", randomUUID(), "repo"), current: join("sessions", randomUUID(), "repo") };
   const seed = join(runDir, "seed.git");
   await checked(["git", "init", "--bare", seed]);
-  await checked(["git", "-C", seed, "fetch", "--depth=1", `file://${source}`, `${options.baseCommit}:refs/heads/benchmark`]);
-  const base = (await checked(["git", "-C", seed, "rev-parse", "refs/heads/benchmark"])).stdout.trim();
+  await checked(["git", "-C", seed, "fetch", "--depth=1", `file://${source}`, `${options.baseCommit}:refs/heads/work`]);
+  const base = (await checked(["git", "-C", seed, "rev-parse", "refs/heads/work"])).stdout.trim();
   if (base !== options.baseCommit) throw new Error(`requested base resolved to ${base}`);
   const tree = (await checked(["git", "-C", seed, "rev-parse", `${base}^{tree}`])).stdout.trim();
   const sourceTimestamp = Number((await checked(["git", "-C", seed, "show", "-s", "--format=%ct", base])).stdout.trim());
@@ -619,9 +622,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     path: source, base_commit: base, base_tree: tree, source_timestamp: sourceTimestamp, forbidden_commit: options.forbiddenCommit,
   }, submodules);
   for (const arm of ["stock", "current"] as const) {
-    const repo = join(runDir, "arms", arm, "repo");
+    const repo = join(runDir, repositories[arm]);
     await mkdir(dirname(repo), { recursive: true });
-    await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "benchmark", seed, repo]);
+    await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "work", seed, repo]);
     await checked(["git", "-C", repo, "remote", "remove", "origin"]);
     await initializeSubmodules(repo, submodules);
     if (profile === "godoxy-icons") await verifyRepositoryIsolation(repo);
@@ -688,13 +691,14 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     const readerPath = "snapshots/runtime/benchmark_jsonl.py";
     await writeFile(join(runDir, readerPath), MEKUGI_EXPORT_SCRIPTS["benchmark_jsonl.py"]);
     await writeFile(join(runDir, validatorPath), MEKUGI_EXPORT_SCRIPTS["analyze_capture.py"]);
-    mekugiExports = { capture: grokComparison ? "artifacts/stock/mekugi/capture.jsonl" : "artifacts/current/mekugi/capture.jsonl", metrics: grokComparison ? "artifacts/stock/mekugi/metrics.json" : "artifacts/current/mekugi/metrics.json",
+    const exportRoot = join(dirname(repositories[grokComparison ? "stock" : "current"]), "exports");
+    mekugiExports = { capture: join(exportRoot, "capture.jsonl"), metrics: join(exportRoot, "metrics.json"),
       validator: { path: validatorPath, sha256: await sha256(join(runDir, validatorPath)) },
       reader: { path: readerPath, sha256: await sha256(join(runDir, readerPath)) } };
   }
   const mekugiExportsByArm: RunState["mekugi_exports_by_arm"] = pairedComparison && mekugiExports
     ? Object.fromEntries((["stock", "current"] as const).map(arm => [arm, {
-      ...mekugiExports, capture: `artifacts/${arm}/mekugi/capture.jsonl`, metrics: `artifacts/${arm}/mekugi/metrics.json`,
+      ...mekugiExports, capture: join(dirname(repositories[arm]), "exports/capture.jsonl"), metrics: join(dirname(repositories[arm]), "exports/metrics.json"),
     }])) : undefined;
   if (pairedComparison) mekugiExports = undefined;
 
@@ -749,8 +753,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     },
     operator: { uid: 1000, gid: 1000 },
     arms: {
-      stock: { repository: "arms/stock/repo", home_template: (comparison === "same-setup" || pairedComparison) ? "snapshots/current/home/ubuntu" : grokComparison ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/stock/home/ubuntu" },
-      current: { repository: "arms/current/repo", home_template: grokComparison ? "snapshots/stock-grok/home/ubuntu" : comparison === "stock-mekugi" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu" },
+      stock: { repository: repositories.stock, home_template: (comparison === "same-setup" || pairedComparison) ? "snapshots/current/home/ubuntu" : grokComparison ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/stock/home/ubuntu" },
+      current: { repository: repositories.current, home_template: grokComparison ? "snapshots/stock-grok/home/ubuntu" : comparison === "stock-mekugi" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu" },
     },
   };
   await writeState(runDir, state);

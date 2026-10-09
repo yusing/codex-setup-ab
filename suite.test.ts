@@ -136,7 +136,7 @@ test("suite report filters to both-passing pairs, leaves missing costs unknown, 
     ];
     const suiteSets = [];
     for (const [offset, item] of sets.entries()) {
-      const trialSet = `codex-ab-trials-fixture${offset}`;
+      const trialSet = `${offset ? "task-runs" : "codex-ab-trials"}-fixture${offset}`;
       const first: PairFixture = { stockSeconds: 10, currentSeconds: 10 + item.deltas[0]!, stockUsd: item.missingCost ? null : 2,
         currentUsd: item.missingCost ? null : 3 };
       const second: PairFixture = { stockSeconds: 10, currentSeconds: 10 + item.deltas[1]!, stockUsd: item.missingCost ? null : 2,

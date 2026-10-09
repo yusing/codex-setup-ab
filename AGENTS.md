@@ -8,6 +8,10 @@
 
 When creating or updating a task pack:
 
+- Give implementation agents only the repository task and neutral environment
+  context. Keep comparison identifiers out of their instructions, paths, Git
+  branches, and environment. Judges retain the comparison context they need.
+
 - Pin a baseline commit dated after the documented knowledge cutoff of every model
   being compared. Record the model IDs, cutoff sources, and baseline date. Resolve an
   unknown cutoff before claiming that the task is post-cutoff.

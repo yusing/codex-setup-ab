@@ -46,7 +46,7 @@ async function readSuite(directory: string): Promise<SuiteState> {
   for (const set of state.sets) {
     const key = `${set.task}/${set.setup}`;
     if (!cleanName(set.task) || keys.has(key) || set.setup !== "standard"
-      || !/^codex-ab-trials-[A-Za-z0-9]+$/.test(set.trial_set)) throw new Error("suite set plan changed");
+      || !/^(?:codex-ab-trials|task-runs)-[A-Za-z0-9]+$/.test(set.trial_set)) throw new Error("suite set plan changed");
     keys.add(key);
   }
   return state;
@@ -74,7 +74,7 @@ export async function prepareSuite(options: {
     return { id: item.id, packPath, source: sources[item.id] as string, pack };
   }));
   if (new Set(tasks.map(task => task.id)).size !== tasks.length) throw new Error("duplicate suite task");
-  const directory = await mkdtemp(join(options.outputParent ?? tmpdir(), "codex-ab-suite-"));
+  const directory = await mkdtemp(join(options.outputParent ?? tmpdir(), "task-suite-"));
   const state: SuiteState = { schema: "codex-ab.suite-run.v1", id: basename(directory), created_at: new Date().toISOString(),
     status: "preparing", comparison: options.comparison, schedule: options.schedule, count: options.count,
     manifest_sha256: await sha256(manifestPath), sources_sha256: await sha256(sourcesPath), sets: [] };

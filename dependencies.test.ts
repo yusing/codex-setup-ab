@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { dependencyKey, ensureDependencyImage } from "./dependencies";
+import { DEPENDENCY_ENV, dependencyKey, ensureDependencyImage } from "./dependencies";
 import { protectedArgs } from "./isolation";
 import type { RunState } from "./types";
 
@@ -53,6 +53,25 @@ test("image inspection failures never start a build or set a pin", async () => {
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("dependency images expose neutral cache paths to implementation agents", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-image-test-"));
+  try {
+    await mkdir(join(root, "artifacts"));
+    const docker = join(root, "docker");
+    const state = fixture();
+    await writeFile(docker, `#!/bin/sh\n[ "$1 $2" = "image inspect" ] || exit 99\nprintf '%s\\n' '${state.image_id}'\n`, { mode: 0o755 });
+    await ensureDependencyImage(docker, root, state, new AbortController().signal);
+    const recipe = await readFile(join(root, "artifacts/dependencies.Dockerfile"), "utf8");
+    expect(DEPENDENCY_ENV).toEqual([
+      "GOCACHE=/opt/task-deps/go-build", "GOMODCACHE=/go/pkg/mod", "BUN_INSTALL_CACHE_DIR=/opt/task-deps/bun",
+    ]);
+    expect(recipe).toContain(`ENV ${DEPENDENCY_ENV.join(" ")}`);
+    expect(recipe).toContain("COPY --from=dependencies /opt/task-deps /opt/task-deps");
+    expect(recipe).not.toContain("/opt/codex-ab-deps");
+    expect(recipe.split(`FROM codex-ab-base:${state.image_id!.replace("sha256:", "")}`)[2]).toContain("rmdir /benchmark-agent-issue-reports; fi && mkdir -p /agent-issue-reports");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 
 test("protected cache writes use existing ephemeral tmpfs, not retained home", () => {
   const state = fixture();
@@ -61,4 +80,6 @@ test("protected cache writes use existing ephemeral tmpfs, not retained home", (
   expect(args).toContain("GOCACHE=/tmp/go-build");
   expect(args).toContain("/tmp:exec,size=4g,mode=1777");
   expect(args).not.toContain("GOCACHE=/home/ubuntu/.cache/go-build");
+  expect(args).toContain("MEKUGI_EXPORT_DIR=/mekugi-exports");
+  expect(args.join(" ")).not.toMatch(/BENCH|benchmark|codex-ab/);
 });

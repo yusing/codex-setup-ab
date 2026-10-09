@@ -75,7 +75,7 @@ test("sqlite-utils upgrade pins the pre-upgrade base and excludes its first solu
   });
   expect(pack.contract.qualification).toBe("not-run");
   expect(pack.contract.allowed_paths).toBeUndefined();
-  expect(pack.contract.existing_tests).toBe("PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 /opt/codex-ab-deps/python/bin/python -m pytest -p no:cacheprovider -q");
+  expect(pack.contract.existing_tests).toBe("PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 /opt/task-deps/python/bin/python -m pytest -p no:cacheprovider -q");
   expect(pack.contract.criteria.map(criterion => criterion.id)).toEqual([
     "views-and-transactions", "checks-and-parser", "check-transforms", "comments-and-indexes",
     "autoincrement-and-unique", "any-types-and-cli", "numeric-transforms", "input-query-identifiers",

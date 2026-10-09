@@ -1,5 +1,5 @@
 import { copyFile, cp, mkdir, readFile, readdir } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { verifyBundleManifest } from "./bundle";
 import { readState, sha256 } from "./state";
 import { meterRollouts, type PricingSnapshot, USAGE_KEYS } from "./usage";
@@ -74,7 +74,7 @@ export async function importControl(runDir: string, state: RunState, sourceDirec
   const published = JSON.parse(await readFile(join(bundle, "report.json"), "utf8")) as { validity?: string; arms?: { stock?: { usage?: { complete?: boolean; totals?: Record<string, number> } } } };
   if (published.validity !== "valid" || published.arms?.stock?.usage?.complete !== true) throw new Error("published control has incomplete usage or invalid infrastructure");
   const rolloutManifest = JSON.parse(await readFile(join(bundle, "rollout-files.json"), "utf8")) as { stock?: RolloutFile[] };
-  const originalSessions = join(sourceRun, "arms/stock/home/ubuntu/.codex/sessions");
+  const originalSessions = join(sourceRun, source.arm_attempts?.stock?.codex_home ?? join(dirname(source.arms.stock.repository), "home/ubuntu/.codex"), "sessions");
   await verifyRollouts(originalSessions, rolloutManifest.stock ?? []);
   const output = join(runDir, "artifacts/stock");
   await mkdir(output, { recursive: true, mode: 0o700 });
@@ -86,7 +86,7 @@ export async function importControl(runDir: string, state: RunState, sourceDirec
     || source.results.stock.patch_path !== "artifacts/stock/changes.patch") throw new Error("control artifact paths changed");
   await copyFile(join(sourceRun, source.results.stock.stdout_path), stdout);
   await copyFile(join(sourceRun, source.results.stock.stderr_path), stderr);
-  const home = join(runDir, "arms/stock/home/ubuntu/.codex");
+  const home = join(runDir, dirname(state.arms.stock.repository), "home/ubuntu/.codex");
   await mkdir(home, { recursive: true, mode: 0o700 });
   const sessions = join(home, "sessions");
   await cp(originalSessions, sessions, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });

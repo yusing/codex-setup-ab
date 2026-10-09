@@ -14,9 +14,9 @@
       {"id": "existing-address-selection", "description": "DNS and IPv4 SERVER_NAME parsing, explicit host and port overrides including port zero, debug behavior, and server cleanup remain unchanged."}
     ],
     "allowed_paths": ["src/flask/app.py"],
-    "preparation": "if test ! -x /opt/codex-ab-deps/python/bin/pytest; then python3 -m venv /opt/codex-ab-deps/python && /opt/codex-ab-deps/python/bin/pip install 'blinker>=1.9.0' 'click>=8.1.3' 'itsdangerous>=2.2.0' 'jinja2>=3.1.2' 'markupsafe>=2.1.1' 'werkzeug>=3.1.0' asgiref pytest python-dotenv; fi",
-    "existing_tests": "PYTHONPATH=src /opt/codex-ab-deps/python/bin/python -m pytest -p no:cacheprovider -q tests/test_basic.py -k 'test_run_from_config or test_run_server_port or test_run_defaults'",
-    "evaluator_guidance": "Use /opt/codex-ab-deps/python/bin/python with PYTHONPATH=src when importing the candidate Flask source. Pytest must use -p no:cacheprovider because candidate files are read-only. Dependencies are preinstalled in the immutable dependency image; do not install packages during offline checks.",
+    "preparation": "if test ! -x /opt/task-deps/python/bin/pytest; then python3 -m venv /opt/task-deps/python && /opt/task-deps/python/bin/pip install 'blinker>=1.9.0' 'click>=8.1.3' 'itsdangerous>=2.2.0' 'jinja2>=3.1.2' 'markupsafe>=2.1.1' 'werkzeug>=3.1.0' asgiref pytest python-dotenv; fi",
+    "existing_tests": "PYTHONPATH=src /opt/task-deps/python/bin/python -m pytest -p no:cacheprovider -q tests/test_basic.py -k 'test_run_from_config or test_run_server_port or test_run_defaults'",
+    "evaluator_guidance": "Use /opt/task-deps/python/bin/python with PYTHONPATH=src when importing the candidate Flask source. Pytest must use -p no:cacheprovider because candidate files are read-only. Dependencies are preinstalled in the immutable dependency image; do not install packages during offline checks.",
     "qualification": "not-run"
   }
 }

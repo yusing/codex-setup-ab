@@ -115,7 +115,7 @@ candidate, harness = pathlib.Path('/candidate'), json.load(open('/harness.json')
 workspace = pathlib.Path('/tmp/evaluation')
 shutil.copytree(candidate, workspace, symlinks=True)
 cache = os.environ.get('BUN_INSTALL_CACHE_DIR')
-if cache and cache.startswith('/opt/codex-ab-deps/') and pathlib.Path(cache).is_dir():
+if cache and cache.startswith(('/opt/task-deps/', '/opt/codex-ab-deps/')) and pathlib.Path(cache).is_dir():
     writable_cache = pathlib.Path('/tmp/bun-cache')
     try:
         shutil.copytree(cache, writable_cache)
