@@ -1,5 +1,5 @@
 import { cp, copyFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { readState, sha256, writeState } from "./state";
 import type { ArmName } from "./types";
 
@@ -142,6 +142,10 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   if (state.mekugi_build) await mkdir(join(destination, "mekugi-build"), { recursive: true });
   for (const file of state.mekugi_build?.files ?? []) await copy(file.path, `mekugi-build/${file.path.split("/").at(-1)}`);
   if (state.task_pack) await copy(state.task_pack.path, "task-pack.json");
+  if (state.upstream_reference) {
+    await mkdir(join(destination, "upstream"), { recursive: true });
+    for (const file of state.upstream_reference.files) await copy(file.path, `upstream/${basename(file.path)}`);
+  }
   if (state.imported_control) {
     await mkdir(join(destination, "imported-control"), { recursive: true });
     for (const name of ["MANIFEST.sha256", "report.json"]) await copy(`evaluator/imported-control/${name}`, `imported-control/${name}`);
@@ -171,6 +175,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     ...(state.protected_runtime?.scripts.map(file => [file.path, file.sha256]) ?? []),
     ...(state.mekugi_build?.files.map(file => [file.path, file.sha256]) ?? []),
     ...(state.task_pack ? [[state.task_pack.path, state.task_pack.sha256]] : []),
+    ...(state.upstream_reference?.files.map(file => [file.path, file.sha256]) ?? []),
     ...(state.criteria ? [[state.criteria.path, state.criteria.sha256]] : []),
     ...(state.imported_control ? [["evaluator/imported-control/MANIFEST.sha256", state.imported_control.bundle_sha256]] : []),
     ...(state.imported_control ? [["artifacts/stock/codex.jsonl", state.imported_control.stdout_sha256],
@@ -272,7 +277,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
           current: "Audited current-home snapshot, including recorded tracked worktree changes.",
         };
   await write("setup-comparison.json", {
-    source: state.source, task: state.task, task_pack: state.task_pack, criteria: state.criteria, submodules: state.submodules ?? [],
+    source: state.source, task: state.task, task_pack: state.task_pack, upstream_reference: state.upstream_reference, criteria: state.criteria, submodules: state.submodules ?? [],
     auto_compact_limit: state.auto_compact_limit,
     comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null,
     execution: state.execution, image_id: state.image_id, dependency_image: state.dependency_image, runtime_tools: state.runtime_tools,

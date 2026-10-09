@@ -200,7 +200,11 @@ of its profile, base, forbidden commit, prompt or grading inputs. Only the pinne
 the arms, even if the source checkout contains later commits.
 
 Preparation fingerprints the manifest and prompt and freezes them, along with
-the expanded criterion contract, under evaluator-only storage. The bundle retains their
+the expanded criterion contract, under evaluator-only storage. Packs may set
+`source.reference_commit` to pin an upstream endpoint for judges. The local source
+must contain that endpoint and its ancestry from the base. Preparation freezes
+those actual commit patches and the combined diff for read-only judge inspection,
+without adding them to implementation workspaces. The bundle retains these
 contents and hashes. No original pack directory is needed after preparation. A fingerprint
 identifies the supplied content; it is not a signature of upstream authenticity.
 

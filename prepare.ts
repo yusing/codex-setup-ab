@@ -8,7 +8,7 @@ import { checked, exec } from "./process";
 import { readToolStoreManifest, recordToolStore, verifySnapshotIdentities, type SnapshotFile, type ToolStoreManifest } from "./snapshot";
 import { ISOLATION_SCRIPTS } from "./isolation";
 import { readMekugiBuild } from "./provenance";
-import { loadTaskPack } from "./task-pack";
+import { loadTaskPack, snapshotUpstreamReference } from "./task-pack";
 import { validateCriteria } from "./semantic";
 import type { BenchmarkModel } from "./types";
 import { isPairedMekugiComparison, validateMekugiFlags } from "./mekugi";
@@ -215,6 +215,17 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   }
   for (const control of [state.task, state.criteria, state.task_pack]) {
     if (control && await sha256(join(runDir, control.path)) !== control.sha256) throw new Error("copied benchmark control changed");
+  }
+  if (state.task_pack) {
+    const pack = JSON.parse(await readFile(join(runDir, state.task_pack.path), "utf8"));
+    if (pack.manifest.source.reference_commit !== state.upstream_reference?.end_commit) throw new Error("upstream reference endpoint changed");
+  }
+  if (state.upstream_reference) {
+    if (state.upstream_reference.base_commit !== state.source.base_commit) throw new Error("upstream reference baseline changed");
+    for (const file of state.upstream_reference.files) {
+      if (!/^evaluator\/upstream\/(?:[a-f0-9]{40}\.patch|index\.json|changes\.patch)$/.test(file.path) ||
+          !(await lstat(join(runDir, file.path))).isFile() || await sha256(join(runDir, file.path)) !== file.sha256) throw new Error("upstream reference changed");
+    }
   }
   if (state.criteria) {
     if (state.criteria.path !== "evaluator/criteria.json") throw new Error("criteria control path changed");
@@ -578,6 +589,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   await copyFile(taskPath, join(runDir, "control/task.md"));
   if (criteriaContract) await writeFile(join(runDir, "evaluator/criteria.json"), JSON.stringify(criteriaContract, null, 2));
   if (pack) await writeFile(join(runDir, "evaluator/task-pack.json"), JSON.stringify(pack.snapshot, null, 2));
+  const upstreamReference = pack ? await snapshotUpstreamReference(runDir, source, pack.manifest.source) : undefined;
 
   let buildProvenance: RunState["mekugi_build"];
   if (build) {
@@ -731,6 +743,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     source: { path: source, base_commit: base, base_tree: tree, source_timestamp: sourceTimestamp, forbidden_commit: options.forbiddenCommit },
     task: { path: "control/task.md", sha256: await sha256(join(runDir, "control/task.md")) },
     task_pack: pack ? { id: pack.manifest.id, path: "evaluator/task-pack.json", sha256: await sha256(join(runDir, "evaluator/task-pack.json")) } : undefined,
+    upstream_reference: upstreamReference,
     criteria: criteriaContract ? { path: "evaluator/criteria.json", sha256: await sha256(join(runDir, "evaluator/criteria.json")), contract: criteriaContract } : undefined,
     image: options.image,
     execution: { model, reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },

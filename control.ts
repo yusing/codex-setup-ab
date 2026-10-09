@@ -14,6 +14,7 @@ export function controlIdentity(state: RunState): unknown {
     profile: state.profile, source: { base_commit: state.source.base_commit, base_tree: state.source.base_tree,
       forbidden_commit: state.source.forbidden_commit },
     task_sha256: state.task.sha256, task_pack_sha256: state.task_pack?.sha256 ?? null,
+    upstream_reference: state.upstream_reference,
     criteria_sha256: state.criteria?.sha256 ?? null, comparison: state.comparison ?? "stock-current",
     execution: state.execution, image_id: state.image_id, dependency_image_id: state.dependency_image?.image_id ?? null,
     codex_sha256: state.runtime_tools.codex_sha256,

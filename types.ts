@@ -60,6 +60,7 @@ export interface RunState {
   source: { path: string; base_commit: string; base_tree: string; source_timestamp: number; forbidden_commit: string };
   task: { path: string; sha256: string };
   task_pack?: { id: string; path: string; sha256: string };
+  upstream_reference?: { base_commit: string; end_commit: string; files: Array<{ path: string; sha256: string }> };
   criteria?: { path: string; sha256: string; contract: import("./semantic").CriteriaContract };
   image: string;
   image_id?: string;

@@ -53,8 +53,9 @@ subjects beginning `upgrade-01:` through `upgrade-19:`. The step column maps
 each candidate commit to its reference commit for comparison. Tests and
 documentation belong with the relevant change; the changelog step records
 changes completed at that point. Candidate Git history remains in the retained
-arm repositories. The generic judge evaluates the final tree, not individual
-commits or commit correspondence.
+arm repositories. The judge evaluates the final tree using the frozen upstream
+commit patches and combined diff, not individual candidate commits or commit
+correspondence.
 
 Expected outcomes come from these commits' implementation, regression tests,
 and documentation, not additional synthetic restrictions. There is no blanket
@@ -101,9 +102,12 @@ recorded Mekugi executable unchanged while a run uses it.
 
 Pinned Python runtime and development dependencies are installed into
 `/opt/task-deps/python`. Candidate and offline evaluator work has no package
-network access. The judges adapt checks to each candidate without access to
-the reference implementation; the provenance range supports task authoring
-and reference validation, not a candidate shortcut.
+network access. Preparation freezes all 19 upstream commit patches and the
+combined diff in evaluator-only storage. Both judge stages inspect that
+read-only reference to ground checks and final assessments in actual upstream
+behavior. Equivalent implementations and safe improvements remain acceptable.
+Implementation agents never receive the reference; no live upstream checkout
+or network lookup is needed during judging.
 
 ## Validation and interpretation
 

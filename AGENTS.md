@@ -17,7 +17,8 @@ When creating or updating a task pack:
   unknown cutoff before claiming that the task is post-cutoff.
 - Derive realistic tasks, requirements, and expected outcomes from the repository's
   actual commits after that baseline. Record the reference commits and map each
-  criterion to their behavior. Keep the reference solution out of candidate workspaces.
+  criterion to their behavior. Pin the evaluator endpoint with `source.reference_commit`.
+  Keep the reference solution out of candidate workspaces.
 - Require behavior at least as good as the reference commits for the selected scope,
   while retaining unaffected repository behavior. Use upstream tests and documentation
   to establish the reference outcome; do not invent stricter compatibility rules.

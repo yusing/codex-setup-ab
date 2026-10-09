@@ -35,6 +35,10 @@ test("pack fingerprints change with task contents and reject escaping assets", a
     manifest.prompt = "external";
     await writeFile(manifestPath, JSON.stringify(manifest));
     await expect(loadTaskPack(manifestPath)).rejects.toThrow("escapes");
+    manifest.prompt = "task.md";
+    manifest.source.reference_commit = manifest.source.base_commit;
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await expect(loadTaskPack(manifestPath)).rejects.toThrow("reference endpoint");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -72,6 +76,7 @@ test("sqlite-utils upgrade pins the pre-upgrade base and excludes its first solu
     repository: "https://github.com/simonw/sqlite-utils.git",
     base_commit: "6a456830ca33eb5edaa634a9b0febe5d71bea2be",
     forbidden_commit: "f726ea4a65c3ce9eaff67057908ee8f2fe7f81e0",
+    reference_commit: "e4935e064407bc995f77795c025c33cef52d742e",
   });
   expect(pack.contract.qualification).toBe("not-run");
   expect(pack.contract.allowed_paths).toBeUndefined();

@@ -49,6 +49,7 @@ export function trialControls(state: RunState) {
   return {
     profile: state.profile, source: state.source, submodules: state.submodules,
     task: state.task, task_pack: state.task_pack, criteria: state.criteria,
+    upstream_reference: state.upstream_reference,
     auto_compact_limit: state.auto_compact_limit,
     comparison: state.comparison ?? "stock-current", execution: state.execution,
     image_id: state.image_id, dependency_image: state.dependency_image, resource_limits: state.resource_limits, timeout_seconds: state.timeout_seconds,

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { prepare, verifyPreparedInputs, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { prepareTrials, readTrialSet, reportTrials, runTrials } from "./trials";
@@ -673,7 +673,7 @@ test("task-pack CLI freezes pinned controls without exposing checks to either ar
   await file(join(directory, "task.md"), "Improve the fixture.\n");
   await file(join(directory, "manifest.json"), JSON.stringify({
     schema: "codex-ab.task-pack.v1", id: "fixture-pack", prompt: "task.md",
-    source: { repository: "https://example.test/fixture.git", base_commit: base, forbidden_commit: future },
+    source: { repository: "https://example.test/fixture.git", base_commit: base, forbidden_commit: future, reference_commit: future },
     criteria: { schema: "codex-ab.criteria.v1", criteria: [{ id: "fixture", description: "Improve the fixture" }],
       preparation: "true", existing_tests: "true", qualification: "not-run" },
   }));
@@ -691,17 +691,46 @@ test("task-pack CLI freezes pinned controls without exposing checks to either ar
   expect(state.source.forbidden_commit).toBe(future);
   expect(state.profile).toBe("task");
   expect(state.task_pack?.id).toBe("fixture-pack");
+  expect(state.upstream_reference).toMatchObject({ base_commit: base, end_commit: future });
+  const index = await Bun.file(join(run, "evaluator/upstream/index.json")).json();
+  expect(index.commits).toEqual([{ commit: future, subject: "future", patch: `${future}.patch` }]);
+  const patch = join(run, `evaluator/upstream/${future}.patch`), original = await readFile(patch, "utf8");
+  expect(original).toContain("+oracle that arms must not see");
   for (const arm of ["stock", "current"] as const) {
     expect(await Bun.file(join(run, state.arms[arm].repository, "manifest.json")).exists()).toBe(false);
+    expect(await Bun.file(join(run, state.arms[arm].repository, "future.txt")).exists()).toBe(false);
+    expect(await Bun.spawn(["git", "-C", join(run, state.arms[arm].repository), "cat-file", "-e", `${future}^{commit}`], { stderr: "ignore" }).exited).not.toBe(0);
   }
   await verifyPreparedInputs(run, state);
   state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
   await writeState(run, state);
   const auth = join(root, "pack-auth.json"); await file(auth, "{}\n", 0o600);
   const fake = await fakeOwnedDocker(0);
+  const trials = await prepareTrials({ runDir: run, count: 2, outputParent: root, dockerBin: fake.path });
+  const trial = join(trials, (await readTrialSet(trials)).trials[0]!.run_dir);
+  expect((await readState(trial)).upstream_reference).toEqual(state.upstream_reference);
+  expect(await sha256(join(trial, `evaluator/upstream/${future}.patch`))).toBe(await sha256(patch));
   await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
   expect(await sha256(join(run, "reports/bundle/task-pack.json"))).toBe(state.task_pack!.sha256);
+  for (const file of state.upstream_reference!.files) {
+    expect(await sha256(join(run, "reports/bundle/upstream", basename(file.path)))).toBe(file.sha256);
+  }
+  const log = await readFile(fake.log, "utf8");
+  const judgeLaunches = log.split("\n").filter(line => line.includes(" create ") && /-judge-[12]-(?:harness|assessment)/.test(line));
+  expect(judgeLaunches).toHaveLength(4);
+  for (const launch of judgeLaunches) expect(launch).toContain(`${join(run, "evaluator/upstream")}:/reference:ro`);
+  const agentLaunches = log.split("\n").filter(line => line.includes(" create ") && ["stock", "current"].some(arm => line.includes(` --name codex-ab-${state.id}-${arm} `)));
+  expect(agentLaunches).toHaveLength(2);
+  for (const launch of agentLaunches) expect(launch).not.toContain("/reference");
+  for (const pass of [1, 2]) for (const stage of ["harness-1", "assessment"]) {
+    const prompt = await readFile(join(fake.stateDir, `codex-ab-${state.id}-judge-${pass}-${stage}-1.prompt`), "utf8");
+    expect(prompt).toContain("Read index.json, relevant commit patches, and changes.patch");
+    expect(prompt).toContain("Assess final results, not candidate commit correspondence");
+  }
   expect(await readFile(join(run, "reports/report.md"), "utf8")).toContain("Task pack: fixture-pack");
+  await writeFile(patch, `${original}\nchanged`);
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("upstream reference changed");
+  await writeFile(patch, original);
   await file(join(run, state.task_pack!.path), "{}");
   await expect(verifyPreparedInputs(run, state)).rejects.toThrow("control changed");
   await expect(main(["prepare", "--task-pack", join(directory, "manifest.json")])).rejects.toThrow("requires --source");
@@ -1001,13 +1030,13 @@ case "$operation" in
         rm -f '${stateDir}/'$name.capture
         ;;
       *-judge-*-harness-*)
-        cat >/dev/null
+        cat >'${stateDir}/'$name.prompt
         sleep 0.1
         printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked." }]]))) } })}'
         ${failHarnessPass ? `case "$name" in *-judge-${failHarnessPass}-harness-*) status=9 ;; esac` : ":"}
         ;;
       *-judge-*-assessment-*)
-        cat >/dev/null
+        cat >'${stateDir}/'$name.prompt
         ${invalidAssessmentPass ? `case "$name" in
           *-judge-${invalidAssessmentPass}-assessment-*) printf '%s\\n' '${invalidAssessment}' ;;
           *) sleep 0.2; printf '%s\\n' '${validAssessment}' ;;
