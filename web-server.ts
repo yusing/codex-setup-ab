@@ -446,9 +446,9 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         new URL(`http://${host.includes(":") ? `[${host}]` : host}:${server.port}`).host);
       if (!req.headers.get("host") || !allowedHosts.includes(url.host) || req.headers.get("origin") && req.headers.get("origin") !== url.origin || req.headers.get("sec-fetch-site") === "cross-site") return json({ error: "Use the workbench origin" }, 403);
       try {
-        if (req.method === "GET" && url.pathname === "/") return new Response(html as unknown as string, { headers: { "Content-Type": "text/html; charset=utf-8" } });
-        if (req.method === "GET" && url.pathname === "/style.css") return new Response(css, { headers: { "Content-Type": "text/css" } });
-        if (req.method === "GET" && url.pathname === "/app.js") return new Response(javascript, { headers: { "Content-Type": "text/javascript" } });
+        if (req.method === "GET" && url.pathname === "/") return new Response(html as unknown as string, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" } });
+        if (req.method === "GET" && url.pathname === "/style.css") return new Response(css, { headers: { "Content-Type": "text/css", "Cache-Control": "no-cache" } });
+        if (req.method === "GET" && url.pathname === "/app.js") return new Response(javascript, { headers: { "Content-Type": "text/javascript", "Cache-Control": "no-cache" } });
         if (req.method === "GET" && url.pathname === "/fonts/ibm-plex-sans-latin.woff2") return new Response(Bun.file(interfaceFont), { headers: { "Content-Type": "font/woff2" } });
         if (req.method === "GET" && url.pathname === "/fonts/OFL.txt") return new Response(fontLicense, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
         if (req.method === "GET" && url.pathname === "/api/config") return json({ token, defaults, comparisons: COMPARISONS, tasks: taskCatalog(), commands: COMMAND_OPTIONS, actions: ACTIONS, paidCommands: [...PAID] });

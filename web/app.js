@@ -9,6 +9,15 @@ let config, workflow = "pair", selected, snapshot, activeId, busy = false, actio
 let artifactItems = [];
 let listSignature, artifactSignature, childSignature, liveKeys;
 let eventStream, latestSnapshot;
+const ATTEMPT_STATUS = { started: "Running", stopped: "Finished", failed: "Failed" };
+const TONES = { stopped: "positive", complete: "positive", failed: "negative", canceled: "negative" };
+function executionStatus(attempt, result) {
+  attempt = obj(attempt); result = obj(result);
+  if (!attempt.status) return ["Not started", ""];
+  const facts = [result.timed_out ? "timed out" : result.canceled ? "canceled" : typeof result.exit_code === "number" ? "exit " + result.exit_code : "",
+    typeof result.agent_elapsed_ms === "number" ? duration(result.agent_elapsed_ms) : ""].filter(Boolean);
+  return [[ATTEMPT_STATUS[attempt.status] || words(attempt.status), ...facts].join(" · "), TONES[attempt.status] || ""];
+}
 function setupLabels(data) {
   return { stock: "Setup unavailable", current: "Setup unavailable", ...obj(data.arm_labels), ...obj(obj(data.report).arm_labels) };
 }
@@ -240,9 +249,8 @@ function metricTable(report, state, labels) {
   const results = obj(state.results);
   const values = (arm) => ({ result: obj(obj(arms[arm]).result ?? results[arm]), totals: obj(obj(obj(arms[arm]).usage).totals) });
   const a = values("stock"), b = values("current");
-  const grade = (data) => typeof obj(data.result.grade).passed === "boolean" ? data.result.grade.passed ? "Passed" : "Failed" : "Not graded";
   const rows = [
-    ["Behavioral grade", grade(a), grade(b)],
+    ["Behavioral grade", gradeChip(a.result), gradeChip(b.result), "", true],
     ["Agent time", duration(a.result.agent_elapsed_ms), duration(b.result.agent_elapsed_ms), "agent_elapsed_ms"],
     ["Estimated API cost", typeof a.totals.estimated_api_usd === "number" ? "$" + metric(a.totals.estimated_api_usd, 6) : "Unknown", typeof b.totals.estimated_api_usd === "number" ? "$" + metric(b.totals.estimated_api_usd, 6) : "Unknown", "estimated_api_usd"],
     ["Total tokens", metric(a.totals.total_tokens), metric(b.totals.total_tokens), "total_tokens"],
@@ -251,29 +259,104 @@ function metricTable(report, state, labels) {
   const changes = obj(report.current_minus_stock_percent);
   const change = (key) => typeof changes[key] === "number" && Number.isFinite(changes[key]) ? (changes[key] > 0 ? "+" : "") + metric(changes[key], 2) + "%" : "Not available";
   return '<div class="table-scroll" tabindex="0" role="region" aria-label="Pair measurements"><table><thead><tr><th>Measurement</th><th class="a">' + esc(labels.stock) + '</th><th class="b">' + esc(labels.current) + "</th></tr></thead><tbody>"
-    + rows.map(([label, av, bv, key]) => "<tr><th>" + esc(label) + '</th><td class="metric a">' + esc(av) + '</td><td class="metric b">' + esc(bv) + (key ? '<span class="metric-change">' + esc(change(key)) + "</span>" : "") + "</td></tr>").join("") + '</tbody></table></div><p class="hint">Change compares ' + esc(labels.current) + " with " + esc(labels.stock) + ". Positive percentages mean more time, cost, or tokens, not better quality.</p>";
+    + rows.map(([label, av, bv, key, html]) => "<tr><th>" + esc(label) + '</th><td class="metric a">' + (html ? av : esc(av)) + '</td><td class="metric b">' + (html ? bv : esc(bv)) + (key ? '<span class="metric-change">' + esc(change(key)) + "</span>" : "") + "</td></tr>").join("") + '</tbody></table></div><p class="hint">Change compares ' + esc(labels.current) + " with " + esc(labels.stock) + ". Positive percentages mean more time, cost, or tokens, not better quality.</p>";
+}
+function statusChip(status, text = words(status)) {
+  return '<span class="status-chip ' + esc(status) + '">' + esc(text) + "</span>";
+}
+function gradeChip(result) {
+  const passed = obj(obj(result).grade).passed;
+  return passed === true ? statusChip("pass", "Passed") : passed === false ? statusChip("fail", "Failed") : statusChip("unassessed", "Not graded");
+}
+function armGrade(report, state, arm) {
+  return obj(obj(obj(obj(report.arms)[arm]).result).grade ?? obj(obj(state.results)[arm]).grade);
+}
+function passKeys(semantic) {
+  return Object.keys(obj(semantic)).filter((key) => /^pass-\d+$/.test(key)).sort();
+}
+function criteriaCount(items) {
+  const counts = {};
+  for (const item of items) counts[obj(item).status] = (counts[obj(item).status] || 0) + 1;
+  if (items.length && counts.pass === items.length) return items.length + "/" + items.length + " criteria pass";
+  return ["pass", "fail", "unassessed"].filter((status) => counts[status]).map((status) => counts[status] + " " + status).join(" · ") || "No criteria recorded";
+}
+// Judge passes keyed by arm. Candidate IDs are positional per pass, so map them through each pass's presentation order.
+function judgedPasses(report) {
+  const passes = obj(obj(report.judge).result).passes;
+  return (Array.isArray(passes) ? passes : []).map((pass) => {
+    const order = Array.isArray(pass.presentation) ? pass.presentation : [];
+    const arm = (id) => ({ "candidate-1": order[0], "candidate-2": order[1] })[id] || id;
+    const scores = {};
+    for (const [id, value] of Object.entries(obj(pass.scores))) scores[arm(id)] = obj(value);
+    return { pass: pass.pass, winner: arm(pass.winner), scores };
+  });
+}
+function verdictSummary(report, state, labels, complete) {
+  const name = (arm) => arm === "tie" ? "tie" : arm === "none" || !arm ? "neither" : labels[arm] || "Unmapped setup";
+  const winner = report.winner;
+  const headline = winner === "stock" || winner === "current" ? "Overall winner: " + labels[winner] : winner === "tie" ? "Overall result: tie" : "No overall winner";
+  const passes = judgedPasses(report);
+  const agreement = obj(obj(report.judge).result).agreement;
+  const judged = passes.length ? " Judge: " + passes.map((pass) => "pass " + pass.pass + " chose " + name(pass.winner)).join(", ") + (typeof agreement === "boolean" ? agreement ? "; passes agree." : "; passes disagree." : ".") : "";
+  const settled = complete && ["stock", "current", "tie"].includes(winner);
+  const card = (arm, side) => {
+    const semantic = armGrade(report, state, arm).semantic;
+    const lines = passKeys(semantic).map((key) => {
+      const number = Number(key.slice(5));
+      const total = obj(passes.find((pass) => pass.pass === number)?.scores[arm]).weighted_total;
+      const existing = obj((obj(semantic)[key + "-existing"] || [])[0]).status;
+      return "<li><strong>Pass " + number + "</strong> " + esc(criteriaCount(Array.isArray(semantic[key]) ? semantic[key] : []))
+        + (typeof total === "number" ? " · score " + esc(metric(total, 1)) + "/100" : "")
+        + (existing && existing !== "pass" ? " · existing tests " + esc(words(existing)) : "") + "</li>";
+    });
+    return '<article class="verdict-card ' + side + '"><h4>' + esc(labels[arm]) + "</h4>" + gradeChip({ grade: armGrade(report, state, arm) })
+      + (lines.length ? "<ul>" + lines.join("") + "</ul>" : '<p class="hint">No criterion results recorded.</p>') + "</article>";
+  };
+  return '<div class="result-summary' + (settled ? "" : " warn") + '"><strong>' + esc(headline) + "</strong><p>" + esc(report.winner_reason || report.comparison_exclusion || "Interpret the available evidence with its validity gates.") + "</p>"
+    + '<p class="hint">' + (complete ? "Measurement complete." : "Measurement incomplete.") + esc(judged) + "</p></div>"
+    + '<div class="verdict-grid">' + card("stock", "a") + card("current", "b") + "</div>";
+}
+function scoreTable(report, labels) {
+  const passes = judgedPasses(report);
+  if (!passes.length) return "";
+  const rows = [["correctness", "Correctness (50%)"], ["completeness", "Completeness (20%)"], ["maintainability", "Maintainability (20%)"], ["test_quality", "Test quality (10%)"], ["weighted_total", "Weighted total (of 100)"]];
+  const cell = (pass, arm, other, key, side) => {
+    const value = obj(pass.scores[arm])[key], rival = obj(pass.scores[other])[key];
+    const lead = typeof value === "number" && typeof rival === "number" && value > rival;
+    return '<td class="metric ' + side + (lead ? " lead" : "") + '">' + esc(metric(value, 2)) + "</td>";
+  };
+  return '<h3>Judge scores</h3><div class="table-scroll" tabindex="0" role="region" aria-label="Judge scores"><table><thead><tr><th rowspan="2">Score</th><th class="a" colspan="' + passes.length + '">' + esc(labels.stock) + '</th><th class="b" colspan="' + passes.length + '">' + esc(labels.current) + "</th></tr><tr>"
+    + ["a", "b"].map((side) => passes.map((pass, index) => '<th class="' + (index === 0 ? side : "") + '">Pass ' + esc(pass.pass) + "</th>").join("")).join("") + "</tr></thead><tbody>"
+    + rows.map(([key, label]) => "<tr><th>" + esc(label) + "</th>" + passes.map((pass, index) => cell(pass, "stock", "current", key, index === 0 ? "a" : "")).join("") + passes.map((pass, index) => cell(pass, "current", "stock", key, index === 0 ? "b" : "")).join("") + "</tr>").join("")
+    + '</tbody></table></div><p class="hint">Component scores range from 0 to 5; the weighted total ranges from 0 to 100. Bold marks the higher score within a pass. Judge prose may use another scale or candidate order; these are the recorded scores.</p>';
 }
 function criterionTable(report, labels) {
   const contract = obj(obj(report.criteria).contract);
   const criteria = Array.isArray(contract.criteria) ? contract.criteria : [];
   if (!criteria.length) return "";
-  const evidence = (arm, id) => {
-    const grade = obj(obj(obj(report.arms)[arm]).result).grade;
-    const matches = Object.entries(obj(obj(grade).semantic)).flatMap(([key, items]) => {
-      const names = semanticNames(key, obj(obj(report.judge).result).passes, labels);
-      return (Array.isArray(items) ? items : []).filter((item) => obj(item).criterion === id).map((item) => '<div class="criterion-finding"><strong>' + esc(words(item.status)) + '</strong><p class="hint">' + esc(words(key)) + ": " + esc(item.basis) + "</p><p>" + esc(displayName(item.reasoning, names)) + "</p></div>");
-    });
-    return matches.join("") || '<span class="hint">Not assessed</span>';
+  const passes = obj(obj(report.judge).result).passes;
+  const findings = (arm, id) => {
+    const semantic = obj(obj(obj(obj(report.arms)[arm]).result).grade).semantic;
+    return passKeys(semantic).flatMap((key) => (Array.isArray(semantic[key]) ? semantic[key] : []).filter((item) => obj(item).criterion === id)
+      .map((item) => ({ key, item, names: semanticNames(key, passes, labels) })));
   };
-  return '<h3>Criterion outcomes</h3><div class="table-scroll" tabindex="0" role="region" aria-label="Criterion outcomes"><table><thead><tr><th>Criterion</th><th class="a">' + esc(labels.stock) + '</th><th class="b">' + esc(labels.current) + '</th></tr></thead><tbody>'
-    + criteria.map((item) => "<tr><th>" + esc(item.id) + '<p class="hint">' + esc(item.description) + '</p></th><td class="a">' + evidence("stock", item.id) + '</td><td class="b">' + evidence("current", item.id) + "</td></tr>").join("") + "</tbody></table></div>";
+  const cell = (arm, id, list) => list.length
+    ? '<div class="chips">' + list.map(({ key, item }) => statusChip(item.status, "P" + key.slice(5) + " · " + words(item.status))).join("") + '</div><details class="criterion-reasoning" data-key="' + esc(arm + ":" + id) + '"><summary>Reasoning</summary>'
+      + list.map(({ key, item, names }) => '<div class="criterion-finding"><p class="hint">' + esc(words(key)) + " · " + esc(item.basis) + "</p><p>" + esc(displayName(item.reasoning, names)) + "</p></div>").join("") + "</details>"
+    : '<span class="hint">Not assessed</span>';
+  return '<h3>Criterion outcomes</h3><p class="hint">Highlighted rows differ between setups. Expand Reasoning for each pass\'s evidence.</p><div class="table-scroll" tabindex="0" role="region" aria-label="Criterion outcomes"><table class="criteria"><thead><tr><th>Criterion</th><th class="a">' + esc(labels.stock) + '</th><th class="b">' + esc(labels.current) + '</th></tr></thead><tbody>'
+    + criteria.map((item) => {
+      const a = findings("stock", item.id), b = findings("current", item.id);
+      const differs = JSON.stringify(a.map(({ item: found }) => found.status)) !== JSON.stringify(b.map(({ item: found }) => found.status));
+      return "<tr" + (differs ? ' class="differs"' : "") + "><th>" + esc(item.id) + '<p class="hint">' + esc(item.description) + '</p></th><td class="a">' + cell("stock", item.id, a) + '</td><td class="b">' + cell("current", item.id, b) + "</td></tr>";
+    }).join("") + "</tbody></table></div>";
 }
 function judgeSummary(judge, labels) {
   const result = obj(obj(judge).result);
   if (!Array.isArray(result.passes) || !result.passes.length) return "";
-  return '<h3>Source assessment</h3>' + result.passes.map((pass) => {
+  return '<h3>Source assessment</h3><p class="hint">Judge prose as recorded. Use the score table above for exact per-setup scores.</p>' + result.passes.map((pass) => {
     const names = assessmentNames(pass, labels);
-    return '<section class="assessment-pass"><h4>Pass ' + esc(pass.pass) + ": " + esc(displayName(pass.winner, names)) + "</h4><p>" + esc(displayName(pass.rationale || "No reasoning recorded for this pass.", names)) + "</p>"
+    return '<section class="assessment-pass"><h4>Pass ' + esc(pass.pass) + " winner: " + esc(displayName(pass.winner, names)) + "</h4><p>" + esc(displayName(pass.rationale || "No reasoning recorded for this pass.", names)) + "</p>"
       + (Array.isArray(pass.evidence) ? "<ul>" + pass.evidence.map((item) => "<li>" + esc(displayName(item, names)) + "</li>").join("") + "</ul>" : "")
       + (Array.isArray(pass.issues) && pass.issues.length ? '<ul class="assessment-issues">' + pass.issues.map((issue) => '<li><strong>' + esc(displayName(issue.candidate, names)) + (issue.severity ? ": " + esc(issue.severity) : "") + "</strong><p>" + esc(displayName(issue.detail, names)) + "</p></li>").join("") + "</ul>" : "") + "</section>";
   }).join("");
@@ -290,11 +373,11 @@ function resultContent(data) {
     const warnings = [...new Set([...currentInvalidity, ...(report.invalidity_reasons || []), ...Object.values(obj(report.arms)).flatMap((arm) => obj(arm.usage).warnings || [])])];
     const complete = report.measurement_complete === true && !invalidated;
     return "<h2>Comparison results</h2><p class='hint'>" + esc(report.design || "Descriptive paired evidence") + "</p>"
-      + (invalidated ? invalidationNotice : '<div class="result-summary' + (complete ? "" : " warn") + '"><strong>' + (complete ? "Measurement complete" : "Measurement incomplete") + "</strong><p>" + esc(report.winner_reason || report.comparison_exclusion || "Interpret the available evidence with its validity gates.") + "</p>"
-      + (report.winner ? "<p>Recorded outcome: " + esc(displayName(report.winner, labels)) + "</p>" : "") + "</div>")
-      + metricTable(report, state, labels)
+      + (invalidated ? invalidationNotice : verdictSummary(report, state, labels, complete))
+      + scoreTable(report, labels)
+      + "<h3>Measurements</h3>" + metricTable(report, state, labels)
       + (warnings.length ? '<ul class="warning-list">' + warnings.map((warning) => "<li>" + esc(warning) + "</li>").join("") + "</ul>" : "")
-      + judgeSummary(report.judge, labels) + criterionTable(report, labels)
+      + criterionTable(report, labels) + judgeSummary(report.judge, labels)
       + disclosure(invalidated ? "Technical report, regenerate after invalidation" : "Technical report", report, labels);
   }
   if (data.entry.kind === "trials") {
@@ -385,13 +468,13 @@ function renderSnapshot(data) {
   const statuses = obj(state.arm_attempts);
   const errors = [job.error, state.error, obj(state.finishing).error, obj(state.judge).error].filter(Boolean);
   const phaseItems = entry.kind === "pair" ? [
-    [labels.stock + " execution", obj(statuses.stock).status || "Not started"],
-    [labels.current + " execution", obj(statuses.current).status || "Not started"],
-    ["Source assessment", obj(state.judge).status || "Not started"],
-    ["Report finishing", obj(state.finishing).status || (data.report ? "Report available" : "Not started")],
+    [labels.stock + " execution", ...executionStatus(statuses.stock, obj(state.results).stock)],
+    [labels.current + " execution", ...executionStatus(statuses.current, obj(state.results).current)],
+    ["Source assessment", obj(state.judge).status || "Not started", TONES[obj(state.judge).status]],
+    ["Report finishing", obj(state.finishing).status || (data.report ? "Report available" : "Not started"), TONES[obj(state.finishing).status]],
   ] : [["Evidence", state.status || "Preparing"], ["Operation", job.status || "Attached"], ["Completed children", data.children.filter((child) => child.status === "complete").length + " of " + data.children.length], ["Report", data.report ? "Available" : "Not yet generated"]];
   $("run-status").innerHTML = '<div class="status-line"><span class="badge ' + esc(job.status || state.status || "prepared") + '">' + esc(job.status || "attached") + "</span><span>Evidence: " + esc(state.status || "not yet prepared") + '</span><span>Operation elapsed: <span id="operation-elapsed"></span></span></div>'
-    + '<div class="phases">' + phaseItems.map(([title, value]) => "<div><strong>" + esc(title) + "</strong><span>" + esc(value) + "</span></div>").join("") + "</div>"
+    + '<div class="phases">' + phaseItems.map(([title, value, tone]) => "<div><strong>" + esc(title) + '</strong><span class="' + esc(tone || "") + '">' + esc(value) + "</span></div>").join("") + "</div>"
     + (errors.length ? '<p class="notice error">' + esc([...new Set(errors)].join("\n")) + "</p>" : "");
   renderElapsed();
   const log = $("phase-log");
@@ -401,7 +484,7 @@ function renderSnapshot(data) {
   const live = Object.entries(obj(data.live)).filter(([, text]) => text);
   const keys = live.map(([arm]) => arm).join(",");
   if (liveKeys !== keys) {
-    $("live-output").innerHTML = live.map(([arm]) => '<details class="panel"><summary></summary><div tabindex="0" role="region" class="' + (entry.kind === "pair" ? "rendered-output" : "log") + '" data-live="' + esc(arm) + '"></div></details>').join("");
+    $("live-output").innerHTML = live.map(([arm]) => '<details class="panel" open><summary></summary><div tabindex="0" role="region" class="' + (entry.kind === "pair" ? "rendered-output" : "log") + '" data-live="' + esc(arm) + '"></div></details>').join("");
     liveKeys = keys;
   }
   for (const [arm, text] of live) {
@@ -421,9 +504,10 @@ function renderSnapshot(data) {
   }
   const signature = JSON.stringify([data.report, data.arm_labels, entry.kind === "build" ? state : state.results, state.invalidity_reasons]);
   if (reportSignature !== signature) {
-    const opened = [...$("results").querySelectorAll("details[open]")].map((element) => element.querySelector("summary").textContent);
+    const key = (detail) => detail.dataset.key || detail.querySelector("summary").textContent;
+    const opened = [...$("results").querySelectorAll("details[open]")].map(key);
     $("results").innerHTML = resultContent(data);
-    for (const detail of $("results").querySelectorAll("details")) if (opened.includes(detail.querySelector("summary").textContent)) detail.open = true;
+    for (const detail of $("results").querySelectorAll("details")) if (opened.includes(key(detail))) detail.open = true;
     reportSignature = signature;
   }
   if (stateSignature !== JSON.stringify([state, labels])) {

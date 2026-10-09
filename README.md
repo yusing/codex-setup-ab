@@ -69,7 +69,8 @@ Reload to reconnect, or attach an existing run, trial-set, or suite directory af
 restarting the server. Started runs are never restarted; the existing audited
 judge-recovery action remains available.
 
-Results include paired grades, time, token and estimated-cost comparisons, criterion
+Results lead with the overall outcome and each setup's grade, per-pass criterion counts,
+and judge scores, followed by time, token and estimated-cost comparisons, criterion
 evidence, judge reasoning, warnings, trial/suite aggregates, and retained reports,
 patches, and logs. Unknown metrics stay unknown. Each result is descriptive evidence,
 not a causal conclusion. Report generation, source assessments, usage correction,
