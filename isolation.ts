@@ -15,7 +15,7 @@ export function launcherMounts(runDir: string, state: RunState, arm: ArmName): s
   const mekugi = state.comparison === "codex-mekugi-grok" ? arm === "stock"
     : arm === "current" && state.execution.current_launcher === "mekugi" || ["same-setup", "journal-compaction", "duplicate-output"].includes(state.comparison ?? "");
   if (grok) return ["-v", `${resolve(runDir, state.runtime_tools.grok_source!)}:/home/ubuntu/.grok/bin/grok:ro`];
-  return mekugi ? ["-v", `${resolve(runDir, state.runtime_tools.mekugi_source!)}:/home/ubuntu/.local/bin/mekugi:ro`] : [];
+  return mekugi && !state.runtime_tools.mekugi_in_image ? ["-v", `${resolve(runDir, state.runtime_tools.mekugi_source!)}:/home/ubuntu/.local/bin/mekugi:ro`] : [];
 }
 
 export async function miseToolMounts(runDir: string, state: RunState): Promise<string[]> {

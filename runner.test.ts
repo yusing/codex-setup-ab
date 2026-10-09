@@ -208,7 +208,7 @@ test("stock-mekugi shares configured tools while isolating current-home guidance
     && line.includes(`MISE_INSTALLS_DIR=${state.runtime_tools.current_setup_installs}`))).toBe(true);
   expect(launches.every(line => line.includes(`${state.runtime_tools.current_setup_mise_source}:/home/ubuntu/.local/bin/mise:ro`))).toBe(true);
   expect(launches.find(line => line.includes(" codex exec --json ") && !line.includes(" mekugi "))).not.toContain("/home/ubuntu/.local/bin/mekugi:ro");
-  expect(launches.find(line => line.includes(" mekugi --mode=mekugi "))).toContain(`${state.runtime_tools.mekugi_source}:/home/ubuntu/.local/bin/mekugi:ro`);
+  expect(launches.find(line => line.includes(" mekugi --mode=mekugi "))).not.toContain(":/home/ubuntu/.local/bin/mekugi:ro");
   expect(launches.find(line => line.includes(" mekugi --mode=mekugi "))).toContain("--tmpfs /home/ubuntu/.local/state/mekugi/debug:size=4g,mode=0700,uid=1000,gid=1000");
   const exportPreflight = (await readFile(fake.log, "utf8")).split("\n").find(line => line.includes(" create ") && line.includes("-preflight-mekugi "))!;
   expect(exportPreflight).toContain("/artifacts/preflight-mekugi:/mekugi-exports");
@@ -289,7 +289,7 @@ for (const comparison of ["journal-compaction", "duplicate-output"] as const) {
     expect(state.arms.stock.home_template).toBe("snapshots/current/home/ubuntu");
     expect(state.arms.current.home_template).toBe(state.arms.stock.home_template);
     expect((await stat(join(run, state.arms.current.home_template, ".local/share/mise/installs"))).isDirectory()).toBe(true);
-    expect(state.runtime_tools.mekugi_sha256).toBe(await sha256(state.runtime_tools.mekugi_source!));
+    expect(state.runtime_tools.mekugi_sha256).toBe(await sha256(resolve(run, state.runtime_tools.mekugi_source!)));
     expect(state.mekugi_exports).toBeUndefined();
     for (const arm of ["stock", "current"] as const) {
       expect(state.mekugi_exports_by_arm?.[arm]).toMatchObject({
@@ -647,7 +647,7 @@ test("Mekugi build inputs are pinned, bundled and independent of the live checko
     const trial = (await readTrialSet(trials)).trials[0]!;
     const directory = join(trials, trial.run_dir);
     await preflightRun(directory, fake.path);
-    expect(await readFile(fake.log, "utf8")).toContain(`${directory}/artifacts/mekugi-build/bin/mekugi:/home/ubuntu/.local/bin/mekugi:ro`);
+    expect(await readFile(fake.log, "utf8")).not.toContain(":/home/ubuntu/.local/bin/mekugi:ro");
   } finally { await rename(movedPrototype, run); }
   expect(await Bun.file(join(run, "artifacts/mekugi-build/source/dirty-guidance.md")).exists()).toBe(true);
   await file(join(run, "reports/report.json"), "{}");
@@ -1306,12 +1306,18 @@ test("prepare requires an executable Mekugi launcher, but no companion helper", 
   await file(selectedMekugi, selectedContent, 0o755);
   const run = await prepare({ ...options, mekugiBinary: selectedMekugi });
   const state = await readState(run);
-  expect(state.runtime_tools.mekugi_source).toBe(selectedMekugi);
+  expect(state.runtime_tools.mekugi_source).toBe("snapshots/runtime/mekugi");
+  expect(state.runtime_tools.mekugi_in_image).toBe(true);
   expect(state.runtime_tools.mekugi_sha256).toBe(await sha256(selectedMekugi));
   expect(await Bun.file(join(run, "snapshots/current/home/ubuntu/.local/bin/mekugi")).exists()).toBe(false);
   await verifyPreparedInputs(run, state);
   await file(selectedMekugi, "changed binary\n");
-  await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("snapshotted Mekugi changed");
+  await verifyPreparedInputs(run, state);
+  const fake = await fakeOwnedDocker(0);
+  await preflightRun(run, fake.path);
+  expect(await readFile(resolve(run, state.runtime_tools.mekugi_source!), "utf8")).toBe(selectedContent);
+  await file(resolve(run, state.runtime_tools.mekugi_source!), "tampered snapshot\n");
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("snapshotted Mekugi changed");
 });
 
 test("runner records timeouts and stops its exact session containers", async () => {

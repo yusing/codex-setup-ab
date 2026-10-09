@@ -368,7 +368,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     ...(includeRuntimeSupplements ? [
       "untracked home files excluded except explicit runtime supplements; no host auth, session history or Mekugi state copied",
       "mise executable and installed tool store mounted read-only without copying; migration completion records and referenced pipx lock sidecars copied",
-      ...(mekugiBinary ? ["Mekugi launcher mounted read-only without host Mekugi state"] : []),
+      ...(mekugiBinary ? ["Mekugi launcher frozen separately for the container image without host Mekugi state"] : []),
       "only currently referenced remote-skill cache entries/content copied; stale generations and Git stores excluded",
       "existing go-modern-guidelines v0.1.1 provider copied without installation or update",
     ] : [
@@ -644,6 +644,14 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   }
   progress("verified independent base-only clones");
 
+  const frozenMekugi = mekugiBinary ? "snapshots/runtime/mekugi" : undefined;
+  if (frozenMekugi) {
+    await mkdir(join(runDir, "snapshots/runtime"), { recursive: true });
+    await copyFile(mekugiBinary!, join(runDir, frozenMekugi));
+    await chmod(join(runDir, frozenMekugi), 0o755);
+    if (await sha256(join(runDir, frozenMekugi)) !== mekugiSha256) throw new Error("Mekugi changed during preparation");
+  }
+
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
   const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate,
@@ -760,7 +768,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       current_setup_mise_sha256: miseSha256,
       current_setup_mise_source: miseBinary,
       codex_code_mode_host_sha256: codeModeHostSha256,
-      mekugi_source: buildProvenance ? "artifacts/mekugi-build/bin/mekugi" : mekugiBinary, mekugi_sha256: mekugiSha256,
+      mekugi_source: frozenMekugi, mekugi_sha256: mekugiSha256, mekugi_in_image: needsMekugi || undefined,
       grok_source: grokBinary, grok_sha256: grokSha256, grok_version: grokVersion,
       codex_code_mode_host_size: codeModeHostStat.size,
     },
