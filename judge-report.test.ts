@@ -496,6 +496,30 @@ test("a later covered semantic pass cannot hide earlier unassessed criteria", as
   expect(report.winner).toBe("none");
 });
 
+test("an executed failure decides the losing arm despite another pass's unassessed criteria", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.criteria = { path: "evaluator/criteria.json", sha256: "criteria",
+    contract: { schema: "codex-ab.criteria.v1", task_sha256: state.task.sha256,
+      criteria: [{ id: "behavior", description: "Required behavior" }], preparation: "true", existing_tests: "true", qualification: "not-run" } };
+  const passed = { criterion: "behavior", status: "pass" as const, basis: "executed" as const, reasoning: "Executed" };
+  state.results!.stock!.grade!.passed = false;
+  state.results!.stock!.grade!.semantic = {
+    "pass-1": [{ ...passed, status: "unassessed" }], "pass-1-existing": [passed],
+    "pass-2": [{ ...passed, status: "fail" }], "pass-2-existing": [passed],
+  };
+  state.results!.current!.grade!.passed = true;
+  state.results!.current!.grade!.semantic = { "pass-1": [passed], "pass-1-existing": [passed], "pass-2": [passed], "pass-2-existing": [passed] };
+  await writeState(run, state);
+  await fixtureJudge(run, "candidate-2", "candidate-1");
+  const result = await buildReport(run);
+  const report = JSON.parse(await readFile(result.jsonPath, "utf8"));
+  expect(report.checks_executed).toBe(true);
+  expect(report.measurement_complete).toBe(true);
+  expect(report.winner).toBe("current");
+  expect(await readFile(result.markdownPath, "utf8")).toContain("| Codex (minimal setup) | fail |");
+});
+
 test("conclusive source-only interface failures do not hide completed assessment", async () => {
   const { run } = await fixtureRun(false, true);
   const state = await readState(run);
