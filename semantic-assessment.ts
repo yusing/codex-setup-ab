@@ -168,7 +168,10 @@ export function validateCriterionAssessments(value: unknown, contract: CriteriaC
       const executed = evidence.candidates[id].find(check => check.criterion === criterion.id)!;
       if (!["pass", "fail", "unassessed"].includes(item.status) || !["executed", "source-only"].includes(item.basis)) throw new Error("invalid criterion status or basis");
       if (item.status === "pass" && (item.basis !== "executed" || executed.status !== "pass")) throw new Error("source-only or broken harness cannot establish a pass");
-      if (item.status === "fail" && item.basis === "executed" && executed.status !== "fail") throw new Error("harness error is not an executed candidate failure");
+      if (item.status === "fail" && item.basis === "executed" && executed.status !== "fail") {
+        return { ...executed, status: "unassessed", basis: "executed",
+          reasoning: `Executed failure is not conclusive: this criterion's recorded check was ${executed.status}, not fail. Judge observation: ${item.reasoning}` } as CriterionEvidence;
+      }
       if (item.status === "fail" && item.basis === "source-only" && !criterion.required_interface) {
         return { ...executed, status: "unassessed", basis: "source-only",
           reasoning: `Source-only failure is not conclusive without an explicitly required public interface. Judge observation: ${item.reasoning}` } as CriterionEvidence;

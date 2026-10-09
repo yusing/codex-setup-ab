@@ -148,6 +148,7 @@ The fixed task-derived criteria cannot be relaxed. Additional checks have alread
 Score correctness (50%), completeness (20%), maintainability (20%) and test quality (10%) from 0 to 5.
 Give each criterion pass, fail or unassessed, with executed or source-only basis and reasoning. A pass requires a relevant successful executed check, not just source inspection.
 A broken harness or assumed internal name is unassessed, not a candidate failure. Source-only failure is allowed only for a missing/broken explicitly required public interface, with concrete source evidence.
+An executed failure requires a failed recorded check for that same criterion. Do not transfer failures from other criteria to a criterion whose check passed; use unassessed when its coverage is inadequate.
 Use unassessed for inadequate tests or uncertain coverage even if a command exited zero.
 A candidate may win only if every criterion and its existing tests passed, with no critical issue. Otherwise winner must be none or the other eligible candidate; tie needs both eligible.
 Task: ${task}

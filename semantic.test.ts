@@ -96,3 +96,26 @@ test("a missing explicit public interface is a source-only defect, not a failed 
   assessments["candidate-1"]![0]!.status = "pass";
   expect(() => validateCriterionAssessments(assessments, explicit, evidence)).toThrow("cannot establish a pass");
 });
+
+test("executed failure labels need failed evidence for the same criterion", () => {
+  const fixed = { ...contract, criteria: [...contract.criteria, { id: "retention", description: "Retain all requirements" }] };
+  const failed = { criterion: "sum", status: "fail", basis: "executed", reasoning: "Assertion failed" } as const;
+  const passed = { criterion: "retention", status: "pass", basis: "executed", reasoning: "Lifecycle passed" } as const;
+  const broken = { ...passed, status: "unassessed", reasoning: "HARNESS_ERROR: wrong interpreter" } as const;
+  const evidence = {
+    candidates: { "candidate-1": [failed, passed], "candidate-2": [failed, broken] },
+    existing_tests: { "candidate-1": passed, "candidate-2": passed }, history: { "candidate-1": [], "candidate-2": [] },
+  };
+  const assessments = Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [
+    { criterion: "sum", status: "fail", basis: "executed", reasoning: "The sum check failed" },
+    { criterion: "retention", status: "fail", basis: "executed", reasoning: "The sum failure contradicts retained requirements" },
+  ]]));
+  const result = validateCriterionAssessments(assessments, fixed, evidence);
+  for (const id of ["candidate-1", "candidate-2"] as const) {
+    expect(result[id][0]!.status).toBe("fail");
+    expect(result[id][1]).toMatchObject({ status: "unassessed", basis: "executed" });
+    expect(result[id][1]!.reasoning).toContain("Judge observation: The sum failure contradicts retained requirements");
+  }
+  expect(evidence.candidates["candidate-1"][1]).toEqual(passed);
+  expect(evidence.candidates["candidate-2"][1]).toEqual(broken);
+});

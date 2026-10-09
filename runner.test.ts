@@ -1650,7 +1650,7 @@ test("finish recovers both timed-out harness stages without changing completed c
 }, 30_000);
 
 for (const judgeModel of ["gpt-6.1-sol", "gpt-6-sol"] as const) {
-for (const failure of ["validation", "timeout"] as const) {
+for (const failure of ["validation", "timeout", ...(judgeModel === "gpt-6.1-sol" ? ["executed-failure" as const] : [])] as const) {
 test(`${judgeModel} ${failure} judge recovery reuses saved pass 1 and runs only incomplete pass 2`, async () => {
   const run = await prepared();
   const auth = join(root, "recover-judge-auth.json");
@@ -1667,13 +1667,14 @@ test(`${judgeModel} ${failure} judge recovery reuses saved pass 1 and runs only 
   const saved = judge.attempts!.find(item => item.pass === 1 && item.stage === "assessment")!;
   const event = JSON.parse((await readFile(join(run, saved.stdout_path), "utf8")).trim());
   const response = JSON.parse(event.item.text);
-  response.criteria["candidate-2"][0] = { criterion: "fixture", status: "fail", basis: "source-only", reasoning: "Unverified source observation." };
+  response.criteria["candidate-2"][0] = { criterion: "fixture", status: "fail", basis: failure === "executed-failure" ? "executed" : "source-only", reasoning: "Unverified failure observation." };
   response.winner = "candidate-1";
   event.item.text = JSON.stringify(response);
   await writeFile(join(run, saved.stdout_path), `${JSON.stringify(event)}\n`);
   judge.status = "failed";
   judge.error = failure === "timeout" ? `Error: semantic judge timed out after ${state.timeout_seconds} seconds` :
-    "Error: source-only failure requires an explicitly required public interface";
+    failure === "executed-failure" ? "Error: harness error is not an executed candidate failure" :
+      "Error: source-only failure requires an explicitly required public interface";
   judge.failed_pass = 1;
   judge.passes = [];
   judge.winner = "none";

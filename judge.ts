@@ -142,6 +142,7 @@ export function summarizeCheck(check: CommandEvidence): Record<string, unknown> 
 const RECOVERABLE_JUDGE_ERRORS = new Set([
   "Error: source-only failure requires an explicitly required public interface",
   "Error: harness repair must not replace a successful check",
+  "Error: harness error is not an executed candidate failure",
 ]);
 
 export async function assertRecoverableJudge(runDir: string, state: RunState): Promise<void> {

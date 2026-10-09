@@ -140,7 +140,10 @@ Earlier evidence remains available to the final assessment; real behavior failur
 weakened into passes. Different names and test wiring are allowed; different required outcomes are
 not. Compilation or setup failures caused by assumed names, runtimes, or entry points remain
 **unassessed**, not automatic candidate failures. A missing explicitly required public interface
-can be a source-only defect. An unsupported source-only failure becomes unassessed instead of aborting judgment. Passing requires executed evidence plus the judge's assessment that the
+can be a source-only defect. An unsupported source-only failure becomes unassessed instead of aborting judgment.
+An executed failure must be supported by a failed check for that same criterion. If its check
+passed or could not assess the behavior, the failure label becomes unassessed and retains the
+judge's observation. Failures from other criteria remain separate evidence. Passing requires executed evidence plus the judge's assessment that the
 check actually covers the criterion. Both passes, disagreements, source, commands, outputs and
 repair attempts are retained.
 
@@ -165,7 +168,7 @@ Capacity errors retry automatically within the active judge command, with at mos
 Cancellation interrupts the delay and prevents another launch. Other failures, timeouts, invalid
 verdicts, and exhausted retries stop with the available evidence preserved. There is no automatic
 model substitution or conversational-agent fallback. Once the command exits, it cannot restart a
-judge attempt; historical failed attempts remain unchanged. The exception is an explicit `finish --recover-judge` for a judge that timed out, or failed on a validation rule the current runner handles without failing: an unsupported source-only failure, or a harness repair that resubmitted a successful check. Recovery requires completed existing tests in both passes, no recorded pass, no running attempt, and no partially executed evidence round. It archives the failed bundle, reuses completed existing-test evidence and evidence rounds, replays every completed judge stage's recorded response under current validation, and launches fresh attempts only for stages that never completed. Prior attempts and their usage remain recorded. Timeout recovery does not resume an interrupted model conversation, change the timeout, or restart either A/B agent; another timeout remains a failed finishing attempt.
+judge attempt; historical failed attempts remain unchanged. The exception is an explicit `finish --recover-judge` for a judge that timed out, or failed on a validation rule the current runner handles without failing: an unsupported source-only or executed failure, or a harness repair that resubmitted a successful check. Recovery requires completed existing tests in both passes, no recorded pass, no running attempt, and no partially executed evidence round. It archives the failed bundle, reuses completed existing-test evidence and evidence rounds, replays every completed judge stage's recorded response under current validation, and launches fresh attempts only for stages that never completed. Prior attempts and their usage remain recorded. Timeout recovery does not resume an interrupted model conversation, change the timeout, or restart either A/B agent; another timeout remains a failed finishing attempt.
 
 ## Report
 
