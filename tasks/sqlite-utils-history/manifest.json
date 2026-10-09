@@ -1,0 +1,63 @@
+{
+  "schema": "codex-ab.task-pack.v1",
+  "id": "sqlite-utils-history",
+  "source": {
+    "repository": "https://github.com/simonw/sqlite-utils.git",
+    "base_commit": "85b1be10c81d9dd3567e36faf8dd411e4a8789bd",
+    "forbidden_commit": "6bc1d33d583c54bd69fbdd2071117e2d38c354a1"
+  },
+  "prompt": "task.md",
+  "criteria": {
+    "schema": "codex-ab.criteria.v1",
+    "criteria": [
+      {
+        "id": "history-recording",
+        "description": "History for table T lives in _history_T with exactly seq, row_id, version, op, and data. seq is never reused, including after pruning; versions are per rowid and never restart. Inserts, value-changing updates, rowid-changing updates (delete then insert), deletes, default-setting replaces (delete then insert), and upserts record the specified ops; no-op updates record nothing. data holds every column, with pre-delete values for deletes and BLOBs as {\"$hex\": lowercase hex}. Views, virtual tables, WITHOUT ROWID tables, missing tables, and history tables are rejected clearly.",
+        "required_interface": "sqlite_utils.db.Table"
+      },
+      {
+        "id": "enable-disable",
+        "description": "enable_history() snapshots every existing row and is idempotent; re-enabling over a kept history table reconciles changed, missing, deleted, and re-created rows exactly as specified; disable_history() removes triggers, keeps the history table unless drop=True, and is a no-op without history; has_history reflects enabled triggers.",
+        "required_interface": "sqlite_utils.db.Table"
+      },
+      {
+        "id": "read-restore-prune",
+        "description": "history() returns entries in seq order with an optional rowid filter, decoded data dictionaries, and bytes for $hex values. restore() deletes for delete versions and otherwise updates or re-inserts the rowid, applying only current columns, keeping or defaulting missing ones, recording the change normally, and raising NotFoundError for unknown rowids or versions. prune_history(keep) keeps the latest keep versions per rowid, returns the deleted count, and rejects keep below 1.",
+        "required_interface": "sqlite_utils.db.Table"
+      },
+      {
+        "id": "schema-changes",
+        "description": "transform() and extract() recreate history triggers for the new schema in the same transaction without rewriting old entries; keep_table copies have no triggers; transform_sql() includes the trigger statements; add_column() extends later versions; rename_table() renames the history table, continues versions, and fails atomically when the target history name exists; drop() drops the history table; duplicate() copies have no history; cached counts and FTS triggers keep working alongside history."
+      },
+      {
+        "id": "cli",
+        "description": "enable-history, disable-history (--drop), history (--rowid, printing seq, row_id, version, op, and JSON data), restore, and prune-history (--keep, reporting deletions) mirror the API, take the database path first, support --load-extension, accept the sqlite-utils rows output options where they print rows, and report expected errors as nonzero Error: messages without tracebacks.",
+        "required_interface": "sqlite-utils CLI"
+      },
+      {
+        "id": "compatibility",
+        "description": "Tables without history behave exactly as before, including the SQL run by transform_sql(), rename_table(), and drop(); no runtime dependency is added; the pre-existing test suite passes and pre-existing tests are not edited or removed."
+      },
+      {
+        "id": "identifiers-atomicity",
+        "description": "Every generated statement quotes identifiers, so tables and columns with spaces, quotes, brackets, reserved words, and non-ASCII names work with every history operation and command; any failing history, restore, prune, or schema operation leaves data, schema, triggers, and history unchanged; history records no wall-clock time."
+      },
+      {
+        "id": "documentation",
+        "description": "docs/python-api.rst and docs/cli.rst document every API and CLI addition with runnable examples and cross-references in the existing style; cog-managed content is regenerated so cog --check README.md docs/*.rst passes; docs/changelog.rst has a top Unreleased section listing every user-visible change."
+      },
+      {
+        "id": "quality-and-tests",
+        "description": "The change is coherent with existing sqlite-utils structure and helpers, new public methods have type hints and :param docstrings, black --check ., flake8, and mypy sqlite_utils tests pass, and new test files cover the requirements through both the Python API and the CLI with meaningful assertions."
+      },
+      {
+        "id": "requirement-retention",
+        "description": "The project rules and history model hold consistently across every delivered part, including parts usually done late such as schema-change integration, CLI commands, documentation, changelog, and lint; code, tests, docs, and CLI agree with the fixed request; the work is not reduced to a partial or demonstration version; unfinished items are reported accurately."
+      }
+    ],
+    "preparation": "if test ! -x /opt/codex-ab-deps/python/bin/python; then python3 -m venv /opt/codex-ab-deps/python && /opt/codex-ab-deps/python/bin/pip install --no-cache-dir click==8.5.0 click-default-group==1.2.4 pluggy==1.6.0 python-dateutil==2.9.0.post0 sqlite-fts4==1.0.3 tabulate==0.10.0 pytest==9.1.1 hypothesis==6.168.1 cogapp==3.6.0 black==26.5.1 flake8==7.4.1 flake8-pyproject==1.2.4 mypy==2.3.1 types-python-dateutil==2.9.0.20260807; fi",
+    "existing_tests": "PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 /opt/codex-ab-deps/python/bin/python -m pytest -p no:cacheprovider -q $(git ls-tree -r --name-only 85b1be10c81d9dd3567e36faf8dd411e4a8789bd -- tests | grep -E '/test_[^/]*[.]py$')",
+    "evaluator_guidance": "Use /opt/codex-ab-deps/python/bin/python with PYTHONPATH=. from the candidate root, and run the CLI as /opt/codex-ab-deps/python/bin/python -m sqlite_utils. Dependencies are preinstalled; do not install packages. Candidate files are read-only: use -p no:cacheprovider and PYTHONDONTWRITEBYTECODE=1 for pytest, mypy --cache-dir=/dev/null, BLACK_CACHE_DIR in a temporary directory for black --check, and temporary database paths. Run the candidate's new tests, the full pre-existing suite, cog --check README.md docs/*.rst, black --check ., flake8, and mypy sqlite_utils tests, then write adaptive API and CLI checks. Inspect _history_T rows and sqlite_master directly. Cover the acceptance examples, no-op updates, rowid-changing updates, replace with default settings, BLOB encoding, eligibility errors, idempotent enable, reconcile after disable, restore of delete and missing-column versions, NotFoundError, prune seq monotonicity, transform with rename and drop and keep_table, transform_sql trigger statements, extract, add_column, rename_table including a taken target, drop, duplicate, coexistence with enable_counts and enable_fts triggers, odd identifiers with spaces, quotes, brackets, reserved words, and non-ASCII names, and atomic failures. For compatibility, compare transform_sql(), rename_table(), and drop() SQL on a table without history against the base commit, for example by tracing statements with Database(tracer=...) in a base checkout obtained from git; and check with git diff against the base commit that pre-existing tests were not edited or removed. For requirement-retention, check every project rule against every delivered part and identify omissions, contradictions, and accurately disclosed incompleteness separately. Use source inspection for structure and documentation without treating it as runtime proof. Expected evaluator wiring errors remain HARNESS_ERROR/unassessed. Do not use agent arm labels, journal or reset counts, runtime length, or launcher-specific workflow compliance to score product quality; judge blind. No solution or prewritten hidden checks are supplied.",
+    "qualification": "not-run"
+  }
+}

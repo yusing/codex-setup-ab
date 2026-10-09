@@ -37,6 +37,9 @@ function field(label, name, value = "", type = "text", hint = "", prefix = "f") 
   const id = prefix + "-" + name;
   return '<div class="field"><label for="' + id + '">' + esc(label) + '</label><input id="' + id + '" name="' + esc(name) + '" type="' + type + '" value="' + esc(value) + '" spellcheck="false">' + (hint ? '<p class="hint">' + esc(hint) + '</p>' : "") + "</div>";
 }
+function sourceHint(task) {
+  return task.repository ? "Local Git checkout. A missing checkout is cloned from " + task.repository + " during preparation." : "Local Git checkout.";
+}
 function select(label, name, options, value = "", hint = "", prefix = "f") {
   const id = prefix + "-" + name;
   return '<div class="field"><label for="' + id + '">' + esc(label) + '</label><select id="' + id + '" name="' + esc(name) + '">' + options.map(([key, text]) => '<option value="' + esc(key) + '"' + (key === value ? " selected" : "") + ">" + esc(text) + "</option>").join("") + "</select>" + (hint ? '<p class="hint">' + esc(hint) + '</p>' : "") + "</div>";
@@ -90,12 +93,12 @@ function drawLaunch() {
       + select("Comparison", "preset", config.comparisons.map((item) => [item.id, item.title]), defaults.preset)
       + select("Task", "task", config.tasks.map((item) => [item.id, item.title]), defaults.task)
       + '</div><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><section class="form-section" aria-labelledby="run-settings-title"><h2 id="run-settings-title">Run configuration</h2><div class="grid">'
-      + '<div class="source-field">' + field("Source checkout", "source", task.source, "text", "Local Git checkout. The default NVM source can be cloned during preparation.") + '</div>'
+      + '<div class="source-field">' + field("Source checkout", "source", task.source, "text", sourceHint(task)) + '</div>'
       + select("Model", "model", [["gpt-6-astra", "GPT-6 Astra"], ["gpt-6.1-sol", "GPT-6.1 Sol"]], defaults.model)
       + select("Reasoning effort", "reasoning-effort", [["", "Task default"], ...["low", "medium", "high", "xhigh"].map((value) => [value, words(value)])], "", "NVM and portable packs: medium. Long-horizon tasks: xhigh. Grok: high.")
       + field("Fresh pair count", "count", "1", "number", "One is a single pair. Two or more create a trial set.")
       + select("Trial arm order", "order", [["concurrent", "Concurrent"], ["alternating", "Alternating first arm"]], "concurrent")
-      + '<div id="compaction-limit-field">' + field("Shared compaction token limit", "auto-compact-limit", "", "number", "Required for the journal comparison.") + "</div></div></section>"
+      + '<div id="compaction-limit-field">' + field("Shared compaction token limit", "auto-compact-limit", task.compactLimit ?? "", "number", "Both arms compact at this context size. Required for the journal comparison; optional for minimal Codex versus Mekugi, where a blank field uses the task default.") + "</div></div></section>"
       + '<details class="advanced"><summary>Runtime and resource settings</summary><div class="grid">' + sharedFields()
       + field("Codex authentication file", "auth-file", defaults["auth-file"], "text", "Local path only. Never paste credential contents.")
       + field("Grok authentication file", "grok-auth-file", defaults["grok-auth-file"])
@@ -139,12 +142,11 @@ function drawLaunch() {
     $("f-task").addEventListener("change", () => {
       const task = config.tasks.find((item) => item.id === $("f-task").value);
       $("f-source").value = task.source;
-      $("f-source").closest(".field").querySelector(".hint").textContent = task.id === "booking-ledger"
-        ? "Leave blank to create a clean synthetic Git seed during preparation, or reuse a Booking Ledger seed checkout."
-        : "Local Git checkout. The default NVM source can be cloned during preparation.";
-      if (task.id === "booking-ledger") {
-        $("f-preset").value = "stock-mekugi";
-        $("f-journal-compaction").value = "auto";
+      $("f-source").closest(".field").querySelector(".hint").textContent = sourceHint(task);
+      $("f-auto-compact-limit").value = task.compactLimit ?? "";
+      if (task.preset) {
+        $("f-preset").value = task.preset;
+        $("f-journal-compaction").value = task.journalCompaction ?? "";
       }
       updateCombination();
     });
@@ -168,8 +170,9 @@ function updateCombination() {
   setEnabled("f-model", !grok);
   setEnabled("f-current-launcher", comparison.id === "stock-current");
   setEnabled("f-journal-compaction", mekugi && comparison.id !== "journal-compaction");
-  setEnabled("f-auto-compact-limit", comparison.id === "journal-compaction");
-  $("compaction-limit-field").hidden = comparison.id !== "journal-compaction";
+  const sharedLimit = ["journal-compaction", "stock-mekugi"].includes(comparison.id);
+  setEnabled("f-auto-compact-limit", sharedLimit);
+  $("compaction-limit-field").hidden = !sharedLimit;
   const build = $("f-mekugi-build").value.trim();
   for (const id of ["f-mekugi-source", "f-mekugi-bin"]) setEnabled(id, mekugi && !build);
   for (const id of ["f-mekugi-build", "f-mekugi-flags"]) setEnabled(id, mekugi);

@@ -342,9 +342,16 @@ test("journal-compaction rejects invalid limits, conflicting flags and protected
     await expect(prepare({ ...options, mekugiFlags })).rejects.toThrow();
   }
   await expect(prepare({ ...options, protectMekugi: true })).rejects.toThrow();
-  for (const comparison of ["stock-current", "same-setup", "stock-mekugi"] as const) {
-    await expect(prepare({ ...options, comparison })).rejects.toThrow();
+  for (const comparison of ["stock-current", "same-setup"] as const) {
+    await expect(prepare({ ...options, comparison })).rejects.toThrow("requires journal-compaction or stock-mekugi");
   }
+});
+
+test("stock-mekugi records an optional shared compaction limit for both arms", async () => {
+  const options = { ...journalCompactionOptions(), comparison: "stock-mekugi" as const };
+  expect((await readState(await prepare(options))).auto_compact_limit).toBe(4096);
+  expect((await readState(await prepare({ ...options, autoCompactLimit: undefined }))).auto_compact_limit).toBeUndefined();
+  await expect(prepare({ ...options, autoCompactLimit: 0 })).rejects.toThrow("must be a positive integer");
 });
 
 test("duplicate-output rejects an unsupported enabled treatment before launching either arm", async () => {

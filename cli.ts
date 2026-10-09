@@ -61,7 +61,7 @@ Prepare options:
   --current-home DIR    configuration Git repository root (default current home)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
   --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, journal-compaction, or duplicate-output
-  --auto-compact-limit N Required shared positive token limit for journal-compaction
+  --auto-compact-limit N shared positive token limit for both arms; required for journal-compaction, optional for stock-mekugi
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
   --mekugi-build DIR    captured build bundle; selects its Mekugi executable and source

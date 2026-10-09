@@ -92,22 +92,25 @@ test("feature comparisons, repeat preparation, and custom task contracts use the
   expect(custom.prepare.taskPath).toBe("/prompt.md");
 });
 
-test("Booking Ledger uses its standalone seed, controls and documented runtime defaults", () => {
-  const options = launchConfiguration({ task: "booking-ledger", "prepare-only": true });
-  expect(options.prepare.source).toBe("");
+test("sqlite-utils history uses its pinned pack, cloned source and documented runtime defaults", () => {
+  const options = launchConfiguration({ task: "sqlite-utils-history", "prepare-only": true });
+  expect(options.prepare.source).toEndWith("codex-ab-sqlite-utils-source");
   expect(options.prepare.comparison).toBe("stock-mekugi");
   expect(options.prepare.mekugiFlags).toEqual(["--mode=mekugi", "--journal-compaction=auto"]);
-  expect(options.prepare.taskPath).toEndWith("tasks/booking-ledger/task.md");
-  expect(options.prepare.criteriaPath).toEndWith("tasks/booking-ledger/criteria.json");
-  expect(options.prepare.baseCommit).toBe("benchmark-base");
-  expect(options.prepare.forbiddenCommit).toBe("benchmark-excluded");
+  expect(options.prepare.taskPackPath).toEndWith("tasks/sqlite-utils-history/manifest.json");
+  expect(options.prepare.criteriaPath).toBeUndefined();
   expect(options.prepare.reasoningEffort).toBe("xhigh");
   expect(options.prepare.timeoutSeconds).toBe(3300);
-  const overridden = launchConfiguration({ task: "booking-ledger", source: "/existing-seed", preset: "stock-current", "reasoning-effort": "high", timeout: "1000" });
-  expect(overridden.prepare.source).toBe("/existing-seed");
+  expect(options.prepare.autoCompactLimit).toBe(200000);
+  expect(launchConfiguration({ task: "sqlite-utils-history", "auto-compact-limit": "60000", "prepare-only": true }).prepare.autoCompactLimit).toBe(60000);
+  const overridden = launchConfiguration({ task: "sqlite-utils-history", source: "/existing-checkout", preset: "stock-current", "reasoning-effort": "high", timeout: "1000" });
+  expect(overridden.prepare.source).toBe("/existing-checkout");
   expect(overridden.prepare.comparison).toBe("stock-current");
   expect(overridden.prepare.reasoningEffort).toBe("high");
   expect(overridden.prepare.timeoutSeconds).toBe(1000);
+  expect(overridden.prepare.autoCompactLimit).toBeUndefined();
+  expect(() => launchConfiguration({ task: "sqlite-utils-history", preset: "stock-current", "auto-compact-limit": "200000" })).toThrow("applies only to journal-compaction or stock-mekugi");
+  expect(() => launchConfiguration({ task: "sqlite-utils-history", source: " " })).toThrow("Source checkout is required");
 });
 
 test("incompatible comparisons and malformed parameters reject before external work", () => {

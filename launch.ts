@@ -22,10 +22,11 @@ export const COMPARISONS = [
 export function taskCatalog() {
   const userRoot = homedir();
   return [
-    { id: "nvm-download-no-eval", title: "NVM download arguments", source: process.env.CODEX_AB_SOURCE_DIR ?? join(tmpdir(), "codex-ab-nvm-source"), timeout: 1800, effort: "medium", pack: "tasks/nvm-download-no-eval/manifest.json" },
+    { id: "nvm-download-no-eval", title: "NVM download arguments", source: process.env.CODEX_AB_SOURCE_DIR ?? join(tmpdir(), "codex-ab-nvm-source"), timeout: 1800, effort: "medium", pack: "tasks/nvm-download-no-eval/manifest.json", repository: "https://github.com/nvm-sh/nvm.git" },
     { id: "skills-mgr-agent-cli", title: "Skills manager agent CLI", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-agent-cli/manifest.json" },
     { id: "session-retention", title: "Mekugi session retention", source: process.env.CODEX_AB_MEKUGI_SOURCE ?? join(userRoot, "projects/mekugi"), timeout: 3600, effort: "xhigh", pack: "" },
-    { id: "booking-ledger", title: "Booking Ledger new project", source: "", timeout: 3300, effort: "xhigh", pack: "" },
+    { id: "sqlite-utils-history", title: "sqlite-utils row history", source: process.env.CODEX_AB_SQLITE_UTILS_SOURCE ?? join(tmpdir(), "codex-ab-sqlite-utils-source"), timeout: 3300, effort: "xhigh", pack: "tasks/sqlite-utils-history/manifest.json",
+      repository: "https://github.com/simonw/sqlite-utils.git", compactLimit: 200000, preset: "stock-mekugi", journalCompaction: "auto" },
     ...["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding"].map(id => ({ id, title: id === "gin-context-copy" ? "Gin context copy" : id === "flask-ipv6-server-name" ? "Flask IPv6 server name" : "Express transfer encoding", source: join(userRoot, "projects", id.split("-")[0]!), timeout: 1800, effort: "medium", pack: `tasks/${id}/manifest.json` })),
     { id: "custom", title: "Custom task or portable pack", source: "", timeout: 1800, effort: "medium", pack: "" },
   ];
@@ -49,9 +50,10 @@ function positive(value: string, label: string): number {
   return Number(value);
 }
 export function launchConfiguration(input: CliOptions): { prepare: PrepareOptions; count: number; order: "concurrent" | "alternating"; docker: string; auth: string; grokAuth: string; prepareOnly: boolean } {
-  const bookingDefaults: CliOptions = input.task === "booking-ledger" && !input.preset && !input.comparison
-    ? { preset: "stock-mekugi", "journal-compaction": "auto" } : {};
-  const o: CliOptions = { ...launchDefaults(), ...bookingDefaults, ...input };
+  const defaults = taskCatalog().find(task => task.id === input.task);
+  const taskDefaults: CliOptions = defaults?.preset && !input.preset && !input.comparison
+    ? { preset: defaults.preset, "journal-compaction": defaults.journalCompaction } : {};
+  const o: CliOptions = { ...launchDefaults(), ...taskDefaults, ...input };
   const task = taskCatalog().find(task => task.id === o.task);
   if (!task) throw new Error("Choose a supported task");
   const preset = stringOption(o, "comparison", stringOption(o, "preset"));
@@ -73,16 +75,18 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (comparison !== "codex-mekugi-grok" && !["gpt-6-astra", "gpt-6.1-sol"].includes(model)) throw new Error("Model must be gpt-6-astra or gpt-6.1-sol");
   const effort = stringOption(o, "reasoning-effort", comparison === "codex-mekugi-grok" ? "high" : task.effort);
   if (!["low", "medium", "high", "xhigh"].includes(effort)) throw new Error("Choose low, medium, high, or xhigh reasoning");
-  const limit = o["auto-compact-limit"] === undefined ? undefined : positive(stringOption(o, "auto-compact-limit"), "Compaction token limit");
-  if ((comparison === "journal-compaction") !== (limit !== undefined)) throw new Error("Only journal-compaction requires a positive compaction token limit");
+  // A task's shared limit makes both stock-mekugi arms compact at the same context size, so Mekugi's journal reset is exercised.
+  const limitText = o["auto-compact-limit"] ?? (comparison === "stock-mekugi" && task.compactLimit ? String(task.compactLimit) : undefined);
+  const limit = limitText === undefined ? undefined : positive(String(limitText), "Compaction token limit");
+  if (comparison === "journal-compaction" && limit === undefined) throw new Error("journal-compaction requires a positive compaction token limit");
+  if (limit !== undefined && !["journal-compaction", "stock-mekugi"].includes(comparison)) throw new Error("A compaction token limit applies only to journal-compaction or stock-mekugi");
   const mekugi = comparison !== "stock-current" || o["current-launcher"] === "mekugi";
   if (["stock-mekugi", "codex-mekugi-grok"].includes(comparison) && o["review-treatment"]) throw new Error("This comparison does not accept a reviewer overlay");
   if (o["protect-mekugi"] && (!mekugi || ["stock-mekugi", "codex-mekugi-grok", "journal-compaction", "duplicate-output"].includes(comparison))) throw new Error("Protected runtime requires current-setup Mekugi or same-setup");
   if (["journal-compaction", "duplicate-output"].includes(comparison) && flags.some(flag => flag.startsWith(`--${comparison}=`) || flag === "--mode=passthrough" || flag.startsWith("--grok"))) throw new Error("The paired feature comparison owns its treatment flag and requires Mekugi Codex routing");
   if (o["mekugi-build"] && (input["mekugi-bin"] || input["mekugi-source"])) throw new Error("A captured Mekugi build owns its source and executable");
   const source = stringOption(o, "source", task.source);
-  const booking = task.id === "booking-ledger";
-  if (!source.trim() && !booking) throw new Error("Source checkout is required");
+  if (!source.trim()) throw new Error("Source checkout is required");
   const custom = task.id === "custom";
   const pack = stringOption(o, "task-pack", task.pack);
   if (custom && !pack && ["base", "forbidden", "task-file", "criteria"].some(key => !stringOption(o, key))) throw new Error("A custom task needs a pack, or base, forbidden commit, task file, and criteria file");
@@ -97,10 +101,10 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
     prepare: {
       comparison: comparison as PrepareOptions["comparison"], model: model as PrepareOptions["model"], reasoningEffort: effort as PrepareOptions["reasoningEffort"],
       source: source.trim() ? resolve(source) : "", profile: profile as PrepareOptions["profile"],
-      baseCommit: stringOption(o, "base", booking ? "benchmark-base" : "302ee2d6691b406f30fcbea38459c6ddc16f6935"),
-      forbiddenCommit: stringOption(o, "forbidden", booking ? "benchmark-excluded" : "d49862486236d8a507bc0986aa1d543481f8fb61"),
-      taskPath: resolve(stringOption(o, "task-file", booking ? "tasks/booking-ledger/task.md" : "tasks/session-retention/task.md")),
-      criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria", booking ? "tasks/booking-ledger/criteria.json" : "tasks/session-retention/criteria.json")),
+      baseCommit: stringOption(o, "base", "302ee2d6691b406f30fcbea38459c6ddc16f6935"),
+      forbiddenCommit: stringOption(o, "forbidden", "d49862486236d8a507bc0986aa1d543481f8fb61"),
+      taskPath: resolve(stringOption(o, "task-file", "tasks/session-retention/task.md")),
+      criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria", "tasks/session-retention/criteria.json")),
       taskPackPath: pack ? resolve(pack) : undefined,
       currentHome: resolve(stringOption(o, "current-home")), image: stringOption(o, "image"), cpus, memory,
       timeoutSeconds: positive(stringOption(o, "timeout", String(task.timeout)), "Timeout"), autoCompactLimit: limit,
@@ -156,23 +160,12 @@ export async function runLaunch(o: CliOptions): Promise<string> {
   process.on("SIGINT", cancel); process.on("SIGTERM", cancel);
   const progress = (message: string) => process.stderr.write(`[launch] ${message}\n`);
   try {
-    if (o.task === "booking-ledger") {
-      if (!config.prepare.source) {
-        progress("Creating the clean Booking Ledger seed");
-        config.prepare.source = (await checked(["bash", resolve("tasks/booking-ledger/seed.sh")], { signal: controller.signal })).stdout.trim();
-        progress(`Synthetic source retained at ${config.prepare.source}`);
-      }
-      for (const key of ["baseCommit", "forbiddenCommit"] as const) {
-        config.prepare[key] = (await checked(["git", "-C", config.prepare.source, "rev-parse", "--verify", `${config.prepare[key]}^{commit}`], { signal: controller.signal })).stdout.trim();
-      }
-    }
-    if (o.task === undefined || o.task === "nvm-download-no-eval") {
-      if (!await Bun.file(join(config.prepare.source, ".git/HEAD")).exists()) {
-        let exists = true;
-        try { await stat(config.prepare.source); } catch { exists = false; }
-        if (exists) await checked(["git", "-C", config.prepare.source, "rev-parse", "--git-dir"], { signal: controller.signal });
-        else { progress(`Cloning NVM source to ${config.prepare.source}`); await checked(["git", "clone", "https://github.com/nvm-sh/nvm.git", config.prepare.source], { signal: controller.signal }); }
-      }
+    const task = taskCatalog().find(item => item.id === (o.task ?? launchDefaults().task));
+    if (task?.repository && !await Bun.file(join(config.prepare.source, ".git/HEAD")).exists()) {
+      let exists = true;
+      try { await stat(config.prepare.source); } catch { exists = false; }
+      if (exists) await checked(["git", "-C", config.prepare.source, "rev-parse", "--git-dir"], { signal: controller.signal });
+      else { progress(`Cloning ${task.title} source to ${config.prepare.source}`); await checked(["git", "clone", task.repository, config.prepare.source], { signal: controller.signal }); }
     }
     progress("Checking container image");
     await ensureLaunchImage({ image: config.prepare.image, codexBinary: config.prepare.codexBinary!, docker: config.docker, signal: controller.signal }, progress);

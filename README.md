@@ -50,9 +50,10 @@ Choose a pinned task and comparison, set the source checkout, model, reasoning e
 and optional Mekugi settings, then **Check inputs**. The workbench explains incompatible
 combinations and missing local inputs before starting work. Advanced settings expose
 the existing preparation options, including custom task packs and task/criteria files.
-Booking Ledger is available in the task selector. Leave its source checkout blank
-to create a clean synthetic seed during preparation. Its defaults use minimal Codex
-versus minimal Mekugi, auto journal compaction, xhigh reasoning, and a 55-minute limit.
+Tasks with a pinned upstream repository, such as NVM and sqlite-utils row history,
+clone a missing source checkout during preparation. The sqlite-utils task defaults to
+minimal Codex versus minimal Mekugi, auto journal compaction, a shared 200,000-token
+auto-compact limit, xhigh reasoning, and a 55-minute limit.
 Preparation only is off by default; explicitly consent to paid inference before
 starting a run, or select preparation only for a model-free check. Enter optional
 Mekugi flags as space-separated text, for example `--mode=mekugi --duplicate-output=false`.
@@ -103,7 +104,7 @@ available to agents. See the [CLI guide](doc/cli.md) and [contract](doc/contract
 - [Specification](doc/spec.md): comparison scope, treatments, and benchmark intent.
 - [Contract](doc/contract.md): isolation, criteria schema, judging, accounting, and failure behavior.
 - [CLI guide](doc/cli.md): manual builds, repeated comparisons, task packs, suites, and control reuse.
-- [Booking Ledger](tasks/booking-ledger/README.md): a synthetic Python/SQLite quality and requirement-retention task.
+- [sqlite-utils row history](tasks/sqlite-utils-history/README.md): a long-session brownfield quality and requirement-retention task.
 
 Started runs and trial sets do not restart or resume. Cancellation preserves available
 evidence; prepare a fresh pair for another attempt. Limited judge recovery is documented

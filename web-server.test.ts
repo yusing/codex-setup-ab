@@ -433,38 +433,21 @@ test("web launch translates space-separated Mekugi flags to CLI arguments", asyn
   } });
 });
 
-test("Booking Ledger checks and launch use its synthetic seed without paid inference", async () => {
+test("a pinned-repository task check announces the clone without starting work", async () => {
   const codex = join(root, "codex");
   for (const path of [codex, join(root, "codex-code-mode-host")]) {
     await file(path, "#!/bin/sh\nexit 0\n");
     await chmod(path, 0o755);
   }
-  const options = { task: "booking-ledger", "prepare-only": true, "current-home": root, "codex-bin": codex, "docker-bin": "/bin/false", "mekugi-source": root, "mekugi-bin": codex };
+  const source = join(root, "missing sqlite-utils checkout");
+  const options = { task: "sqlite-utils-history", source, "prepare-only": true, "current-home": root, "codex-bin": codex, "docker-bin": "/bin/false", "mekugi-source": root, "mekugi-bin": codex };
   const catalog = (await (await fetch(origin + "/api/config")).json()).tasks;
-  expect(catalog.find((task: { id: string }) => task.id === "booking-ledger")).toBeDefined();
+  expect(catalog.find((task: { id: string }) => task.id === "sqlite-utils-history")).toMatchObject({ repository: "https://github.com/simonw/sqlite-utils.git", preset: "stock-mekugi", journalCompaction: "auto", compactLimit: 200000 });
   const checked = await post("/api/check", { command: "launch", options });
   expect(checked.status).toBe(200);
-  expect((await checked.json()).warnings.join(" ")).toContain("seed checkout");
+  expect((await checked.json()).warnings).toContain(`The sqlite-utils row history checkout will be cloned to ${source} from https://github.com/simonw/sqlite-utils.git`);
   expect((await (await fetch(origin + "/api/entries")).json()).entries).toEqual([]);
-  const started = await post("/api/start", { command: "launch", options });
-  expect(started.status).toBe(202);
-  const entry = await started.json();
-  let detail;
-  const deadline = Date.now() + 5000;
-  do {
-    detail = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
-    if (detail.entry.job.status !== "running") break;
-    await Bun.sleep(20);
-  } while (Date.now() < deadline);
-  const source = detail.entry.job.log.match(/Synthetic source retained at (\/tmp\/codex-ab-booking-ledger\.[A-Za-z0-9]+)/)?.[1];
-  try {
-    expect(source).toBeDefined();
-    expect(detail.entry.job.status).toBe("failed");
-    expect(detail.entry.job.log).toContain("Cannot inspect Docker image");
-    expect((await post("/api/check", { command: "launch", options: { ...options, source } })).status).toBe(200);
-  } finally {
-    if (source) await rm(source, { recursive: true, force: true });
-  }
+  expect((await post("/api/check", { command: "launch", options: { ...options, task: "session-retention" } })).status).toBe(400);
 });
 
 test("a model-free CLI operation completes, persists its result, and releases the active slot", async () => {

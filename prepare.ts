@@ -117,7 +117,10 @@ function grokStockConfig(reasoningEffort: ReasoningEffort): string {
 function validatePairedMekugiComparison(comparison: RunState["comparison"], limit: number | undefined, flags: string[], protectedRuntime: boolean): void {
   if (comparison === "journal-compaction") {
     if (limit === undefined || !Number.isSafeInteger(limit) || limit <= 0) throw new Error("journal-compaction requires a positive integer --auto-compact-limit");
-  } else if (limit !== undefined) throw new Error("--auto-compact-limit requires journal-compaction");
+  } else if (limit !== undefined) {
+    if (comparison !== "stock-mekugi") throw new Error("--auto-compact-limit requires journal-compaction or stock-mekugi");
+    if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error("--auto-compact-limit must be a positive integer");
+  }
   if (!isPairedMekugiComparison(comparison)) return;
   if (protectedRuntime) throw new Error(`${comparison} requires the same ordinary container boundary in both arms`);
   if (flags.some(flag => flag.startsWith(`--${comparison}=`) || flag === "--mode=passthrough" || flag === "--grok" || flag.startsWith("--grok="))) {

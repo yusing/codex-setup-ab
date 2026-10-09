@@ -63,7 +63,7 @@ image. The run performs model-free preflight before inference. The agent equival
 Available pinned tasks are `nvm-download-no-eval`, `gin-context-copy`,
 `flask-ipv6-server-name`, `express-transfer-encoding`,
 [skills-mgr-agent-cli](../tasks/skills-mgr-agent-cli/README.md),
-[booking-ledger](../tasks/booking-ledger/README.md), and
+[sqlite-utils-history](../tasks/sqlite-utils-history/README.md), and
 [session-retention](../tasks/session-retention/README.md). The `custom` choice accepts
 a portable pack or explicit task inputs. The Web UI and CLI share the
 [launch catalog](../launch.ts); omitting `--task` keeps the NVM default.
@@ -93,6 +93,8 @@ Mekugi's default; direct-Codex comparisons reject it. The dedicated
 [journal compaction comparison](spec.md#journal-compaction-comparison) is available in the
 Web UI and through agent-directed `launch --preset journal-compaction` with
 `--auto-compact-limit N`; that comparison owns both arms' compaction modes.
+`stock-mekugi` also accepts an optional shared `--auto-compact-limit N`, applied
+to both arms; other comparisons reject it.
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. Both arms receive the same minimal generated Codex configuration and the existing mise runtime and configuration, including referenced lock sidecars and migration completion records. Both access the same read-only host installation store at its original absolute path. A launches direct Codex through mise; B additionally receives the selected Mekugi executable and launches `mekugi codex` through mise. Neither arm receives current-home agent instructions, skills, hooks, roles, or a reviewer overlay. Both use the default service tier.
 
@@ -204,13 +206,17 @@ falls back to the Codex rollout and says so in its warnings. The exports are oth
 within-arm diagnostics, not measured savings against A. Consistency checks alone do not protect
 exports from executor writes; the optional [protected runtime](contract.md#protected-mekugi-runtime) supplies that boundary.
 
-## New-project quality and requirement-retention task
+## Long-session quality and requirement-retention task
 
-The [Booking Ledger benchmark](../tasks/booking-ledger/README.md) asks candidates to
-build a complete Python/SQLite CLI from a clean synthetic seed. It focuses on
-quality, correctness, completeness, and requirement drift across persistent state,
-interval capacity, atomic changes, imports, and reports. Its model-free preparation
-recipe compares stock Codex with Mekugi journal context reset enabled and caps each
-agent at 55 minutes. Reset occurrence and project duration remain unmeasured;
-post-reset claims require observed root reset and continued work. Evaluation time
-is separate. This task uses standalone criteria and the generic task profile.
+The [sqlite-utils row history benchmark](../tasks/sqlite-utils-history/README.md)
+asks candidates to add trigger-based row history to a pinned upstream sqlite-utils
+checkout, across its Python API, CLI, schema-change operations, documentation,
+changelog, and tests. It focuses on quality, correctness, completeness, and
+requirement drift: fixed project rules must still hold in work done late in a long
+session. The change requires reading large existing modules and documentation, so
+context grows from observation rather than from generated code. Its launch defaults
+compare stock Codex with Mekugi journal context reset enabled, give both agents a
+shared 200,000-token auto-compact limit, and cap each agent at 55 minutes. Reset
+occurrence and project duration remain unmeasured; post-reset claims require observed
+root reset and continued work. Evaluation time is separate. This task uses a
+portable task pack and the generic task profile.
