@@ -9,12 +9,10 @@ import { MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import type { RunState } from "./types";
 
 for (const flag of [
-  "--mode=mekugi", "--mode=passthrough",
-  "--journal-compaction=auto", "--journal-compaction=slice", "--journal-compaction=off",
-  "--post-compact-recovery=true", "--post-compact-recovery=false",
-  "--timeout=30s", "--stream-idle-timeout=2m",
-  "--debug", "--debug=true", "--grok", "--grok=true", "--grok=false",
+  "--timeout=30s", "--stream-idle-timeout=2m", "--debug", "--debug=true",
   "--ansi-faint=auto", "--ansi-faint=on", "--ansi-faint=off",
+  ...["shell-guard", "deduplicate-output", "child-reply-summary"].flatMap(name =>
+    [`--${name}`, `--${name}=true`, `--${name}=false`]),
 ]) {
   test(`Mekugi accepts ${flag}`, () => {
     expect(validateMekugiFlags([flag])).toEqual([flag]);
@@ -22,18 +20,21 @@ for (const flag of [
 }
 
 test("Mekugi accepts distinct current flags together and an empty flag list", () => {
-  const flags = ["--mode=mekugi", "--journal-compaction=slice", "--post-compact-recovery=false",
-    "--timeout=30s", "--stream-idle-timeout=2m", "--debug", "--grok=false", "--ansi-faint=off"];
+  const flags = ["--shell-guard=false", "--deduplicate-output=false", "--child-reply-summary=true",
+    "--timeout=30s", "--stream-idle-timeout=2m", "--debug", "--ansi-faint=off"];
   expect(validateMekugiFlags(flags)).toEqual(flags);
   expect(validateMekugiFlags([])).toEqual([]);
 });
 
 for (const flag of [
   "--mentor-handoff", "--mentor-handoff=true", "--main-mentor-handoff=false", "--explore-filter=true",
+  "--mode=mekugi", "--mode=passthrough", "--journal-compaction=auto", "--journal-compaction=slice",
+  "--journal-compaction=off", "--post-compact-recovery=true", "--post-compact-recovery=false",
+  "--duplicate-output=true", "--grok", "--grok=true", "--grok=false",
   "--capture-output=/tmp/capture.jsonl", "--grok-auth-file=/tmp/auth.json",
-  "--mode=invalid", "--journal-compaction=true", "--post-compact-recovery=auto",
-  "--post-compact-recovery", "--debug=false", "--grok=invalid", "--ansi-faint=true", "--ansi-faint",
-  "--timeout", "--stream-idle-timeout", "--unknown=true", "--debug=true\n", "--debug=true\0",
+  "--shell-guard=auto", "--deduplicate-output=on", "--child-reply-summary=off",
+  "--debug=false", "--ansi-faint=true", "--ansi-faint", "--timeout", "--stream-idle-timeout",
+  "--unknown=true", "--debug=true\n", "--debug=true\0",
 ]) {
   test(`Mekugi rejects unsupported or invalid ${JSON.stringify(flag)}`, () => {
     expect(() => validateMekugiFlags([flag])).toThrow();
@@ -41,14 +42,12 @@ for (const flag of [
 }
 
 for (const flags of [
-  ["--mode=mekugi", "--mode=passthrough"],
-  ["--journal-compaction=auto", "--journal-compaction=off"],
-  ["--post-compact-recovery=true", "--post-compact-recovery=false"],
+  ["--shell-guard", "--shell-guard=false"],
+  ["--deduplicate-output=true", "--deduplicate-output=false"],
+  ["--child-reply-summary", "--child-reply-summary=true"],
   ["--timeout=30s", "--timeout=60s"],
   ["--stream-idle-timeout=2m", "--stream-idle-timeout=3m"],
-  ["--debug", "--debug=true"], ["--grok", "--grok=false"],
-  ["--ansi-faint=on", "--ansi-faint=off"],
-  ["--mode=passthrough", "--journal-compaction=auto"],
+  ["--debug", "--debug=true"], ["--ansi-faint=on", "--ansi-faint=off"],
 ]) {
   test(`Mekugi rejects conflicting flags ${flags.join(" ")}`, () => {
     expect(() => validateMekugiFlags(flags)).toThrow();
@@ -144,7 +143,7 @@ for (const modified of ["validator", "reader"] as const) {
       await writeFile(join(root, "metrics.json"), JSON.stringify({ exchanges: [] }));
       await writeFile(join(root, "capture.jsonl"), "");
       const state = {
-        mekugi_flags: ["--mode=mekugi"],
+        mekugi_flags: [],
         mekugi_exports_by_arm: { current: {
           validator: { path: "analyze_capture.py", sha256: await sha256(validator) },
           reader: { path: "benchmark_jsonl.py", sha256: await sha256(reader) },

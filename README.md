@@ -15,7 +15,8 @@ general conclusions.
 - Access to the task's source repository and pinned commit.
 - A standalone Codex binary with its matching `codex-code-mode-host` companion.
 - A mode-0600 Codex `auth.json` for inference.
-- Python 3 and a Mekugi executable for comparisons using Mekugi export validation.
+- Python 3 and the Mekugi executable pair (`mekugi` and `mekugi-exec` in one directory)
+  for comparisons using Mekugi export validation.
 
 Pair preparation checks and builds the selected image automatically. For manual
 build commands and runtime details, see the [CLI build guide](doc/cli.md#prerequisites-and-build).
@@ -52,11 +53,11 @@ combinations and missing local inputs before starting work. Advanced settings ex
 the existing preparation options, including custom task packs and task/criteria files.
 Tasks with a pinned upstream repository, such as NVM and sqlite-utils multi-commit upgrade,
 clone a missing source checkout during preparation. The sqlite-utils task defaults to
-minimal Codex versus minimal Mekugi, auto journal compaction, a shared 200,000-token
+minimal Codex versus minimal Mekugi, a shared 200,000-token
 auto-compact limit, xhigh reasoning, and a 55-minute limit.
 Preparation only is off by default; explicitly consent to paid inference before
-starting a run, or select preparation only for a model-free check. Enter optional
-Mekugi flags as space-separated text, for example `--mode=mekugi --duplicate-output=false`.
+starting a run, or select preparation only for a model-free check. Use the Mekugi
+behavior checkboxes and faint-text/timeout controls to configure the prepared run.
 A repeat count of two or more prepares fresh trial pairs.
 The suite workflow accepts a suite manifest and source-mapping file.
 

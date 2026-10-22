@@ -91,6 +91,9 @@ main { padding: 40px clamp(24px, 4vw, 64px) 72px; min-width: 0; }
 .comparison-preview h2 { font-size: 20px; margin: 0 0 8px; text-wrap: balance; }
 .comparison-preview p { font-size: 14px; color: var(--muted); }
 .description { margin-bottom: 32px; color: var(--muted); font-size: 14px; }
+fieldset.mekugi-settings { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 0; border: 0; }
+.mekugi-settings legend { font-size: 16px; font-weight: 600; padding: 0; }
+.mekugi-settings > .hint { margin: 8px 0 20px; }
 .form-section { margin-top: 32px; }
 .form-section > h2 { font-size: 18px; margin-bottom: 20px; }
 details.advanced { border-top: 1px solid var(--line); padding: 20px 0; }

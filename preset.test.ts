@@ -61,20 +61,20 @@ esac
   }
 }
 
-test("agent launch preserves the former task, model, launcher, reasoning and compaction flags", () => {
-  const skill = launchConfiguration({ preset: "stock-mekugi", task: "skills-mgr-agent-cli", model: "gpt-6.1-sol", "reasoning-effort": "low", "journal-compaction": "slice" });
+test("agent launch selects current task, model, launcher, reasoning and Mekugi flags", () => {
+  const skill = launchConfiguration({ preset: "stock-mekugi", task: "skills-mgr-agent-cli", model: "gpt-6.1-sol", "reasoning-effort": "low", "mekugi-flags": '["--deduplicate-output=false"]' });
   expect(skill.prepare.taskPackPath).toEndWith("tasks/skills-mgr-agent-cli/manifest.json");
   expect(skill.prepare.mekugiSource).toBeDefined();
   expect(skill.prepare.model).toBe("gpt-6.1-sol");
   expect(skill.prepare.reasoningEffort).toBe("low");
   expect(skill.prepare.timeoutSeconds).toBe(7200);
-  expect(skill.prepare.mekugiFlags).toEqual(["--mode=mekugi", "--journal-compaction=slice"]);
+  expect(skill.prepare.mekugiFlags).toEqual(["--deduplicate-output=false"]);
   const same = launchConfiguration({ preset: "current-vs-current-mekugi" });
   expect(same.prepare.comparison).toBe("same-setup");
-  const grok = launchConfiguration({ preset: "codex-mekugi-grok", "journal-compaction": "off" });
+  const grok = launchConfiguration({ preset: "codex-mekugi-grok" });
   expect(grok.prepare.model).toBe("grok:grok-4.7");
   expect(grok.prepare.reasoningEffort).toBe("high");
-  expect(grok.prepare.mekugiFlags).toEqual(["--mode=mekugi", "--grok", "--journal-compaction=off"]);
+  expect(grok.prepare.mekugiFlags).toEqual([]);
   const session = launchConfiguration({ task: "session-retention" });
   expect(session.prepare.baseCommit).toBe("302ee2d6691b406f30fcbea38459c6ddc16f6935");
   expect(session.prepare.reasoningEffort).toBe("xhigh");
@@ -82,8 +82,8 @@ test("agent launch preserves the former task, model, launcher, reasoning and com
 });
 
 test("feature comparisons, repeat preparation, and custom task contracts use the retained owners", () => {
-  const feature = launchConfiguration({ preset: "journal-compaction", "auto-compact-limit": "100000", count: "3", order: "alternating", "prepare-only": true });
-  expect(feature.prepare.autoCompactLimit).toBe(100000);
+  const feature = launchConfiguration({ preset: "duplicate-output", count: "3", order: "alternating", "prepare-only": true });
+  expect(feature.prepare.comparison).toBe("duplicate-output");
   expect(feature.count).toBe(3);
   expect(feature.order).toBe("alternating");
   expect(feature.prepareOnly).toBe(true);
@@ -96,7 +96,7 @@ test("sqlite-utils upgrade uses its pinned pack, cloned source and documented ru
   const options = launchConfiguration({ task: "sqlite-utils-history", "prepare-only": true });
   expect(options.prepare.source).toEndWith("codex-ab-sqlite-utils-source");
   expect(options.prepare.comparison).toBe("stock-mekugi");
-  expect(options.prepare.mekugiFlags).toEqual(["--mode=mekugi", "--journal-compaction=auto"]);
+  expect(options.prepare.mekugiFlags).toEqual([]);
   expect(options.prepare.taskPackPath).toEndWith("tasks/sqlite-utils-history/manifest.json");
   expect(options.prepare.criteriaPath).toBeUndefined();
   expect(options.prepare.reasoningEffort).toBe("xhigh");
@@ -109,7 +109,7 @@ test("sqlite-utils upgrade uses its pinned pack, cloned source and documented ru
   expect(overridden.prepare.reasoningEffort).toBe("high");
   expect(overridden.prepare.timeoutSeconds).toBe(1000);
   expect(overridden.prepare.autoCompactLimit).toBeUndefined();
-  expect(() => launchConfiguration({ task: "sqlite-utils-history", preset: "stock-current", "auto-compact-limit": "200000" })).toThrow("applies only to journal-compaction or stock-mekugi");
+  expect(() => launchConfiguration({ task: "sqlite-utils-history", preset: "stock-current", "auto-compact-limit": "200000" })).toThrow("applies only to stock-mekugi");
   expect(() => launchConfiguration({ task: "sqlite-utils-history", source: " " })).toThrow("Source checkout is required");
 });
 
@@ -117,9 +117,9 @@ test("incompatible comparisons and malformed parameters reject before external w
   for (const [options, error] of [
     [{ preset: "same-setup", task: "session-retention" }, "require a task outside Mekugi"],
     [{ task: "native-tool-frontends" }, "supported task"],
-    [{ "journal-compaction": "auto" }, "requires a Mekugi"],
-    [{ "journal-compaction": "invalid", preset: "stock-mekugi" }, "auto, slice, or off"],
-    [{ preset: "journal-compaction" }, "token limit"],
+    [{ "journal-compaction": "auto" }, "no longer supported"],
+    [{ "journal-compaction": "invalid", preset: "stock-mekugi" }, "no longer supported"],
+    [{ preset: "journal-compaction" }, "supported comparison"],
     [{ count: "0" }, "positive integer"],
     [{ task: "custom", source: "/tmp/source" }, "custom task needs"],
     [{ "mekugi-build": "/build", "mekugi-bin": "/bin" }, "owns its source"],
@@ -127,7 +127,7 @@ test("incompatible comparisons and malformed parameters reject before external w
 });
 
 test("the agent CLI accepts equals syntax and requires explicit paid consent", async () => {
-  expect(main(["launch", "--preset=stock-mekugi", "--journal-compaction=slice", "--model=gpt-6.1-sol", "--reasoning-effort=high"])).rejects.toThrow("confirm-paid-inference");
+  expect(main(["launch", "--preset=stock-mekugi", "--model=gpt-6.1-sol", "--reasoning-effort=high"])).rejects.toThrow("confirm-paid-inference");
   expect(main(["launch", "--prepare-only", "--mentor-handoff"])).rejects.toThrow("unknown option");
   expect(main(["launch", "--prepare-only=true"])).rejects.toThrow("does not accept a value");
 });

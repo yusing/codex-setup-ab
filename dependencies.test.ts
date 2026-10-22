@@ -29,6 +29,7 @@ test("dependency key pins build inputs, not per-run paths or source locations", 
     (s: RunState) => { s.submodules![0]!.sha = "new"; },
     (s: RunState) => { s.runtime_tools.bun_sha256 = "new"; },
     (s: RunState) => { s.runtime_tools.mekugi_sha256 = "b".repeat(64); },
+    (s: RunState) => { s.runtime_tools.mekugi_exec_sha256 = "c".repeat(64); },
     (s: RunState) => { s.criteria!.contract.preparation = "false"; },
     (s: RunState) => { s.operator.uid = 1234; },
   ]) {
@@ -95,21 +96,24 @@ test("image builds receive frozen Mekugi bytes and a hash-checked final image re
     await mkdir(join(root, "baseline"));
     await writeFile(join(root, "bun"), "bun fixture");
     await writeFile(join(root, "mekugi"), "frozen Mekugi");
+    await writeFile(join(root, "mekugi-exec"), "frozen helper");
     const state = fixture();
     state.arms = { stock: { repository: "baseline" } } as RunState["arms"];
-    Object.assign(state.runtime_tools, { bun: "bun", mekugi_source: "mekugi", mekugi_in_image: true, mekugi_sha256: await sha256(join(root, "mekugi")) });
+    Object.assign(state.runtime_tools, { bun: "bun", mekugi_source: "mekugi", mekugi_in_image: true, mekugi_sha256: await sha256(join(root, "mekugi")), mekugi_exec_source: "mekugi-exec", mekugi_exec_sha256: await sha256(join(root, "mekugi-exec")) });
     const docker = join(root, "docker");
     await writeFile(docker, `#!/bin/sh
 case "$1 $2" in
   'image inspect') if [ ! -f '${root}/built' ]; then echo 'No such image' >&2; exit 1; fi; echo '${state.image_id}' ;;
   'tag '*) ;;
-  'build --tag') cmp '${root}/mekugi' "$4/mekugi" && cp "$4/Dockerfile" '${root}/recipe' && touch '${root}/built' ;;
+  'build --tag') cmp '${root}/mekugi' "$4/mekugi" && cmp '${root}/mekugi-exec' "$4/mekugi-exec" && cp "$4/Dockerfile" '${root}/recipe' && touch '${root}/built' ;;
   *) exit 99 ;;
 esac
 `, { mode: 0o755 });
     await ensureDependencyImage(docker, root, state, new AbortController().signal);
     const recipe = await readFile(join(root, "recipe"), "utf8");
     expect(recipe).toContain("COPY --chmod=755 mekugi /usr/local/bin/mekugi");
+    expect(recipe).toContain("COPY --chmod=755 mekugi-exec /usr/local/bin/mekugi-exec");
+    expect(recipe).toContain(`${state.runtime_tools.mekugi_exec_sha256}  /usr/local/bin/mekugi-exec`);
     expect(recipe).toContain(`${state.runtime_tools.mekugi_sha256}  /usr/local/bin/mekugi`);
     expect(state.dependency_image?.key).toBe(dependencyKey(state, state.image_id!));
   } finally { await rm(root, { recursive: true, force: true }); }

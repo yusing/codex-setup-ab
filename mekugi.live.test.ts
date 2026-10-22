@@ -26,7 +26,7 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
         "--tmpfs", "/home/ubuntu/.local/state/mekugi/debug:size=64m,mode=0700,uid=1000,gid=1000",
         "-v", `${process.env.CODEX_AB_MEKUGI_BIN ?? "/home/ubuntu/go/bin/mekugi"}:/usr/local/bin/mekugi:ro`,
         process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery",
-        "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", "--mode=mekugi", "--ansi-faint=off",
+        "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", "--ansi-faint=off",
         "--capture-output=/mekugi-exports/capture.jsonl", "--debug", "codex", "--version"],
     });
     expect(result.exitCode).toBe(0);
@@ -34,6 +34,7 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
     const metrics = JSON.parse(await readFile(join(root, "exports/metrics.json"), "utf8"));
     expect(metrics.schema).toBe("mekugi.capture.metrics.v7");
     expect(metrics.requests.logical).toBe(0);
+    expect(await readFile(join(root, "exports/capture.jsonl"), "utf8")).toBe("");
     expect((await readdir(join(root, "exports"))).sort()).toEqual(["capture.jsonl", "metrics.json"]);
     expect(await readdir(join(root, "home/.local/state/mekugi/debug"))).toEqual([]);
     await mkdir(join(root, "protected-exports"));
@@ -46,18 +47,18 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
         "-v", `${root}/protected-exports:/mekugi-exports`,
         "-v", `${process.env.CODEX_AB_MEKUGI_BIN ?? "/home/ubuntu/go/bin/mekugi"}:/usr/local/bin/mekugi:ro`,
         process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery",
-        "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", "--mode=mekugi",
+        "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi",
         "--capture-output=/mekugi-exports/capture.jsonl", "--debug", "codex", "--version"],
     });
     expect(protectedResult.exitCode, protectedResult.stderr).toBe(0);
     expect((await readdir(join(root, "protected-exports"))).sort()).toEqual(["capture.jsonl", "metrics.json"]);
     expect(await readdir(join(root, "runtime/state/mekugi/debug"))).toEqual([]);
-    const state = { mekugi_flags: ["--mode=mekugi"], mekugi_exports: {
+    const state = { mekugi_flags: [], mekugi_exports: {
       metrics: "exports/metrics.json", capture: "exports/capture.jsonl",
       validator: { path: "analyze_capture.py", sha256: await sha256(join(root, "analyze_capture.py")) },
       reader: { path: "benchmark_jsonl.py", sha256: await sha256(join(root, "benchmark_jsonl.py")) },
     } } as RunState;
-    expect(await validateMekugiExports(root, state)).toMatchObject({ status: "unavailable", reason: expect.stringContaining("capture is empty") });
+    expect(await validateMekugiExports(root, state)).toMatchObject({ status: "unavailable", reason: expect.stringContaining("metrics are missing exchanges") });
     for (const [index, flags] of [["--timeout=not-a-duration"], ["--mode=passthrough", "--post-compact-recovery=true"],
       ["--mentor-handoff=false"], ["--main-mentor-handoff=false"], ["--explore-filter=false"]].entries()) {
       const invalid = await runOwnedContainer({
@@ -68,8 +69,6 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
       });
       expect(invalid.exitCode).not.toBe(0);
     }
-    state.mekugi_flags = ["--mode=passthrough"];
-    expect((await validateMekugiExports(root, state)).status).toBe("unavailable");
     await rm(join(root, "analyze_capture.py"));
     expect(await validateMekugiExports(root, state)).toMatchObject({ status: "unavailable", reason: expect.stringContaining("ENOENT") });
   } finally {

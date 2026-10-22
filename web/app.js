@@ -9,6 +9,12 @@ let config, workflow = "pair", selected, snapshot, activeId, busy = false, actio
 let artifactItems = [];
 let listSignature, artifactSignature, childSignature, liveKeys;
 let eventStream, latestSnapshot;
+const MEKUGI_TOGGLES = [
+  ["shell-guard", "Guard remote VCS writes and sudo commands"],
+  ["deduplicate-output", "Deduplicate output and attachments"],
+  ["child-reply-summary", "Show child-authored reply summaries"],
+];
+const MEKUGI_VALUES = ["ansi-faint", "timeout", "stream-idle-timeout"];
 const ATTEMPT_STATUS = { started: "Running", stopped: "Finished", failed: "Failed" };
 const TONES = { stopped: "positive", complete: "positive", failed: "negative", canceled: "negative" };
 function executionStatus(attempt, result) {
@@ -44,8 +50,8 @@ function select(label, name, options, value = "", hint = "", prefix = "f") {
   const id = prefix + "-" + name;
   return '<div class="field"><label for="' + id + '">' + esc(label) + '</label><select id="' + id + '" name="' + esc(name) + '">' + options.map(([key, text]) => '<option value="' + esc(key) + '"' + (key === value ? " selected" : "") + ">" + esc(text) + "</option>").join("") + "</select>" + (hint ? '<p class="hint">' + esc(hint) + '</p>' : "") + "</div>";
 }
-function check(label, name, prefix = "f") {
-  return '<label class="check"><input id="' + prefix + "-" + name + '" type="checkbox" name="' + name + '">' + esc(label) + "</label>";
+function check(label, name, prefix = "f", checked = false) {
+  return '<label class="check"><input id="' + prefix + "-" + name + '" type="checkbox" name="' + name + '"' + (checked ? " checked" : "") + '>' + esc(label) + "</label>";
 }
 function formOptions(form) {
   const options = {};
@@ -98,17 +104,22 @@ function drawLaunch() {
       + select("Reasoning effort", "reasoning-effort", [["", "Task default"], ...["low", "medium", "high", "xhigh"].map((value) => [value, words(value)])], "", "NVM and portable packs: medium. Long-horizon tasks: xhigh. Grok: high.")
       + field("Fresh pair count", "count", "1", "number", "One is a single pair. Two or more create a trial set.")
       + select("Trial arm order", "order", [["concurrent", "Concurrent"], ["alternating", "Alternating first arm"]], "concurrent")
-      + '<div id="compaction-limit-field">' + field("Shared compaction token limit", "auto-compact-limit", task.compactLimit ?? "", "number", "Both arms compact at this context size. Required for the journal comparison; optional for minimal Codex versus Mekugi, where a blank field uses the task default.") + "</div></div></section>"
+      + '<div id="compaction-limit-field">' + field("Shared compaction token limit", "auto-compact-limit", task.compactLimit ?? "", "number", "Both arms compact at this context size. Optional for minimal Codex versus Mekugi; a blank field uses the task default.") + "</div></div></section>"
       + '<details class="advanced"><summary>Runtime and resource settings</summary><div class="grid">' + sharedFields()
       + field("Codex authentication file", "auth-file", defaults["auth-file"], "text", "Local path only. Never paste credential contents.")
       + field("Grok authentication file", "grok-auth-file", defaults["grok-auth-file"])
       + '</div></details><details class="advanced"><summary>Mekugi and comparison settings</summary><div class="grid">'
       + select("Current-setup launcher", "current-launcher", [["codex", "Direct Codex"], ["mekugi", "Mekugi"]], "codex", "Applies to minimal versus current setup.")
-      + select("Journal compaction override", "journal-compaction", [["", "Mekugi default"], ...["auto", "slice", "off"].map((value) => [value, words(value)])])
       + field("Mekugi source", "mekugi-source", defaults["mekugi-source"])
       + field("Mekugi executable", "mekugi-bin", defaults["mekugi-bin"])
       + field("Captured Mekugi build (optional)", "mekugi-build", "", "text", "Owns its executable and source when supplied.")
-      + field("Mekugi flags (optional)", "mekugi-flags", "", "text", "Space-separated flags, for example --mode=mekugi --duplicate-output=false.")
+      + '<fieldset class="mekugi-settings"><legend>Mekugi behavior</legend><p class="hint">Applies to this run only. Export diagnostics are enabled automatically.</p><div class="grid"><div>'
+      + MEKUGI_TOGGLES.map(([name, label]) => check(label, "mekugi-" + name, "f", true)).join("")
+      + '<p id="deduplication-owned" class="hint" hidden>The comparison sets deduplication off for A and on for B.</p></div>'
+      + select("Faint text", "mekugi-ansi-faint", [["auto", "Auto"], ["on", "On"], ["off", "Off"]], "auto")
+      + field("Response-start timeout", "mekugi-timeout", "", "text", "Mekugi default: 10m. Use a duration such as 30s or 2m.")
+      + field("Stream idle timeout", "mekugi-stream-idle-timeout", "", "text", "Mekugi default: 4m. Use a duration such as 30s or 2m.")
+      + '</div></fieldset>'
       + field("Grok executable", "grok-bin", defaults["grok-bin"])
       + field("Reviewer treatment (optional)", "review-treatment", "", "text", "Use an existing reviewer overlay path.")
       + '</div>' + check("Use protected Mekugi runtime", "protect-mekugi") + '</details>'
@@ -146,7 +157,6 @@ function drawLaunch() {
       $("f-auto-compact-limit").value = task.compactLimit ?? "";
       if (task.preset) {
         $("f-preset").value = task.preset;
-        $("f-journal-compaction").value = task.journalCompaction ?? "";
       }
       updateCombination();
     });
@@ -169,13 +179,15 @@ function updateCombination() {
   $("comparison-description").textContent = comparison.description + (grok ? " The fixed model is Grok 4.7." : "");
   setEnabled("f-model", !grok);
   setEnabled("f-current-launcher", comparison.id === "stock-current");
-  setEnabled("f-journal-compaction", mekugi && comparison.id !== "journal-compaction");
-  const sharedLimit = ["journal-compaction", "stock-mekugi"].includes(comparison.id);
+  const sharedLimit = comparison.id === "stock-mekugi";
   setEnabled("f-auto-compact-limit", sharedLimit);
   $("compaction-limit-field").hidden = !sharedLimit;
   const build = $("f-mekugi-build").value.trim();
   for (const id of ["f-mekugi-source", "f-mekugi-bin"]) setEnabled(id, mekugi && !build);
-  for (const id of ["f-mekugi-build", "f-mekugi-flags"]) setEnabled(id, mekugi);
+  setEnabled("f-mekugi-build", mekugi);
+  for (const name of [...MEKUGI_TOGGLES.map(([name]) => name), ...MEKUGI_VALUES]) setEnabled("f-mekugi-" + name, mekugi);
+  setEnabled("f-mekugi-deduplicate-output", mekugi && comparison.id !== "duplicate-output");
+  $("deduplication-owned").hidden = comparison.id !== "duplicate-output";
   for (const id of ["f-grok-bin", "f-grok-auth-file"]) setEnabled(id, grok);
   setEnabled("f-protect-mekugi", mekugi && ["stock-current", "same-setup"].includes(comparison.id));
   setEnabled("f-review-treatment", !["stock-mekugi", "codex-mekugi-grok"].includes(comparison.id));
@@ -197,7 +209,18 @@ function updateConsent() {
 }
 function launchRequest() {
   const options = formOptions($("launch-form"));
-  if (options["mekugi-flags"]) options["mekugi-flags"] = JSON.stringify(options["mekugi-flags"].trim().split(/\s+/));
+  if (workflow === "pair") {
+    const flags = [];
+    for (const name of [...MEKUGI_TOGGLES.map(([name]) => name), ...MEKUGI_VALUES]) {
+      const key = "mekugi-" + name;
+      const input = $("f-" + key);
+      delete options[key];
+      if (!input || input.disabled) continue;
+      if (input.type === "checkbox") flags.push(`--${name}=${input.checked}`);
+      else if (input.value.trim()) flags.push(`--${name}=${input.value.trim()}`);
+    }
+    if (flags.length) options["mekugi-flags"] = JSON.stringify(flags);
+  }
   const command = workflow === "pair" ? "launch" : workflow === "suite" ? "prepare-suite" : "build-mekugi";
   const body = { command, options };
   if (workflow === "pair") {

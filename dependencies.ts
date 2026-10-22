@@ -17,7 +17,7 @@ export function dependencyKey(state: RunState, baseImage: string): string {
     version: 3, baseImage, tree: state.source.base_tree, commit: state.source.base_commit,
     submodules: state.submodules?.map(({ path, sha }) => ({ path, sha })),
     preparation: state.criteria?.contract.preparation, bun: state.runtime_tools.bun_sha256,
-    ...(state.runtime_tools.mekugi_in_image ? { mekugi: state.runtime_tools.mekugi_sha256 } : {}),
+    ...(state.runtime_tools.mekugi_in_image ? { mekugi: state.runtime_tools.mekugi_sha256, mekugi_exec: state.runtime_tools.mekugi_exec_sha256 } : {}),
     uid: state.operator.uid, gid: state.operator.gid,
   })).digest("hex");
 }
@@ -44,6 +44,10 @@ export async function ensureDependencyImage(docker: string, runDir: string, stat
       "COPY --chmod=755 mekugi /usr/local/bin/mekugi",
       `RUN echo '${state.runtime_tools.mekugi_sha256}  /usr/local/bin/mekugi' | sha256sum --check --strict`,
     ] : []),
+    ...(state.runtime_tools.mekugi_exec_source ? [
+      "COPY --chmod=755 mekugi-exec /usr/local/bin/mekugi-exec",
+      `RUN echo '${state.runtime_tools.mekugi_exec_sha256}  /usr/local/bin/mekugi-exec' | sha256sum --check --strict`,
+    ] : []),
     "RUN if [ -d /benchmark-agent-issue-reports ]; then rmdir /benchmark-agent-issue-reports; fi && mkdir -p /agent-issue-reports",
     `USER ${state.operator.uid}:${state.operator.gid}`, "COPY --from=dependencies /opt/task-deps /opt/task-deps",
     "COPY --from=dependencies /go/pkg/mod /go/pkg/mod", `ENV ${DEPENDENCY_ENV.join(" ")}`, "",
@@ -65,6 +69,7 @@ export async function ensureDependencyImage(docker: string, runDir: string, stat
       await cp(resolve(runDir, state.arms.stock.repository), join(context, "baseline"), { recursive: true, verbatimSymlinks: true });
       await cp(resolve(runDir, state.runtime_tools.bun), join(context, "bun"));
       if (state.runtime_tools.mekugi_in_image) await copyFile(resolve(runDir, state.runtime_tools.mekugi_source!), join(context, "mekugi"));
+      if (state.runtime_tools.mekugi_exec_source) await copyFile(resolve(runDir, state.runtime_tools.mekugi_exec_source), join(context, "mekugi-exec"));
       await copyFile(join(runDir, "artifacts/dependencies.prepare.sh"), join(context, "prepare.sh"));
       await copyFile(join(runDir, "artifacts/dependencies.Dockerfile"), join(context, "Dockerfile"));
       const built = await exec([docker, "build", "--tag", tag, context], {

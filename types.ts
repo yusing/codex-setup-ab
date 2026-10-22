@@ -98,6 +98,8 @@ export interface RunState {
     preflight_cache?: { go_build: string; go_pkg: string; bun?: string; source_run: string };
     codex_code_mode_host_sha256: string;
     mekugi_source?: string;
+    mekugi_exec_source?: string;
+    mekugi_exec_sha256?: string;
     mekugi_sha256?: string;
     mekugi_in_image?: boolean;
     grok_source?: string;

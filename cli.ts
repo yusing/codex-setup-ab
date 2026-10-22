@@ -24,7 +24,7 @@ const HELP = `codex-ab ${VERSION}
   serve [--host ADDRESS] [--port PORT]
                                    Open the human workbench (default 127.0.0.1:4849)
   launch [--preset NAME] [--task NAME] [--prepare-only]
-         [--model NAME] [--reasoning-effort LEVEL] [--journal-compaction MODE]
+         [--model NAME] [--reasoning-effort LEVEL]
          [--count N] [--order concurrent|alternating] [--confirm-paid-inference]
                                    Agent-directed preset launch with the existing path overrides
 
@@ -60,8 +60,8 @@ Prepare options:
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --current-home DIR    configuration Git repository root (default current home)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
-  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, journal-compaction, or duplicate-output
-  --auto-compact-limit N shared positive token limit for both arms; required for journal-compaction, optional for stock-mekugi
+  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, or duplicate-output
+  --auto-compact-limit N shared positive token limit for both stock-mekugi arms
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
   --mekugi-build DIR    captured build bundle; selects its Mekugi executable and source

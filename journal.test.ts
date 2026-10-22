@@ -1,16 +1,5 @@
 import { expect, test } from "bun:test";
 import { compactionComparisonExclusion, journalEvidence, journalEvidenceMarkdown } from "./journal";
-import { validateMekugiFlags } from "./mekugi";
-
-test("journal compaction flag accepts only the supported explicit enum", () => {
-  for (const mode of ["auto", "slice", "off"]) expect(validateMekugiFlags([`--journal-compaction=${mode}`])).toEqual([`--journal-compaction=${mode}`]);
-  for (const flags of [["--journal-compaction"], ["--journal-compaction=true"], ["--journal-compaction=off", "--journal-compaction=auto"]]) {
-    expect(() => validateMekugiFlags(flags)).toThrow();
-  }
-  expect(() => validateMekugiFlags(["--mode=passthrough", "--journal-compaction=auto"])).toThrow("journal-compaction requires Mekugi mode");
-  expect(validateMekugiFlags(["--mode=mekugi", "--journal-compaction=auto"])).toHaveLength(2);
-});
-
 const usage = (input: number, output: number) => ({ input_tokens: input, cached_input_tokens: 0, output_tokens: output, reasoning_tokens: 0 });
 
 test("router compaction has zero observed provider cost; old provenance stays unknown", () => {

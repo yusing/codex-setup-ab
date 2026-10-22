@@ -181,7 +181,7 @@ def payload(value: object) -> dict[str, int]:
         raise ValueError("payload metrics must be an object")
     measured: dict[str, int] = {}
     for key in ("bytes", "tokens"):
-        count = value.get(key)
+        count = value.get(key, 0) if key == "tokens" else value.get(key)
         if type(count) is not int or count < 0:
             raise ValueError(f"payload {key} must be a non-negative integer")
         measured[key] = count
@@ -470,6 +470,10 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
 
     ordered = sorted(exchanges, key=sequence)
     v7 = metrics.get("schema") == "mekugi.capture.metrics.v7"
+    # Old snapshots published semantic/token estimates and tool aggregates.
+    # Current v7 snapshots retain only wire bytes and provider-owned usage.
+    legacy_payloads = not v7 or any(key in metrics for key in ("semantic", "provider_tools", "delivered_tools"))
+    legacy_payloads = legacy_payloads or "tokens" in metrics.get("transport", {}).get("client_requests", {})
     requests = {"logical": len(ordered), "provider_attempts": 0, "completed": 0, "failed": 0}
     if v7:
         requests["retries"] = 0
@@ -514,9 +518,9 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
                 raise ValueError("provider attempt must be an object")
             if not isinstance(attempt.get("model"), str) or not attempt["model"]:
                 raise ValueError("provider attempt is missing its actual model")
-            if not isinstance(attempt.get("projected_request"), dict):
+            if legacy_payloads and not isinstance(attempt.get("projected_request"), dict):
                 raise ValueError("missing projected request observation")
-            payload(attempt["projected_request"])
+            payload(attempt.get("projected_request"))
             transport_kind = attempt.get("transport")
             if transport_kind not in {None, "websocket"}:
                 raise ValueError("provider attempt has an unsupported transport")
@@ -600,10 +604,10 @@ def validate_calculations(metrics: dict[str, Any], exchanges: list[dict[str, Any
         raise ValueError("metrics have an unsupported transport shape")
     if (
         any(payload(published_transport.get(key)) != transport[key] for key in INFERENCE_TRANSPORT_KEYS)
-        or metrics.get("semantic") != semantic
+        or (legacy_payloads and metrics.get("semantic") != semantic)
     ):
         raise ValueError("payload totals do not reconcile exchanges")
-    if metrics.get("provider_tools") != provider_tools or metrics.get("delivered_tools") != delivered_tools:
+    if legacy_payloads and (metrics.get("provider_tools") != provider_tools or metrics.get("delivered_tools") != delivered_tools):
         raise ValueError("tool aggregates do not reconcile exchanges")
 
     published_cache = metrics.get("cache")

@@ -20,7 +20,6 @@ randomized causal estimates. See the [CLI guide](cli.md) for repeated runs and t
 | `stock-mekugi` | Minimal direct Codex versus minimal Codex through Mekugi, with identical configured tools. |
 | `codex-mekugi-grok` | Stock Codex through Mekugi on Grok versus the Grok CLI. |
 | `same-setup` | Direct Codex versus Mekugi with the same current-home guidance and tools. |
-| `journal-compaction` | Model-written versus router compaction with the same Mekugi setup. |
 | `duplicate-output` | Mekugi duplicate-output projection off versus on. |
 
 The Web UI names each compared setup by its launcher, guidance, or treatment.
@@ -78,23 +77,8 @@ Use `CODEX_AB_SKILLS_MGR_SOURCE` to select the skills manager task checkout
 Mekugi runtime checkout (default `$HOME/projects/mekugi`) and the source for `session-retention`;
 set the source, executable, image, and credential paths in the Web UI's settings.
 
-To select Mekugi's compaction mode explicitly:
-
-```sh
-CODEX_AB_SKILLS_MGR_SOURCE=/path/to/skills-mgr \
-CODEX_AB_MEKUGI_SOURCE=/path/to/mekugi ./dist/codex-ab launch \
-  --preset stock-mekugi --task skills-mgr-agent-cli --journal-compaction auto --confirm-paid-inference
-```
-
-This command starts paid inference. `--journal-compaction auto|slice|off` accepts spaced or
-equals forms with `stock-mekugi`, `current-vs-current-mekugi`, and `codex-mekugi-grok`.
-It also works with `stock-current --current-launcher mekugi`. Omitting it preserves
-Mekugi's default; direct-Codex comparisons reject it. The dedicated
-[journal compaction comparison](spec.md#journal-compaction-comparison) is available in the
-Web UI and through agent-directed `launch --preset journal-compaction` with
-`--auto-compact-limit N`; that comparison owns both arms' compaction modes.
-`stock-mekugi` also accepts an optional shared `--auto-compact-limit N`, applied
-to both arms; other comparisons reject it.
+`stock-mekugi` accepts an optional shared `--auto-compact-limit N`, applied
+to both arms; other comparisons reject it. Compaction remains Codex-owned.
 
 Use `--comparison stock-mekugi --mekugi-source /path/to/matching/mekugi` to isolate the launcher treatment. Both arms receive the same minimal generated Codex configuration and the existing mise runtime and configuration, including referenced lock sidecars and migration completion records. Both access the same read-only host installation store at its original absolute path. A launches direct Codex through mise; B launches the selected, image-pinned Mekugi executable as `mekugi codex` through mise. Neither arm receives current-home agent instructions, skills, hooks, roles, or a reviewer overlay. Both use the default service tier.
 
@@ -102,11 +86,12 @@ Preparation does not install tools or copy their store, and no Dockerfile tool p
 
 Use the Web UI model and reasoning controls, or agent-directed `launch --preset stock-mekugi --model gpt-6.1-sol --reasoning-effort high --confirm-paid-inference`, to run a Sol/high pair. Mekugi runs the selected models without mentor handoff; the former mentor options and comparisons are no longer supported. Saved mentor runs cannot be processed by the current harness; retain their existing reports for historical results. The default model remains Astra. Reasoning defaults to medium for NVM and xhigh for the skills manager and session-retention tasks; the Grok preset defaults to high regardless of task. An explicit `--reasoning-effort` overrides these defaults. The selected image must contain the matching host Codex and code-mode-host binaries; the runner checks their versions and hashes before inference. Build the selected Mekugi executable before rerunning.
 
-Select the executable with `--mekugi-bin`. Preparation freezes it and preflight copies it into the benchmark image at build time, pinned by SHA-256, so subsequent host Mekugi updates do not interrupt prepared runs or trials. Prepare a new run to select an updated binary. Optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated with the runner-bundled analyzer; `--mekugi-source` remains the required export-validation selector, not proof that the binary came from that checkout. The current-home Git snapshot is retained for configuration provenance, while the selected executable and runner-owned analyzer sources are captured separately. Only the configured mise tool setup reaches both minimal agent homes; other current-home runtime supplements and unused launcher executables are omitted. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
+Select the executable with `--mekugi-bin`; its executable `mekugi-exec` companion
+must be installed beside it. Both are frozen and hash-pinned into the image. Preparation freezes it and preflight copies it into the benchmark image at build time, pinned by SHA-256, so subsequent host Mekugi updates do not interrupt prepared runs or trials. Prepare a new run to select an updated binary. Optionally add `--mekugi-flags` as for the current-setup launcher comparison. Mekugi capture and metrics exports are retained and validated with the runner-bundled analyzer; `--mekugi-source` remains the required export-validation selector, not proof that the binary came from that checkout. The current-home Git snapshot is retained for configuration provenance, while the selected executable and runner-owned analyzer sources are captured separately. Only the configured mise tool setup reaches both minimal agent homes; other current-home runtime supplements and unused launcher executables are omitted. Protected Mekugi runtime is not supported for this comparison because that runtime currently depends on the current-home setup.
 
 ## Stock Codex plus Mekugi versus Grok CLI
 
-Use `--comparison codex-mekugi-grok` to compare stock Codex launched through Mekugi on `grok:grok-4.7` against the Grok CLI on `grok-4.7`. A receives the generated stock Codex configuration plus Mekugi and launches `mekugi --grok codex`. B receives a generated Grok configuration plus the selected Grok executable and launches `grok` headlessly. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier and high reasoning unless `--reasoning-effort` selects another effort.
+Use `--comparison codex-mekugi-grok` to compare stock Codex launched through Mekugi on `grok:grok-4.7` against the Grok CLI on `grok-4.7`. A receives the generated stock Codex configuration plus Mekugi and launches `mekugi` with the prefixed model `grok:grok-4.7`. B receives a generated Grok configuration plus the selected Grok executable and launches `grok` headlessly. Neither arm receives current-home instructions, skills, hooks, roles, tool installations, or a reviewer overlay. Both use the default service tier and high reasoning unless `--reasoning-effort` selects another effort.
 
 ```sh
 run_dir="$(./dist/codex-ab prepare \
@@ -115,7 +100,6 @@ run_dir="$(./dist/codex-ab prepare \
   --comparison codex-mekugi-grok \
   --mekugi-source /home/ubuntu/projects/mekugi \
   --mekugi-bin /home/ubuntu/go/bin/mekugi \
-  --mekugi-flags '["--mode=mekugi","--grok"]' \
   --grok-bin /home/ubuntu/.grok/bin/grok \
   --image codex-ab:0.1.0)"
 ./dist/codex-ab preflight --run-dir "$run_dir"
@@ -127,26 +111,19 @@ run_dir="$(./dist/codex-ab prepare \
 
 `--grok-auth-file` is copied privately into both isolated homes. Grok usage is metered from each B session `usage.json`, using captured list prices for comparison. Session-only Grok estimates use base rates and explicitly exclude unknown request-level long-context premiums; provider-recorded totals are retained separately. Command durations and tool blocking come from matched events in `events.jsonl`. Codex JSONL remains the A accounting source. Isolated launcher snapshots omit the unused current-home mise tool store. This is not a current-home direct Codex versus Mekugi comparison.
 
-## Journal compaction comparison
+## Historical journal compaction evidence
 
-Use `prepare --comparison journal-compaction --auto-compact-limit N` with the
-usual predetermined task/criteria and Mekugi source/binary options to compare
-model-written compaction (A, off) with router compaction (B, auto). Both arms use
-the same current-home snapshot, Mekugi binary and recorded positive token limit.
-This comparison owns the compaction flag and requires ordinary container
-boundaries in both arms. Imported controls are not supported. Preparation and preflight do not run inference; execution
-still requires `--confirm-paid-inference`. Pairs with no compaction in either arm
-are marked `no compaction observed` and excluded from paired aggregates, never
-counted as ties. Missing compaction evidence is separately reported as unavailable.
-Use `prepare-trials --count 4` on the prepared run for repeated pairs; schedules
-remain separate. This opt-in comparison does not enable auto as Mekugi's default.
+New journal-compaction comparisons and journal/recovery flags are unsupported.
+Retained runs can still be inspected and reported with their captured controls,
+compaction evidence, and exclusion rules. Prepare a fresh supported comparison
+to use the current Mekugi interface.
 
 ## Duplicate-output comparison
 
 Use `prepare --comparison duplicate-output` with the usual predetermined
 task/criteria and `--mekugi-source`/`--mekugi-bin` options to compare Mekugi's
-duplicate-output projection off (A, `--duplicate-output=false`) with on
-(B, `--duplicate-output=true`). Both arms launch the same Mekugi binary through
+duplicate-output projection off (A, `--deduplicate-output=false`) with on
+(B, `--deduplicate-output=true`). Both arms launch the same Mekugi binary through
 mise with separate writable copies of the same immutable current-home snapshot,
 the same task, model, reasoning, service tier, tools, and ordinary container
 boundary. A reviewer overlay, if selected, applies to both arms. This isolates
@@ -162,8 +139,8 @@ uses a read-only snapshot alias; installed tools retain their existing read-only
 host-store mount, including when nested under that alias. Other comparisons keep
 their existing model guards and home-path behavior.
 
-The comparison owns `--duplicate-output`; supplying it through `--mekugi-flags`
-is rejected, as are passthrough, Grok routing, and `--protect-mekugi`.
+The comparison owns `--deduplicate-output`; supplying it through `--mekugi-flags`
+is rejected, as is `--protect-mekugi`.
 Imported direct-Codex controls are unsupported. Model-free preflight checks both
 flag values and their export paths before inference. Each arm retains separate
 capture and metrics exports and provider-usage accounting; missing or invalid
@@ -171,11 +148,10 @@ exports prevent a complete paired measurement. Preparation and preflight do not
 run inference; execution requires `--confirm-paid-inference`. Use
 `prepare-trials --count 4` on a prepared run for fresh repeated pairs.
 
-Duplicate-output projection is enabled by default in Mekugi mode. Outside this
-comparison, use `--mekugi-flags '["--duplicate-output=false"]'` to disable it.
-Passthrough is unaffected, and full host results, retained evidence, and the UI
-remain intact. See Mekugi's
-[projection contract](https://github.com/yusing/mekugi/blob/main/doc/spec/execution.md#duplicate-output-projection).
+Output deduplication is enabled by default. Outside this
+comparison, use `--mekugi-flags '["--deduplicate-output=false"]'` to disable it.
+Full host results, retained evidence, and the UI remain intact. The comparison
+selector remains `duplicate-output` for retained evidence continuity.
 
 ## Current setup: direct Codex versus Mekugi
 
@@ -187,16 +163,24 @@ A reviewer overlay, if selected, therefore applies to both arms. There is no tre
 general workflow guidance. The default `stock-current` comparison is unchanged.
 
 Select the Mekugi executable with `--mekugi-bin`.
-Use `--mekugi-flags '["--mode=mekugi"]'` for explicit Mekugi options placed before its `codex`
-subcommand. Supported flags include `--ansi-faint=auto|on|off`, `--post-compact-recovery=true|false`,
-`--journal-compaction=auto|slice|off`, `--duplicate-output=true|false`, timeouts,
-`--mode`, `--grok`, and `--debug`.
-The removed `--explore-filter` option is rejected. Export destinations, credential paths, and runtime configuration are benchmark-owned and cannot be
+Use `--mekugi-flags '["--deduplicate-output=false"]'` for explicit Mekugi options
+placed before its `codex` subcommand. The workbench presents these options as a
+Mekugi behavior group: checked toggles enable shell guarding, output deduplication,
+and child-reply summaries; unchecked toggles explicitly disable them. Faint text
+and response/idle timeouts have separate controls. In the deduplication comparison,
+the comparison controls that toggle for both arms. Export diagnostics stay enabled
+by the runner. Settings apply to the prepared run without rewriting host configuration.
+Supported CLI flags include
+`--ansi-faint=auto|on|off`, `--deduplicate-output=true|false`,
+`--shell-guard=true|false`, `--child-reply-summary=true|false`, timeouts,
+and `--debug`. Mode, journal compaction, post-compact recovery, mentor, explore-filter,
+and `--grok` flags are rejected. Grok routing is selected by the comparison.
+Export destinations, credential paths, and runtime configuration are benchmark-owned and cannot be
 overridden through this option. The selected arguments and comparison identity appear in the
 machine state and consolidated report. Preparation and preflight make no model requests.
 
 Supply `--mekugi-source DIR` (required for `same-setup`) to enable sanitized `--capture-output`
-and capturer-owned metrics exports. Mekugi now writes the metrics snapshot through `--debug`; the runner keeps its other, potentially private debug files inside the disposable agent container and copies only `metrics.json` and the root session's native usage report, `token-metrics.md`, into the run artifacts. The checkout is not read for validation scripts or binary provenance; use `--mekugi-build` for recorded source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and its hash.
+and capturer-owned metrics exports. Mekugi now writes the metrics snapshot through `--debug`; the runner keeps its other, potentially private debug files inside the disposable agent container and copies only `metrics.json` and, when an older executable produced one, the root session's native usage report, `token-metrics.md`, into the run artifacts. The checkout is not read for validation scripts or binary provenance; use `--mekugi-build` for recorded source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and its hash.
 The report validates the capturer's schema, treatment identity and raw-record consistency with that analyzer, retaining missing or
 invalid telemetry explicitly. Capture calculations remain owned by Mekugi. When validation
 succeeds, a Mekugi arm's tokens and requests come from its provider attempts, excluding prewarm,
@@ -218,8 +202,7 @@ The task retains the `sqlite-utils-history` identifier for existing references;
 historical row-history runs keep their captured controls and form a different task.
 The integrated upgrade requires reading large existing modules and documentation.
 Its launch defaults
-compare stock Codex with Mekugi journal context reset enabled, give both agents a
-shared 200,000-token auto-compact limit, and cap each agent at 55 minutes. Reset
-occurrence and project duration remain unmeasured; post-reset claims require observed
-root reset and continued work. Evaluation time is separate. This task uses a
+compare stock Codex with Mekugi, give both agents a
+shared 200,000-token auto-compact limit, and cap each agent at 55 minutes. Compaction
+occurrence and project duration remain unmeasured. Evaluation time is separate. This task uses a
 portable task pack and the generic task profile.

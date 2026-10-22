@@ -14,7 +14,6 @@ export const COMPARISONS = [
   { id: "stock-current", title: "Minimal versus current setup", a: "Codex · minimal setup", b: "Codex · current setup", description: "Measure the complete instruction and tool setup." },
   { id: "same-setup", title: "Current Codex versus Mekugi", a: "Codex · current setup", b: "Mekugi · current setup", description: "Keep guidance fixed; change the launcher." },
   { id: "stock-mekugi", title: "Minimal Codex versus minimal Mekugi", a: "Codex · minimal setup", b: "Mekugi · minimal setup", description: "Isolate the launcher with minimal guidance." },
-  { id: "journal-compaction", title: "Journal compaction off versus auto", a: "Mekugi · compaction off", b: "Mekugi · compaction auto", description: "Use one shared token limit and two fresh isolated arms." },
   { id: "duplicate-output", title: "Duplicate output off versus on", a: "Mekugi · projection off", b: "Mekugi · projection on", description: "Keep the current setup and compare output projection." },
   { id: "codex-mekugi-grok", title: "Mekugi versus Grok CLI", a: "Mekugi · Grok", b: "Grok CLI", description: "Compare launchers on the fixed Grok model." },
 ];
@@ -26,7 +25,7 @@ export function taskCatalog() {
     { id: "skills-mgr-agent-cli", title: "Skills manager agent CLI", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-agent-cli/manifest.json" },
     { id: "session-retention", title: "Mekugi session retention", source: process.env.CODEX_AB_MEKUGI_SOURCE ?? join(userRoot, "projects/mekugi"), timeout: 3600, effort: "xhigh", pack: "" },
     { id: "sqlite-utils-history", title: "sqlite-utils multi-commit upgrade", source: process.env.CODEX_AB_SQLITE_UTILS_SOURCE ?? join(tmpdir(), "codex-ab-sqlite-utils-source"), timeout: 3300, effort: "xhigh", pack: "tasks/sqlite-utils-history/manifest.json",
-      repository: "https://github.com/simonw/sqlite-utils.git", compactLimit: 200000, preset: "stock-mekugi", journalCompaction: "auto" },
+      repository: "https://github.com/simonw/sqlite-utils.git", compactLimit: 200000, preset: "stock-mekugi" },
     ...["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding"].map(id => ({ id, title: id === "gin-context-copy" ? "Gin context copy" : id === "flask-ipv6-server-name" ? "Flask IPv6 server name" : "Express transfer encoding", source: join(userRoot, "projects", id.split("-")[0]!), timeout: 1800, effort: "medium", pack: `tasks/${id}/manifest.json` })),
     { id: "custom", title: "Custom task or portable pack", source: "", timeout: 1800, effort: "medium", pack: "" },
   ];
@@ -52,7 +51,7 @@ function positive(value: string, label: string): number {
 export function launchConfiguration(input: CliOptions): { prepare: PrepareOptions; count: number; order: "concurrent" | "alternating"; docker: string; auth: string; grokAuth: string; prepareOnly: boolean } {
   const defaults = taskCatalog().find(task => task.id === input.task);
   const taskDefaults: CliOptions = defaults?.preset && !input.preset && !input.comparison
-    ? { preset: defaults.preset, "journal-compaction": defaults.journalCompaction } : {};
+    ? { preset: defaults.preset } : {};
   const o: CliOptions = { ...launchDefaults(), ...taskDefaults, ...input };
   const task = taskCatalog().find(task => task.id === o.task);
   if (!task) throw new Error("Choose a supported task");
@@ -61,13 +60,8 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (!COMPARISONS.some(item => item.id === comparison)) throw new Error("Choose a supported comparison");
   if (o["current-launcher"] && !["codex", "mekugi"].includes(String(o["current-launcher"]))) throw new Error("Current launcher must be codex or mekugi");
   if (task.id === "session-retention" && comparison !== "stock-current") throw new Error("Mekugi comparisons require a task outside Mekugi; choose another task");
-  const compaction = stringOption(o, "journal-compaction");
-  if (compaction && !["auto", "slice", "off"].includes(compaction)) throw new Error("Journal compaction must be auto, slice, or off");
-  if (compaction && comparison === "stock-current" && o["current-launcher"] !== "mekugi") throw new Error("Journal compaction requires a Mekugi launcher");
-  if (compaction && comparison === "journal-compaction") throw new Error("The journal comparison owns its compaction setting");
-  const flags = validateMekugiFlags(o["mekugi-flags"] ? JSON.parse(stringOption(o, "mekugi-flags")) : ["--mode=mekugi", ...(comparison === "codex-mekugi-grok" ? ["--grok"] : [])]);
-  if (compaction) flags.push(`--journal-compaction=${compaction}`);
-  validateMekugiFlags(flags);
+  if (o["journal-compaction"] !== undefined) throw new Error("Journal compaction is no longer supported");
+  const flags = validateMekugiFlags(o["mekugi-flags"] ? JSON.parse(stringOption(o, "mekugi-flags")) : []);
   const count = positive(stringOption(o, "count", "1"), "Repeat count");
   const order = stringOption(o, "order", "concurrent");
   if (order !== "concurrent" && order !== "alternating") throw new Error("Order must be concurrent or alternating");
@@ -75,15 +69,14 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (comparison !== "codex-mekugi-grok" && !["gpt-6-astra", "gpt-6.1-sol"].includes(model)) throw new Error("Model must be gpt-6-astra or gpt-6.1-sol");
   const effort = stringOption(o, "reasoning-effort", comparison === "codex-mekugi-grok" ? "high" : task.effort);
   if (!["low", "medium", "high", "xhigh"].includes(effort)) throw new Error("Choose low, medium, high, or xhigh reasoning");
-  // A task's shared limit makes both stock-mekugi arms compact at the same context size, so Mekugi's journal reset is exercised.
+  // Apply the same Codex context limit to both minimal launcher arms.
   const limitText = o["auto-compact-limit"] ?? (comparison === "stock-mekugi" && task.compactLimit ? String(task.compactLimit) : undefined);
   const limit = limitText === undefined ? undefined : positive(String(limitText), "Compaction token limit");
-  if (comparison === "journal-compaction" && limit === undefined) throw new Error("journal-compaction requires a positive compaction token limit");
-  if (limit !== undefined && !["journal-compaction", "stock-mekugi"].includes(comparison)) throw new Error("A compaction token limit applies only to journal-compaction or stock-mekugi");
+  if (limit !== undefined && comparison !== "stock-mekugi") throw new Error("A compaction token limit applies only to stock-mekugi");
   const mekugi = comparison !== "stock-current" || o["current-launcher"] === "mekugi";
   if (["stock-mekugi", "codex-mekugi-grok"].includes(comparison) && o["review-treatment"]) throw new Error("This comparison does not accept a reviewer overlay");
-  if (o["protect-mekugi"] && (!mekugi || ["stock-mekugi", "codex-mekugi-grok", "journal-compaction", "duplicate-output"].includes(comparison))) throw new Error("Protected runtime requires current-setup Mekugi or same-setup");
-  if (["journal-compaction", "duplicate-output"].includes(comparison) && flags.some(flag => flag.startsWith(`--${comparison}=`) || flag === "--mode=passthrough" || flag.startsWith("--grok"))) throw new Error("The paired feature comparison owns its treatment flag and requires Mekugi Codex routing");
+  if (o["protect-mekugi"] && (!mekugi || ["stock-mekugi", "codex-mekugi-grok", "duplicate-output"].includes(comparison))) throw new Error("Protected runtime requires current-setup Mekugi or same-setup");
+  if (comparison === "duplicate-output" && flags.some(flag => flag === "--deduplicate-output" || flag.startsWith("--deduplicate-output="))) throw new Error("The paired feature comparison owns its treatment flag and requires Mekugi Codex routing");
   if (o["mekugi-build"] && (input["mekugi-bin"] || input["mekugi-source"])) throw new Error("A captured Mekugi build owns its source and executable");
   const source = stringOption(o, "source", task.source);
   if (!source.trim()) throw new Error("Source checkout is required");

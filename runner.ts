@@ -8,7 +8,7 @@ import candidateSource from "./candidate-script.txt" with { type: "text" };
 import { executorOwnership, launcherMounts, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { armExecutionSucceeded, readState, writeState, withRunLock } from "./state";
-import { isPairedMekugiComparison, mekugiArmFlags, MEKUGI_METRICS_WRAPPER } from "./mekugi";
+import { isPairedMekugiComparison, mekugiArmFlags, MEKUGI_METRICS_WRAPPER, validateMekugiFlags } from "./mekugi";
 import { importControl } from "./control";
 import { armLabels } from "./arm-labels";
 import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
@@ -80,6 +80,8 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
 }
 
 async function preflightChecks(docker: string, state: RunState, runDir: string, signal: AbortSignal): Promise<string> {
+  if (state.comparison === "journal-compaction") throw new Error("journal-compaction is retired; prepare a supported comparison");
+  validateMekugiFlags(state.mekugi_flags ?? []);
   await verifyPreparedInputs(runDir, state);
   if (state.profile === "godoxy-icons") verifyGodoxyIdentity(state.source, state.submodules);
   // Resolve the mutable tag before any checks, so every check and launch uses
@@ -185,7 +187,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
           'cp -a /setup/. /home/ubuntu/ && export PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin && exec "$@"',
           "preflight", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...flags,
           ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),
-          "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"] });
+          "--capture-output=/mekugi-exports/capture.jsonl", ...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"]), "--version"] });
       await writeFile(join(runDir, `artifacts/preflight-mekugi${paired ? `-${arm}` : ""}.json`), JSON.stringify(launch, null, 2));
       if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
     }
@@ -298,7 +300,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const grokCommand = grokArm
     ? ["grok", "--prompt-file", "/control/task.md", "--cwd", "/workspace", "-m", "grok-4.7", "--reasoning-effort", state.execution.reasoning_effort, "--always-approve", "--sandbox", "off", "--output-format", "json", "--disable-web-search"]
     : undefined;
-  const codexLauncher = mekugiArm ? ["mekugi", ...mekugiArmFlags(state, arm), ...exportArgs, "codex"] : ["codex"];
+  const codexLauncher = mekugiArm ? ["mekugi", ...mekugiArmFlags(state, arm), ...exportArgs, ...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"])] : ["codex"];
   const mekugiLauncher = exportArgs.length ? ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", ...codexLauncher] : codexLauncher;
   const launcher = grokCommand ?? (mekugiArm && state.comparison === "codex-mekugi-grok" ? mekugiLauncher : arm === "current" || state.comparison === "stock-mekugi" || state.comparison === "same-setup" || isPairedMekugiComparison(state.comparison) ? ["mise", "exec", "--", ...mekugiLauncher] : ["codex"]);
   const grokPath = grokArm ? ["-e", "PATH=/home/ubuntu/.grok/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin", "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin"];

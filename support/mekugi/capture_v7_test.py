@@ -125,6 +125,34 @@ class CaptureV7Tests(unittest.TestCase):
                 self.assertEqual(self.validate(*fixture(("complete", "incomplete", "unknown", "missing"),
                                                        throughput=timing)), set())
 
+    def test_current_v7_byte_only_capture_and_snapshot(self):
+        metrics, records = fixture(throughput=True)
+        records = [copy.deepcopy(record) for record in records]
+        for key in ("semantic", "provider_tools", "delivered_tools"):
+            del metrics[key]
+        for value in metrics["transport"].values():
+            del value["tokens"]
+        exchange = metrics["exchanges"][0]
+        attempt = exchange["provider_attempts"][0]
+        del attempt["projected_request"]
+        for value in (exchange["client_request"], exchange["client_response"], attempt["request"], attempt["response"]):
+            del value["tokens"]
+        for record in records:
+            record.pop("projected_request", None)
+            for key in ("request", "response"):
+                record[key].pop("tokens", None)
+        # Nonzero measurements prove byte reconciliation is still enforced.
+        records[1]["request"]["bytes"] = attempt["request"]["bytes"] = 37
+        metrics["transport"]["provider_attempt_requests"]["bytes"] = 37
+        self.assertEqual(self.validate(metrics, records), set())
+        changed = copy.deepcopy(metrics)
+        changed["transport"]["provider_attempt_requests"]["bytes"] += 1
+        with self.assertRaisesRegex(ValueError, "payload totals"):
+            self.validate(changed, records)
+        records[1]["request"]["bytes"] += 1
+        with self.assertRaisesRegex(ValueError, "raw provider measurements"):
+            self.validate(metrics, records)
+
     def test_v7_missing_usage_is_not_zero_usage(self):
         metrics, records = fixture(("missing",))
         self.assertNotIn("usage", metrics["exchanges"][0])

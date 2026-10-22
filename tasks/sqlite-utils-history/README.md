@@ -71,9 +71,9 @@ CLI tests and reader documentation. Implementing the interacting behaviors
 requires sustained source inspection, integration, and validation rather than
 one isolated feature.
 
-This workload is intended to give journal reset an opportunity to occur. Size
-does not guarantee a reset, and no new candidate run has yet measured its
-duration, context growth, or reset frequency.
+This workload is intended to exercise sustained context use and Codex-owned
+compaction. Size does not guarantee compaction, and no new candidate run has
+yet measured its duration, context growth, or compaction frequency.
 
 ## Launch and environment
 
@@ -94,7 +94,7 @@ commit. **Check inputs** does not clone or start inference.
 ./dist/codex-ab launch --task sqlite-utils-history --confirm-paid-inference
 ```
 
-Defaults remain minimal Codex versus minimal Mekugi, auto journal compaction,
+Defaults remain minimal Codex versus minimal Mekugi,
 xhigh reasoning, a shared 200,000-token auto-compact limit, and a 55-minute
 maximum per candidate. Preparation and judges have separate budgets. Optional
 model, reasoning, timeout, and compaction overrides remain available. Keep the
@@ -126,9 +126,7 @@ optional environment capabilities. The manifest's `qualification: not-run`
 describes the adaptive-judge contract's lack of a prequalified hidden oracle;
 these upstream reference checks do not change that claim.
 
-For a **post-journal-reset** claim, establish a successful root reset in the
-retained Mekugi exports followed by continued root work. Flags, journal
-writes, child resets, or task size do not establish that sequence. Report zero
-observed resets and unavailable telemetry separately. Keep such runs in the
-general setup comparison, without describing them as post-reset evidence.
-This whole-launcher comparison does not isolate journal reset's causal effect.
+Historical post-journal-reset claims require retained evidence of a successful
+root reset followed by continued root work. Task size and flags alone do not
+establish that sequence. Current Mekugi runs have no journal-reset treatment;
+this whole-launcher comparison does not isolate compaction's causal effect.

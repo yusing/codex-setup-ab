@@ -421,15 +421,23 @@ test("invalid launch inputs fail before creating a job, and paid consent is fres
   expect(entries.entries[0].job).toBeUndefined();
 });
 
-test("web launch translates space-separated Mekugi flags to CLI arguments", async () => {
+test("web Mekugi settings serialize unchecked and checked toggles and omit disabled controls", async () => {
   const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
-  const elements = { "launch-form": { querySelectorAll: () => [] }, "prepare-only": { checked: false }, "paid-consent": { checked: true } };
+  const toggles = [
+    { name: "mekugi-shell-guard", type: "checkbox", checked: false, disabled: false },
+    { name: "mekugi-deduplicate-output", type: "checkbox", checked: true, disabled: true },
+    { name: "mekugi-child-reply-summary", type: "checkbox", checked: true, disabled: false },
+  ];
+  const elements = { "launch-form": { querySelectorAll: () => toggles }, "prepare-only": { checked: false }, "paid-consent": { checked: true },
+    ...Object.fromEntries(toggles.map(input => ["f-" + input.name, input])),
+    "f-mekugi-ansi-faint": { value: "off" }, "f-mekugi-timeout": { value: "30s" }, "f-mekugi-stream-idle-timeout": { value: "" },
+  };
   const body = runInNewContext(source + '\nlaunchRequest()', {
     document: { getElementById: (id: keyof typeof elements) => elements[id] },
-    FormData: class { *[Symbol.iterator]() { yield ["mekugi-flags", " --mode=mekugi  --duplicate-output=false "]; } },
+    FormData: class { *[Symbol.iterator]() { yield ["mekugi-timeout", "30s"]; yield ["mekugi-ansi-faint", "off"]; } },
   });
   expect(body).toEqual({ command: "launch", options: {
-    "mekugi-flags": '["--mode=mekugi","--duplicate-output=false"]', "confirm-paid-inference": true,
+    "mekugi-flags": '["--shell-guard=false","--child-reply-summary=true","--ansi-faint=off","--timeout=30s"]', "confirm-paid-inference": true,
   } });
 });
 
@@ -442,7 +450,7 @@ test("a pinned-repository task check announces the clone without starting work",
   const source = join(root, "missing sqlite-utils checkout");
   const options = { task: "sqlite-utils-history", source, "prepare-only": true, "current-home": root, "codex-bin": codex, "docker-bin": "/bin/false", "mekugi-source": root, "mekugi-bin": codex };
   const catalog = (await (await fetch(origin + "/api/config")).json()).tasks;
-  expect(catalog.find((task: { id: string }) => task.id === "sqlite-utils-history")).toMatchObject({ repository: "https://github.com/simonw/sqlite-utils.git", preset: "stock-mekugi", journalCompaction: "auto", compactLimit: 200000 });
+  expect(catalog.find((task: { id: string }) => task.id === "sqlite-utils-history")).toMatchObject({ repository: "https://github.com/simonw/sqlite-utils.git", preset: "stock-mekugi", compactLimit: 200000 });
   const checked = await post("/api/check", { command: "launch", options });
   expect(checked.status).toBe(200);
   expect((await checked.json()).warnings).toContain(`The sqlite-utils multi-commit upgrade checkout will be cloned to ${source} from https://github.com/simonw/sqlite-utils.git`);

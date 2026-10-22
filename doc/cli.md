@@ -158,15 +158,15 @@ build_dir="$(./dist/codex-ab build-mekugi \
 This model-free command uses the comparison runner's bundled Mekugi source-exclusion rules. It
 excludes generated binaries, dependency `node_modules` trees, nested Claude worktrees,
 and Backpass state while retaining dirty source and compiled embedded assets. The
-compiled executable omits debug symbols.
+compiled `mekugi` and `mekugi-exec` executables omit debug symbols.
 It retains a source archive, the archiver, build command/logs, immutable builder-image identity,
-and the executable hash in a private temporary directory. Compilation consumes the archive
+and both executable hashes in a private temporary directory. Compilation consumes the archive
 inside a container without host credentials. Dependency downloads are allowed during this build;
 no model request is made. Failed builds retain their available evidence.
 
 Use `prepare --mekugi-build "$build_dir"` instead of `--mekugi-bin` and
 `--mekugi-source`. Preparation snapshots the runner-bundled analyzer and isolation scripts,
-checks the executable, and copies source provenance into the existing result bundle. No live source
+checks both executables, and copies source provenance into the existing result bundle. No live source
 checkout or original build directory is needed after preparation. The run image is still
 selected independently and verified normally. This is locally recorded build provenance,
 not a signed third-party attestation. Supplying binaries without a build bundle remains

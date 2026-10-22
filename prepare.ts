@@ -116,24 +116,27 @@ function grokStockConfig(reasoningEffort: ReasoningEffort): string {
 
 
 function validatePairedMekugiComparison(comparison: RunState["comparison"], limit: number | undefined, flags: string[], protectedRuntime: boolean): void {
-  if (comparison === "journal-compaction") {
-    if (limit === undefined || !Number.isSafeInteger(limit) || limit <= 0) throw new Error("journal-compaction requires a positive integer --auto-compact-limit");
-  } else if (limit !== undefined) {
-    if (comparison !== "stock-mekugi") throw new Error("--auto-compact-limit requires journal-compaction or stock-mekugi");
+  if (comparison === "journal-compaction") throw new Error("journal-compaction is retired; prepare a supported comparison");
+  if (limit !== undefined) {
+    if (comparison !== "stock-mekugi") throw new Error("--auto-compact-limit requires stock-mekugi");
     if (!Number.isSafeInteger(limit) || limit <= 0) throw new Error("--auto-compact-limit must be a positive integer");
   }
   if (!isPairedMekugiComparison(comparison)) return;
   if (protectedRuntime) throw new Error(`${comparison} requires the same ordinary container boundary in both arms`);
-  if (flags.some(flag => flag.startsWith(`--${comparison}=`) || flag === "--mode=passthrough" || flag === "--grok" || flag.startsWith("--grok="))) {
+  if (flags.some(flag => flag === "--deduplicate-output" || flag.startsWith("--deduplicate-output="))) {
     throw new Error(`${comparison} owns its treatment flag and requires Codex with Mekugi routing`);
   }
 }
 
 export async function verifyPreparedInputs(runDir: string, state: RunState): Promise<void> {
+  if (state.runtime_tools.mekugi_in_image && (!state.runtime_tools.mekugi_exec_source || !state.runtime_tools.mekugi_exec_sha256)) {
+    throw new Error("snapshotted Mekugi companion identity is missing; prepare a fresh run");
+  }
   if (state.runtime_tools.shared_binaries) {
     for (const [source, hash, label] of [
       [state.runtime_tools.current_setup_mise_source, state.runtime_tools.current_setup_mise_sha256, "current setup runtime"],
       [state.runtime_tools.mekugi_source, state.runtime_tools.mekugi_sha256, "Mekugi"],
+      [state.runtime_tools.mekugi_exec_source, state.runtime_tools.mekugi_exec_sha256, "Mekugi companion"],
       [state.runtime_tools.grok_source, state.runtime_tools.grok_sha256, "Grok"],
     ]) {
       if ((source || hash) && (!source || !hash || await sha256(resolve(runDir, source)) !== hash)) throw new Error(`snapshotted ${label} changed`);
@@ -480,6 +483,7 @@ const REVIEW_TREATMENT_FILES = [
 
 export async function prepare(options: PrepareOptions): Promise<string> {
   const build = options.mekugiBuild ? await readMekugiBuild(options.mekugiBuild) : undefined;
+  if (build && !build.binaries.mekugi_exec) throw new Error("Mekugi build must pin both executables; capture a fresh build");
   if (build) options = { ...options, currentLauncher: options.comparison === "codex-mekugi-grok" ? "grok" : "mekugi",
     mekugiBinary: join(options.mekugiBuild!, "bin/mekugi"),
     mekugiSource: join(options.mekugiBuild!, "source") };
@@ -559,15 +563,18 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const mekugiStat = mekugiBinary ? await stat(mekugiBinary) : undefined;
   if (mekugiStat && (!mekugiStat.isFile() || (mekugiStat.mode & 0o111) === 0)) throw new Error(`Mekugi launcher is not executable: ${mekugiBinary}`);
   const mekugiSha256 = mekugiBinary ? await sha256(mekugiBinary) : undefined;
+  const mekugiExec = mekugiBinary ? await realpath(join(dirname(mekugiBinary), "mekugi-exec")) : undefined;
+  if (mekugiExec) {
+    const info = await stat(mekugiExec);
+    if (!info.isFile() || (info.mode & 0o111) === 0) throw new Error("Mekugi companion is not executable");
+  }
+  const mekugiExecSha256 = mekugiExec ? await sha256(mekugiExec) : undefined;
   const grokBinary = grokComparison ? await realpath(options.grokBinary ?? join(options.currentHome, ".grok/bin/grok")) : undefined;
   const grokStat = grokBinary ? await stat(grokBinary) : undefined;
   if (grokStat && (!grokStat.isFile() || (grokStat.mode & 0o111) === 0)) throw new Error(`Grok executable is not executable: ${grokBinary}`);
   const grokSha256 = grokBinary ? await sha256(grokBinary) : undefined;
   const grokVersion = grokBinary ? (await checked([grokBinary, "--version"])).stdout.trim() : undefined;
   if (grokBinary && !/^grok \d+\.\d+\.\d+/.test(grokVersion ?? "")) throw new Error(`unexpected Grok version: ${grokVersion}`);
-  if (grokComparison && !mekugiFlags.some(flag => flag === "--grok" || flag === "--grok=true")) {
-    throw new Error("codex-mekugi-grok requires --grok in --mekugi-flags");
-  }
   if (options.model && !["gpt-6-astra", "gpt-6.1-sol"].includes(options.model) && !(grokComparison && options.model === "grok:grok-4.7")) throw new Error("unsupported benchmark model");
   const model: BenchmarkModel = grokComparison ? "grok:grok-4.7" : options.model ?? "gpt-6-astra";
   if (options.model && grokComparison && options.model !== model) throw new Error(`${comparison} uses ${model}`);
@@ -596,7 +603,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     const directory = join(runDir, "artifacts/mekugi-build");
     await mkdir(directory);
     const files: Array<{ path: string; sha256: string }> = [];
-    for (const name of ["source.tar", "build_inputs.py", "build.json", "build.stdout", "build.stderr", "build-result.json", "bin/mekugi"]) {
+    for (const name of ["source.tar", "build_inputs.py", "build.json", "build.stdout", "build.stderr", "build-result.json", "bin/mekugi", "bin/mekugi-exec"]) {
       const target = join(directory, name);
       await mkdir(dirname(target), { recursive: true });
       await copyFile(join(options.mekugiBuild!, name), target);
@@ -605,7 +612,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     if (await sha256(join(directory, "source.tar")) !== build.source_archive_sha256 ||
         await sha256(join(directory, "build_inputs.py")) !== build.archiver_sha256 ||
         JSON.stringify(JSON.parse(await readFile(join(directory, "build.json"), "utf8"))) !== JSON.stringify(build) ||
-        mekugiSha256 !== build.binaries.mekugi) throw new Error("build inputs changed during preparation");
+        mekugiSha256 !== build.binaries.mekugi ||
+        (build.binaries.mekugi_exec !== undefined && mekugiExecSha256 !== build.binaries.mekugi_exec)) throw new Error("build inputs changed during preparation");
     options.mekugiSource = join(directory, "source");
     await mkdir(options.mekugiSource);
     await checked(["python3", "-c",
@@ -734,6 +742,12 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     }
     protectedRuntime = { boundary: "direct-egress-vs-router-only", scripts };
   }
+  if (mekugiExec) {
+    await mkdir(join(runDir, "snapshots/runtime"), { recursive: true });
+    await copyFile(mekugiExec, join(runDir, "snapshots/runtime/mekugi-exec"));
+    await chmod(join(runDir, "snapshots/runtime/mekugi-exec"), 0o755);
+    if (await sha256(join(runDir, "snapshots/runtime/mekugi-exec")) !== mekugiExecSha256) throw new Error("Mekugi companion changed during preparation");
+  }
   const state: RunState = {
     profile,
     comparison,
@@ -768,6 +782,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       current_setup_mise_sha256: miseSha256,
       current_setup_mise_source: miseBinary,
       codex_code_mode_host_sha256: codeModeHostSha256,
+      mekugi_exec_source: mekugiExec ? "snapshots/runtime/mekugi-exec" : undefined, mekugi_exec_sha256: mekugiExecSha256,
       mekugi_source: frozenMekugi, mekugi_sha256: mekugiSha256, mekugi_in_image: needsMekugi || undefined,
       grok_source: grokBinary, grok_sha256: grokSha256, grok_version: grokVersion,
       codex_code_mode_host_size: codeModeHostStat.size,
