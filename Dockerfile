@@ -2,6 +2,7 @@
 
 FROM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go-toolchain
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS node-toolchain
+FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS bun-toolchain
 
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
@@ -9,6 +10,7 @@ FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a
 # wrappers, source, home state, or credentials.
 COPY --from=go-toolchain /usr/local/go /usr/local/go
 COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
+COPY --from=bun-toolchain /usr/local/bin/bun /usr/local/bin/bun
 ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
 
 RUN apt-get update \
@@ -28,7 +30,8 @@ RUN apt-get update \
         ripgrep \
     && rm -rf /var/lib/apt/lists/* \
     && go version \
-    && node --version
+    && node --version \
+    && bun --version
 
 # The comparison is bare Codex versus bare Codex. Copy the same audited
 # standalone CLI and its code-mode host used by both arms from an explicit

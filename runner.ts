@@ -51,7 +51,7 @@ async function inspectCandidate(docker: string, runDir: string, state: RunState,
     tree: state.source.base_tree, forbidden: state.source.forbidden_commit, icons: state.profile === "godoxy-icons", submodules: state.submodules ?? [] };
   const result = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${label}`, signal, timeoutMs: 60_000,
     createArgs: [...containerArgs(state), "--network", "none", "-e", "GIT_OPTIONAL_LOCKS=0", "-v", `${repository}:/workspace${capture ? "" : ":ro"}`,
-      "-v", `${resolve(runDir, state.runtime_tools.bun)}:/usr/local/bin/bun:ro`, ...(capture ? ["-v", `${capture}:/capture`] : []),
+      ...(capture ? ["-v", `${capture}:/capture`] : []),
       imageRef(state), "bun", "-e", candidateSource, JSON.stringify(spec)] });
   if (result.exitCode !== 0 || result.timedOut || result.canceled) throw new Error(`candidate ${label} verification failed: ${result.stderr.trim()}`);
 }
@@ -196,10 +196,9 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   const dependencyBase = dependencyImage(state);
   if (state.profile !== "godoxy-icons") {
     progress("compiling the exact base and task dependencies in an ephemeral container");
-    const bun = resolve(runDir, state.runtime_tools.bun);
     const cacheArgs = ["--network", "none"];
     const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, ...cacheArgs,
-      "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, "-v", `${bun}:/usr/local/bin/bun:ro`, dependencyBase, "sh", "-lc",
+      "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, dependencyBase, "sh", "-lc",
       `git clone --no-hardlinks /seed /tmp/preflight >/dev/null && git -C /tmp/preflight checkout ${state.source.base_commit} >/dev/null && cd /tmp/preflight && ${prepareAssets(state)} && git diff --quiet HEAD --`] });
     if (compile.exitCode !== 0) throw new Error(`base dependency/compile preflight failed: ${compile.stderr.trim()}`);
   } else {
@@ -246,12 +245,11 @@ export async function preflightRunUnlocked(runDirectory: string, dockerBin = pro
 async function prewarm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, signal: AbortSignal): Promise<void> {
   const name = `codex-ab-${state.id}-${arm}-agent-warm`;
   const repo = resolve(runDir, state.arms[arm].repository);
-  const bun = resolve(runDir, state.runtime_tools.bun);
   const command = prepareAssets(state);
   const result = await runOwnedContainer({ docker, name, signal, createArgs: [...containerArgs(state),
     "-v", `${repo}:/workspace`, "-v", `${home}:/home/ubuntu`,
     "--network", "none",
-    "-v", `${bun}:/usr/local/bin/bun:ro`, imageRef(state), "sh", "-lc", command] });
+    imageRef(state), "sh", "-lc", command] });
   if (result.exitCode !== 0) throw new Error(`${arm === "stock" ? "A" : "B"} / ${armLabels(state)[arm]} cache prewarm failed: ${result.stderr.trim()}`);
   await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true);
 }

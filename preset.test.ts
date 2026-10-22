@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { ensureLaunchImage, launchConfiguration } from "./launch";
 import { main } from "./cli";
 
-type ImageState = "matching" | "stale-codex" | "stale-host" | "wrong-operator" | "wrong-operator-missing-host" | "missing" | "inspect-error" | "identity-error" | "hash-error";
+type ImageState = "matching" | "missing-bun" | "bun-error" | "stale-codex" | "stale-host" | "wrong-operator" | "wrong-operator-missing-host" | "missing" | "inspect-error" | "identity-error" | "hash-error";
 
 async function imageProbe(state: ImageState) {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-preset-"));
@@ -33,6 +33,10 @@ case "$1" in
     echo sha256:fixture ;;
   run)
     case " $* " in
+      *' bun --version '*)
+        [ "$PRESET_STATE" != missing-bun ] || { echo 'bun not found' >&2; exit 127; }
+        [ "$PRESET_STATE" != bun-error ] || { echo 'daemon unavailable' >&2; exit 125; }
+        echo 1.4.2 ;;
       *' sha256sum '*)
         case "$PRESET_STATE" in hash-error|wrong-operator-missing-host) echo 'hash probe failed' >&2; exit 1 ;; esac
         codex_hash=$PRESET_CODEX_HASH
@@ -143,7 +147,7 @@ test("image verification reuses matching binaries and rebuilds stale identity or
   expect(matching.error).toBe("");
   expect(matching.calls).toContain("sha256sum /usr/local/bin/codex /usr/local/bin/codex-code-mode-host");
   expect(matching.calls).not.toContain("\nbuild ");
-  for (const state of ["stale-codex", "stale-host", "wrong-operator", "missing"] as const) {
+  for (const state of ["stale-codex", "stale-host", "wrong-operator", "missing", "missing-bun"] as const) {
     const result = await imageProbe(state);
     expect(result.error).toBe("");
     expect(result.calls).toContain("build --build-context codex_binary=" + result.root + "/selected");
@@ -154,7 +158,7 @@ test("image verification reuses matching binaries and rebuilds stale identity or
 });
 
 test("image probe failures stop without a build", async () => {
-  for (const state of ["inspect-error", "identity-error", "hash-error"] as const) {
+  for (const state of ["inspect-error", "identity-error", "hash-error", "bun-error"] as const) {
     const result = await imageProbe(state);
     expect(result.error).toContain("Cannot");
     expect(result.calls).not.toContain("\nbuild ");

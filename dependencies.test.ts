@@ -21,13 +21,13 @@ test("dependency key pins build inputs, not per-run paths or source locations", 
   const key = dependencyKey(state, state.image_id!);
   const relocated = structuredClone(state);
   relocated.id = "another-run";
+  relocated.runtime_tools.bun_sha256 = "different-host-bun";
   relocated.submodules![0]!.source = "/another/source";
   expect(dependencyKey(relocated, state.image_id!)).toBe(key);
   for (const change of [
     (s: RunState) => { s.source.base_commit = "new"; },
     (s: RunState) => { s.source.base_tree = "new"; },
     (s: RunState) => { s.submodules![0]!.sha = "new"; },
-    (s: RunState) => { s.runtime_tools.bun_sha256 = "new"; },
     (s: RunState) => { s.runtime_tools.mekugi_sha256 = "b".repeat(64); },
     (s: RunState) => { s.runtime_tools.mekugi_exec_sha256 = "c".repeat(64); },
     (s: RunState) => { s.criteria!.contract.preparation = "false"; },
@@ -94,7 +94,6 @@ test("image builds receive frozen Mekugi bytes and a hash-checked final image re
   try {
     await mkdir(join(root, "artifacts"));
     await mkdir(join(root, "baseline"));
-    await writeFile(join(root, "bun"), "bun fixture");
     await writeFile(join(root, "mekugi"), "frozen Mekugi");
     await writeFile(join(root, "mekugi-exec"), "frozen helper");
     const state = fixture();
@@ -105,7 +104,7 @@ test("image builds receive frozen Mekugi bytes and a hash-checked final image re
 case "$1 $2" in
   'image inspect') if [ ! -f '${root}/built' ]; then echo 'No such image' >&2; exit 1; fi; echo '${state.image_id}' ;;
   'tag '*) ;;
-  'build --tag') cmp '${root}/mekugi' "$4/mekugi" && cmp '${root}/mekugi-exec' "$4/mekugi-exec" && cp "$4/Dockerfile" '${root}/recipe' && touch '${root}/built' ;;
+  'build --tag') test ! -e "$4/bun" && cmp '${root}/mekugi' "$4/mekugi" && cmp '${root}/mekugi-exec' "$4/mekugi-exec" && cp "$4/Dockerfile" '${root}/recipe' && touch '${root}/built' ;;
   *) exit 99 ;;
 esac
 `, { mode: 0o755 });

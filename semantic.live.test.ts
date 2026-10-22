@@ -23,7 +23,7 @@ liveTest("isolated checks accept equivalent names, find defects and reject broke
         name: `codex-ab-semantic-${process.pid}-${name}`, docker: "docker",
         check: { criterion: "sum", rationale: "Both inputs contribute to the sum.",
           files: [{ path: "extra.cjs", source: `const assert = require('node:assert/strict'); const math = require('./math.cjs'); assert.equal(math.${symbol}(2, 3), 5);` }],
-          command: ["node", "extra.cjs"] } });
+          command: ["bun", "extra.cjs"] } });
       expect(evidence.status).toBe(expected);
     }
     const candidate = join(root, "renamed");

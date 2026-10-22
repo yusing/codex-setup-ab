@@ -9,7 +9,7 @@ Use `./dist/codex-ab --help` for all flags.
 
 ## Prerequisites and build
 
-You need Bun 1.4 or later, Git, Python 3 for Mekugi export validation, Docker with BuildKit named-context support, access to the source commit, a standalone Codex binary and its matching `codex-code-mode-host` companion, and a mode-0600 Codex `auth.json`. The pinned Ubuntu 24.04 image copies Go 1.27.1 and Node 24.21.0 from public, digest-pinned official images; it does not inherit another benchmark image's runtime, wrappers, source, home, or credentials. It copies the chosen standalone Codex pair directly. Preparation records the CLI version plus both files' SHA-256 identities; preflight requires both container copies to match.
+You need Bun 1.4 or later, Git, Python 3 for Mekugi export validation, Docker with BuildKit named-context support, access to the source commit, a standalone Codex binary and its matching `codex-code-mode-host` companion, and a mode-0600 Codex `auth.json`. The pinned Ubuntu 24.04 image copies Go 1.27.1, Node 24.21.0, and Bun 1.4.2 from public, digest-pinned official images; it does not inherit another benchmark image's runtime, wrappers, source, home, or credentials. It copies the chosen standalone Codex pair directly. Preparation records the CLI version plus both files' SHA-256 identities; preflight requires both container copies to match.
 
 For human-directed work, [start the Web UI](../README.md#launch-and-watch-in-the-web-ui). Pair
 preparation checks and builds the selected image automatically. The following manual
@@ -33,7 +33,7 @@ docker build \
 ./dist/codex-ab --version
 ```
 
-The harness follows the selected host Codex version, not a separately pinned CLI release. The container operator is always `1000:1000`. The preset runner checks an existing image before use and rebuilds it when its operator identity or the Codex/code-mode-host binary hashes differ from the selected host setup, so stale images are not reused after a Codex update. Existing prepared runs retain their recorded runtime identities; prepare a new run to use an updated host pair.
+The harness follows the selected host Codex version, not a separately pinned CLI release. The container operator is always `1000:1000`. The preset runner checks an existing image before use and rebuilds it when its operator identity or the Codex/code-mode-host binary hashes differ from the selected host setup, or its PATH-resolved Bun cannot run, so stale images are not reused after a Codex update. Rebuild older images without Bun before manual preflight. Existing prepared runs retain their recorded runtime identities; prepare a new run to use an updated host pair.
 
 No model request occurs during the build or `prepare`. The `run` command includes two independent source-assessment passes after a completed pair. Each pass has two stages when the first harness succeeds, or three when one repair stage is needed; every stage allows at most three Sol launches on capacity errors. `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
 

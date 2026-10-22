@@ -34,7 +34,7 @@ afterEach(async () => { if (root) await rm(root, { recursive: true, force: true 
 async function inspect(mode: "verify" | "capture", baseline = false, discardDependencies: string[] = []): Promise<Awaited<ReturnType<typeof runOwnedContainer>>> {
   return runOwnedContainer({ docker, name: `codex-ab-candidate-${crypto.randomUUID()}`, timeoutMs: 30_000,
     createArgs: ["--network", "none", "-e", "GIT_OPTIONAL_LOCKS=0", "-v", `${repo}:/workspace`, "-v", `${capture}:/capture`,
-      "-v", `${process.execPath}:/usr/local/bin/bun:ro`, image, "bun", "-e", source,
+      image, "bun", "-e", source,
       JSON.stringify({ mode, baseline, discardDependencies, clean: baseline, base, tree, forbidden: "f".repeat(40), icons: false, submodules: [] })] });
 }
 

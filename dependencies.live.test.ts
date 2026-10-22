@@ -33,7 +33,7 @@ liveTest("real workload reuses dependency image offline with isolated writes and
     await cp(join(root, "repo"), join(root, "repo-b"), { recursive: true });
     await mkdir(join(root, "home-a"));
     await mkdir(join(root, "home-b"));
-    const common = ["--network", "none", "-v", `${join(root, "repo")}:/baseline:ro`, "-v", `${process.execPath}:/usr/local/bin/bun:ro`];
+    const common = ["--network", "none", "-v", `${join(root, "repo")}:/baseline:ro`];
     const preparation = `cp -a /baseline /tmp/work && cd /tmp/work && ${state.criteria!.contract.preparation}`;
     const run = (suffix: string, args: string[], command: string) => runOwnedContainer({ docker, name: `codex-ab-deps-live-${process.pid}-${suffix}`, timeoutMs: 600_000,
       createArgs: [...common, ...args, dependencyImage(state), "sh", "-lc", command] });
@@ -50,7 +50,7 @@ liveTest("real workload reuses dependency image offline with isolated writes and
       await mkdir(capture);
       const captured = await runOwnedContainer({ docker, name: `codex-ab-deps-live-${process.pid}-capture-${repo}`,
         createArgs: ["--network", "none", "-v", `${path}:/workspace`, "-v", `${capture}:/capture`,
-          "-v", `${process.execPath}:/usr/local/bin/bun:ro`, dependencyImage(state), "bun", "-e", candidateSource,
+          dependencyImage(state), "bun", "-e", candidateSource,
           JSON.stringify({ mode: "capture", baseline: false, clean: false, base: state.source.base_commit,
             tree: state.source.base_tree, forbidden: "0".repeat(40), icons: false, submodules: [], discardDependencies: directories })] });
       expect(captured.exitCode, captured.stderr).toBe(0);

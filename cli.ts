@@ -69,7 +69,7 @@ Prepare options:
   --current-launcher N  codex (default; same-setup uses mekugi) or mekugi
   --mekugi-bin FILE     Mekugi executable used by --current-launcher mekugi
   --grok-bin FILE       Grok executable used by --comparison codex-mekugi-grok
-  --bun-bin FILE        Bun 1.4+ executable copied for isolated preparation
+  --bun-bin FILE        host Bun 1.4+ executable recorded as preparation provenance
   --codex-bin FILE      standalone Codex executable used to build the image
   --image NAME          prebuilt bare-Codex image (default codex-ab:0.1.0)
   --timeout SECONDS     per agent and judge launch (default 1800)

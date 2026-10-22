@@ -134,8 +134,15 @@ export async function ensureLaunchImage(options: { image: string; codexBinary: s
       if (hashes.exitCode !== 0) throw new Error(`Cannot verify Codex binaries: ${hashes.stderr.trim()}`);
       if (hashes.stdout.trim() !== `${codexHash}  /usr/local/bin/codex\n${hostHash}  /usr/local/bin/codex-code-mode-host`) reason = "Codex binaries differ from the selected host pair";
     }
+    if (!reason) {
+      const bun = await execute(["run", "--rm", "--network", "none", options.image, "bun", "--version"]);
+      if (bun.exitCode !== 0) {
+        if (bun.exitCode === 125) throw new Error(`Cannot verify container Bun: ${bun.stderr.trim()}`);
+        reason = "container Bun is missing or cannot run through PATH";
+      }
+    }
   }
-  if (!reason) { progress("Image identity and Codex binaries match"); return; }
+  if (!reason) { progress("Image identity and Codex binaries match; container Bun runs through PATH"); return; }
   progress(`Building image ${options.image} (${reason})`);
   // Inherit streams so the workbench receives build progress, not a silent buffered build.
   const child = Bun.spawn([options.docker, "build", "--build-context", `codex_binary=${dirname(codex)}`, "--build-arg", `CODEX_SHA256=${codexHash}`, "--build-arg", `CODEX_CODE_MODE_HOST_SHA256=${hostHash}`, "--build-arg", "BENCH_UID=1000", "--build-arg", "BENCH_GID=1000", "-t", options.image, "."], { stdout: "inherit", stderr: "inherit" });

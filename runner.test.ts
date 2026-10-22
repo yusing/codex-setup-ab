@@ -1079,6 +1079,8 @@ test("non-paid preflight leaves a prepared run unstarted", async () => {
   expect(log).toContain("mise ls --current --missing --no-header");
   expect(log).not.toContain("go generate");
   expect(log).toContain("cd /tmp/preflight && true && git diff --quiet HEAD --");
+  expect(log).toContain(" bun -e ");
+  expect(log).not.toContain(`${state.runtime_tools.bun}:/usr/local/bin/bun`);
 });
 
 test("preflight rejects unavailable provider networking before inference", async () => {
