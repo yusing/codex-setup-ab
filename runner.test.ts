@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,6 +28,8 @@ let base: string;
 let future: string;
 let codexHash: string;
 let codeModeHostHash: string;
+const originalPath = process.env.PATH;
+let brewPrefix: string;
 
 async function file(path: string, content = "fixture\n", mode?: number): Promise<void> {
   await mkdir(join(path, ".."), { recursive: true });
@@ -36,6 +38,7 @@ async function file(path: string, content = "fixture\n", mode?: number): Promise
 
 async function fixtureHome(): Promise<string> {
   const h = join(root, "fixture-home");
+  await file(join(h, ".bash_profile"), 'export PATH="/fixture-python/bin:$PATH"\n');
   for (const name of ["config.toml", "overridden_base_instructions.md", "AGENTS.md", "LARGE-TASK.md", "SMALL-TASK.md", "IMPLEMENTATION.md", "hooks.json", "herdr-agent-state.sh"]) {
     await file(join(h, ".codex", name), name === "config.toml" ? '"model" = "gpt-6-astra"\n"model_reasoning_effort" = "medium"\n"service_tier" = "default"\n["projects"."/old"]\ntrust_level = "trusted"\n' : "fixture\n");
   }
@@ -93,6 +96,9 @@ esac
 
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "codex-ab-test-"));
+  brewPrefix = join(root, "linuxbrew");
+  await file(join(brewPrefix, "bin/brew"), `#!/bin/sh\nprintf '%s\\n' '${brewPrefix}'\n`, 0o755);
+  process.env.PATH = `${brewPrefix}/bin:${originalPath}`;
   source = join(root, "source");
   await mkdir(join(source, "internal/router"), { recursive: true });
   await checked(["git", "init", source]);
@@ -118,7 +124,8 @@ beforeAll(async () => {
   home = await fixtureHome();
 });
 
-afterAll(async () => { await rm(root, { recursive: true, force: true }); });
+afterAll(async () => { process.env.PATH = originalPath; await rm(root, { recursive: true, force: true }); });
+beforeEach(() => { process.env.PATH = `${brewPrefix}/bin:${originalPath}`; });
 
 async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi" = "codex", currentHome = home): Promise<string> {
   return prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
@@ -167,6 +174,9 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   await expect(verifyPreparedInputs(run, state)).rejects.toThrow("identity changed");
   const adaptedConfig = Bun.TOML.parse(await readFile(join(run, "snapshots/current/home/ubuntu/.codex/config.toml"), "utf8")) as Record<string, unknown>;
   expect(adaptedConfig.projects).toEqual({ "/workspace": { trust_level: "trusted" } });
+  const profile = join(run, state.arms.current.home_template, ".bash_profile");
+  const initialized = await checked(["bash", "--noprofile", "--norc", "-c", '. "$1"; printf "%s" "$PATH"', "profile-check", profile]);
+  expect(initialized.stdout).toStartWith("/opt/task-deps/python/bin:/fixture-python/bin:");
 });
 
 test("stock-mekugi shares configured tools while isolating current-home guidance", async () => {
@@ -184,6 +194,10 @@ test("stock-mekugi shares configured tools while isolating current-home guidance
   expect(state.runtime_tools.current_setup_installs).toBe(await realpath(join(home, ".local/share/mise/installs")));
   for (const arm of ["stock", "current"] as const) {
     const template = join(run, state.arms[arm].home_template);
+    const configValues = Bun.TOML.parse(await readFile(join(template, ".codex/config.toml"), "utf8"));
+    expect(configValues.network_access).toBeUndefined();
+    const identity = await checked(["git", "-C", join(run, state.arms[arm].repository), "-c", "user.useConfigOnly=true", "var", "GIT_AUTHOR_IDENT"]);
+    expect(identity.stdout).toStartWith("Task Agent <agent@example.invalid>");
     expect(await readFile(join(template, ".config/mise/config.toml"), "utf8")).toBe('[tools]\n"fixture-runner" = "1"\n');
     expect(await Bun.file(join(template, ".local/bin/mise")).exists()).toBe(false);
     expect(await Bun.file(join(template, "AGENTS.md")).exists()).toBe(false);
@@ -204,6 +218,8 @@ test("stock-mekugi shares configured tools while isolating current-home guidance
   const launches = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" exec --json "));
   expect(launches).toHaveLength(2);
   expect(launches.some(line => line.includes(" codex exec --json ") && !line.includes(" mekugi "))).toBe(true);
+  expect(launches.every(line => line.includes(`${brewPrefix}:${brewPrefix}:ro`) && line.includes(`HOMEBREW_PREFIX=${brewPrefix}`))).toBe(true);
+  expect(launches.every(line => line.includes("PATH=/opt/task-deps/python/bin:"))).toBe(true);
   expect(launches.some(line => line.includes(" sh -c ") && line.includes(" mekugi --capture-output=/mekugi-exports/capture.jsonl --debug codex exec --json "))).toBe(true);
   expect(launches.every(line => line.includes(" mise exec ") && line.includes(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`)
     && line.includes(`MISE_INSTALLS_DIR=${state.runtime_tools.current_setup_installs}`))).toBe(true);
@@ -1012,6 +1028,7 @@ case "$operation" in
       *-preflight-hash) ${missingHost ? `printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex'; status=1` : `printf '%s  %s\\n%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' '${codeModeHostHash}' '/usr/local/bin/codex-code-mode-host'; printf '%s  %s\\n' '${wrongProtectedBinary ? "bad" : codexHash}' '/usr/local/libexec/codex-real'`} ;;
       *-preflight-network-*) ${networkFailure ? "echo 'curl: (7) Network unreachable' >&2; status=7" : "printf '%s' '403'"} ;;
       *-preflight-toolhost) printf '%s\\n' 'CODEX_AB_TOOL_HOST_OK' ;;
+      *-preflight-environment-*) : ;;
       *-preflight-grok) printf '%s\\n' 'grok 1.0.30' ;;
       *-warm) ${failWarm ? "echo prewarm-failed >&2; status=9" : ":"} ;;
       *-capture)
@@ -1077,6 +1094,9 @@ test("non-paid preflight leaves a prepared run unstarted", async () => {
   expect(await Bun.file(join(fake.stateDir, `network-codex-ab-${state.id}-preflight-provider`)).exists()).toBe(false);
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain("mise ls --current --missing --no-header");
+  expect(log).toContain("-preflight-environment-stock");
+  expect(log).toContain("-preflight-environment-current");
+  expect(log).toContain("for interpreter in python python3");
   expect(log).not.toContain("go generate");
   expect(log).toContain("cd /tmp/preflight && true && git diff --quiet HEAD --");
   expect(log).toContain(" bun -e ");
@@ -1181,6 +1201,35 @@ test("Rust tools outside the mise store are recorded, mounted read-only, and ver
   await file(join(rustup, "toolchains/fixture/bin/rustc"), "changed toolchain");
   await expect(verifyPreparedInputs(run, await readState(run))).rejects.toThrow("Rust runtime changed");
 });
+test("Linuxbrew drift and missing offline environment tools stop before inference", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  const manifest = await readToolStoreManifest(join(run, state.runtime_tools.current_setup_files));
+  expect(manifest.linuxbrew?.prefix).toBe(brewPrefix);
+  const extra = join(brewPrefix, "bin/new-tool");
+  await file(extra, "changed installation");
+  try {
+    await expect(preflightRun(run, "/must-not-run")).rejects.toThrow("Linuxbrew installation changed");
+  } finally { await rm(extra); }
+  const fake = await fakeOwnedDocker(0);
+  await file(fake.path, (await readFile(fake.path, "utf8")).replace("*-preflight-environment-*) : ;;", "*-preflight-environment-*) echo 'task Python missing' >&2; status=127 ;;"), 0o755);
+  await expect(preflightRun(run, fake.path)).rejects.toThrow("candidate environment preflight failed");
+  expect((await readFile(fake.log, "utf8"))).not.toContain(" exec --json ");
+  expect((await readState(run)).status).toBe("prepared");
+});
+test("a dangling login profile preserves the captured shell fallback", async () => {
+  const privateHome = join(root, "dangling-profile-home");
+  await cp(home, privateHome, { recursive: true });
+  await rm(join(privateHome, ".bash_profile"));
+  await symlink("missing-profile", join(privateHome, ".bash_profile"));
+  await file(join(privateHome, ".profile"), 'export PROFILE_FALLBACK=loaded\nexport PATH="/fallback-python/bin:$PATH"\n');
+  await checked(["git", "-C", privateHome, "add", ".profile"]);
+  const run = await prepared(30, "codex", privateHome);
+  const state = await readState(run);
+  const template = join(run, state.arms.current.home_template);
+  const result = await checked(["bash", "--noprofile", "--norc", "-c", '. "$HOME/.bash_profile"; printf "%s:%s" "$PROFILE_FALLBACK" "$PATH"'], { env: { HOME: template } });
+  expect(result.stdout).toStartWith("loaded:/opt/task-deps/python/bin:/fallback-python/bin:");
+});
 test("Mekugi rejects changed controls and snapshot files before Docker is invoked", async () => {
   for (const path of ["control/task.md", "evaluator/criteria.json", "snapshots/current/home/ubuntu/AGENTS.md", "snapshots/stock/home/ubuntu/AGENTS.md"]) {
     const run = await prepared();
@@ -1244,7 +1293,7 @@ test("current-only execution launches Mekugi and finishes without a stock agent 
   expect(state.judge).toBeUndefined();
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain(" mise exec -- mekugi codex exec ");
-  expect(log).not.toMatch(/ create --rm --name codex-ab-.*-stock --label /);
+  expect(log).not.toContain(` create --rm --name codex-ab-${state.id}-stock --label `);
   expect(log).not.toContain("-stock-agent-warm ");
   expect(await readFile(join(run, "reports/report.md"), "utf8")).toContain("This single-arm run has no paired winner.");
   expect(await Bun.file(join(run, "reports/bundle/MANIFEST.sha256")).exists()).toBe(true);

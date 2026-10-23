@@ -72,6 +72,8 @@ test("dependency images expose neutral cache paths to implementation agents", as
     ]);
     expect(recipe).toContain(`ENV ${DEPENDENCY_ENV.join(" ")}`);
     expect(recipe).toContain("COPY --from=dependencies /opt/task-deps /opt/task-deps");
+    expect(recipe).toContain('ENV PATH="/opt/task-deps/python/bin:');
+    expect(recipe).toContain("/etc/profile.d/task-tools.sh");
     expect(recipe).not.toContain("/opt/codex-ab-deps");
     expect(recipe.split(`FROM codex-ab-base:${state.image_id!.replace("sha256:", "")}`)[2]).toContain("rmdir /benchmark-agent-issue-reports; fi && mkdir -p /agent-issue-reports");
   } finally { await rm(root, { recursive: true, force: true }); }

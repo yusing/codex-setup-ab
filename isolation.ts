@@ -1,4 +1,4 @@
-import { dependencyImage } from "./dependencies";
+import { dependencyImage, TASK_PATH } from "./dependencies";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
@@ -20,8 +20,10 @@ export function launcherMounts(runDir: string, state: RunState, arm: ArmName): s
 
 export async function miseToolMounts(runDir: string, state: RunState): Promise<string[]> {
   const installs = resolve(runDir, state.runtime_tools.current_setup_installs);
-  const { rust } = await readToolStoreManifest(join(runDir, state.runtime_tools.current_setup_files));
+  const { rust, linuxbrew } = await readToolStoreManifest(join(runDir, state.runtime_tools.current_setup_files));
   return ["-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`, "-e", "MISE_AUTO_INSTALL=0",
+    "-e", `PATH=${TASK_PATH}${linuxbrew ? `:${linuxbrew.prefix}/bin:${linuxbrew.prefix}/sbin` : ""}`,
+    ...(linuxbrew ? ["-v", `${linuxbrew.prefix}:${linuxbrew.prefix}:ro`, "-e", `HOMEBREW_PREFIX=${linuxbrew.prefix}`, "-e", "HOMEBREW_NO_AUTO_UPDATE=1"] : []),
     ...(state.runtime_tools.current_setup_mise_source ? ["-v", `${state.runtime_tools.current_setup_mise_source}:/home/ubuntu/.local/bin/mise:ro`] : []),
     ...(rust ? ["-v", `${rust.cargo_bin}:${rust.cargo_bin}:ro`, "-v", `${rust.cargo_bin}:/home/ubuntu/.cargo/bin:ro`,
       "-v", `${rust.rustup}:${rust.rustup}:ro`, "-e", `RUSTUP_HOME=${rust.rustup}`] : [])];
@@ -35,7 +37,6 @@ export function protectedArgs(runDir: string, state: RunState, runtime: string):
     "--tmpfs", "/tmp:exec,size=4g,mode=1777",
     "--tmpfs", "/mekugi-debug:size=4g,mode=0700",
     "--tmpfs", "/mekugi-runtime/state/mekugi/debug:size=4g,mode=0700",
-    "-e", "PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin:/usr/sbin:/sbin",
     "-e", "MEKUGI_RUNTIME_DIR=/mekugi-runtime", "-e", "XDG_STATE_HOME=/mekugi-runtime/state",
     "-e", "MEKUGI_DEBUG_TMPDIR=/mekugi-debug",
     "-e", "MEKUGI_EXPORT_DIR=/mekugi-exports", "-e", "GOCACHE=/tmp/go-build",

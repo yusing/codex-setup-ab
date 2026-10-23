@@ -5,6 +5,8 @@ import { createHash } from "node:crypto";
 import { exec, checked } from "./process";
 import type { RunState } from "./types";
 
+export const TASK_PATH = "/opt/task-deps/python/bin:/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/go/bin:/usr/sbin:/sbin";
+
 // Outside HOME and /workspace: private bind mounts must not hide image caches.
 export const DEPENDENCY_ENV = [
   "GOCACHE=/opt/task-deps/go-build",
@@ -14,7 +16,7 @@ export const DEPENDENCY_ENV = [
 
 export function dependencyKey(state: RunState, baseImage: string): string {
   return createHash("sha256").update(JSON.stringify({
-    version: 4, baseImage, tree: state.source.base_tree, commit: state.source.base_commit,
+    version: 5, baseImage, tree: state.source.base_tree, commit: state.source.base_commit,
     submodules: state.submodules?.map(({ path, sha }) => ({ path, sha })),
     preparation: state.criteria?.contract.preparation,
     ...(state.runtime_tools.mekugi_in_image ? { mekugi: state.runtime_tools.mekugi_sha256, mekugi_exec: state.runtime_tools.mekugi_exec_sha256 } : {}),
@@ -51,6 +53,10 @@ export async function ensureDependencyImage(docker: string, runDir: string, stat
     "RUN if [ -d /benchmark-agent-issue-reports ]; then rmdir /benchmark-agent-issue-reports; fi && mkdir -p /agent-issue-reports",
     `USER ${state.operator.uid}:${state.operator.gid}`, "COPY --from=dependencies /opt/task-deps /opt/task-deps",
     "COPY --from=dependencies /go/pkg/mod /go/pkg/mod", `ENV ${DEPENDENCY_ENV.join(" ")}`, "",
+    "USER root",
+    `ENV PATH="${TASK_PATH}"`,
+    `RUN printf '%s\\n' 'export PATH="/opt/task-deps/python/bin:$PATH\${HOMEBREW_PREFIX:+:$HOMEBREW_PREFIX/bin:$HOMEBREW_PREFIX/sbin}"' > /etc/profile.d/task-tools.sh`,
+    `USER ${state.operator.uid}:${state.operator.gid}`,
   ].join("\n");
 
   await writeFile(join(runDir, "artifacts/dependencies.Dockerfile"), recipe);

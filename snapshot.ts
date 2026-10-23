@@ -62,6 +62,7 @@ export async function verifySnapshotIdentities(root: string, expected: SnapshotF
 
 export interface ToolStoreManifest {
   files: SnapshotFile[];
+  linuxbrew?: { prefix: string; files: SnapshotFile[] };
   rust?: { cargo_bin: string; rustup: string; cargo_files: SnapshotFile[]; rustup_files: SnapshotFile[] };
 }
 

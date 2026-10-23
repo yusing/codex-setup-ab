@@ -42,6 +42,21 @@ preparing a new run.
 
 Each arm sees only its own clone, caches, and private home. New implementation-agent contexts use neutral task instructions, paths, environment names, and Git branches rather than comparison identifiers. Judges retain their paired inputs. Fresh runs use random session directories for implementation workspaces, active homes, runtime state, and capture exports, including their host-side mount sources. Their mapping is recorded in `run.json`; operator-only logs retain setup labels. Historical records keep their original identities. The shared dependency environment uses `/opt/task-deps`; older prepared inputs require fresh preparation to use the neutral context. The host installed-tool store is mounted read-only into the current arm for `stock-current`, into both arms for `stock-mekugi`, `same-setup`, `journal-compaction`, and `duplicate-output`, and into neither arm for `codex-mekugi-grok`. Agent logs and captured patches stay outside its writable mounts. Behavioral criteria are fixed before execution; adaptive checks are authored after both candidates stop and run in separate evaluator workspaces.
 
+Fresh preparation seeds the same repository-local Git author identity in both candidate
+clones. The dependency image places the task Python
+environment on PATH for direct commands and login shells. Captured Bash login
+profiles restore task-Python precedence after user initialization, including
+Linuxbrew initialization. Preflight checks both `python` and `python3` through
+the copied candidate home and its mise setup offline before inference. Generated minimal Codex configuration omits the
+unsupported top-level `network_access` setting; Docker owns network isolation.
+
+When Linuxbrew is available on the preparation host, tool-enabled arms also mount
+its installation prefix read-only at the original absolute path. Its file metadata
+is recorded and checked alongside mise and Rust, and its bin directories are exposed
+on PATH. Keep all mounted installations unchanged while prepared runs use them.
+The existing comparison-specific tool access rules apply to Linuxbrew too. Fresh
+preparation is required to adopt these environment changes; retained runs are unchanged.
+
 Validate the image and snapshotted dependencies without making a model request:
 
 ```sh

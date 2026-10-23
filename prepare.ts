@@ -101,7 +101,7 @@ async function manifest(root: string): Promise<Array<{ path: string; type: strin
 function stockConfig(model: RunState["execution"]["model"], reasoningEffort: ReasoningEffort): string {
   return [
     `model = ${JSON.stringify(model)}`, `model_reasoning_effort = "${reasoningEffort}"`, 'service_tier = "default"',
-    'approval_policy = "never"', 'sandbox_mode = "danger-full-access"', 'network_access = "enabled"',
+    'approval_policy = "never"', 'sandbox_mode = "danger-full-access"',
     '', '[projects."/workspace"]', 'trust_level = "trusted"', '',
   ].join("\n");
 }
@@ -257,6 +257,9 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   if (!setupIsUnchanged) {
     throw new Error("current setup installations changed");
   }
+  if (setupFiles.linuxbrew && !await verifySnapshotIdentities(setupFiles.linuxbrew.prefix, setupFiles.linuxbrew.files)) {
+    throw new Error("current setup Linuxbrew installation changed");
+  }
   if (setupFiles.rust && (!await verifySnapshotIdentities(setupFiles.rust.cargo_bin, setupFiles.rust.cargo_files)
     || !await verifySnapshotIdentities(setupFiles.rust.rustup, setupFiles.rust.rustup_files))) {
     throw new Error("current setup Rust runtime changed");
@@ -362,12 +365,21 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   const configPath = join(destination, ".codex/config.toml");
   const config = replaceProjectTrust(await readFile(configPath, "utf8"));
   await writeFile(configPath, config, { mode: 0o600 });
+  const loginProfile = join(destination, ".bash_profile");
+  const loginContents = await readFile(loginProfile, "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT" && error.code !== "EACCES") throw error;
+    return 'if [ -r "$HOME/.bash_login" ]; then . "$HOME/.bash_login"; elif [ -r "$HOME/.profile" ]; then . "$HOME/.profile"; fi\n';
+  });
+  // Materialize symlinks before adapting the snapshot, never write through to the host.
+  await rm(loginProfile, { force: true });
+  await writeFile(loginProfile, `${loginContents}\n# Prefer the task environment after user shell initialization.\nexport PATH="/opt/task-deps/python/bin:$PATH"\n`);
   const output = join(dirname(destination), "snapshot-manifest.json");
   await writeFile(output, `${JSON.stringify({ created_at: new Date().toISOString(), source_home: home,
     review_treatment: reviewTreatment ? { source: reviewTreatment, files: treatmentFiles } : null,
     configuration_repository: { path: repository, commit, tree, tracked_worktree_changes: changed }, adaptations: [
     "configuration repository shallow-cloned independently with its remote removed; current tracked working-tree changes overlaid",
     "project trust entries replaced with /workspace",
+    "Bash login profile restores task Python PATH after user shell initialization",
     ...(includeRuntimeSupplements ? [
       "untracked home files excluded except explicit runtime supplements; no host auth, session history or Mekugi state copied",
       "mise executable and installed tool store mounted read-only without copying; migration completion records and referenced pipx lock sidecars copied",
@@ -646,6 +658,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     await mkdir(dirname(repo), { recursive: true });
     await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "work", seed, repo]);
     await checked(["git", "-C", repo, "remote", "remove", "origin"]);
+    await checked(["git", "-C", repo, "config", "user.name", "Task Agent"]);
+    await checked(["git", "-C", repo, "config", "user.email", "agent@example.invalid"]);
     await initializeSubmodules(repo, submodules);
     if (profile === "godoxy-icons") await verifyRepositoryIsolation(repo);
     await verifyClone(seed, repo, base, tree, options.forbiddenCommit);
@@ -679,6 +693,13 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   }
   const currentSetupFiles = join(runDir, "snapshots/current/mise-files.json.gz");
   const toolManifest: ToolStoreManifest = { files: setupFiles };
+  const brew = !isolatedFromCurrentTools && process.platform === "linux" ? Bun.which("brew", { PATH: process.env.PATH }) : null;
+  if (brew) {
+    const prefix = await realpath((await checked([brew, "--prefix"], { env: { HOMEBREW_NO_AUTO_UPDATE: "1" } })).stdout.trim());
+    if (prefix === "/" || prefix === await realpath(options.currentHome)) throw new Error("Linuxbrew prefix must be a dedicated tool installation");
+    progress(`recording Linuxbrew tool metadata for read-only mount: ${prefix}`);
+    toolManifest.linuxbrew = { prefix, files: await recordToolStore(prefix) };
+  }
   const cargoBin = join(await realpath(options.currentHome), ".cargo/bin");
   if (setupFiles.some(file => file.path.startsWith("rust/") && file.type === "symlink" && file.target === cargoBin)) {
     const rustup = join(await realpath(options.currentHome), ".rustup");
