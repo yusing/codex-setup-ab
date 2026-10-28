@@ -261,23 +261,23 @@ test("stock-mekugi accepts an explicit Sol/high pair with the selected model", a
     model: "grok:grok-4.6", mekugiSource: captureSource })).rejects.toThrow("unsupported benchmark model");
 });
 
-test("stock-mekugi accepts low reasoning and rejects unsupported efforts clearly", async () => {
+test.each(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const)("stock-mekugi preserves %s reasoning and rejects unknown efforts", async (effort) => {
   const captureSource = join(root, "low-stock-mekugi-capture-source");
   await mkdir(captureSource, { recursive: true });
   const options = { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi" as const,
     model: "gpt-6-astra" as const, mekugiSource: captureSource };
-  const run = await prepare({ ...options, reasoningEffort: "low" });
+  const run = await prepare({ ...options, reasoningEffort: effort });
   const state = await readState(run);
-  expect(state.execution.reasoning_effort).toBe("low");
+  expect(state.execution.reasoning_effort).toBe(effort);
   for (const template of [state.arms.stock.home_template, state.arms.current.home_template]) {
     expect(await readFile(join(run, template, ".codex/config.toml"), "utf8"))
-      .toContain('model_reasoning_effort = "low"');
+      .toContain(`model_reasoning_effort = "${effort}"`);
   }
   await verifyPreparedInputs(run, state);
-  await expect(prepare({ ...options, reasoningEffort: "minimal" as "low" }))
-    .rejects.toThrow("reasoning effort must be low, medium, high, or xhigh");
+  await expect(prepare({ ...options, reasoningEffort: "unknown" as "low" }))
+    .rejects.toThrow("reasoning effort must be one of:");
 });
 
 function mekugiComparisonOptions() {

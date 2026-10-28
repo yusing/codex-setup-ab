@@ -171,3 +171,7 @@ test("wrong operator identity rebuilds an image even when its companion binary i
   expect(result.calls).toContain("build --build-context");
   expect(result.calls).not.toContain("sha256sum /usr/local/bin/codex");
 });
+
+test.each(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])("launch accepts %s reasoning", effort => {
+  expect(launchConfiguration({ "reasoning-effort": effort }).prepare.reasoningEffort).toBe(effort);
+});

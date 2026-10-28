@@ -1,3 +1,4 @@
+import { REASONING_EFFORTS } from "./types";
 import { access, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -68,7 +69,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   const model = comparison === "codex-mekugi-grok" ? "grok:grok-4.7" : stringOption(o, "model", "gpt-6-astra");
   if (comparison !== "codex-mekugi-grok" && !["gpt-6-astra", "gpt-6.1-sol"].includes(model)) throw new Error("Model must be gpt-6-astra or gpt-6.1-sol");
   const effort = stringOption(o, "reasoning-effort", comparison === "codex-mekugi-grok" ? "high" : task.effort);
-  if (!["low", "medium", "high", "xhigh"].includes(effort)) throw new Error("Choose low, medium, high, or xhigh reasoning");
+  if (!REASONING_EFFORTS.some(value => value === effort)) throw new Error(`Choose reasoning effort: ${REASONING_EFFORTS.join(", ")}`);
   // Apply the same Codex context limit to both minimal launcher arms.
   const limitText = o["auto-compact-limit"] ?? (comparison === "stock-mekugi" && task.compactLimit ? String(task.compactLimit) : undefined);
   const limit = limitText === undefined ? undefined : positive(String(limitText), "Compaction token limit");

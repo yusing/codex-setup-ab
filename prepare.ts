@@ -1,3 +1,4 @@
+import { REASONING_EFFORTS } from "./types";
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -525,7 +526,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (!["codex", "mekugi", "grok"].includes(currentLauncher)) throw new Error("current launcher must be codex, mekugi, or grok");
   const needsMekugi = currentLauncher === "mekugi" || grokComparison;
   if (options.mekugiBinary && !needsMekugi) throw new Error("--mekugi-bin requires a Mekugi launcher treatment");
-  if (!["low", "medium", "high", "xhigh"].includes(reasoningEffort)) throw new Error("reasoning effort must be low, medium, high, or xhigh");
+  if (!REASONING_EFFORTS.includes(reasoningEffort)) throw new Error(`reasoning effort must be one of: ${REASONING_EFFORTS.join(", ")}`);
   if (profile === "godoxy-icons" && (options.baseCommit !== GODOXY_ICONS.base_commit || options.forbiddenCommit !== GODOXY_ICONS.forbidden_commit)) {
     throw new Error("godoxy-icons benchmark identity mismatch");
   }

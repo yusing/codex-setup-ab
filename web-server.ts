@@ -1,3 +1,4 @@
+import { REASONING_EFFORTS } from "./types";
 import { constants, watch, type FSWatcher } from "node:fs";
 import { access, lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -449,7 +450,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         if (req.method === "GET" && url.pathname === "/app.js") return new Response(javascript, { headers: { "Content-Type": "text/javascript", "Cache-Control": "no-cache" } });
         if (req.method === "GET" && url.pathname === "/fonts/ibm-plex-sans-latin.woff2") return new Response(Bun.file(interfaceFont), { headers: { "Content-Type": "font/woff2" } });
         if (req.method === "GET" && url.pathname === "/fonts/OFL.txt") return new Response(fontLicense, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
-        if (req.method === "GET" && url.pathname === "/api/config") return json({ token, defaults, comparisons: COMPARISONS, tasks: taskCatalog(), commands: COMMAND_OPTIONS, actions: ACTIONS, paidCommands: [...PAID] });
+        if (req.method === "GET" && url.pathname === "/api/config") return json({ token, defaults, reasoningEfforts: REASONING_EFFORTS, comparisons: COMPARISONS, tasks: taskCatalog(), commands: COMMAND_OPTIONS, actions: ACTIONS, paidCommands: [...PAID] });
         if (req.method === "GET" && url.pathname === "/api/entries") return json(entryList());
         if (req.method === "GET" && url.pathname === "/api/events") {
           const id = url.searchParams.get("entry");

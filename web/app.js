@@ -101,7 +101,7 @@ function drawLaunch() {
       + '</div><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><section class="form-section" aria-labelledby="run-settings-title"><h2 id="run-settings-title">Run configuration</h2><div class="grid">'
       + '<div class="source-field">' + field("Source checkout", "source", task.source, "text", sourceHint(task)) + '</div>'
       + select("Model", "model", [["gpt-6-astra", "GPT-6 Astra"], ["gpt-6.1-sol", "GPT-6.1 Sol"]], defaults.model)
-      + select("Reasoning effort", "reasoning-effort", [["", "Task default"], ...["low", "medium", "high", "xhigh"].map((value) => [value, words(value)])], "", "NVM and portable packs: medium. Long-horizon tasks: xhigh. Grok: high.")
+      + select("Reasoning effort", "reasoning-effort", [["", "Task default"], ...config.reasoningEfforts.map((value) => [value, words(value)])], "", "NVM and portable packs: medium. Long-horizon tasks: xhigh. Grok: high.")
       + field("Fresh pair count", "count", "1", "number", "One is a single pair. Two or more create a trial set.")
       + select("Trial arm order", "order", [["concurrent", "Concurrent"], ["alternating", "Alternating first arm"]], "concurrent")
       + '<div id="compaction-limit-field">' + field("Shared compaction token limit", "auto-compact-limit", task.compactLimit ?? "", "number", "Both arms compact at this context size. Optional for minimal Codex versus Mekugi; a blank field uses the task default.") + "</div></div></section>"
