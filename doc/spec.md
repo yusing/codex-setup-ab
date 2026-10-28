@@ -77,6 +77,12 @@ Use `CODEX_AB_SKILLS_MGR_SOURCE` to select the skills manager task checkout
 Mekugi runtime checkout (default `$HOME/projects/mekugi`) and the source for `session-retention`;
 set the source, executable, image, and credential paths in the Web UI's settings.
 
+The **Parallel work** checkbox (CLI: `--parallel-work` on `launch` or
+`prepare`) adds a short, neutral instruction to both task prompts: delegate
+independent work, keep coupled work together, coordinate edits, and integrate
+and validate the result. It is unchecked by default, leaving existing delegation
+behavior unchanged. It does not change trial arm scheduling or host guidance.
+
 `stock-mekugi` accepts an optional shared `--auto-compact-limit N`, applied
 to both arms; other comparisons reject it. Compaction remains Codex-owned.
 

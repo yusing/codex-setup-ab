@@ -175,3 +175,10 @@ test("wrong operator identity rebuilds an image even when its companion binary i
 test.each(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])("launch accepts %s reasoning", effort => {
   expect(launchConfiguration({ "reasoning-effort": effort }).prepare.reasoningEffort).toBe(effort);
 });
+
+test("parallel work is opt-in and independent of trial scheduling", () => {
+  expect(launchConfiguration({}).prepare.parallelWork).toBe(false);
+  const launch = launchConfiguration({ "parallel-work": true, order: "alternating" });
+  expect(launch.prepare.parallelWork).toBe(true);
+  expect(launch.order).toBe("alternating");
+});

@@ -94,6 +94,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   return {
     prepare: {
       comparison: comparison as PrepareOptions["comparison"], model: model as PrepareOptions["model"], reasoningEffort: effort as PrepareOptions["reasoningEffort"],
+      parallelWork: o["parallel-work"] === true,
       source: source.trim() ? resolve(source) : "", profile: profile as PrepareOptions["profile"],
       baseCommit: stringOption(o, "base", "302ee2d6691b406f30fcbea38459c6ddc16f6935"),
       forbiddenCommit: stringOption(o, "forbidden", "d49862486236d8a507bc0986aa1d543481f8fb61"),

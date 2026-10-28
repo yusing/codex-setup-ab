@@ -51,6 +51,7 @@ Usage:
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
   --model NAME          gpt-6-astra (default) or gpt-6.1-sol for Codex comparisons
+  --parallel-work       ask both agents to delegate independent work in parallel
   --reasoning-effort N   ${REASONING_EFFORTS.join(", ")}
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit
@@ -169,6 +170,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const runDir = await prepare({
       profile: string(o, "profile", o.criteria ? "task" : "mekugi") as import("./types").BenchmarkProfile,
       model: o.model as import("./types").BenchmarkModel | undefined,
+      parallelWork: o["parallel-work"] === true,
       reasoningEffort: string(o, "reasoning-effort", o.comparison === "codex-mekugi-grok" ? "high" : "medium") as import("./types").ReasoningEffort,
       source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),

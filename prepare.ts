@@ -1,5 +1,5 @@
 import { REASONING_EFFORTS } from "./types";
-import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -28,6 +28,7 @@ export interface PrepareOptions {
   mekugiFlags?: string[];
   profile?: BenchmarkProfile;
   reasoningEffort?: ReasoningEffort;
+  parallelWork?: boolean;
   source: string;
   baseCommit: string;
   forbiddenCommit: string;
@@ -607,7 +608,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   progress(`created isolated run ${runDir}`);
   for (const dir of ["control", "evaluator", "sessions", "snapshots", "artifacts"]) await mkdir(join(runDir, dir), { recursive: true });
   await copyFile(taskPath, join(runDir, "control/task.md"));
-  if (criteriaContract) await writeFile(join(runDir, "evaluator/criteria.json"), JSON.stringify(criteriaContract, null, 2));
+  if (options.parallelWork) await appendFile(join(runDir, "control/task.md"),
+    "\n\n## Parallel work\n\nUse delegates for independent work in parallel. Keep coupled work together and avoid overlapping edits. Give delegates the relevant requirements and context; each owns implementation and focused validation. Coordinate dependencies, integrate results, and validate the complete result.\n");
+  const preparedCriteria = criteriaContract
+    ? { ...criteriaContract, task_sha256: await sha256(join(runDir, "control/task.md")) } : undefined;
+  if (preparedCriteria) await writeFile(join(runDir, "evaluator/criteria.json"), JSON.stringify(preparedCriteria, null, 2));
   if (pack) await writeFile(join(runDir, "evaluator/task-pack.json"), JSON.stringify(pack.snapshot, null, 2));
   const upstreamReference = pack ? await snapshotUpstreamReference(runDir, source, pack.manifest.source) : undefined;
 
@@ -788,7 +793,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     task: { path: "control/task.md", sha256: await sha256(join(runDir, "control/task.md")) },
     task_pack: pack ? { id: pack.manifest.id, path: "evaluator/task-pack.json", sha256: await sha256(join(runDir, "evaluator/task-pack.json")) } : undefined,
     upstream_reference: upstreamReference,
-    criteria: criteriaContract ? { path: "evaluator/criteria.json", sha256: await sha256(join(runDir, "evaluator/criteria.json")), contract: criteriaContract } : undefined,
+    criteria: preparedCriteria ? { path: "evaluator/criteria.json", sha256: await sha256(join(runDir, "evaluator/criteria.json")), contract: preparedCriteria } : undefined,
     image: options.image,
     execution: { model, reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },
     resource_limits: { cpus: options.cpus, memory: options.memory },

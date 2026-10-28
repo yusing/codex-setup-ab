@@ -536,3 +536,11 @@ esac
   const output = await fetch(`${origin}/api/entries/${entry.id}/artifacts?path=build.stderr`);
   expect(await output.text()).toContain("Compilation failed");
 });
+
+test.each([false, true])("web parallel work serializes checked=%s", async checked => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const body = runInNewContext(source + '\nformOptions({ querySelectorAll: () => [{ name: "parallel-work", checked, disabled: false }] })', {
+    checked, FormData: class { *[Symbol.iterator]() {} },
+  });
+  expect(body).toEqual(checked ? { "parallel-work": true } : {});
+});

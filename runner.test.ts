@@ -1981,3 +1981,18 @@ test("sequential cancellation does not start the second arm", async () => {
   expect(result.results?.current).toBeUndefined();
   expect(await readFile(fake.log, "utf8")).not.toContain(`start --attach --interactive codex-ab-${state.id}-current`);
 }, 20000);
+
+test.each([false, true])("parallel work %s preserves task and criteria integrity", async parallelWork => {
+  const original = await readFile(task, "utf8");
+  const run = await prepare({ ...mekugiComparisonOptions(), parallelWork });
+  const state = await readState(run);
+  const prompt = await readFile(join(run, state.task.path), "utf8");
+  expect(prompt.startsWith(original)).toBe(true);
+  if (parallelWork) {
+    expect(prompt).toContain("Use delegates for independent work in parallel.");
+    expect(prompt).toContain("integrate results, and validate the complete result.");
+  } else expect(prompt).toBe(original);
+  expect(state.criteria!.contract.task_sha256).toBe(await sha256(join(run, state.task.path)));
+  expect(await readFile(task, "utf8")).toBe(original);
+  await verifyPreparedInputs(run, state);
+});
