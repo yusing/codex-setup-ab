@@ -47,7 +47,8 @@ JSON or command transport payloads. Incomplete log records wait for a complete
 event; raw evidence remains available for download. Embedded HTML is displayed
 as text, unsafe links are inactive, and images do not trigger network requests.
 Build output stays plain text. Live updates retain open panels and follow-scroll
-behavior.
+behavior. If the operating system cannot allocate file watchers, live evidence
+updates use periodic refresh until that view is closed.
 
 ## Stock Codex versus stock plus Mekugi
 

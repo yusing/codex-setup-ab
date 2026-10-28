@@ -328,11 +328,12 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     let closed = false, running = false, dirty = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let refresh: ReturnType<typeof setInterval> | undefined;
     let controller: ReadableStreamDefaultController<Uint8Array>;
     function close() {
       if (closed) return;
       closed = true;
-      clearTimeout(timer); clearInterval(heartbeat);
+      clearTimeout(timer); clearInterval(heartbeat); clearInterval(refresh);
       for (const { watcher } of watchers.values()) watcher.close();
       subscribers.delete(schedule); streams.delete(close);
       req.signal.removeEventListener("abort", close);
@@ -345,8 +346,15 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       previous.set(event, data);
       controller.enqueue(encoder.encode(`event: ${event}\ndata: ${data}\n\n`));
     }
+    function watchUnavailable(error: unknown): boolean {
+      if (!["EMFILE", "ENFILE", "ENOSPC"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+      for (const { watcher } of watchers.values()) watcher.close();
+      watchers.clear();
+      if (!closed && !refresh) refresh = setInterval(schedule, 1000);
+      return true;
+    }
     async function observe(data: Awaited<ReturnType<typeof snapshot>>) {
-      if (closed || !entry?.directory) return;
+      if (closed || refresh || !entry?.directory) return;
       const root = entry.directory;
       // Watch evidence only, not the private homes and source trees in a run.
       const paths = new Map<string, boolean>([[root, false]]);
@@ -375,7 +383,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         const info = await lstat(path).catch(error => {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         });
-        if (closed) return;
+        if (closed || refresh) return;
         const identity = info?.isDirectory() ? `${info.dev}:${info.ino}` : undefined;
         const existing = watchers.get(path);
         if (identity && existing?.identity === identity) continue;
@@ -385,9 +393,14 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
           const watcher = watch(path, { recursive }, (_event, filename) => {
             if (path !== dirname(root) || !filename || String(filename) === basename(root)) schedule();
           });
-          watcher.on("error", () => { watcher.close(); watchers.delete(path); schedule(); });
+          watcher.on("error", error => {
+            watcher.close(); watchers.delete(path);
+            watchUnavailable(error);
+            schedule();
+          });
           watchers.set(path, { watcher, identity });
         } catch (error) {
+          if (watchUnavailable(error)) return;
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
       }

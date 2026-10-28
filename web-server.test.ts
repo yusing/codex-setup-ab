@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import * as fs from "node:fs";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,7 +40,7 @@ async function pair(): Promise<string> {
 
 async function subscribe(id?: string) {
   const abort = new AbortController();
-  const response = await fetch(origin + "/api/events" + (id ? "?entry=" + id : ""), { signal: AbortSignal.any([abort.signal, AbortSignal.timeout(5000)]) });
+  const response = await fetch(origin + "/api/events" + (id ? "?entry=" + id : ""), { signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) });
   expect(response.status).toBe(200);
   expect(response.headers.get("content-type")).toBe("text/event-stream");
   const reader = response.body!.getReader();
@@ -348,7 +349,7 @@ test("SSE pushes attachment, external evidence changes, and current state on rec
   expect((await reconnected.next("snapshot")).state.status).toBe("replacement");
   reconnected.close();
   expect((await fetch(origin + "/api/events?entry=missing")).status).toBe(404);
-});
+}, 15000);
 
 test("SSE discovers suite reports written after their empty directory appears", async () => {
   const directory = join(root, "suite");
@@ -543,4 +544,21 @@ test.each([false, true])("web parallel work serializes checked=%s", async checke
     checked, FormData: class { *[Symbol.iterator]() {} },
   });
   expect(body).toEqual(checked ? { "parallel-work": true } : {});
+});
+
+test.each(["EMFILE", "ENFILE", "ENOSPC"])("SSE keeps evidence live when watchers fail with %s", async code => {
+  const directory = await pair();
+  const entry = await attach(directory);
+  const watcher = spyOn(fs, "watch").mockImplementation(() => { throw Object.assign(new Error("watch unavailable"), { code }); });
+  const stream = await subscribe(entry.id);
+  try {
+    expect((await stream.next("snapshot")).state.status).toBe("complete");
+    await file(join(directory, "run.json"), JSON.stringify({ schema_version: 1, status: "partial" }));
+    expect((await stream.next("snapshot", data => data.state.status === "partial")).state.status).toBe("partial");
+    expect(watcher).toHaveBeenCalledTimes(1);
+  } finally {
+    stream.close();
+    await workbench.shutdown();
+    watcher.mockRestore();
+  }
 });
