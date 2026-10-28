@@ -9,10 +9,14 @@ preserving unaffected functionality. Implementation design is yours.
    redirecting the views to a backup table. Automatic view rewriting is optional.
 2. Add `Table.checks`, `Table.column_checks`, and `Table.table_checks` for CHECK
    introspection. Expose expressions, constraint names, owning columns, literal
-   choices where applicable, original SQL, and source spans. Handle real SQLite
-   syntax, including comments and quoted identifiers.
-3. Preserve CHECK constraints through transformations; rename their column
-   references correctly and handle dropped columns without leaving broken checks.
+   choices, original SQL, and source spans. A column check has literal choices
+   exactly when it consists entirely of `owning_column IN (literal, ...)`;
+   `IN ()` has an empty list of choices. Handle real SQLite syntax, including
+   comments and quoted identifiers.
+3. Preserve CHECK constraints through transformations and rename their column
+   references correctly. Dropping a column removes the checks it owns; if a
+   remaining check references a dropped column, raise `TransformError` and
+   leave the table unchanged rather than weakening or breaking that check.
 4. Keep schema introspection compatible with older supported SQLite versions.
 5. Preserve column comments through transformations, including rename and reorder.
 6. Make FTS tokenizer arguments safe from SQL injection while retaining valid
@@ -38,8 +42,9 @@ preserving unaffected functionality. Implementation design is yours.
     mark when the highest row has been deleted.
 18. Preserve column and composite UNIQUE constraints through transforms, including
     names, collations, sort order, conflict behavior, and column renames/drops.
-19. Convert exact empty TEXT values to NULL when transforming to INTEGER, FLOAT,
-    or REAL. Leave other values to SQLite's normal conversion behavior.
+19. When a transform changes a TEXT column to INTEGER, FLOAT, or REAL, convert
+    its exact empty strings to NULL. Leave other values to SQLite's normal
+    conversion behavior, and copy columns whose type is not changed unaltered.
 
 Keep existing transaction, foreign-key, and connection-setting protections
 intact. Handle unsupported transformations safely. Safe support for additional
