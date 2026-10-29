@@ -15,7 +15,7 @@ import type { BenchmarkModel } from "./types";
 import { isPairedMekugiComparison, validateMekugiFlags } from "./mekugi";
 import { MEKUGI_EXPORT_SCRIPTS, MEKUGI_ISOLATION_SCRIPTS } from "./support/mekugi";
 import { sha256, writeState } from "./state";
-import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from "./types";
+import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort, JudgeReport } from "./types";
 
 export interface PrepareOptions {
   comparison?: import("./types").Comparison;
@@ -102,7 +102,7 @@ async function manifest(root: string): Promise<Array<{ path: string; type: strin
   return result;
 }
 
-function stockConfig(model: RunState["execution"]["model"], reasoningEffort: ReasoningEffort): string {
+export function minimalCodexConfig(model: RunState["execution"]["model"] | JudgeReport["model"], reasoningEffort: ReasoningEffort): string {
   return [
     `model = ${JSON.stringify(model)}`, `model_reasoning_effort = "${reasoningEffort}"`, 'service_tier = "default"',
     'approval_policy = "never"', 'sandbox_mode = "danger-full-access"',
@@ -192,7 +192,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     const mekugiFiles = await manifest(mekugiHome);
     const grokFiles = await manifest(grokHome);
     if (mekugiFiles.length !== (state.runtime_tools.shared_binaries ? 1 : 2)
-      || await readFile(join(mekugiHome, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)
+      || await readFile(join(mekugiHome, ".codex/config.toml"), "utf8") !== minimalCodexConfig(state.execution.model, state.execution.reasoning_effort)
       || !state.runtime_tools.shared_binaries && await sha256(join(mekugiHome, ".local/bin/mekugi")) !== state.runtime_tools.mekugi_sha256) {
       throw new Error("codex-mekugi-grok Codex+Mekugi setup snapshot changed");
     }
@@ -209,12 +209,12 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     const sameTools = (files: Awaited<ReturnType<typeof manifest>>) => sharedTools.every(tool => files.some(file => JSON.stringify(file) === JSON.stringify(tool)));
     const stockGuidance = withoutTools(stockFiles);
     if (!sameTools(stockFiles) || stockGuidance.length !== 1 || stockGuidance[0].path !== ".codex/config.toml" || stockGuidance[0].type !== "file"
-      || await readFile(join(stock, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)) throw new Error("stock setup snapshot changed");
+      || await readFile(join(stock, ".codex/config.toml"), "utf8") !== minimalCodexConfig(state.execution.model, state.execution.reasoning_effort)) throw new Error("stock setup snapshot changed");
     if (stockMekugi) {
       const treated = join(runDir, state.arms.current.home_template);
       const treatedFiles = await manifest(treated);
       if (!sameTools(treatedFiles) || withoutTools(treatedFiles).length !== (state.runtime_tools.shared_binaries ? 1 : 2)
-        || await readFile(join(treated, ".codex/config.toml"), "utf8") !== stockConfig(state.execution.model, state.execution.reasoning_effort)
+        || await readFile(join(treated, ".codex/config.toml"), "utf8") !== minimalCodexConfig(state.execution.model, state.execution.reasoning_effort)
         || !state.runtime_tools.shared_binaries && await sha256(join(treated, ".local/bin/mekugi")) !== state.runtime_tools.mekugi_sha256) {
         throw new Error("stock-mekugi setup snapshot changed");
       }
@@ -807,14 +807,14 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const stockMekugiTemplate = join(runDir, "snapshots/stock-mekugi/home/ubuntu");
   if (comparison === "stock-mekugi" || grokComparison) {
     await mkdir(join(stockMekugiTemplate, ".codex"), { recursive: true });
-    await writeFile(join(stockMekugiTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
+    await writeFile(join(stockMekugiTemplate, ".codex/config.toml"), minimalCodexConfig(model, reasoningEffort), { mode: 0o600 });
   }
   if (grokComparison) {
     const grokTemplate = join(runDir, "snapshots/stock-grok/home/ubuntu");
     await mkdir(join(grokTemplate, ".grok"), { recursive: true });
     await writeFile(join(grokTemplate, ".grok/config.toml"), grokStockConfig(reasoningEffort), { mode: 0o600 });
   }
-  if (!commitComparison) await writeFile(join(stockTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
+  if (!commitComparison) await writeFile(join(stockTemplate, ".codex/config.toml"), minimalCodexConfig(model, reasoningEffort), { mode: 0o600 });
   if (comparison === "stock-mekugi") {
     for (const target of [stockTemplate, stockMekugiTemplate]) {
       for (const path of TOOL_SETUP_PATHS) {

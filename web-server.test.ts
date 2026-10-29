@@ -173,6 +173,51 @@ test("pair measurement headers use actual arms before reporting and retain recor
   } finally { stream.close(); }
 });
 
+test.each([
+  { name: "pending judge", status: undefined, exitCode: -1, passed: false, label: "Not graded" },
+  { name: "unassessed criteria", status: "unassessed", exitCode: 0, passed: false, label: "Not graded" },
+  { name: "missing semantic pass", status: "pass", missingPass: true, exitCode: 0, passed: false, label: "Not graded" },
+  { name: "missing criterion coverage", status: "pass", missingCriterion: true, exitCode: 0, passed: false, label: "Not graded" },
+  { name: "executed failure with another pass unassessed", status: "fail", exitCode: -1, passed: false, label: "Failed" },
+  { name: "source-only failure with another pass unassessed", status: "fail", basis: "source-only", exitCode: -1, passed: false, label: "Failed" },
+  { name: "completed preparation failure", status: "pass", exitCode: 0, preparationExit: 1, passed: false, label: "Failed" },
+  { name: "completed passing grade", status: "pass", exitCode: 0, passed: true, label: "Passed" },
+  { name: "evaluator error", status: "fail", exitCode: 0, passed: false, evaluatorError: "Infrastructure failed", label: "Not graded" },
+])("behavioral grade displays $label for $name before and after reporting", async scenario => {
+  const directory = await pair();
+  const command = (exitCode: number) => ({ command: "check", exit_code: exitCode });
+  const assessed = { criterion: "behavior", status: "pass", basis: "executed", reasoning: "Executed check" };
+  const criteria = { contract: { criteria: [{ id: "behavior", description: "Required behavior" },
+    ...(scenario.missingCriterion ? [{ id: "other", description: "Other required behavior" }] : [])] } };
+  const result = { grade: {
+    preparation: command(scenario.preparationExit ?? 0), router_suite: command(scenario.exitCode),
+    passed: scenario.passed, evaluator_error: scenario.evaluatorError,
+    semantic: scenario.status === undefined ? undefined : {
+      "pass-1": [{ ...assessed, status: scenario.status === "pass" ? "pass" : "unassessed" }],
+      "pass-1-existing": [assessed],
+      ...(scenario.missingPass ? {} : {
+        "pass-2": [{ ...assessed, status: scenario.status, basis: scenario.basis ?? "executed" }],
+        "pass-2-existing": [assessed],
+      }),
+    },
+  } };
+  await file(join(directory, "run.json"), JSON.stringify({ schema_version: 1, status: "complete", criteria, results: { stock: result },
+    judge: { status: scenario.exitCode === -1 ? "failed" : "complete" } }));
+  const entry = await attach(directory);
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const tone = scenario.label === "Not graded" ? "unassessed" : scenario.passed ? "pass" : "fail";
+  const chip = `<span class="status-chip ${tone}">${scenario.label}</span>`;
+  const render = async () => {
+    const input = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
+    return { input, html: runInNewContext(source + "\nresultContent(input)", { input }) };
+  };
+  expect((await render()).html).toContain('<tr><th>Behavioral grade</th><td class="metric a">' + chip + "</td>");
+  await file(join(directory, "reports/report.json"), JSON.stringify({ criteria, arms: { stock: { result } } }));
+  const reported = await render();
+  expect(reported.html).toContain('<tr><th>Behavioral grade</th><td class="metric a">' + chip + "</td>");
+  expect(reported.html).toContain('<article class="verdict-card a"><h4>' + reported.input.arm_labels.stock + "</h4>" + chip);
+});
+
 test("source assessments replace numbered identities using each pass's presentation order", async () => {
   const directory = await pair();
   const report = {

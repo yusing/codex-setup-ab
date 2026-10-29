@@ -139,7 +139,7 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   await cp(home, setupHome, { recursive: true, verbatimSymlinks: true });
   const configPath = join(setupHome, ".codex/config.toml");
   const historicalConfig = join(setupHome, "historical-config.toml");
-  const originalConfig = await readFile(configPath, "utf8");
+  const originalConfig = 'model_instructions_file = "/missing/setup-instructions.md"\n' + await readFile(configPath, "utf8");
   await file(historicalConfig, originalConfig);
   await rm(configPath);
   await symlink(historicalConfig, configPath);
@@ -248,6 +248,15 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   }
   expect(markdown).toContain(`commit ${first}; tree ${state.setup_revisions!.stock.tree}`);
   expect(markdown).toContain(`commit ${second}; tree ${state.setup_revisions!.current.tree}`);
+  const candidateConfigs = await Promise.all([a, b].map(snapshot => readFile(join(snapshot, ".codex/config.toml"), "utf8")));
+  expect((await judgeRun(run, auth, fake.path)).status).toBe("complete");
+  const judged = await readState(run);
+  for (const attempt of judged.judge!.attempts!) {
+    const mounted = join(fake.stateDir, `codex-ab-${state.id}-judge-${attempt.pass}-${attempt.stage}-${attempt.attempt}.config.toml`);
+    expect(Bun.TOML.parse(await readFile(mounted, "utf8"))).toEqual({ model: "gpt-6.1-sol", model_reasoning_effort: "high",
+      service_tier: "default", approval_policy: "never", sandbox_mode: "danger-full-access", projects: { "/workspace": { trust_level: "trusted" } } });
+  }
+  expect(await Promise.all([a, b].map(snapshot => readFile(join(snapshot, ".codex/config.toml"), "utf8")))).toEqual(candidateConfigs);
   await bundles.collectBundle(run);
   expect(await Bun.file(join(run, "reports/bundle/setup-a-snapshot-manifest.json")).exists()).toBe(true);
   await file(join(a, ".codex/AGENTS.md"), "tampered\n");
@@ -1148,6 +1157,7 @@ case "$operation" in
     done
     test -n "$name" || exit 2
     case "$name" in
+      *-judge-*) cp "$setup/.codex/config.toml" '${stateDir}/'$name.config.toml ;;
       *-preflight-setup|*-preflight-grok|*-preflight-mekugi*|*-preflight-environment-*)
         test -w "$setup/.local/bin" || exit 2
         printf 'PREFLIGHT_HOME %s\\n' "$setup" >> '${log}'
@@ -1815,8 +1825,18 @@ test("finish recovers pre-judge reporting failure without restarting candidates"
   await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("failed finishing");
 }, 30_000);
 
-test("finish recovers both timed-out harness stages without changing completed candidate or existing-test evidence", async () => {
-  const run = await prepared();
+test.each(["timeout", "configuration"])("finish recovers %s harness startup without changing completed candidate or existing-test evidence", async failure => {
+  let run: string;
+  if (failure === "configuration") {
+    const setupHome = join(root, "recover-config-home");
+    await cp(home, setupHome, { recursive: true, verbatimSymlinks: true });
+    await file(join(setupHome, ".codex/config.toml"), 'model_instructions_file = "/missing/setup-instructions.md"\n' + await readFile(join(home, ".codex/config.toml"), "utf8"));
+    await checked(["git", "-C", setupHome, "add", ".codex/config.toml"]);
+    await checked(["git", "-C", setupHome, "commit", "-m", "configured instructions"]);
+    run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+      outputParent: root, currentHome: setupHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+      comparison: "setup-commits", setupACommit: "HEAD", setupBCommit: "HEAD" });
+  } else run = await prepared();
   const auth = join(root, "recover-timeout-auth.json");
   await file(auth, "{}\n", 0o600);
   const fake = await fakeOwnedDocker(0);
@@ -1831,12 +1851,22 @@ test("finish recovers both timed-out harness stages without changing completed c
   const savedPass = judge.passes[0]!;
   const candidateOutputs = await Promise.all(arms.map(arm => readFile(join(run, state.results![arm]!.stdout_path), "utf8")));
   judge.status = "failed";
-  judge.error = `Error: semantic judge timed out after ${state.timeout_seconds} seconds`;
+  judge.error = failure === "timeout" ? `Error: semantic judge timed out after ${state.timeout_seconds} seconds`
+    : "Error: semantic judge pass 1, executable checks, round 1 failed (1)";
   judge.failed_pass = 1;
   judge.passes = [];
   judge.winner = "none";
   judge.attempts = judge.attempts!.filter(item => item.stage === "harness-1");
-  for (const attempt of judge.attempts) attempt.status = attempt.pass === 1 ? "failed" : "canceled";
+  for (const attempt of judge.attempts) {
+    attempt.status = attempt.pass === 1 ? "failed" : "canceled";
+    if (failure === "configuration") {
+      attempt.error = attempt.pass === 1 ? judge.error : "Error: semantic judge canceled";
+      await writeFile(join(run, attempt.stdout_path), "");
+      await writeFile(join(run, attempt.stderr_path), attempt.pass === 1
+        ? "Error: failed to read model instructions file /missing/setup-instructions.md: No such file or directory (os error 2)\n" : "");
+      await cp(join(run, "snapshots/stock/home/ubuntu/.codex/config.toml"), join(run, attempt.usage_home, "config.toml"));
+    }
+  }
   judge.usage_homes = judge.attempts.map(item => item.usage_home);
   const priorAttempts = structuredClone(judge.attempts);
   const attemptOutputs = await Promise.all(priorAttempts.map(item => readFile(join(run, item.stdout_path), "utf8")));
@@ -1856,6 +1886,16 @@ test("finish recovers both timed-out harness stages without changing completed c
     await expect(assertRecoverableJudge(run, { ...state, judge: { ...judge, error } })).rejects.toThrow("recovery requires a failed judge");
   }
   await expect(assertRecoverableJudge(run, { ...state, judge: { ...judge, status: "complete" } })).rejects.toThrow("recovery requires a failed judge");
+  if (failure === "configuration") {
+    const failed = priorAttempts.find(attempt => attempt.status === "failed")!;
+    for (const [path, replacement] of [[failed.stdout_path, "model request output"], [failed.stderr_path, "provider authentication failed"],
+      [`${failed.usage_home}/config.toml`, 'model_instructions_file = "/different/instructions.md"\n']] as const) {
+      const retained = await readFile(join(run, path), "utf8");
+      await writeFile(join(run, path), replacement);
+      await expect(assertRecoverableJudge(run, state)).rejects.toThrow("recovery requires a failed judge");
+      await writeFile(join(run, path), retained);
+    }
+  }
   await expect(assertRecoverableJudge(run, { ...state, judge: { ...judge, passes: [savedPass] } })).rejects.toThrow("no recorded pass");
   await expect(assertRecoverableJudge(run, { ...state, judge: { ...judge,
     attempts: judge.attempts.map((item, index) => index === 0 ? { ...item, status: "running" } : item),

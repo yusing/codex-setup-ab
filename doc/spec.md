@@ -41,6 +41,8 @@ source-assessment reasoning and issues, and criterion decisions directly.
 Readers do not need to expand sections to understand the result. Token breakdowns,
 execution evidence, pricing provenance, and diagnostics remain in one optional
 technical report and the retained evidence downloads.
+Pending or infrastructure-unassessed behavioral grades appear as not graded;
+a failed grade requires an assessed failure.
 
 Setup output renders Codex and Mekugi agent messages as Markdown, including lists,
 links, tables, and code blocks. Tool activity uses short status messages rather than raw event

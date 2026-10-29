@@ -147,11 +147,28 @@ const RECOVERABLE_JUDGE_ERRORS = new Set([
 
 export async function assertRecoverableJudge(runDir: string, state: RunState): Promise<void> {
   const prior = state.judge;
-  const recoverable = RECOVERABLE_JUDGE_ERRORS.has(prior?.error ?? "") ||
+  let recoverable = RECOVERABLE_JUDGE_ERRORS.has(prior?.error ?? "") ||
     prior?.error === `Error: semantic judge timed out after ${state.timeout_seconds} seconds`;
+  // Older setup-commit judges inherited setup A's config without its referenced files.
+  // Require the original startup evidence, not an arbitrary nonzero judge exit.
+  if (!recoverable && state.comparison === "setup-commits" && prior && prior.error ===
+      `Error: semantic judge pass ${prior.failed_pass}, executable checks, round 1 failed (1)`) {
+    const attempt = prior.attempts?.filter(item => item.pass === prior.failed_pass &&
+      item.stage === "harness-1" && item.status === "failed" && item.error === prior.error).at(-1);
+    if (attempt) {
+      const [config, snapshot, stdout, stderr] = await Promise.all([
+        readFile(join(runDir, attempt.usage_home, "config.toml"), "utf8"),
+        readFile(join(runDir, "snapshots/stock/home/ubuntu/.codex/config.toml"), "utf8"),
+        readFile(join(runDir, attempt.stdout_path), "utf8"), readFile(join(runDir, attempt.stderr_path), "utf8"),
+      ]);
+      const instructions = (Bun.TOML.parse(config) as Record<string, unknown>).model_instructions_file;
+      recoverable = config === snapshot && typeof instructions === "string" && stdout === "" && stderr.trim() ===
+        `Error: failed to read model instructions file ${instructions}: No such file or directory (os error 2)`;
+    }
+  }
   if (prior?.status !== "failed" || !recoverable || prior.passes.length ||
       prior.attempts?.some(item => item.status === "running")) {
-    throw new Error("recovery requires a failed judge with a recoverable validation error or timeout, no recorded pass, and no running attempt");
+    throw new Error("recovery requires a failed judge with a recoverable validation error, configuration startup failure or timeout, no recorded pass, and no running attempt");
   }
   const exists = async (path: string) => access(path).then(() => true, () => false);
   for (const pass of [1, 2]) {

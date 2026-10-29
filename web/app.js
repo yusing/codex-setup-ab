@@ -281,8 +281,9 @@ function metricTable(report, state, labels) {
   const results = obj(state.results);
   const values = (arm) => ({ result: obj(obj(arms[arm]).result ?? results[arm]), totals: obj(obj(obj(arms[arm]).usage).totals) });
   const a = values("stock"), b = values("current");
+  const criteria = report.criteria ?? state.criteria;
   const rows = [
-    ["Behavioral grade", gradeChip(a.result), gradeChip(b.result), "", true],
+    ["Behavioral grade", gradeChip(a.result, criteria), gradeChip(b.result, criteria), "", true],
     ["Agent time", duration(a.result.agent_elapsed_ms), duration(b.result.agent_elapsed_ms), "agent_elapsed_ms"],
     ["Estimated API cost", typeof a.totals.estimated_api_usd === "number" ? "$" + metric(a.totals.estimated_api_usd, 6) : "Unknown", typeof b.totals.estimated_api_usd === "number" ? "$" + metric(b.totals.estimated_api_usd, 6) : "Unknown", "estimated_api_usd"],
     ["Total tokens", metric(a.totals.total_tokens), metric(b.totals.total_tokens), "total_tokens"],
@@ -296,8 +297,22 @@ function metricTable(report, state, labels) {
 function statusChip(status, text = words(status)) {
   return '<span class="status-chip ' + esc(status) + '">' + esc(text) + "</span>";
 }
-function gradeChip(result) {
-  const passed = obj(obj(result).grade).passed;
+function gradeChip(result, criteria) {
+  const grade = obj(obj(result).grade);
+  const semantic = obj(grade.semantic);
+  const required = obj(obj(criteria).contract).criteria;
+  // An assessed failure settles the grade even when other checks remain unassessed.
+  const failed = grade.passed === false && Object.values(semantic).flat().some((item) => obj(item).status === "fail");
+  const covered = Array.isArray(required) && [1, 2].every((pass) => {
+    const assessed = semantic["pass-" + pass], existing = semantic["pass-" + pass + "-existing"];
+    return Array.isArray(assessed) && assessed.length === required.length
+      && assessed.every((item) => item.status !== "unassessed" && (item.basis === "executed" || item.status === "fail"))
+      && Array.isArray(existing) && existing.length === 1
+      && existing.every((item) => item.status !== "unassessed" && item.basis === "executed");
+  });
+  const pending = !Array.isArray(required) || grade.evaluator_error || (!failed && (!covered
+    || [grade.preparation, grade.router_suite].some((check) => obj(check).command === "not run" || obj(check).exit_code === -1)));
+  const passed = pending ? undefined : grade.passed;
   return passed === true ? statusChip("pass", "Passed") : passed === false ? statusChip("fail", "Failed") : statusChip("unassessed", "Not graded");
 }
 function armGrade(report, state, arm) {
@@ -341,7 +356,7 @@ function verdictSummary(report, state, labels, complete) {
         + (typeof total === "number" ? " · score " + esc(metric(total, 1)) + "/100" : "")
         + (existing && existing !== "pass" ? " · existing tests " + esc(words(existing)) : "") + "</li>";
     });
-    return '<article class="verdict-card ' + side + '"><h4>' + esc(labels[arm]) + "</h4>" + gradeChip({ grade: armGrade(report, state, arm) })
+    return '<article class="verdict-card ' + side + '"><h4>' + esc(labels[arm]) + "</h4>" + gradeChip({ grade: armGrade(report, state, arm) }, report.criteria ?? state.criteria)
       + (lines.length ? "<ul>" + lines.join("") + "</ul>" : '<p class="hint">No criterion results recorded.</p>') + "</article>";
   };
   return '<div class="result-summary' + (settled ? "" : " warn") + '"><strong>' + esc(headline) + "</strong><p>" + esc(report.winner_reason || report.comparison_exclusion || "Interpret the available evidence with its validity gates.") + "</p>"
