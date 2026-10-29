@@ -1,6 +1,6 @@
 import { dependencyImage } from "./dependencies";
 import { join, posix } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { runOwnedContainer } from "./container";
 import type { ArmName, CommandEvidence, RunState } from "./types";
 
@@ -114,6 +114,15 @@ import hashlib, json, os, pathlib, shutil, subprocess, sys
 candidate, harness = pathlib.Path('/candidate'), json.load(open('/harness.json'))
 workspace = pathlib.Path('/tmp/evaluation')
 shutil.copytree(candidate, workspace, symlinks=True)
+build_seed = '/compiler-seed' if pathlib.Path('/compiler-seed').is_dir() else os.environ.get('GOCACHE')
+if build_seed and build_seed.startswith(('/compiler-seed', '/opt/task-deps/', '/opt/codex-ab-deps/')) and pathlib.Path(build_seed).is_dir():
+    writable_build = pathlib.Path('/tmp/go-build')
+    writable_build.mkdir(parents=True, exist_ok=True)
+    copied = subprocess.run(['cp', '-a', '--reflink=auto', build_seed + '/.', str(writable_build)])
+    if copied.returncode:
+        print('HARNESS_ERROR: evaluator compiler cache setup failed', file=sys.stderr)
+        raise SystemExit(125)
+os.environ['GOCACHE'] = '/tmp/go-build'
 cache = os.environ.get('BUN_INSTALL_CACHE_DIR')
 if cache and cache.startswith(('/opt/task-deps/', '/opt/codex-ab-deps/')) and pathlib.Path(cache).is_dir():
     writable_cache = pathlib.Path('/tmp/bun-cache')
@@ -161,6 +170,28 @@ if any(current_identity(path) != identity for path, identity in baseline.items()
 raise SystemExit(result.returncode)
 `;
 
+/** Warm only pinned baseline code; candidate checks receive this cache read-only. */
+export async function prepareEvaluatorCache(runDir: string, state: RunState, docker: string, signal?: AbortSignal): Promise<void> {
+  if (!await access(join(runDir, "evaluator/stock/go.mod")).then(() => true, () => false)) return;
+  const root = join(runDir, "evaluator/compiler-cache");
+  if (await access(join(root, "ready")).then(() => true, () => false)) return;
+  await mkdir(join(root, "go-build"), { recursive: true, mode: 0o700 });
+  process.stderr.write("[grade] warming shared baseline compiler cache offline\n");
+  const result = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-compiler-cache`, signal,
+    timeoutMs: Math.min(state.timeout_seconds * 1000, 120_000),
+    createArgs: ["--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+      "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
+      "--tmpfs", "/tmp:exec,size=4g,mode=1777", "-v", `${join(runDir, "seed.git")}:/seed.git:ro`,
+      "-v", `${join(root, "go-build")}:/cache`, "-e", "GOCACHE=/cache", "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
+      "-e", `BASE_COMMIT=${state.source.base_commit}`,
+      dependencyImage(state), "sh", "-c", 'git clone --no-hardlinks /seed.git /tmp/base && cd /tmp/base && git checkout --detach "$BASE_COMMIT" && go test -c -o /tmp/baseline-cache.test .'],
+    stdoutFile: join(root, "warm.stdout"), stderrFile: join(root, "warm.stderr"),
+  });
+  if (result.canceled || signal?.aborted) throw new Error("compiler cache warming canceled");
+  if (result.timedOut || result.exitCode !== 0) process.stderr.write(`[grade] baseline cache warming ${result.timedOut ? "timed out" : `exited ${result.exitCode}`}; retaining available compiler entries\n`);
+  await writeFile(join(root, "ready"), "baseline cache prepared\n", { mode: 0o600 });
+}
+
 export async function executeSemanticCheck(options: {
   runDir: string; state: RunState; candidate: string; output: string; name: string;
   check: SemanticCheck; docker: string; signal?: AbortSignal; arm?: ArmName;
@@ -170,15 +201,18 @@ export async function executeSemanticCheck(options: {
   const harnessPath = join(options.output, "harness.json");
   await writeFile(harnessPath, JSON.stringify({ ...check, preparation: options.state.criteria?.contract.preparation ?? "true" }, null, 2), { mode: 0o600 });
   const started = new Date();
+  const cacheSeed = join(runDir, "evaluator/compiler-cache/go-build");
+  const hasCacheSeed = await access(join(runDir, "evaluator/compiler-cache/ready")).then(() => true, () => false);
   const result = await runOwnedContainer({
     docker: options.docker, name: options.name, signal: options.signal,
     timeoutMs: state.timeout_seconds * 1000,
     createArgs: ["--network", "none", "--read-only", "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges", "--cpus", state.resource_limits.cpus,
       "--memory", state.resource_limits.memory, "--tmpfs", "/tmp:exec,size=4g,mode=1777",
-      "-e", "GOCACHE=/tmp/go-build", "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
+      "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
       "-e", "XDG_STATE_HOME=/tmp/state", "-e", "XDG_CONFIG_HOME=/tmp/config",
       "-e", "MEKUGI_RUNTIME_DIR=/tmp/runtime",
+      ...(hasCacheSeed ? ["-v", `${cacheSeed}:/compiler-seed:ro`] : []),
       "-e", "PYTHONDONTWRITEBYTECODE=1", "-v", `${options.candidate}:/candidate:ro`,
       "-v", `${harnessPath}:/harness.json:ro`,
       ...(options.arm && !state.dependency_image ? ["-v", `${join(runDir, "arms", options.arm, "grader-go-pkg-cache")}:/home/ubuntu/go/pkg:ro`,

@@ -102,9 +102,9 @@ async function manifest(root: string): Promise<Array<{ path: string; type: strin
   return result;
 }
 
-export function minimalCodexConfig(model: RunState["execution"]["model"] | JudgeReport["model"], reasoningEffort: ReasoningEffort): string {
+export function minimalCodexConfig(model: RunState["execution"]["model"] | JudgeReport["model"], reasoningEffort: ReasoningEffort, serviceTier: JudgeReport["service_tier"] = "default"): string {
   return [
-    `model = ${JSON.stringify(model)}`, `model_reasoning_effort = "${reasoningEffort}"`, 'service_tier = "default"',
+    `model = ${JSON.stringify(model)}`, `model_reasoning_effort = "${reasoningEffort}"`, `service_tier = ${JSON.stringify(serviceTier)}`,
     'approval_policy = "never"', 'sandbox_mode = "danger-full-access"',
     '', '[projects."/workspace"]', 'trust_level = "trusted"', '',
   ].join("\n");

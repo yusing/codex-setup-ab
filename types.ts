@@ -151,6 +151,7 @@ export interface JudgePass {
 }
 
 export interface JudgeAttempt {
+  service_tier?: "default" | "priority" | "fast";
   stage?: string;
   pass: 1 | 2;
   attempt: number;
@@ -173,7 +174,7 @@ export interface JudgeReport {
   /** Medium is retained for completed reports created before high became the judge default. */
   reasoning_effort: "medium" | "high";
   /** Optional because completed medium/default reports predate persisted judge-tier metadata. */
-  service_tier?: "default" | "priority";
+  service_tier?: "default" | "priority" | "fast";
   passes: JudgePass[];
   agreement?: boolean;
   winner: ArmName | "tie" | "none";

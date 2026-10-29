@@ -53,7 +53,8 @@ test("semantic prompts bound duplicated command output while retaining explicit 
     command: "test", started_at: "", elapsed_ms: 1, exit_code: 0,
     stdout: "x".repeat(600_000), stderr: "y".repeat(600_000),
   };
-  const item = { criterion: "sum", status: "pass", basis: "executed", reasoning: "executed", execution } as const;
+  const item = { criterion: "sum", status: "pass" as const, basis: "executed" as const, reasoning: "executed", execution,
+    check: { criterion: "sum", command: ["node", "check.js"], rationale: "Sum behavior", files: [{ path: "check.js", source: "z".repeat(600_000) }] } };
   const evidence = {
     candidates: { "candidate-1": [item], "candidate-2": [item] },
     history: { "candidate-1": [item], "candidate-2": [item] },
@@ -63,6 +64,8 @@ test("semantic prompts bound duplicated command output while retaining explicit 
   expect(JSON.stringify(summary).length).toBeLessThan(100_000);
   expect(summary.existing_tests["candidate-1"].execution?.stdout).toContain("complete output retained under /evidence");
   expect(execution.stdout).toHaveLength(600_000);
+  expect(summary.candidates["candidate-1"][0]?.check?.files[0]?.source).toContain("/evidence/round-*/candidate-1/sum/harness.json");
+  expect(item.check.files[0].source).toHaveLength(600_000);
 });
 
 test("judge harness compilation problems remain unassessed, not candidate failures", () => {

@@ -14,6 +14,8 @@ import { gradeArm, preflightRun, runPair } from "./runner";
 import { prepareSemanticAssessment } from "./semantic-assessment";
 import { assertRecoverableJudge, judgeRun } from "./judge";
 import * as bundles from "./bundle";
+import * as containers from "./container";
+import { prepareEvaluatorCache } from "./semantic";
 import { buildReport } from "./report";
 import { embeddedFallbackPricing, type PricingSnapshot } from "./usage";
 import { readToolStoreManifest } from "./snapshot";
@@ -254,7 +256,7 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   for (const attempt of judged.judge!.attempts!) {
     const mounted = join(fake.stateDir, `codex-ab-${state.id}-judge-${attempt.pass}-${attempt.stage}-${attempt.attempt}.config.toml`);
     expect(Bun.TOML.parse(await readFile(mounted, "utf8"))).toEqual({ model: "gpt-6.1-sol", model_reasoning_effort: "high",
-      service_tier: "default", approval_policy: "never", sandbox_mode: "danger-full-access", projects: { "/workspace": { trust_level: "trusted" } } });
+      service_tier: "fast", approval_policy: "never", sandbox_mode: "danger-full-access", projects: { "/workspace": { trust_level: "trusted" } } });
   }
   expect(await Promise.all([a, b].map(snapshot => readFile(join(snapshot, ".codex/config.toml"), "utf8")))).toEqual(candidateConfigs);
   await bundles.collectBundle(run);
@@ -925,7 +927,13 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   expect(evaluatorLaunches.every(line => line.includes("--network none") && !line.includes("auth.json") && !line.includes("docker.sock"))).toBe(true);
   expect(evaluatorLaunches.every(line => line.includes("XDG_STATE_HOME=/tmp/state") &&
     line.includes("XDG_CONFIG_HOME=/tmp/config") && line.includes("MEKUGI_RUNTIME_DIR=/tmp/runtime"))).toBe(true);
-  expect(judgeLaunches.every(line => line.includes('sandbox_mode="danger-full-access"') && !line.includes('service_tier="fast"'))).toBe(true);
+  expect(judgeLaunches.every(line => line.includes('sandbox_mode="danger-full-access"') && line.includes('service_tier="fast"'))).toBe(true);
+  expect(done.judge?.service_tier).toBe("fast");
+  expect(done.judge?.attempts?.every(attempt => attempt.service_tier === "fast")).toBe(true);
+  expect(evaluatorLaunches.every(line => !line.includes(":/build-cache") && !line.includes("GOCACHE=/tmp/go-build"))).toBe(true);
+  expect(evaluatorLaunches.every(line => line.includes("--read-only"))).toBe(true);
+  expect(evaluatorLaunches.every(line => line.includes(":/compiler-seed:ro"))).toBe(true);
+  expect(judgeLaunches.every(line => !line.includes(":/compiler-seed") && !line.includes(":/cache"))).toBe(true);
 });
 test("parallel semantic passes preserve the initiating failure", async () => {
   const run = await prepared();
@@ -951,6 +959,34 @@ test("judge executable-check failures use operator-facing stage names", async ()
   const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, 1);
   await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("semantic judge pass 1, executable checks, round 1 failed (9)");
   expect((await readState(run)).judge?.status).toBe("failed");
+});
+test.each(["missing", "malformed", "symlink"])("harness plan artifacts reject %s files before checks execute", async fault => {
+  const run = await prepared();
+  const auth = join(root, `artifact-${fault}-auth.json`); await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const action = fault === "missing" ? 'rm "$harness/checks.json"' : fault === "malformed"
+    ? 'printf invalid > "$harness/checks.json"' : 'rm "$harness/checks.json"; ln -s outside "$harness/checks.json"';
+  const script = await readFile(fake.path, "utf8");
+  expect(script).toContain('> "$harness/checks.json"');
+  await writeFile(fake.path, script.replace('> "$harness/checks.json"', '> "$harness/checks.json"\n        ' + action));
+  await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow(
+    fault === "missing" ? "ENOENT" : fault === "malformed" ? "invalid semantic harness plan JSON" : "ELOOP");
+  expect((await readFile(fake.log, "utf8"))).not.toContain("-round-1-");
+});
+test("optional baseline cache timeout preserves judging and cancellation", async () => {
+  const run = await prepared(); const state = await readState(run);
+  await file(join(run, "evaluator/stock/go.mod"), "module fixture\n");
+  const result = { exitCode: -1, timedOut: true, canceled: false, elapsedMs: 1, stdout: "", stderr: "" };
+  const warm = spyOn(containers, "runOwnedContainer").mockResolvedValue(result);
+  try {
+    await prepareEvaluatorCache(run, state, "unused");
+    expect(await Bun.file(join(run, "evaluator/compiler-cache/ready")).exists()).toBe(true);
+    expect(warm.mock.calls[0]![0].createArgs.join(" ")).toContain("go test -c");
+    await rm(join(run, "evaluator/compiler-cache/ready"));
+    warm.mockResolvedValue({ ...result, canceled: true });
+    await expect(prepareEvaluatorCache(run, state, "unused")).rejects.toThrow("warming canceled");
+    expect(await Bun.file(join(run, "evaluator/compiler-cache/ready")).exists()).toBe(false);
+  } finally { warm.mockRestore(); }
 });
 test("semantic file boundaries reject unrelated changes", async () => {
   const criteriaPath = join(root, "boundary-criteria.json");
@@ -1115,6 +1151,8 @@ async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHo
   }) } });
   const validAssessment = judgeAssessment(true);
   const invalidAssessment = judgeAssessment(false);
+  const harnessPlan = JSON.stringify(Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id,
+    [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked." }]])));
   await file(path, `#!/bin/sh
 set -u
 mkdir -p '${stateDir}'
@@ -1152,6 +1190,7 @@ case "$operation" in
       case "$argument" in
         *:/capture) printf '%s' "\${argument%:/capture}" >'${stateDir}/'$name.capture ;;
         *:/home/ubuntu) setup="\${argument%:/home/ubuntu}" ;;
+        *:/harness) printf '%s' "\${argument%:/harness}" >'${stateDir}/'$name.harness ;;
       esac
       previous="$argument"
     done
@@ -1194,7 +1233,10 @@ case "$operation" in
       *-judge-*-harness-*)
         cat >'${stateDir}/'$name.prompt
         sleep 0.1
-        printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked." }]]))) } })}'
+        harness=$(cat '${stateDir}/'$name.harness)
+        printf '%s\\n' '${harnessPlan}' > "$harness/checks.json"
+        mkfifo "$harness/draft.pipe"
+        printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ plan_file: "checks.json" }) } })}'
         ${failHarnessPass ? `case "$name" in *-judge-${failHarnessPass}-harness-*) status=9 ;; esac` : ":"}
         ;;
       *-judge-*-assessment-*)
@@ -1942,12 +1984,17 @@ test.each(["timeout", "configuration"])("finish recovers %s harness startup with
   const addedLog = (await readFile(fake.log, "utf8")).slice(priorLog.length);
   expect(addedLog).toContain("-judge-1-harness-1-2");
   expect(addedLog).toContain("-judge-2-harness-1-2");
+  const firstHarnessFinish = Math.min(...[1, 2].map(pass => addedLog.indexOf(`FINISH codex-ab-${state.id}-judge-${pass}-harness-1-2`)));
+  for (const pass of [1, 2]) {
+    expect(addedLog.indexOf(`start --attach codex-ab-${state.id}-judge-${pass}-harness-1-2`)).toBeLessThan(firstHarnessFinish);
+  }
   expect(addedLog).not.toMatch(/-semantic-[12]-existing-/);
   expect(addedLog).not.toContain("-stock ");
   expect(addedLog).not.toContain("-current ");
   expect(addedLog).not.toContain(`${state.runtime_tools.current_setup_installs}:`);
   expect(await sha256(toolManifest)).toBe(toolManifestHash);
   expect(finished.finishing_history).toHaveLength(1);
+  expect(await Bun.file(join(run, "reports/bundle/semantic/pass-1/plans/harness-1-2/checks.json")).exists()).toBe(true);
 }, 30_000);
 
 for (const judgeModel of ["gpt-6.1-sol", "gpt-6-sol"] as const) {
@@ -1966,6 +2013,11 @@ test(`${judgeModel} ${failure} judge recovery reuses saved pass 1 and runs only 
   const supplementalPricing = { captured_at: new Date().toISOString(), rate: embeddedFallbackPricing(judgeModel) };
   state.judge_pricing = supplementalPricing;
   const saved = judge.attempts!.find(item => item.pass === 1 && item.stage === "assessment")!;
+  if (failure === "validation") {
+    const harness = judge.attempts!.find(item => item.pass === 1 && item.stage === "harness-1")!;
+    const plan = await Bun.file(join(run, "evaluator/semantic/pass-1/plans/harness-1-1/checks.json")).json();
+    await writeFile(join(run, harness.stdout_path), JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(plan) } }) + "\n");
+  }
   const event = JSON.parse((await readFile(join(run, saved.stdout_path), "utf8")).trim());
   const response = JSON.parse(event.item.text);
   response.criteria["candidate-2"][0] = { criterion: "fixture", status: "fail", basis: failure === "executed-failure" ? "executed" : "source-only", reasoning: "Unverified failure observation." };
