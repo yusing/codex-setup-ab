@@ -132,7 +132,7 @@ function validatePairedMekugiComparison(comparison: RunState["comparison"], limi
   }
 }
 
-export async function verifyPreparedInputs(runDir: string, state: RunState): Promise<void> {
+export async function verifyPreparedInputs(runDir: string, state: RunState, purpose: "execution" | "judging" = "execution"): Promise<void> {
   if (state.runtime_tools.mekugi_in_image && (!state.runtime_tools.mekugi_exec_source || !state.runtime_tools.mekugi_exec_sha256)) {
     throw new Error("snapshotted Mekugi companion identity is missing; prepare a fresh run");
   }
@@ -143,6 +143,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
       [state.runtime_tools.mekugi_exec_source, state.runtime_tools.mekugi_exec_sha256, "Mekugi companion"],
       [state.runtime_tools.grok_source, state.runtime_tools.grok_sha256, "Grok"],
     ]) {
+      if (purpose === "judging" && source && isAbsolute(source)) continue;
       if ((source || hash) && (!source || !hash || await sha256(resolve(runDir, source)) !== hash)) throw new Error(`snapshotted ${label} changed`);
     }
   }
@@ -254,7 +255,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
     const contract = validateCriteria(JSON.parse(await readFile(join(runDir, state.criteria.path), "utf8")), state.task.sha256);
     if (JSON.stringify(contract) !== JSON.stringify(state.criteria.contract)) throw new Error("predetermined criteria changed");
   }
-  if (await sha256(resolve(runDir, state.runtime_tools.bun)) !== state.runtime_tools.bun_sha256) throw new Error("snapshotted Bun changed");
+  if (purpose === "execution" && await sha256(resolve(runDir, state.runtime_tools.bun)) !== state.runtime_tools.bun_sha256) throw new Error("snapshotted Bun changed");
   const manifestPath = join(runDir, state.snapshot_manifest);
   if (await sha256(manifestPath) !== state.current_snapshot.manifest_sha256) throw new Error("snapshot manifest changed");
   const recorded = JSON.parse(await readFile(manifestPath, "utf8")) as { files: unknown };
@@ -263,25 +264,27 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
       await sha256(join(currentTemplate, ".local/bin/mise")) !== state.runtime_tools.current_setup_mise_sha256) {
     throw new Error("snapshotted current setup runtime changed");
   }
-  const setupInstalls = resolve(runDir, state.runtime_tools.current_setup_installs);
   const setupFilesPath = join(runDir, state.runtime_tools.current_setup_files);
   if (await sha256(setupFilesPath) !== state.runtime_tools.current_setup_files_sha256) {
     throw new Error("snapshotted current setup file manifest changed");
   }
-  const setupFiles = await readToolStoreManifest(setupFilesPath);
-  const hasIdentities = Array.isArray(setupFiles.files) && setupFiles.files.every(file => file.identity !== undefined);
-  const setupIsUnchanged = hasIdentities
-    ? await verifySnapshotIdentities(setupInstalls, setupFiles.files)
-    : JSON.stringify(await manifest(setupInstalls)) === JSON.stringify(setupFiles.files);
-  if (!setupIsUnchanged) {
-    throw new Error("current setup installations changed");
-  }
-  if (setupFiles.linuxbrew && !await verifySnapshotIdentities(setupFiles.linuxbrew.prefix, setupFiles.linuxbrew.files)) {
-    throw new Error("current setup Linuxbrew installation changed");
-  }
-  if (setupFiles.rust && (!await verifySnapshotIdentities(setupFiles.rust.cargo_bin, setupFiles.rust.cargo_files)
-    || !await verifySnapshotIdentities(setupFiles.rust.rustup, setupFiles.rust.rustup_files))) {
-    throw new Error("current setup Rust runtime changed");
+  if (purpose === "execution") {
+    const setupInstalls = resolve(runDir, state.runtime_tools.current_setup_installs);
+    const setupFiles = await readToolStoreManifest(setupFilesPath);
+    const hasIdentities = Array.isArray(setupFiles.files) && setupFiles.files.every(file => file.identity !== undefined);
+    const setupIsUnchanged = hasIdentities
+      ? await verifySnapshotIdentities(setupInstalls, setupFiles.files)
+      : JSON.stringify(await manifest(setupInstalls)) === JSON.stringify(setupFiles.files);
+    if (!setupIsUnchanged) {
+      throw new Error("current setup installations changed");
+    }
+    if (setupFiles.linuxbrew && !await verifySnapshotIdentities(setupFiles.linuxbrew.prefix, setupFiles.linuxbrew.files)) {
+      throw new Error("current setup Linuxbrew installation changed");
+    }
+    if (setupFiles.rust && (!await verifySnapshotIdentities(setupFiles.rust.cargo_bin, setupFiles.rust.cargo_files)
+      || !await verifySnapshotIdentities(setupFiles.rust.rustup, setupFiles.rust.rustup_files))) {
+      throw new Error("current setup Rust runtime changed");
+    }
   }
   const mekugiTemplate = state.comparison === "codex-mekugi-grok" ? join(runDir, state.arms.stock.home_template) : join(runDir, state.arms.current.home_template);
   if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {

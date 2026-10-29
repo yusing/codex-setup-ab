@@ -1881,6 +1881,19 @@ test.each(["timeout", "configuration"])("finish recovers %s harness startup with
   state.finishing = { status: "failed", started_at: new Date().toISOString(), bundle_path: "reports/bundle", error: judge.error };
   await writeState(run, state);
   await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("--recover-judge");
+  const toolManifest = join(run, state.runtime_tools.current_setup_files);
+  const toolManifestHash = await sha256(toolManifest);
+  if (failure === "configuration") {
+    await file(join(state.runtime_tools.current_setup_installs, "fixture-runner/1/bin/project-runner"), "changed after execution\n");
+    await expect(verifyPreparedInputs(run, state)).rejects.toThrow("current setup installations changed");
+    for (const [path, message] of [[toolManifest, "snapshotted current setup file manifest changed"],
+      [join(run, state.task.path), "copied benchmark control changed"]] as const) {
+      const retained = await readFile(path);
+      await writeFile(path, "tampered control\n");
+      await expect(verifyPreparedInputs(run, state, "judging")).rejects.toThrow(message);
+      await writeFile(path, retained);
+    }
+  }
 
   for (const error of ["Error: provider authentication failed", `Error: semantic judge timed out after ${state.timeout_seconds + 1} seconds`]) {
     await expect(assertRecoverableJudge(run, { ...state, judge: { ...judge, error } })).rejects.toThrow("recovery requires a failed judge");
@@ -1932,6 +1945,8 @@ test.each(["timeout", "configuration"])("finish recovers %s harness startup with
   expect(addedLog).not.toMatch(/-semantic-[12]-existing-/);
   expect(addedLog).not.toContain("-stock ");
   expect(addedLog).not.toContain("-current ");
+  expect(addedLog).not.toContain(`${state.runtime_tools.current_setup_installs}:`);
+  expect(await sha256(toolManifest)).toBe(toolManifestHash);
   expect(finished.finishing_history).toHaveLength(1);
 }, 30_000);
 
