@@ -4,7 +4,7 @@ export const presentationLabel = (index: number): string => index === 0 ? "A" : 
 
 export function armLabels(state: Pick<RunState, "comparison" | "execution" | "setup_revisions"> & Partial<Pick<RunState, "arms">>): Record<ArmName, string> {
   if (state.comparison === "custom") return Object.fromEntries(Object.entries(state.arms ?? {}).map(([arm, setup]) =>
-    [arm, `${setup.launcher === "mekugi" ? "Codex + Mekugi" : "Codex"} (setup ${state.setup_revisions?.[arm]?.commit.slice(0, 12) ?? "unavailable"})`]));
+    [arm, `${setup.launcher === "mekugi" ? "Codex + Mekugi" : "Codex"} (${state.setup_revisions?.[arm]?.commit === "stock" ? "stock setup" : "setup " + (state.setup_revisions?.[arm]?.commit.slice(0, 12) ?? "unavailable")})`]));
   if (state.comparison === "setup-commits") {
     const launcher = state.execution.current_launcher === "mekugi" ? "Codex + Mekugi" : "Codex";
     return { stock: `${launcher} (setup ${state.setup_revisions?.stock.commit.slice(0, 12) ?? "A"})`, current: `${launcher} (setup ${state.setup_revisions?.current.commit.slice(0, 12) ?? "B"})` };

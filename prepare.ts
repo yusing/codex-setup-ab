@@ -165,8 +165,8 @@ export async function verifyPreparedInputs(runDir: string, state: RunState, purp
     for (const arm of armNames(state)) {
       const identity = state.setup_revisions[arm];
       const expectedManifest = `snapshots/${arm}/home/snapshot-manifest.json`;
-      if (!identity || identity.manifest !== expectedManifest || !/^[a-f0-9]{40}$/.test(identity.commit)
-        || !/^[a-f0-9]{40}$/.test(identity.tree) || await sha256(join(runDir, identity.manifest)) !== identity.manifest_sha256) throw new Error(`${arm} setup revision manifest changed`);
+      const stockSetup = state.comparison === "custom" && state.arm_configurations?.[armNames(state).indexOf(arm)]?.setup_commit === "stock";
+      if (!identity || identity.manifest !== expectedManifest || !(stockSetup ? identity.commit === "stock" && identity.tree === "stock" : /^[a-f0-9]{40}$/.test(identity.commit) && /^[a-f0-9]{40}$/.test(identity.tree)) || await sha256(join(runDir, identity.manifest)) !== identity.manifest_sha256) throw new Error(`${arm} setup revision manifest changed`);
       const recorded = JSON.parse(await readFile(join(runDir, identity.manifest), "utf8"));
       if (recorded.configuration_repository.commit !== identity.commit || recorded.configuration_repository.tree !== identity.tree
         || recorded.configuration_repository.tracked_worktree_changes.length !== 0
@@ -594,7 +594,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   }
   if (commitComparison && (options.reviewTreatment || options.protectMekugi)) throw new Error("setup-commits does not accept reviewer overlays or asymmetric protected runtime");
   const revisions = commitComparison ? await Promise.all((customArms?.map(arm => arm.setup_commit) ?? [options.setupACommit!, options.setupBCommit!]).map(async ref =>
-    (await checked(["git", "-C", options.currentHome, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).stdout.trim())) : undefined;
+    comparison === "custom" && ref === "stock" ? "stock" : (await checked(["git", "-C", options.currentHome, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).stdout.trim())) : undefined;
   const pairedComparison = isPairedMekugiComparison(comparison);
   const pairedExports = pairedComparison || commitComparison && (customArms ? customArms.some(arm => arm.launcher === "mekugi") : options.currentLauncher === "mekugi" || Boolean(build));
   validatePairedMekugiComparison(comparison, options.autoCompactLimit, mekugiFlags, Boolean(options.protectMekugi));
@@ -762,17 +762,28 @@ export async function prepare(options: PrepareOptions): Promise<string> {
 
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
-  const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate,
-    isolatedGuidance ? undefined : mekugiBinary,
-    miseBinary, !isolatedGuidance, reviewTreatment, revisions?.[1]);
+  const captureSetup = async (template: string, revision: string | undefined, runtimeHome: string) => {
+    if (revision !== "stock") return snapshotCurrent(options.currentHome, template,
+      isolatedGuidance ? undefined : mekugiBinary, miseBinary, !isolatedGuidance, reviewTreatment, revision, runtimeHome);
+    await mkdir(join(template, ".codex"), { recursive: true });
+    await writeFile(join(template, ".codex/config.toml"), minimalCodexConfig(model, reasoningEffort), { mode: 0o600 });
+    for (const path of TOOL_SETUP_PATHS.filter(path => path !== ".local/bin/mise")) {
+      if (await exists(join(options.currentHome, path))) await copyRequired(join(options.currentHome, path), join(template, path));
+    }
+    const output = join(dirname(template), "snapshot-manifest.json");
+    await writeFile(output, JSON.stringify({ created_at: new Date().toISOString(), source_home: options.currentHome,
+      configuration_repository: { commit: "stock", tree: "stock", tracked_worktree_changes: [] },
+      files: await manifest(template) }, null, 2));
+    return output;
+  };
+  const snapshotManifest = await captureSetup(currentTemplate, revisions?.[1], options.currentHome);
   let setupRevisions: RunState["setup_revisions"];
   if (revisions) {
     setupRevisions = {};
     for (const [index, arm] of keys.entries()) {
       const template = join(runDir, `snapshots/${arm}/home/ubuntu`);
       await mkdir(template, { recursive: true });
-      const path = index === 1 ? snapshotManifest : await snapshotCurrent(options.currentHome, template,
-        mekugiBinary, miseBinary, true, undefined, revisions[index], currentTemplate);
+      const path = index === 1 ? snapshotManifest : await captureSetup(template, revisions[index], revisions[1] === "stock" ? options.currentHome : currentTemplate);
       const document = JSON.parse(await readFile(path, "utf8"));
       setupRevisions[arm] = { commit: document.configuration_repository.commit, tree: document.configuration_repository.tree,
         manifest: relative(runDir, path), manifest_sha256: await sha256(path) };
@@ -840,7 +851,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     }
   }
   await mkdir(join(runDir, "snapshots/runtime"), { recursive: true });
-  progress(commitComparison ? "captured both setup revisions with shared runtime supplements" : "captured repository-based current and minimal stock setup templates");
+  progress(commitComparison ? "captured selected setups with shared runtime tools" : "captured repository-based current and minimal stock setup templates");
 
   let mekugiExports: RunState["mekugi_exports"];
   if (mekugiBinary && options.mekugiSource) {

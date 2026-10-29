@@ -39,10 +39,13 @@ Codex configuration symlinks into the setup repository are read from the snapsho
 and materialized before adaptation; targets outside the repository are rejected.
 
 For `custom`, supply `--arms` as an ordered JSON array, for example
-`[{"launcher":"stock","setup_commit":"commit1"},{"launcher":"mekugi","setup_commit":"commit1"},{"launcher":"mekugi","setup_commit":"HEAD"}]`.
-`stock` aliases the direct `codex` launcher. Each arm receives the chosen setup revision;
+`[{"launcher":"codex","setup_commit":"stock"},{"launcher":"mekugi","setup_commit":"commit1"},{"launcher":"mekugi","setup_commit":"HEAD"}]`.
+`launcher` selects `codex` or `mekugi` (the legacy launcher alias `stock` means `codex`).
+`setup_commit` independently selects `stock` for minimal guidance or a Git revision.
+Stock setups retain configured mise tool access but omit custom instructions, skills, hooks, and Mekugi configuration.
+Each revision arm receives the chosen setup revision;
 HEAD means the committed revision, without working-tree edits. At least two arms are
-required. Shared model, reasoning, service tier (from the second revision), runtime,
+required. Shared model, reasoning, service tier (from the second setup, default for Stock), runtime,
 task, and resource controls apply to all arms. Reviewer overlays and protected runtime
 are unavailable for this composition. The first two retained keys are `stock` and
 `current`; subsequent keys are `arm-3`, `arm-4`, and so on. Each arm has an independent

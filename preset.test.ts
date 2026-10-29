@@ -8,7 +8,7 @@ import { ensureLaunchImage, launchConfiguration } from "./launch";
 import { main } from "./cli";
 
 test("custom launch composes ordered launcher revisions and rejects incomplete inputs", () => {
-  const arms = [{ launcher: "stock", setup_commit: "HEAD~1" }, { launcher: "mekugi", setup_commit: "HEAD~1" }, { launcher: "mekugi", setup_commit: "HEAD" }];
+  const arms = [{ launcher: "codex", setup_commit: "stock" }, { launcher: "mekugi", setup_commit: "HEAD~1" }, { launcher: "mekugi", setup_commit: "HEAD" }];
   const configuration = launchConfiguration({ preset: "custom", arms: JSON.stringify(arms) });
   expect(configuration.prepare.arms).toEqual(arms.map(arm => ({ ...arm, launcher: arm.launcher === "stock" ? "codex" : arm.launcher })));
   expect(configuration.prepare.currentLauncher).toBe("mekugi");

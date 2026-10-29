@@ -136,6 +136,31 @@ async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi"
     mekugiBinary: currentLauncher === "mekugi" ? join(currentHome, "go/bin/mekugi") : undefined });
 }
 
+test("custom composition prepares independent launcher and stock/revision choices", async () => {
+  const revision = (await checked(["git", "-C", home, "rev-parse", "HEAD"])).stdout.trim();
+  for (const secondSetup of ["stock", revision]) {
+    const arms = [
+      { launcher: "codex" as const, setup_commit: "stock" },
+      { launcher: "mekugi" as const, setup_commit: secondSetup },
+      { launcher: "codex" as const, setup_commit: revision },
+      { launcher: "mekugi" as const, setup_commit: secondSetup === "stock" ? revision : "stock" },
+    ];
+    const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+      outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+      comparison: "custom", arms, mekugiSource, mekugiBinary: join(home, "go/bin/mekugi"), codexBinary: join(home, ".local/bin/codex") });
+    const state = await readState(run);
+    expect(state.arm_configurations).toEqual(arms);
+    await verifyPreparedInputs(run, state);
+    for (const [index, arm] of Object.keys(state.arms).entries()) {
+      const template = join(run, state.arms[arm]!.home_template);
+      expect(await Bun.file(join(template, ".codex/AGENTS.md")).exists()).toBe(arms[index]!.setup_commit !== "stock");
+      expect(await Bun.file(join(template, ".config/mise/config.toml")).exists()).toBe(true);
+    }
+    const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, 4);
+    await preflightRun(run, fake.path);
+  }
+}, 30_000);
+
 test("custom composition executes and blindly assesses every isolated arm, then retains all trial controls", async () => {
   const revision = (await checked(["git", "-C", home, "rev-parse", "HEAD"])).stdout.trim();
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,

@@ -88,16 +88,22 @@ function sharedFields() {
 }
 let customArmIndex = 0;
 function customArmRows() {
-  return [...$("custom-arms").querySelectorAll(".custom-arm")].map(row => ({ launcher: row.querySelector("select").value, setup_commit: row.querySelector("input").value }));
+  return [...$("custom-arms").querySelectorAll(".custom-arm")].map(row => ({ launcher: row.querySelector("select").value, setup_commit: row.querySelectorAll("select")[1].value === "stock" ? "stock" : row.querySelector("input").value }));
 }
 function addCustomArm(launcher = "mekugi", revision = "HEAD") {
   const index = ++customArmIndex;
   const row = document.createElement("div");
   row.className = "custom-arm grid";
-  row.innerHTML = select("Launcher " + index, "arm-launcher-" + index, [["codex", "Stock Codex"], ["mekugi", "Mekugi"]], launcher)
-    + field("Setup revision " + index, "arm-revision-" + index, revision)
+  row.innerHTML = select("Launcher " + index, "arm-launcher-" + index, [["codex", "Codex"], ["mekugi", "Mekugi"]], launcher)
+    + select("Setup " + index, "arm-setup-" + index, [["stock", "Stock"], ["revision", "Committed SHA"]], revision === "stock" ? "stock" : "revision")
+    + field("Setup revision " + index, "arm-revision-" + index, revision === "stock" ? "HEAD" : revision)
     + '<button type="button">Remove setup</button>';
-  for (const input of row.querySelectorAll("input,select")) { input.removeAttribute("name"); input.addEventListener("input", updateCombination); }
+  const setup = row.querySelectorAll("select")[1];
+  const updateSetup = () => { row.querySelector("input").disabled = setup.value === "stock"; row.querySelector("input").parentElement.hidden = setup.value === "stock"; };
+  setup.addEventListener("input", updateSetup);
+  setup.addEventListener("change", updateSetup);
+  updateSetup();
+  for (const input of row.querySelectorAll("input,select")) { input.removeAttribute("name"); input.addEventListener("input", updateCombination); input.addEventListener("change", updateCombination); }
   row.querySelector("button").addEventListener("click", () => { row.remove(); updateCombination(); });
   $("custom-arms").append(row);
 }
@@ -117,7 +123,7 @@ function drawLaunch() {
       + '</div><div id="setup-commit-fields" class="grid" hidden>'
       + field("Setup commit A", "setup-a-commit", "", "text", "Baseline revision in the setup configuration repository.")
       + field("Setup commit B", "setup-b-commit", "", "text", "Treatment revision; live tracked edits are excluded.")
-      + '</div><section id="custom-composition" hidden><h2>Compared setups</h2><p class="hint">Choose at least two launchers and committed setup revisions. Shared controls apply to every setup.</p><div id="custom-arms"></div><button id="add-custom-arm" type="button">Add setup</button></section><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><section class="form-section" aria-labelledby="run-settings-title"><h2 id="run-settings-title">Run configuration</h2><div class="grid">'
+      + '</div><section id="custom-composition" hidden><h2>Compared setups</h2><p class="hint">Choose at least two setups. For each, choose Codex or Mekugi with Stock guidance or a committed setup revision. Shared controls apply to every setup.</p><div id="custom-arms"></div><button id="add-custom-arm" type="button">Add setup</button></section><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><section class="form-section" aria-labelledby="run-settings-title"><h2 id="run-settings-title">Run configuration</h2><div class="grid">'
       + '<div class="source-field">' + field("Source checkout", "source", task.source, "text", sourceHint(task)) + '</div>'
       + select("Model", "model", [["gpt-6-astra", "GPT-6 Astra"], ["gpt-6.1-sol", "GPT-6.1 Sol"]], defaults.model)
       + select("Reasoning effort", "reasoning-effort", [["", "Task default"], ...config.reasoningEfforts.map((value) => [value, words(value)])], "", "NVM and portable packs: medium. Long-horizon tasks: xhigh. Grok: high.")
@@ -180,7 +186,7 @@ function drawLaunch() {
       }
       updateCombination();
     });
-    addCustomArm("codex"); addCustomArm("mekugi");
+    addCustomArm("codex", "stock"); addCustomArm("mekugi");
     $("add-custom-arm").addEventListener("click", () => { addCustomArm(); updateCombination(); });
     for (const id of ["f-preset", "f-current-launcher", "f-mekugi-build", "f-task-pack"]) {
       $(id).addEventListener("input", updateCombination);
@@ -202,7 +208,7 @@ function updateCombination() {
   const mekugi = composition ? configuredArms.some(arm => arm.launcher === "mekugi") : !["stock-current", "setup-commits"].includes(comparison.id) || $("f-current-launcher").value === "mekugi";
   const titleB = comparison.id === "stock-current" && mekugi ? "Mekugi · current setup" : comparison.b;
   $("comparison-preview").innerHTML = '<article><h2>' + esc(comparison.a) + '</h2><p>Fresh isolated workspace</p></article><article><h2>' + esc(titleB) + '</h2><p>Same task and resource limits</p></article>';
-  if (composition) $("comparison-preview").innerHTML = configuredArms.map(arm => "<article><h2>" + esc((arm.launcher === "mekugi" ? "Mekugi" : "Stock Codex") + " @ " + arm.setup_commit) + "</h2><p>Fresh isolated workspace</p></article>").join("");
+  if (composition) $("comparison-preview").innerHTML = configuredArms.map(arm => "<article><h2>" + esc((arm.launcher === "mekugi" ? "Mekugi" : "Codex") + " + " + (arm.setup_commit === "stock" ? "Stock" : arm.setup_commit)) + "</h2><p>Fresh isolated workspace</p></article>").join("");
   $("comparison-description").textContent = comparison.description + (grok ? " The fixed model is Grok 4.7." : "");
   setEnabled("f-model", !grok);
   setEnabled("f-current-launcher", ["stock-current", "setup-commits"].includes(comparison.id));

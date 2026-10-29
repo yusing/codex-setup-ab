@@ -189,9 +189,11 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
       const mekugiCheck = state.execution.current_launcher === "mekugi"
         ? " && command -v mekugi >/dev/null"
         : "";
+      const stockSetup = state.comparison === "custom" && state.setup_revisions?.[setupArm]?.commit === "stock";
+      const guidanceCheck = stockSetup ? "true" : `skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && if test -f /workspace/go.mod; then test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go${goHookCheck}; fi`;
       const dependencies = await checkSetup(setupArm, { name: `${prefix}-setup`, createArgs: ["-e", `CODEX_AB_HOOK_EVENT=${hookEvent}`,
         "-v", `${workspace}:/workspace:ro`, setupImage, "sh", "-lc",
-        `export PATH=/home/ubuntu/.local/bin:$PATH && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && missing_tools="$(mise ls --current --missing --no-header)" && if test -n "$missing_tools"; then printf "missing current setup tools: %s\n" "$missing_tools" >&2; exit 1; fi && cd /workspace && mise exec -- sh -lc 'skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && if test -f /workspace/go.mod; then test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go${goHookCheck}; fi'${mekugiCheck}`] });
+        `export PATH=/home/ubuntu/.local/bin:$PATH && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && missing_tools="$(mise ls --current --missing --no-header)" && if test -n "$missing_tools"; then printf "missing current setup tools: %s\n" "$missing_tools" >&2; exit 1; fi && cd /workspace && mise exec -- sh -lc '${guidanceCheck}'${mekugiCheck}`] });
       if (/\[WARN\] migrate:/.test(`${dependencies.stdout}\n${dependencies.stderr}`)) {
         throw new Error("current setup mise migration failed against the read-only tool snapshot; prepare again from a home with completed mise migrations");
       }

@@ -13,7 +13,7 @@ import { validateMekugiFlags } from "./mekugi";
 import type { CliOptions } from "./cli-options";
 
 export const COMPARISONS = [
-  { id: "custom", title: "Custom composition", a: "First setup", b: "Additional setups", description: "Compare two or more launchers and configuration revisions." },
+  { id: "custom", title: "Custom composition", a: "First setup", b: "Additional setups", description: "Compare two or more Codex or Mekugi setups with Stock guidance or a committed revision." },
   { id: "setup-commits", title: "Setup commit versus setup commit", a: "Setup commit A", b: "Setup commit B", description: "Compare two configuration revisions with the same launcher and pinned runtime binaries." },
   { id: "stock-current", title: "Minimal versus current setup", a: "Codex · minimal setup", b: "Codex · current setup", description: "Measure the complete instruction and tool setup." },
   { id: "same-setup", title: "Current Codex versus Mekugi", a: "Codex · current setup", b: "Mekugi · current setup", description: "Keep guidance fixed; change the launcher." },

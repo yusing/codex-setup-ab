@@ -16,7 +16,7 @@ randomized causal estimates. See the [CLI guide](cli.md) for repeated runs and t
 
 | Selector | Comparison |
 | --- | --- |
-| `custom` | An ordered composition of two or more Codex or Mekugi launchers, each at a chosen configuration revision. |
+| `custom` | An ordered composition of two or more Codex or Mekugi launchers, each independently using Stock guidance or a chosen configuration revision. |
 | `setup-commits` | Two configuration-repository revisions with shared pinned runtime binaries and the same launcher. |
 | `stock-current` | Minimal Codex versus an audited current-home setup, optionally launched through Mekugi. |
 | `stock-mekugi` | Minimal direct Codex versus minimal Codex through Mekugi, with identical configured tools. |
