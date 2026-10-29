@@ -12,6 +12,7 @@ import { validateMekugiFlags } from "./mekugi";
 import type { CliOptions } from "./cli-options";
 
 export const COMPARISONS = [
+  { id: "setup-commits", title: "Setup commit versus setup commit", a: "Setup commit A", b: "Setup commit B", description: "Compare two configuration revisions with the same launcher and pinned runtime binaries." },
   { id: "stock-current", title: "Minimal versus current setup", a: "Codex · minimal setup", b: "Codex · current setup", description: "Measure the complete instruction and tool setup." },
   { id: "same-setup", title: "Current Codex versus Mekugi", a: "Codex · current setup", b: "Mekugi · current setup", description: "Keep guidance fixed; change the launcher." },
   { id: "stock-mekugi", title: "Minimal Codex versus minimal Mekugi", a: "Codex · minimal setup", b: "Mekugi · minimal setup", description: "Isolate the launcher with minimal guidance." },
@@ -60,7 +61,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   const comparison = preset === "current-vs-current-mekugi" ? "same-setup" : preset;
   if (!COMPARISONS.some(item => item.id === comparison)) throw new Error("Choose a supported comparison");
   if (o["current-launcher"] && !["codex", "mekugi"].includes(String(o["current-launcher"]))) throw new Error("Current launcher must be codex or mekugi");
-  if (task.id === "session-retention" && comparison !== "stock-current") throw new Error("Mekugi comparisons require a task outside Mekugi; choose another task");
+  if (task.id === "session-retention" && !["stock-current", "setup-commits"].includes(comparison)) throw new Error("Mekugi comparisons require a task outside Mekugi; choose another task");
   if (o["journal-compaction"] !== undefined) throw new Error("Journal compaction is no longer supported");
   const flags = validateMekugiFlags(o["mekugi-flags"] ? JSON.parse(stringOption(o, "mekugi-flags")) : []);
   const count = positive(stringOption(o, "count", "1"), "Repeat count");
@@ -74,11 +75,15 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   const limitText = o["auto-compact-limit"] ?? (comparison === "stock-mekugi" && task.compactLimit ? String(task.compactLimit) : undefined);
   const limit = limitText === undefined ? undefined : positive(String(limitText), "Compaction token limit");
   if (limit !== undefined && comparison !== "stock-mekugi") throw new Error("A compaction token limit applies only to stock-mekugi");
-  const mekugi = comparison !== "stock-current" || o["current-launcher"] === "mekugi";
+  const mekugi = !["stock-current", "setup-commits"].includes(comparison) || o["current-launcher"] === "mekugi";
   if (["stock-mekugi", "codex-mekugi-grok"].includes(comparison) && o["review-treatment"]) throw new Error("This comparison does not accept a reviewer overlay");
   if (o["protect-mekugi"] && (!mekugi || ["stock-mekugi", "codex-mekugi-grok", "duplicate-output"].includes(comparison))) throw new Error("Protected runtime requires current-setup Mekugi or same-setup");
   if (comparison === "duplicate-output" && flags.some(flag => flag === "--deduplicate-output" || flag.startsWith("--deduplicate-output="))) throw new Error("The paired feature comparison owns its treatment flag and requires Mekugi Codex routing");
   if (o["mekugi-build"] && (input["mekugi-bin"] || input["mekugi-source"])) throw new Error("A captured Mekugi build owns its source and executable");
+  const setupACommit = stringOption(o, "setup-a-commit").trim();
+  const setupBCommit = stringOption(o, "setup-b-commit").trim();
+  if (comparison === "setup-commits" ? !setupACommit || !setupBCommit : Boolean(setupACommit || setupBCommit)) throw new Error("Choose both setup commits only for setup-commits");
+  if (comparison === "setup-commits" && (o["review-treatment"] || o["protect-mekugi"])) throw new Error("Setup commits cannot use reviewer overlays or asymmetric protected runtime");
   const source = stringOption(o, "source", task.source);
   if (!source.trim()) throw new Error("Source checkout is required");
   const custom = task.id === "custom";
@@ -93,6 +98,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (!["mekugi", "task", "skills-mgr-bundle", "godoxy-icons"].includes(profile)) throw new Error("Unknown task profile");
   return {
     prepare: {
+      setupACommit: setupACommit || undefined, setupBCommit: setupBCommit || undefined,
       comparison: comparison as PrepareOptions["comparison"], model: model as PrepareOptions["model"], reasoningEffort: effort as PrepareOptions["reasoningEffort"],
       parallelWork: o["parallel-work"] === true,
       source: source.trim() ? resolve(source) : "", profile: profile as PrepareOptions["profile"],

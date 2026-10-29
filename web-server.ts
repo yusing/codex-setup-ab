@@ -315,6 +315,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     }
     const labelState = entry.kind === "trials" ? object(state.controls) : state;
     const labels = entry.kind === "pair" || entry.kind === "trials" ? armLabels({
+      setup_revisions: labelState.setup_revisions as RunState["setup_revisions"],
       comparison: labelState.comparison as RunState["comparison"],
       execution: object(labelState.execution) as RunState["execution"],
     }) : undefined;

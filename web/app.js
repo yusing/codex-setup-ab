@@ -98,6 +98,9 @@ function drawLaunch() {
     fields = '<div class="grid">'
       + select("Comparison", "preset", config.comparisons.map((item) => [item.id, item.title]), defaults.preset)
       + select("Task", "task", config.tasks.map((item) => [item.id, item.title]), defaults.task)
+      + '</div><div id="setup-commit-fields" class="grid" hidden>'
+      + field("Setup commit A", "setup-a-commit", "", "text", "Baseline revision in the setup configuration repository.")
+      + field("Setup commit B", "setup-b-commit", "", "text", "Treatment revision; live tracked edits are excluded.")
       + '</div><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><section class="form-section" aria-labelledby="run-settings-title"><h2 id="run-settings-title">Run configuration</h2><div class="grid">'
       + '<div class="source-field">' + field("Source checkout", "source", task.source, "text", sourceHint(task)) + '</div>'
       + select("Model", "model", [["gpt-6-astra", "GPT-6 Astra"], ["gpt-6.1-sol", "GPT-6.1 Sol"]], defaults.model)
@@ -110,7 +113,7 @@ function drawLaunch() {
       + field("Codex authentication file", "auth-file", defaults["auth-file"], "text", "Local path only. Never paste credential contents.")
       + field("Grok authentication file", "grok-auth-file", defaults["grok-auth-file"])
       + '</div></details><details class="advanced"><summary>Mekugi and comparison settings</summary><div class="grid">'
-      + select("Current-setup launcher", "current-launcher", [["codex", "Direct Codex"], ["mekugi", "Mekugi"]], "codex", "Applies to minimal versus current setup.")
+      + select("Current-setup launcher", "current-launcher", [["codex", "Direct Codex"], ["mekugi", "Mekugi"]], "codex", "For setup-commit comparisons this launcher applies to both arms.")
       + field("Mekugi source", "mekugi-source", defaults["mekugi-source"])
       + field("Mekugi executable", "mekugi-bin", defaults["mekugi-bin"])
       + field("Captured Mekugi build (optional)", "mekugi-build", "", "text", "Owns its executable and source when supplied.")
@@ -174,12 +177,14 @@ function setEnabled(id, enabled) { if ($(id)) $(id).disabled = !enabled; }
 function updateCombination() {
   const comparison = config.comparisons.find((item) => item.id === $("f-preset").value);
   const grok = comparison.id === "codex-mekugi-grok";
-  const mekugi = comparison.id !== "stock-current" || $("f-current-launcher").value === "mekugi";
+  const mekugi = !["stock-current", "setup-commits"].includes(comparison.id) || $("f-current-launcher").value === "mekugi";
   const titleB = comparison.id === "stock-current" && mekugi ? "Mekugi · current setup" : comparison.b;
   $("comparison-preview").innerHTML = '<article><h2>' + esc(comparison.a) + '</h2><p>Fresh isolated workspace</p></article><article><h2>' + esc(titleB) + '</h2><p>Same task and resource limits</p></article>';
   $("comparison-description").textContent = comparison.description + (grok ? " The fixed model is Grok 4.7." : "");
   setEnabled("f-model", !grok);
-  setEnabled("f-current-launcher", comparison.id === "stock-current");
+  setEnabled("f-current-launcher", ["stock-current", "setup-commits"].includes(comparison.id));
+  $("setup-commit-fields").hidden = comparison.id !== "setup-commits";
+  for (const name of ["setup-a-commit", "setup-b-commit"]) setEnabled("f-" + name, comparison.id === "setup-commits");
   const sharedLimit = comparison.id === "stock-mekugi";
   setEnabled("f-auto-compact-limit", sharedLimit);
   $("compaction-limit-field").hidden = !sharedLimit;
@@ -191,7 +196,7 @@ function updateCombination() {
   $("deduplication-owned").hidden = comparison.id !== "duplicate-output";
   for (const id of ["f-grok-bin", "f-grok-auth-file"]) setEnabled(id, grok);
   setEnabled("f-protect-mekugi", mekugi && ["stock-current", "same-setup"].includes(comparison.id));
-  setEnabled("f-review-treatment", !["stock-mekugi", "codex-mekugi-grok"].includes(comparison.id));
+  setEnabled("f-review-treatment", !["stock-mekugi", "codex-mekugi-grok", "setup-commits"].includes(comparison.id));
   const custom = $("f-task").value === "custom";
   $("custom-task-fields").hidden = !custom;
   for (const input of $("custom-task-fields").querySelectorAll("input,select")) input.disabled = !custom;

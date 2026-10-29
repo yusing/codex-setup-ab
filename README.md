@@ -2,7 +2,7 @@
 
 `codex-ab` runs isolated, descriptive comparisons of coding-agent setups on the same
 pinned repository task. Compare minimal Codex with your current guidance, direct Codex
-with Mekugi, or specific Mekugi treatments. A Grok CLI comparison is also available.
+with Mekugi, two setup commits on shared pinned runtime binaries, or specific Mekugi treatments. A Grok CLI comparison is also available.
 
 The Web UI prepares and launches runs, streams progress, and inspects retained results.
 Reports combine behavioral grades, source assessments, time, tokens, and estimated API
@@ -51,6 +51,9 @@ Choose a pinned task and comparison, set the source checkout, model, reasoning e
 and optional Mekugi settings, then **Check inputs**. The workbench explains incompatible
 combinations and missing local inputs before starting work. Advanced settings expose
 the existing preparation options, including custom task packs and task/criteria files.
+For **Setup commit versus setup commit**, select both revisions from the configuration
+repository. The launcher selection applies to both arms; tracked local edits stay out.
+See the [setup-commit guide](doc/cli.md#compare-setup-commits).
 Tasks with a pinned upstream repository, such as NVM and sqlite-utils multi-commit upgrade,
 clone a missing source checkout during preparation. The sqlite-utils task defaults to
 minimal Codex versus minimal Mekugi, a shared 200,000-token

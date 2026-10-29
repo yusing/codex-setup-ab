@@ -100,6 +100,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   await copy("reports/report.json", "report.json");
   await copy("reports/report.md", "report.md");
   await copy(state.snapshot_manifest, "snapshot-manifest.json");
+  if (state.setup_revisions) await copy(state.setup_revisions.stock.manifest, "setup-a-snapshot-manifest.json");
   await copy(state.runtime_tools.current_setup_files, state.runtime_tools.current_setup_files.endsWith(".gz") ? "mise-files.json.gz" : "mise-files.json");
   await copy(state.task.path, "task.md");
   if (state.mekugi_exports) {
@@ -171,6 +172,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   const integrity: Array<{ path: string; sha256: string; expected_sha256: string; matches: boolean }> = [];
   for (const [path, expected] of [
     [state.snapshot_manifest, state.current_snapshot.manifest_sha256],
+    ...(state.setup_revisions ? [[state.setup_revisions.stock.manifest, state.setup_revisions.stock.manifest_sha256]] : []),
     [state.task.path, state.task.sha256],
     ...(state.protected_runtime?.scripts.map(file => [file.path, file.sha256]) ?? []),
     ...(state.mekugi_build?.files.map(file => [file.path, file.sha256]) ?? []),
@@ -253,7 +255,9 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       if (await sha256(join(destination, "treatment", name)) !== item.after_sha256) throw new Error("applied treatment differs from manifest");
     }
   }
-  const setupDescriptions = state.comparison === "duplicate-output"
+  const setupDescriptions = state.setup_revisions
+    ? { stock: `Configuration commit ${state.setup_revisions.stock.commit}; shared pinned runtime.`, current: `Configuration commit ${state.setup_revisions.current.commit}; shared pinned runtime.` }
+    : state.comparison === "duplicate-output"
     ? { stock: "Same current-home snapshot and Mekugi binary as B; duplicate-output projection off.", current: "Same current-home snapshot and Mekugi binary as A; duplicate-output projection on." }
     : state.comparison === "journal-compaction"
     ? { stock: "Same current-home snapshot and Mekugi binary as B; journal compaction off.", current: "Same current-home snapshot and Mekugi binary as A; journal compaction auto." }
@@ -281,6 +285,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     auto_compact_limit: state.auto_compact_limit,
     comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null,
     execution: state.execution, image_id: state.image_id, dependency_image: state.dependency_image, runtime_tools: state.runtime_tools,
+    setup_revisions: state.setup_revisions,
     resource_limits: state.resource_limits, current_configuration: manifest.configuration_repository,
     review_treatment: treatment,
     stock: setupDescriptions.stock,

@@ -2,7 +2,7 @@ import { dependencyImage, TASK_PATH } from "./dependencies";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
-import { MEKUGI_METRICS_WRAPPER } from "./mekugi";
+import { MEKUGI_METRICS_WRAPPER, usesMekugi } from "./mekugi";
 import { runOwnedContainer } from "./container";
 import type { ArmName, RunState } from "./types";
 import { readToolStoreManifest } from "./snapshot";
@@ -12,10 +12,9 @@ export const ISOLATION_SCRIPTS = ["isolated-codex.sh", "agent-mounts.sh", "agent
 export function launcherMounts(runDir: string, state: RunState, arm: ArmName): string[] {
   if (!state.runtime_tools.shared_binaries) return [];
   const grok = state.comparison === "codex-mekugi-grok" && arm === "current";
-  const mekugi = state.comparison === "codex-mekugi-grok" ? arm === "stock"
-    : arm === "current" && state.execution.current_launcher === "mekugi" || ["same-setup", "journal-compaction", "duplicate-output"].includes(state.comparison ?? "");
+
   if (grok) return ["-v", `${resolve(runDir, state.runtime_tools.grok_source!)}:/home/ubuntu/.grok/bin/grok:ro`];
-  return mekugi && !state.runtime_tools.mekugi_in_image ? ["-v", `${resolve(runDir, state.runtime_tools.mekugi_source!)}:/home/ubuntu/.local/bin/mekugi:ro`] : [];
+  return (usesMekugi(state, arm) || state.comparison === "same-setup") && !state.runtime_tools.mekugi_in_image ? ["-v", `${resolve(runDir, state.runtime_tools.mekugi_source!)}:/home/ubuntu/.local/bin/mekugi:ro`] : [];
 }
 
 export async function miseToolMounts(runDir: string, state: RunState): Promise<string[]> {

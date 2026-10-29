@@ -182,3 +182,13 @@ test("parallel work is opt-in and independent of trial scheduling", () => {
   expect(launch.prepare.parallelWork).toBe(true);
   expect(launch.order).toBe("alternating");
 });
+
+
+test("setup-commit launch requires both revisions and shares the selected launcher", () => {
+  const options = { preset: "setup-commits", "setup-a-commit": "HEAD~1", "setup-b-commit": "HEAD" };
+  expect(launchConfiguration(options).prepare).toMatchObject({ comparison: "setup-commits", setupACommit: "HEAD~1", setupBCommit: "HEAD", currentLauncher: "codex" });
+  expect(launchConfiguration({ ...options, "current-launcher": "mekugi" }).prepare.currentLauncher).toBe("mekugi");
+  expect(() => launchConfiguration({ preset: "setup-commits" })).toThrow("both setup commits");
+  expect(() => launchConfiguration({ ...options, preset: "stock-current" })).toThrow("only for setup-commits");
+  expect(() => launchConfiguration({ ...options, "review-treatment": "/overlay" })).toThrow("overlays");
+});

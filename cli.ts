@@ -61,8 +61,10 @@ Prepare options:
   --criteria FILE       predetermined behavioral contract; defaults to task profile
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --current-home DIR    configuration Git repository root (default current home)
+  --setup-a-commit REF  baseline setup commit in --current-home (setup-commits)
+  --setup-b-commit REF  treatment setup commit in --current-home (setup-commits)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
-  --comparison NAME    stock-current (default), same-setup, stock-mekugi, codex-mekugi-grok, or duplicate-output
+  --comparison NAME    stock-current (default), setup-commits, same-setup, stock-mekugi, codex-mekugi-grok, or duplicate-output
   --auto-compact-limit N shared positive token limit for both stock-mekugi arms
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
@@ -177,6 +179,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       taskPackPath: o["task-pack"] as string | undefined,
       criteriaPath: o.criteria as string | undefined,
       outputParent: o["output-parent"] as string | undefined,
+      setupACommit: o["setup-a-commit"] as string | undefined, setupBCommit: o["setup-b-commit"] as string | undefined,
       reviewTreatment: o["review-treatment"] as string | undefined,
       comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,
       autoCompactLimit: o["auto-compact-limit"] === undefined ? undefined : Number(o["auto-compact-limit"]),

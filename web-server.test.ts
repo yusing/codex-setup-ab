@@ -562,3 +562,17 @@ test.each(["EMFILE", "ENFILE", "ENOSPC"])("SSE keeps evidence live when watchers
     watcher.mockRestore();
   }
 });
+
+
+test("setup commit identities label retained pair and trial evidence", async () => {
+  const identity = { comparison: "setup-commits", execution: { current_launcher: "mekugi" },
+    setup_revisions: { stock: { commit: "a".repeat(40) }, current: { commit: "b".repeat(40) } } };
+  for (const kind of ["pair", "trials"]) {
+    const directory = join(root, kind);
+    await file(join(directory, kind === "pair" ? "run.json" : "trials.json"), JSON.stringify(kind === "pair"
+      ? { schema_version: 1, ...identity } : { schema: "codex-ab.trials.v1", controls: identity, trials: [] }));
+    const entry = await attach(directory);
+    const detail = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
+    expect(detail.arm_labels).toEqual({ stock: "Codex + Mekugi (setup aaaaaaaaaaaa)", current: "Codex + Mekugi (setup bbbbbbbbbbbb)" });
+  }
+});

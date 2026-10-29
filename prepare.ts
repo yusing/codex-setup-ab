@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { checked, exec } from "./process";
 import { readToolStoreManifest, recordToolStore, verifySnapshotIdentities, type SnapshotFile, type ToolStoreManifest } from "./snapshot";
 import { ISOLATION_SCRIPTS } from "./isolation";
@@ -19,6 +19,8 @@ import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort } from 
 
 export interface PrepareOptions {
   comparison?: import("./types").Comparison;
+  setupACommit?: string;
+  setupBCommit?: string;
   autoCompactLimit?: number;
   model?: BenchmarkModel;
   grokBinary?: string;
@@ -60,7 +62,7 @@ async function copyRequired(source: string, target: string): Promise<void> {
 }
 
 async function copyRemoteSkillCache(home: string, destination: string): Promise<void> {
-  const config = JSON.parse(await readFile(join(home, ".skills-mgr/.skills-mgr.json"), "utf8")) as {
+  const config = JSON.parse(await readFile(join(destination, ".skills-mgr/.skills-mgr.json"), "utf8")) as {
     skills?: Record<string, { remote?: { name?: string } }>;
   };
   const wanted = new Set(Object.values(config.skills ?? {}).map(skill => skill.remote?.name).filter((name): name is string => Boolean(name)));
@@ -146,10 +148,25 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
   }
   if (state.task.path !== "control/task.md") throw new Error("copied benchmark control path changed");
   const stock = join(runDir, "snapshots/stock/home/ubuntu");
+  const commitComparison = state.comparison === "setup-commits";
+  if (commitComparison) {
+    if (!state.setup_revisions || state.arms.current.home_template !== "snapshots/current/home/ubuntu"
+      || !["codex", "mekugi"].includes(state.execution.current_launcher ?? "codex")) throw new Error("setup revision identities missing or changed");
+    for (const arm of ["stock", "current"] as const) {
+      const identity = state.setup_revisions[arm];
+      const expectedManifest = `snapshots/${arm}/home/snapshot-manifest.json`;
+      if (!identity || identity.manifest !== expectedManifest || !/^[a-f0-9]{40}$/.test(identity.commit)
+        || !/^[a-f0-9]{40}$/.test(identity.tree) || await sha256(join(runDir, identity.manifest)) !== identity.manifest_sha256) throw new Error(`${arm} setup revision manifest changed`);
+      const recorded = JSON.parse(await readFile(join(runDir, identity.manifest), "utf8"));
+      if (recorded.configuration_repository.commit !== identity.commit || recorded.configuration_repository.tree !== identity.tree
+        || recorded.configuration_repository.tracked_worktree_changes.length !== 0
+        || JSON.stringify(await manifest(join(runDir, state.arms[arm].home_template))) !== JSON.stringify(recorded.files)) throw new Error(`${arm} setup revision snapshot changed`);
+    }
+  } else if (state.setup_revisions) throw new Error("setup revisions require setup-commits");
   const pairedMekugi = isPairedMekugiComparison(state.comparison);
   const sameSetup = state.comparison === "same-setup" || pairedMekugi;
   validatePairedMekugiComparison(state.comparison, state.auto_compact_limit, state.mekugi_flags ?? [], Boolean(state.protected_runtime));
-  if (pairedMekugi) {
+  if (pairedMekugi || commitComparison && state.execution.current_launcher === "mekugi") {
     if (state.arms.current.home_template !== "snapshots/current/home/ubuntu") throw new Error(`${state.comparison} setup identity changed`);
     for (const arm of ["stock", "current"] as const) {
       const item = state.mekugi_exports_by_arm?.[arm];
@@ -185,7 +202,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState): Pro
       || !state.runtime_tools.shared_binaries && await sha256(join(grokHome, ".grok/bin/grok")) !== state.runtime_tools.grok_sha256) {
       throw new Error("codex-mekugi-grok Grok setup snapshot changed");
     }
-  } else {
+  } else if (!commitComparison) {
     const stockFiles = await manifest(stock);
     const sharedTools = currentFiles?.filter(file => TOOL_SETUP_PATHS.some(path => file.path === path || file.path.startsWith(`${path}/`))) ?? [];
     const withoutTools = (files: Awaited<ReturnType<typeof manifest>>) => files.filter(file => !sharedTools.some(tool => tool.path === file.path));
@@ -286,16 +303,40 @@ function replaceProjectTrust(config: string): string {
 }
 
 
-async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, miseBinary: string | undefined, includeRuntimeSupplements: boolean, reviewTreatment?: string): Promise<string> {
+async function snapshotConfig(destination: string, sourceHome: string): Promise<string> {
+  let path = join(destination, ".codex/config.toml");
+  const seen = new Set<string>();
+  while ((await lstat(path)).isSymbolicLink()) {
+    if (seen.has(path)) throw new Error("setup configuration has a symlink cycle");
+    seen.add(path);
+    const target = await readlink(path);
+    if (isAbsolute(target)) {
+      const owner = [sourceHome, "/home/ubuntu"].find(root => target.startsWith(`${root}/`));
+      if (!owner) throw new Error("setup configuration symlink points outside the setup repository");
+      path = resolve(destination, relative(owner, target));
+    } else path = resolve(dirname(path), target);
+    if (!path.startsWith(`${destination}/`)) throw new Error("setup configuration symlink escapes its snapshot");
+  }
+  if (!(await realpath(path)).startsWith(`${destination}/`)) throw new Error("setup configuration resolves outside its snapshot");
+  return readFile(path, "utf8");
+}
+
+async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, miseBinary: string | undefined, includeRuntimeSupplements: boolean, reviewTreatment?: string, revision?: string, runtimeHome = home): Promise<string> {
   const repository = (await checked(["git", "-C", home, "rev-parse", "--show-toplevel"])).stdout.trim();
   if (await realpath(repository) !== await realpath(home)) throw new Error("--current-home must be the configuration repository root");
-  await checked(["git", "clone", "--depth=1", "--no-local", "--no-hardlinks", pathToFileURL(repository).href, destination]);
-  await checked(["git", "-C", destination, "remote", "remove", "origin"]);
+  if (revision) {
+    await checked(["git", "init", destination]);
+    await checked(["git", "-C", destination, "fetch", "--depth=1", pathToFileURL(repository).href, revision]);
+    await checked(["git", "-C", destination, "checkout", "--detach", "FETCH_HEAD"]);
+  } else {
+    await checked(["git", "clone", "--depth=1", "--no-local", "--no-hardlinks", pathToFileURL(repository).href, destination]);
+    await checked(["git", "-C", destination, "remote", "remove", "origin"]);
+  }
   const commit = (await checked(["git", "-C", destination, "rev-parse", "HEAD"])).stdout.trim();
   const tree = (await checked(["git", "-C", destination, "rev-parse", "HEAD^{tree}"])).stdout.trim();
   // Include current tracked edits, additions and deletions without copying the
   // host's index, Git configuration, untracked credentials or session state.
-  const changed = (await checked(["git", "-C", home, "diff", "--no-renames", "--name-only", "-z", commit, "--"])).stdout.split("\0").filter(Boolean);
+  const changed = revision ? [] : (await checked(["git", "-C", home, "diff", "--no-renames", "--name-only", "-z", commit, "--"])).stdout.split("\0").filter(Boolean);
   const changedSet = new Set(changed);
   const roots = changed.filter(item => {
     const parts = item.split("/");
@@ -311,27 +352,29 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   // Runtime materializations are not authored configuration. Keep these
   // supplements separate from the Git-owned instructions, roles and skills.
   if (includeRuntimeSupplements) {
-    for (const item of [".codex/hooks", ".agents/skills"]) {
-      await copyRequired(join(home, item), join(destination, item));
+    for (const item of revision ? [".codex/hooks/bin"] : [".codex/hooks", ".agents/skills"]) {
+      if (revision) await rm(join(destination, item), { recursive: true, force: true });
+      await copyRequired(join(runtimeHome, item), join(destination, item));
     }
     // This disposable cache is not materialized in every current setup.
     const bundledMarketplace = ".codex/.tmp/bundled-marketplaces/openai-bundled";
-    if (await exists(join(home, bundledMarketplace))) {
-      await copyRequired(join(home, bundledMarketplace), join(destination, bundledMarketplace));
+    if (revision) await rm(join(destination, bundledMarketplace), { recursive: true, force: true });
+    if (await exists(join(runtimeHome, bundledMarketplace))) {
+      await copyRequired(join(runtimeHome, bundledMarketplace), join(destination, bundledMarketplace));
     }
-    if (await exists(join(home, ".codex/herdr-agent-state.sh"))) {
+    if (!revision && await exists(join(home, ".codex/herdr-agent-state.sh"))) {
       await copyRequired(join(home, ".codex/herdr-agent-state.sh"), join(destination, ".codex/herdr-agent-state.sh"));
     }
     await copyRemoteSkillCache(home, destination);
-    await copyRequired(join(home, ".cache/go-modern-guidelines/v0.1.1"), join(destination, ".cache/go-modern-guidelines/v0.1.1"));
+    await copyRequired(join(runtimeHome, ".cache/go-modern-guidelines/v0.1.1"), join(destination, ".cache/go-modern-guidelines/v0.1.1"));
   }
   if (miseBinary) {
     await mkdir(join(destination, ".local/share/mise/installs"), { recursive: true });
     // The read-only tool store has already been migrated on the source home.
     // Preserve its completion records so mise does not try to migrate it again.
     const miseMigrations = ".local/share/mise/migrations";
-    if (await exists(join(home, miseMigrations))) {
-      await copyRequired(join(home, miseMigrations), join(destination, miseMigrations));
+    if (await exists(join(runtimeHome, miseMigrations))) {
+      await copyRequired(join(runtimeHome, miseMigrations), join(destination, miseMigrations));
     }
     // mise.lock points at generated pipx lock directories outside Git. Copy
     // only the sidecars named by that lock, not the rest of the untracked home.
@@ -365,7 +408,9 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     }
   }
   const configPath = join(destination, ".codex/config.toml");
-  const config = replaceProjectTrust(await readFile(configPath, "utf8"));
+  const config = replaceProjectTrust(await snapshotConfig(destination, await realpath(home)));
+  if (!(await realpath(dirname(configPath))).startsWith(`${destination}/`)) throw new Error("setup configuration directory resolves outside its snapshot");
+  await rm(configPath, { force: true });
   await writeFile(configPath, config, { mode: 0o600 });
   const loginProfile = join(destination, ".bash_profile");
   const loginContents = await readFile(loginProfile, "utf8").catch((error: NodeJS.ErrnoException) => {
@@ -379,7 +424,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   await writeFile(output, `${JSON.stringify({ created_at: new Date().toISOString(), source_home: home,
     review_treatment: reviewTreatment ? { source: reviewTreatment, files: treatmentFiles } : null,
     configuration_repository: { path: repository, commit, tree, tracked_worktree_changes: changed }, adaptations: [
-    "configuration repository shallow-cloned independently with its remote removed; current tracked working-tree changes overlaid",
+    revision ? "configuration repository shallow-fetched at the selected commit; no working-tree overlay" : "configuration repository shallow-cloned independently with its remote removed; current tracked working-tree changes overlaid",
     "project trust entries replaced with /workspace",
     "Bash login profile restores task Python PATH after user shell initialization",
     ...(includeRuntimeSupplements ? [
@@ -507,15 +552,25 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const profile = options.profile ?? (options.criteriaPath ? "task" : "mekugi");
   const mekugiFlags = validateMekugiFlags(options.mekugiFlags ?? []);
   const comparison = options.comparison ?? "stock-current";
-  if (!["stock-current", "same-setup", "stock-mekugi", "codex-mekugi-grok", "journal-compaction", "duplicate-output"].includes(comparison)) throw new Error("unknown comparison");
+  if (!["stock-current", "setup-commits", "same-setup", "stock-mekugi", "codex-mekugi-grok", "journal-compaction", "duplicate-output"].includes(comparison)) throw new Error("unknown comparison");
+  const commitComparison = comparison === "setup-commits";
+  if (commitComparison !== Boolean(options.setupACommit && options.setupBCommit)
+    || !commitComparison && Boolean(options.setupACommit || options.setupBCommit)) {
+    throw new Error("setup-commits requires both --setup-a-commit and --setup-b-commit; other comparisons do not accept them");
+  }
+  if (commitComparison && (options.reviewTreatment || options.protectMekugi)) throw new Error("setup-commits does not accept reviewer overlays or asymmetric protected runtime");
+  const revisions = commitComparison ? await Promise.all([options.setupACommit!, options.setupBCommit!].map(async ref =>
+    (await checked(["git", "-C", options.currentHome, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).stdout.trim())) : undefined;
   const pairedComparison = isPairedMekugiComparison(comparison);
+  const pairedExports = pairedComparison || commitComparison && (options.currentLauncher === "mekugi" || Boolean(build));
   validatePairedMekugiComparison(comparison, options.autoCompactLimit, mekugiFlags, Boolean(options.protectMekugi));
   const grokComparison = comparison === "codex-mekugi-grok";
   const isolatedGuidance = comparison === "stock-mekugi" || grokComparison;
   const isolatedFromCurrentTools = grokComparison;
   const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi" || pairedComparison;
   const currentLauncher = options.currentLauncher ?? (grokComparison ? "grok" : launcherComparison ? "mekugi" : "codex");
-  if ((launcherComparison || grokComparison) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source to select export validation`);
+  if (commitComparison && currentLauncher === "grok") throw new Error("setup-commits requires the Codex or Mekugi launcher");
+  if ((launcherComparison || grokComparison || pairedExports) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source to select export validation`);
   if (launcherComparison && currentLauncher !== "mekugi") throw new Error(`${comparison} requires the Mekugi launcher`);
   if (grokComparison && currentLauncher !== "grok") throw new Error("codex-mekugi-grok requires the Grok launcher");
   if ((comparison === "stock-mekugi" || grokComparison) && options.reviewTreatment) throw new Error(`${comparison} does not accept a current-home review treatment`);
@@ -593,17 +648,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const model: BenchmarkModel = grokComparison ? "grok:grok-4.7" : options.model ?? "gpt-6-astra";
   if (options.model && grokComparison && options.model !== model) throw new Error(`${comparison} uses ${model}`);
   const codeModeHostSha256 = await sha256(codeModeHost);
-  const currentConfig = Bun.TOML.parse(await readFile(join(options.currentHome, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
-  const configured = (key: string): string | undefined =>
-    typeof currentConfig[key] === "string" ? currentConfig[key] : undefined;
-  if (!isolatedGuidance && comparison !== "duplicate-output" &&
-      (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium")) {
-    throw new Error("current setup must configure model gpt-6-astra with medium reasoning for this benchmark");
-  }
-  const serviceTier = isolatedGuidance ? "default" : configured("service_tier");
-  if (!serviceTier) throw new Error("current setup does not declare service_tier");
   if (!(await exists(join(source, ".git")))) throw new Error(`source is not a Git worktree: ${source}`);
-  const runDir = await mkdtemp(join(options.outputParent ?? tmpdir(), "task-run-"));
+  const runDir = await realpath(await mkdtemp(join(options.outputParent ?? tmpdir(), "task-run-")));
   await chmod(runDir, 0o700);
   progress(`created isolated run ${runDir}`);
   for (const dir of ["control", "evaluator", "sessions", "snapshots", "artifacts"]) await mkdir(join(runDir, dir), { recursive: true });
@@ -684,7 +730,28 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   await mkdir(currentTemplate, { recursive: true });
   const snapshotManifest = await snapshotCurrent(options.currentHome, currentTemplate,
     isolatedGuidance ? undefined : mekugiBinary,
-    miseBinary, !isolatedGuidance, reviewTreatment);
+    miseBinary, !isolatedGuidance, reviewTreatment, revisions?.[1]);
+  let setupRevisions: RunState["setup_revisions"];
+  if (revisions) {
+    const baselineTemplate = join(runDir, "snapshots/stock/home/ubuntu");
+    await mkdir(baselineTemplate, { recursive: true });
+    const baselineManifest = await snapshotCurrent(options.currentHome, baselineTemplate, mekugiBinary, miseBinary, true, undefined, revisions[0], currentTemplate);
+    const identities = await Promise.all([baselineManifest, snapshotManifest].map(async path => {
+      const document = JSON.parse(await readFile(path, "utf8"));
+      return { commit: document.configuration_repository.commit, tree: document.configuration_repository.tree,
+        manifest: relative(runDir, path), manifest_sha256: await sha256(path) };
+    }));
+    setupRevisions = { stock: identities[0]!, current: identities[1]! };
+  }
+  const currentConfig = Bun.TOML.parse(await readFile(join(currentTemplate, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
+  const configured = (key: string): string | undefined =>
+    typeof currentConfig[key] === "string" ? currentConfig[key] : undefined;
+  if (!isolatedGuidance && !commitComparison && comparison !== "duplicate-output" &&
+      (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium")) {
+    throw new Error("current setup must configure model gpt-6-astra with medium reasoning for this benchmark");
+  }
+  const serviceTier = isolatedGuidance ? "default" : configured("service_tier");
+  if (!serviceTier) throw new Error("current setup does not declare service_tier");
   const currentSetupInstalls = isolatedFromCurrentTools
     ? join(runDir, "snapshots/current/mise/installs")
     : await realpath(join(options.currentHome, ".local/share/mise/installs"));
@@ -729,7 +796,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     await mkdir(join(grokTemplate, ".grok"), { recursive: true });
     await writeFile(join(grokTemplate, ".grok/config.toml"), grokStockConfig(reasoningEffort), { mode: 0o600 });
   }
-  await writeFile(join(stockTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
+  if (!commitComparison) await writeFile(join(stockTemplate, ".codex/config.toml"), stockConfig(model, reasoningEffort), { mode: 0o600 });
   if (comparison === "stock-mekugi") {
     for (const target of [stockTemplate, stockMekugiTemplate]) {
       for (const path of TOOL_SETUP_PATHS) {
@@ -738,7 +805,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     }
   }
   await mkdir(join(runDir, "snapshots/runtime"), { recursive: true });
-  progress("captured repository-based current and minimal stock setup templates");
+  progress(commitComparison ? "captured both setup revisions with shared runtime supplements" : "captured repository-based current and minimal stock setup templates");
 
   let mekugiExports: RunState["mekugi_exports"];
   if (mekugiBinary && options.mekugiSource) {
@@ -751,11 +818,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       validator: { path: validatorPath, sha256: await sha256(join(runDir, validatorPath)) },
       reader: { path: readerPath, sha256: await sha256(join(runDir, readerPath)) } };
   }
-  const mekugiExportsByArm: RunState["mekugi_exports_by_arm"] = pairedComparison && mekugiExports
+  const mekugiExportsByArm: RunState["mekugi_exports_by_arm"] = pairedExports && mekugiExports
     ? Object.fromEntries((["stock", "current"] as const).map(arm => [arm, {
       ...mekugiExports, capture: join(dirname(repositories[arm]), "exports/capture.jsonl"), metrics: join(dirname(repositories[arm]), "exports/metrics.json"),
     }])) : undefined;
-  if (pairedComparison) mekugiExports = undefined;
+  if (pairedExports) mekugiExports = undefined;
 
   let protectedRuntime: RunState["protected_runtime"];
   if (options.protectMekugi) {
@@ -798,6 +865,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     execution: { model, reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },
     resource_limits: { cpus: options.cpus, memory: options.memory },
     timeout_seconds: options.timeoutSeconds,
+    setup_revisions: setupRevisions,
     snapshot_manifest: relative(runDir, snapshotManifest),
     current_snapshot: { captured_at: snapshotDocument.created_at, manifest_sha256: await sha256(snapshotManifest) },
     runtime_tools: {

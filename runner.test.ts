@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { prepare, verifyPreparedInputs, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
 import { finishBenchmark, runBenchmark } from "./workflow";
 import { prepareTrials, readTrialSet, reportTrials, runTrials } from "./trials";
@@ -133,6 +133,120 @@ async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi"
     codexBinary: join(currentHome, ".local/bin/codex"), currentLauncher,
     mekugiBinary: currentLauncher === "mekugi" ? join(currentHome, "go/bin/mekugi") : undefined });
 }
+
+test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions with shared %s runtime", async launcher => {
+  const setupHome = join(root, `revision-home-${launcher}`);
+  await cp(home, setupHome, { recursive: true, verbatimSymlinks: true });
+  const configPath = join(setupHome, ".codex/config.toml");
+  const historicalConfig = join(setupHome, "historical-config.toml");
+  const originalConfig = await readFile(configPath, "utf8");
+  await file(historicalConfig, originalConfig);
+  await rm(configPath);
+  await symlink(historicalConfig, configPath);
+  await file(join(setupHome, ".local/bin/codex"), "#!/bin/sh\necho historical-codex\n", 0o755);
+  await checked(["git", "-C", setupHome, "add", "-f", ".local/bin/codex", ".codex/config.toml", "historical-config.toml"]);
+  await checked(["git", "-C", setupHome, "commit", "-m", "historical config and launcher"]);
+  const first = (await checked(["git", "-C", setupHome, "rev-parse", "HEAD"])).stdout.trim();
+  await rm(configPath);
+  await symlink("../historical-config.toml", configPath);
+  await checked(["git", "-C", setupHome, "rm", "--cached", ".local/bin/codex"]);
+  await cp(join(home, ".local/bin/codex"), join(setupHome, ".local/bin/codex"));
+  await file(join(setupHome, ".codex/AGENTS.md"), "second revision\n");
+  await file(join(setupHome, ".codex/hooks/revision.ts"), "second hook source\n");
+  await checked(["git", "-C", setupHome, "add", ".codex"]);
+  await checked(["git", "-C", setupHome, "commit", "-m", "second setup"]);
+  const second = (await checked(["git", "-C", setupHome, "rev-parse", "HEAD"])).stdout.trim();
+  await file(join(setupHome, ".codex/AGENTS.md"), "dirty live guidance\n");
+  await file(join(setupHome, ".codex/hooks/revision.ts"), "dirty hook source\n");
+  await file(historicalConfig, originalConfig + "# dirty live config\n");
+  const options = { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, outputParent: root, currentHome: setupHome, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "setup-commits" as const,
+    setupACommit: first, setupBCommit: second, currentLauncher: launcher,
+    mekugiSource: launcher === "mekugi" ? mekugiSource : undefined };
+  const run = await prepare(options);
+  const state = await readState(run);
+  expect(state.setup_revisions?.stock.commit).toBe(first);
+  expect(state.setup_revisions?.current.commit).toBe(second);
+  const a = join(run, state.arms.stock.home_template);
+  const b = join(run, state.arms.current.home_template);
+  expect(await readFile(join(a, ".codex/AGENTS.md"), "utf8")).toBe("fixture\n");
+  for (const snapshot of [a, b]) {
+    expect(await readFile(join(snapshot, ".codex/config.toml"), "utf8")).not.toContain("dirty live config");
+    expect((Bun.TOML.parse(await readFile(join(snapshot, ".codex/config.toml"), "utf8")) as Record<string, unknown>).projects).toEqual({ "/workspace": { trust_level: "trusted" } });
+  }
+  expect(await readFile(historicalConfig, "utf8")).toBe(originalConfig + "# dirty live config\n");
+  expect(await Bun.file(join(a, ".codex/hooks/revision.ts")).exists()).toBe(false);
+  expect(await readFile(join(b, ".codex/AGENTS.md"), "utf8")).toBe("second revision\n");
+  expect(await readFile(join(b, ".codex/hooks/revision.ts"), "utf8")).toBe("second hook source\n");
+  expect(await readFile(join(setupHome, ".codex/AGENTS.md"), "utf8")).toBe("dirty live guidance\n");
+  expect(await sha256(join(a, ".codex/hooks/bin/session_start_context"))).toBe(await sha256(join(b, ".codex/hooks/bin/session_start_context")));
+  await verifyPreparedInputs(run, state);
+  if (launcher === "mekugi") {
+    const changed = structuredClone(state);
+    changed.mekugi_exports_by_arm!.stock!.capture = changed.mekugi_exports_by_arm!.current!.capture;
+    await expect(verifyPreparedInputs(run, changed)).rejects.toThrow("per-arm exports changed");
+  }
+  const auth = join(root, `revision-auth-${launcher}.json`);
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  if (launcher === "mekugi") {
+    state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+    await writeState(run, state);
+    const trials = await prepareTrials({ runDir: run, count: 2, outputParent: root, dockerBin: fake.path });
+    const set = await readTrialSet(trials);
+    expect(set.controls.setup_revisions).toEqual(state.setup_revisions);
+    for (const trial of set.trials) {
+      const directory = join(trials, trial.run_dir);
+      await verifyPreparedInputs(directory, await readState(directory));
+    }
+    await writeFile(fake.log, "");
+  }
+  expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
+  const calls = (await readFile(fake.log, "utf8")).split("\n");
+  if (launcher === "mekugi") {
+    const preflights = calls.filter(line => line.includes(" create ") && line.includes("mekugi-metrics") && line.includes("codex --version"));
+    expect(preflights).toHaveLength(2);
+    expect(preflights[0]).toContain(`${a}:/setup:ro`);
+    expect(preflights[1]).toContain(`${b}:/setup:ro`);
+  }
+  const launches = calls.filter(line => line.includes(" exec --json "));
+  expect(launches).toHaveLength(2);
+  expect(launches.every(line => line.includes(" mise exec -- "))).toBe(true);
+  expect(launches.every(line => line.includes('export PATH="/opt/task-deps/python/bin:/usr/local/bin:$PATH"; exec "$@"'))).toBe(true);
+  expect(launches.every(line => line.includes(launcher === "mekugi" ? "/usr/local/bin/mekugi --capture-output" : "/usr/local/bin/codex exec"))).toBe(true);
+  expect(launches.every(line => line.includes(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`))).toBe(true);
+  const completed = await readState(run);
+  completed.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, completed);
+  const report = await buildReport(run);
+  const markdown = await readFile(report.markdownPath, "utf8");
+  const reported = await Bun.file(report.jsonPath).json();
+  if (launcher === "mekugi") for (const arm of ["stock", "current"]) {
+    expect(markdown).toContain(`### ${reported.arm_labels[arm]}`);
+  }
+  if (launcher === "mekugi") for (const arm of ["stock", "current"]) {
+    expect(reported.arms[arm].usage.warnings.some((warning: string) => warning.includes("Mekugi provider-attempt accounting"))).toBe(true);
+  }
+  expect(markdown).toContain(`commit ${first}; tree ${state.setup_revisions!.stock.tree}`);
+  expect(markdown).toContain(`commit ${second}; tree ${state.setup_revisions!.current.tree}`);
+  await bundles.collectBundle(run);
+  expect(await Bun.file(join(run, "reports/bundle/setup-a-snapshot-manifest.json")).exists()).toBe(true);
+  await file(join(a, ".codex/AGENTS.md"), "tampered\n");
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("stock setup revision snapshot changed");
+  await expect(prepare({ ...options, setupACommit: "missing-ref" })).rejects.toThrow();
+  await expect(prepare({ ...options, setupBCommit: undefined })).rejects.toThrow("requires both");
+}, 15_000);
+
+test.each([false, true])("preparation accepts a relative output parent (symlink: %s)", async linked => {
+  const parent = linked ? join(root, "linked-output") : root;
+  if (linked) await symlink(root, parent);
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, currentHome: home, outputParent: relative(process.cwd(), parent),
+    image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
+  expect(run).toBe(await realpath(run));
+  await verifyPreparedInputs(run, await readState(run));
+});
 
 test("same-setup uses one immutable configuration for both arms and rejects drift", async () => {
   await mkdir(join(root, "capture-source"), { recursive: true });

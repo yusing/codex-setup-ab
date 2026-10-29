@@ -100,6 +100,24 @@ Trial and suite directories instead contain `trials.json` or `suite.json`; use t
 recorded child directories to inspect individual pairs. The [contract](contract.md#report)
 describes the retained evidence and measurement limitations.
 
+## Compare setup commits
+
+Use the workbench's **Setup commit versus setup commit** comparison, or prepare a
+model-free pair from the agent CLI:
+
+```sh
+codex-ab launch --preset setup-commits --task nvm-download-no-eval \
+  --current-home /path/to/configuration-repository \
+  --setup-a-commit BASE_REF --setup-b-commit TREATMENT_REF --prepare-only
+```
+
+Choose `--current-launcher mekugi` to use the same pinned Mekugi pair for both arms;
+the default is direct Codex. Commit selectors apply to the setup repository, not
+the benchmark task repository. Dirty tracked edits are excluded. Existing repeat
+count/order controls repeat the frozen snapshots. Paid inference still requires
+explicit consent. See the [snapshot contract](contract.md#prepare-an-isolated-pair)
+for runtime supplements and provenance limits.
+
 ## Repeat a pinned comparison
 
 Start from an unused prepared pair. `prepare-trials` runs model-free preflight, pins the immutable

@@ -2,7 +2,7 @@ import type { CriterionEvidence } from "./semantic";
 
 export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" | "task";
 export type CodexLauncher = "codex" | "mekugi" | "grok";
-export type Comparison = "stock-current" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "journal-compaction" | "duplicate-output";
+export type Comparison = "stock-current" | "setup-commits" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "journal-compaction" | "duplicate-output";
 export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 export type BenchmarkModel = "gpt-6-astra" | "gpt-6.1-sol" | "grok:grok-4.7";
@@ -79,6 +79,7 @@ export interface RunState {
   execution: { model: BenchmarkModel | "gpt-6-sol"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;
+  setup_revisions?: Record<ArmName, { commit: string; tree: string; manifest: string; manifest_sha256: string }>;
   snapshot_manifest: string;
   current_snapshot: { captured_at: string; manifest_sha256: string };
   runtime_tools: {
