@@ -194,7 +194,7 @@ supported and explicitly reports missing source provenance.
 
 Portable packs include [nvm download](../tasks/nvm-download-no-eval/manifest.json),
 [Gin context copy](../tasks/gin-context-copy/manifest.json), and
-[skills manager agent CLI](../tasks/skills-mgr-agent-cli/README.md). Each pins its upstream base and
+[skills manager repository-to-agent workflow](../tasks/skills-mgr-agent-cli/README.md). Each pins its upstream base and
 excluded solution commit, dependency preparation, and behavioral criteria. NVM and Gin also
 enforce their task-required single-file boundaries; the skills manager task leaves file scope open.
 They use the generic `task` profile, not a repository-specific runner branch.

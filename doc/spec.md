@@ -76,8 +76,11 @@ Available pinned tasks are `nvm-download-no-eval`, `gin-context-copy`,
 [session-retention](../tasks/session-retention/README.md). The `custom` choice accepts
 a portable pack or explicit task inputs. The Web UI and CLI share the
 [launch catalog](../launch.ts); omitting `--task` keeps the NVM default.
-The skills manager task asks for agent-friendly, non-interactive skill management,
-leaving the interface and implementation design open. It uses a two-hour agent timeout;
+The skills manager task reproduces a 12-commit repository-to-agent workflow:
+repository installation, remote-cache recovery, layered selection, diagnostics,
+content checks, safe edits, and refresh backoff. Its pinned reference is available
+only to evaluators; candidates choose their interface and implementation design.
+It uses a two-hour agent timeout;
 long-horizon runtime and compaction frequency have not been measured, and compaction is not guaranteed.
 `session-retention` is available only with `stock-current`. All Mekugi presets reject that
 Mekugi development task before external effects, so the launcher is compared on a separate project.

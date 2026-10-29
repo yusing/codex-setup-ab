@@ -3,37 +3,50 @@
   "id": "skills-mgr-agent-cli",
   "source": {
     "repository": "https://github.com/yusing/skills-mgr.git",
-    "base_commit": "9ee73a175a6c86b749984cf1904433b3037e530f",
-    "forbidden_commit": "3d287a151622bca1ac764ffa1ce50e5b5472fd25"
+    "base_commit": "9ae7009faa837921ef6ed28e7b78f02a8e2f964e",
+    "forbidden_commit": "49b3594ad30bcfc0a869758fe79ef0dfa9b92087",
+    "reference_commit": "4d73a988979b7b9c8f0135b5bc9b9c6976aab7c0"
   },
   "prompt": "task.md",
   "criteria": {
     "schema": "codex-ab.criteria.v1",
     "criteria": [
       {
-        "id": "discovery",
-        "description": "An agent can determine which skills are available and active through a non-interactive interface consistent with normal skill serving."
+        "id": "repository-install",
+        "description": "Install selected root or nested skills from HTTPS repositories, owner/repo shorthand, and GitHub tree or SKILL.md URLs, including slash-containing branches. Explain ambiguity and reject invalid addresses without selection changes. Preserve resources and executable scripts, and enable the installed skill in the chosen layer."
+      },
+      {
+        "id": "remote-recovery",
+        "description": "Persist the normalized repository locator, including any explicitly supplied ref and path, and declared skill identity with schema support. Sync restores missing remote cache content without losing selections or local patches; failed recovery preserves retained state and unrelated skills remain usable. Retain remote-content trust boundaries."
       },
       {
         "id": "diagnostics",
-        "description": "An agent can diagnose problems with skill availability or content through useful non-interactive feedback."
+        "description": "Expose available and active skills, resolved ownership and alternatives, effective selection layers, disabled owners, content health, missing caches, broken patches, and native fallback consistently with serving. Provide useful recovery guidance without requiring an exact JSON schema."
       },
       {
-        "id": "selection",
-        "description": "An agent can change skill selection non-interactively while preserving existing selection semantics."
+        "id": "content-checks",
+        "description": "Check served bodies, listed Markdown references, and explicitly named resources without executing scripts. Reject unreadable, empty, frontmatter-only, or patch-failed content; report per-target results and return failure when checks fail."
       },
       {
-        "id": "content",
-        "description": "An agent can safely change skill content non-interactively while respecting existing ownership and preserving prior state on rejected changes."
+        "id": "layered-selection",
+        "description": "Set Boolean or conditional selections and restore inheritance non-interactively while retaining project/global precedence and native harness ownership. First global writes create manager state. Interface, installation, sync, and management commands consistently use the global layer from the user's home directory."
       },
       {
-        "id": "compatibility-and-tests",
-        "description": "Existing skill ownership, selection, serving, and interactive behavior remain compatible, and tests exercise the new agent-facing workflow."
+        "id": "safe-edits",
+        "description": "Accept complete manifests from files or stdin with optional digest-based stale-edit protection. Validate before publication and preserve prior state on rejection or failed publication. Preserve local modes and update selection/placeholder identities on rename. Remote edits use local patches without changing fetched content, remote identity, or invocation metadata. Scope does not switch content ownership."
+      },
+      {
+        "id": "refresh-backoff",
+        "description": "Failed background refresh attempts observe the existing retry interval instead of immediately respawning on subsequent commands."
+      },
+      {
+        "id": "compatibility-tests-docs",
+        "description": "The installation, recovery, serving, diagnostics, selection, and editing workflow works together. Preserve unaffected ownership, selection, serving, and interactive behavior and meaningful existing coverage. The root Go suite passes, regression tests exercise requested changes and failures, and affected usage, sync help, and selection/remote-store documentation describe delivered behavior."
       }
     ],
     "preparation": "go mod download",
     "existing_tests": "go test . -count=1",
-    "evaluator_guidance": "Derive checks only from the task prompt and the candidate's actual interface. Use isolated temporary home/project roots and local fixtures. Do not prescribe command names, flags, JSON schemas, digest checks, helper names, or the historical solution's design. Exercise end-to-end outcomes and retained behavior at the pinned base. Do not consult the excluded solution. No hidden oracle or runtime-duration threshold is supplied.",
+    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local Git fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. The 12 upstream commits are frozen read-only under /reference: inspect index.json, relevant commit patches, and changes.patch to ground checks in actual implementation, regression tests, and documentation. Installation/recovery evidence is in repository_install_test.go, repository_cli_test.go, and audit_remote_regression_test.go; agent_commands_test.go covers diagnostics, checks, selections, and edits; refresh_runner_test.go covers retry behavior. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact command names, flags, JSON fields, helper names, architecture, patch shape, or the historical README rewrite. Test meaningful end-to-end interactions, not just isolated helpers. Use local Git URL rewriting or equivalent fixtures for repository installation; failures in evaluator wiring are HARNESS_ERROR/unassessed. Do not make unrelated changes bundled in upstream commits into new requirements. Preserve source-only observations with insufficient executed coverage as unassessed. No hidden oracle is supplied. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness.",
     "qualification": "not-run"
   }
 }

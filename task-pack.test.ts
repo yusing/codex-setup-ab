@@ -44,19 +44,21 @@ test("pack fingerprints change with task contents and reject escaping assets", a
   }
 });
 
-test("skills manager task pins a historical non-Mekugi implementation", async () => {
+test("skills manager workflow pins its pre-install base and evaluator-only reference", async () => {
   const pack = await loadTaskPack(join(import.meta.dir, "tasks/skills-mgr-agent-cli/manifest.json"));
   expect(pack.manifest.id).toBe("skills-mgr-agent-cli");
   expect(pack.manifest.source).toEqual({
     repository: "https://github.com/yusing/skills-mgr.git",
-    base_commit: "9ee73a175a6c86b749984cf1904433b3037e530f",
-    forbidden_commit: "3d287a151622bca1ac764ffa1ce50e5b5472fd25",
+    base_commit: "9ae7009faa837921ef6ed28e7b78f02a8e2f964e",
+    forbidden_commit: "49b3594ad30bcfc0a869758fe79ef0dfa9b92087",
+    reference_commit: "4d73a988979b7b9c8f0135b5bc9b9c6976aab7c0",
   });
   expect(pack.contract.qualification).toBe("not-run");
   expect(pack.contract.allowed_paths).toBeUndefined();
   expect(Object.keys(pack.snapshot.files).sort()).toEqual(["manifest.json", "task.md"]);
   expect(pack.contract.criteria.map(criterion => criterion.id)).toEqual([
-    "discovery", "diagnostics", "selection", "content", "compatibility-and-tests",
+    "repository-install", "remote-recovery", "diagnostics", "content-checks",
+    "layered-selection", "safe-edits", "refresh-backoff", "compatibility-tests-docs",
   ]);
 });
 
