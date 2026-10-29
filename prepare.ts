@@ -303,15 +303,15 @@ function replaceProjectTrust(config: string): string {
 }
 
 
-async function snapshotConfig(destination: string, sourceHome: string): Promise<string> {
-  let path = join(destination, ".codex/config.toml");
+export async function readSnapshotConfig(destination: string, sourceHome: string, configurationPath = ".codex/config.toml"): Promise<string> {
+  let path = join(destination, configurationPath);
   const seen = new Set<string>();
   while ((await lstat(path)).isSymbolicLink()) {
     if (seen.has(path)) throw new Error("setup configuration has a symlink cycle");
     seen.add(path);
     const target = await readlink(path);
     if (isAbsolute(target)) {
-      const owner = [sourceHome, "/home/ubuntu"].find(root => target.startsWith(`${root}/`));
+      const owner = [resolve(sourceHome), "/home/ubuntu"].find(root => target.startsWith(`${root}/`));
       if (!owner) throw new Error("setup configuration symlink points outside the setup repository");
       path = resolve(destination, relative(owner, target));
     } else path = resolve(dirname(path), target);
@@ -408,10 +408,27 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     }
   }
   const configPath = join(destination, ".codex/config.toml");
-  const config = replaceProjectTrust(await snapshotConfig(destination, await realpath(home)));
+  const config = replaceProjectTrust(await readSnapshotConfig(destination, await realpath(home)));
   if (!(await realpath(dirname(configPath))).startsWith(`${destination}/`)) throw new Error("setup configuration directory resolves outside its snapshot");
   await rm(configPath, { force: true });
   await writeFile(configPath, config, { mode: 0o600 });
+  const mekugiConfigPath = join(destination, ".config/mekugi/config.toml");
+  let omittedMekugiReviewers = false;
+  if (revision && mekugiBinary && await exists(mekugiConfigPath)) {
+    const settings = Bun.TOML.parse(await readSnapshotConfig(destination, await realpath(home), ".config/mekugi/config.toml")) as {
+      orchestration?: Record<string, unknown>;
+    };
+    if (settings.orchestration && Object.hasOwn(settings.orchestration, "reviewers")) {
+      delete settings.orchestration.reviewers;
+      if (!Object.keys(settings.orchestration).length) delete settings.orchestration;
+      const adapted = Bun.TOML.stringify(settings);
+      if (adapted === undefined) throw new Error("cannot serialize Mekugi compatibility configuration");
+      if (!(await realpath(dirname(mekugiConfigPath))).startsWith(`${destination}/`)) throw new Error("Mekugi configuration directory resolves outside its snapshot");
+      await rm(mekugiConfigPath, { force: true });
+      await writeFile(mekugiConfigPath, adapted, { mode: 0o600 });
+      omittedMekugiReviewers = true;
+    }
+  }
   const loginProfile = join(destination, ".bash_profile");
   const loginContents = await readFile(loginProfile, "utf8").catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT" && error.code !== "EACCES") throw error;
@@ -427,6 +444,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     revision ? "configuration repository shallow-fetched at the selected commit; no working-tree overlay" : "configuration repository shallow-cloned independently with its remote removed; current tracked working-tree changes overlaid",
     "project trust entries replaced with /workspace",
     "Bash login profile restores task Python PATH after user shell initialization",
+    ...(omittedMekugiReviewers ? [".config/mekugi/config.toml: obsolete orchestration.reviewers omitted for shared Mekugi runtime compatibility; original retained in the selected configuration commit"] : []),
     ...(includeRuntimeSupplements ? [
       "untracked home files excluded except explicit runtime supplements; no host auth, session history or Mekugi state copied",
       "mise executable and installed tool store mounted read-only without copying; migration completion records and referenced pipx lock sidecars copied",

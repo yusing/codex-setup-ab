@@ -143,7 +143,7 @@ that already uses those values; it does not require Astra/medium in that configu
 Both arms retain identical current-home setup. Absolute paths under the original
 home (for example, `/home/yusing`) resolve to each arm's own isolated home through
 an alias alongside `/home/ubuntu`. The active host home is not mounted. Preflight
-uses a read-only snapshot alias; installed tools retain their existing read-only
+uses a disposable writable home and matching alias; installed tools retain their existing read-only
 host-store mount, including when nested under that alias. Other comparisons keep
 their existing model guards and home-path behavior.
 

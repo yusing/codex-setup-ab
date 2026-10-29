@@ -40,7 +40,7 @@ async function fixtureHome(): Promise<string> {
   const h = join(root, "fixture-home");
   await file(join(h, ".bash_profile"), 'export PATH="/fixture-python/bin:$PATH"\n');
   for (const name of ["config.toml", "overridden_base_instructions.md", "AGENTS.md", "LARGE-TASK.md", "SMALL-TASK.md", "IMPLEMENTATION.md", "hooks.json", "herdr-agent-state.sh"]) {
-    await file(join(h, ".codex", name), name === "config.toml" ? '"model" = "gpt-6-astra"\n"model_reasoning_effort" = "medium"\n"service_tier" = "default"\n["projects"."/old"]\ntrust_level = "trusted"\n' : "fixture\n");
+    await file(join(h, ".codex", name), name === "config.toml" ? '"model" = "gpt-6-astra"\n"model_reasoning_effort" = "medium"\n"service_tier" = "default"\n["projects"."/old"]\ntrust_level = "trusted"\n' : name === "hooks.json" ? "{}\n" : "fixture\n");
   }
   await file(join(h, "AGENTS.md"));
   await symlink("AGENTS.md", join(h, "linked-guidance"));
@@ -143,8 +143,13 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   await file(historicalConfig, originalConfig);
   await rm(configPath);
   await symlink(historicalConfig, configPath);
+  const mekugiSettings = '[service_tiers]\n"gpt-6.1-sol" = "default"\n[features]\nshell_guard = true\n[orchestration.reviewers]\ncorrectness = "review-correctness"\nsimplification = "review-simplify"\n';
+  await file(join(setupHome, "historical-mekugi.toml"), mekugiSettings);
+  await mkdir(join(setupHome, ".config/mekugi"), { recursive: true });
+  await symlink(join(setupHome, "historical-mekugi.toml"), join(setupHome, ".config/mekugi/config.toml"));
   await file(join(setupHome, ".local/bin/codex"), "#!/bin/sh\necho historical-codex\n", 0o755);
-  await checked(["git", "-C", setupHome, "add", "-f", ".local/bin/codex", ".codex/config.toml", "historical-config.toml"]);
+  await file(join(setupHome, ".local/bin/check_project"), "#!/bin/sh\necho setup-utility\n", 0o755);
+  await checked(["git", "-C", setupHome, "add", "-f", ".local/bin/codex", ".local/bin/check_project", ".codex/config.toml", "historical-config.toml", ".config/mekugi/config.toml", "historical-mekugi.toml"]);
   await checked(["git", "-C", setupHome, "commit", "-m", "historical config and launcher"]);
   const first = (await checked(["git", "-C", setupHome, "rev-parse", "HEAD"])).stdout.trim();
   await rm(configPath);
@@ -174,7 +179,15 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   for (const snapshot of [a, b]) {
     expect(await readFile(join(snapshot, ".codex/config.toml"), "utf8")).not.toContain("dirty live config");
     expect((Bun.TOML.parse(await readFile(join(snapshot, ".codex/config.toml"), "utf8")) as Record<string, unknown>).projects).toEqual({ "/workspace": { trust_level: "trusted" } });
+    if (launcher === "mekugi") {
+      const adapted = Bun.TOML.parse(await readFile(join(snapshot, ".config/mekugi/config.toml"), "utf8"));
+      expect(adapted).toEqual({ service_tiers: { "gpt-6.1-sol": "default" }, features: { shell_guard: true } });
+      const manifest = await Bun.file(join(dirname(snapshot), "snapshot-manifest.json")).json();
+      expect(manifest.adaptations.some((entry: string) => entry.includes("orchestration.reviewers omitted"))).toBe(true);
+      expect((await checked(["git", "-C", snapshot, "show", "HEAD:historical-mekugi.toml"])).stdout).toBe(mekugiSettings);
+    }
   }
+  expect(await readFile(join(setupHome, ".config/mekugi/config.toml"), "utf8")).toBe(mekugiSettings);
   expect(await readFile(historicalConfig, "utf8")).toBe(originalConfig + "# dirty live config\n");
   expect(await Bun.file(join(a, ".codex/hooks/revision.ts")).exists()).toBe(false);
   expect(await readFile(join(b, ".codex/AGENTS.md"), "utf8")).toBe("second revision\n");
@@ -204,11 +217,16 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   }
   expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
   const calls = (await readFile(fake.log, "utf8")).split("\n");
+  const stagedHomes = calls.filter(line => line.startsWith("PREFLIGHT_HOME ")).map(line => line.split(" ")[1]!);
+  expect(stagedHomes.length).toBeGreaterThanOrEqual(4);
+  expect(new Set(stagedHomes).size).toBe(stagedHomes.length);
+  for (const staged of stagedHomes) expect(await Bun.file(join(staged, ".codex/config.toml")).exists()).toBe(false);
+  for (const snapshot of [a, b]) expect(await readFile(join(snapshot, ".local/bin/check_project"), "utf8")).toBe("#!/bin/sh\necho setup-utility\n");
   if (launcher === "mekugi") {
     const preflights = calls.filter(line => line.includes(" create ") && line.includes("mekugi-metrics") && line.includes("codex --version"));
     expect(preflights).toHaveLength(2);
-    expect(preflights[0]).toContain(`${a}:/setup:ro`);
-    expect(preflights[1]).toContain(`${b}:/setup:ro`);
+    expect(preflights.every(line => line.includes(":/home/ubuntu "))).toBe(true);
+    expect(preflights.every(line => !line.includes(":/setup:ro"))).toBe(true);
   }
   const launches = calls.filter(line => line.includes(" exec --json "));
   expect(launches).toHaveLength(2);
@@ -448,7 +466,8 @@ test("duplicate-output launches equal controls with distinct treatment and per-a
     expect(preflight).toContain(`--deduplicate-output=${treatment}`);
     expect(preflight).toContain("codex --version");
     expect(preflight).toContain(`${join(run, "artifacts/preflight-mekugi", arm)}:/mekugi-exports`);
-    expect(preflight).toContain(`${join(run, state.arms[arm].home_template)}:${snapshot.source_home}:ro`);
+    const stagedHome = preflight.match(/-v (\S+):\/home\/ubuntu /)![1]!;
+    expect(preflight).toContain(`${stagedHome}:${snapshot.source_home} `);
     expect(launch).toContain(`${join(run, dirname(state.arms[arm].repository), "home/ubuntu")}:${snapshot.source_home}`);
     expect(launch).not.toContain(`${snapshot.source_home}:${snapshot.source_home}`);
     expect(log.indexOf(preflight)).toBeLessThan(log.indexOf(launch));
@@ -1118,15 +1137,26 @@ case "$operation" in
     esac
     ;;
   create)
-    name=; previous=
+    name=; setup=; previous=
     for argument in "$@"; do
       if [ "$previous" = --name ]; then name="$argument"; fi
       case "$argument" in
         *:/capture) printf '%s' "\${argument%:/capture}" >'${stateDir}/'$name.capture ;;
+        *:/home/ubuntu) setup="\${argument%:/home/ubuntu}" ;;
       esac
       previous="$argument"
     done
     test -n "$name" || exit 2
+    case "$name" in
+      *-preflight-setup|*-preflight-grok|*-preflight-mekugi*|*-preflight-environment-*)
+        test -w "$setup/.local/bin" || exit 2
+        printf 'PREFLIGHT_HOME %s\\n' "$setup" >> '${log}'
+        if test -f "$setup/.local/bin/check_project"; then
+          test "$(cat "$setup/.local/bin/check_project")" = "$(printf '#!/bin/sh\\necho setup-utility\\n')" || exit 2
+          printf '# private preflight write\\n' >> "$setup/.local/bin/check_project"
+        fi
+        ;;
+    esac
     printf '%s\\n' "$*" >'${stateDir}/'$name
     echo "$name"
     ;;
@@ -1199,8 +1229,20 @@ esac
   return { path, log, stateDir };
 }
 
-test("non-paid preflight leaves a prepared run unstarted", async () => {
-  const run = await prepared();
+test.each(["absent", "unregistered", "registered", "linked"])("non-paid preflight respects Go hook registration (%s) and leaves the run unstarted", async registration => {
+  const configuredHome = join(root, `hook-home-${registration}`);
+  await cp(home, configuredHome, { recursive: true, verbatimSymlinks: true });
+  if (registration === "absent") await rm(join(configuredHome, ".codex/hooks.json"));
+  else await file(join(configuredHome, ".codex/hooks.json"), JSON.stringify({ hooks: { PostToolUse: [
+    { hooks: [{ type: "command", command: registration !== "unregistered" ? "/home/ubuntu/.codex/hooks/bin/go_guidelines" : "/home/ubuntu/.codex/hooks/bin/session_start_context" }] },
+  ] } }));
+  if (registration === "linked") {
+    await rename(join(configuredHome, ".codex/hooks.json"), join(configuredHome, "registered-hooks.json"));
+    await symlink(join(configuredHome, "registered-hooks.json"), join(configuredHome, ".codex/hooks.json"));
+    await checked(["git", "-C", configuredHome, "add", "registered-hooks.json"]);
+  }
+  const run = await prepared(30, "codex", registration === "linked" ? `${configuredHome}/` : configuredHome);
+  if (registration === "linked") await file(join(configuredHome, "registered-hooks.json"), "{}");
   const fake = await fakeOwnedDocker(0);
   await preflightRun(run, fake.path);
   const state = await readState(run);
@@ -1208,6 +1250,8 @@ test("non-paid preflight leaves a prepared run unstarted", async () => {
   expect(await Bun.file(join(fake.stateDir, `network-codex-ab-${state.id}-preflight-provider`)).exists()).toBe(false);
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain("mise ls --current --missing --no-header");
+  expect(log.includes("| /home/ubuntu/.codex/hooks/bin/go_guidelines")).toBe(registration !== "absent" && registration !== "unregistered");
+  expect(log).toContain("skills-mgr get use-modern-go/scripts/VERSION");
   expect(log).toContain("-preflight-environment-stock");
   expect(log).toContain("-preflight-environment-current");
   expect(log).toContain("for interpreter in python python3");
@@ -1967,9 +2011,12 @@ test("preflight rejects mise migration warnings even when mise exits successfull
   const run = await prepared();
   const fake = await fakeOwnedDocker(0);
   const script = await readFile(fake.path, "utf8");
-  await writeFile(fake.path, script.replace('    case "$name" in', `    case "$name" in
+  await writeFile(fake.path, script.replace('    status=0\n    case "$name" in', `    status=0
+    case "$name" in
       *-preflight-setup) printf '%s\\n' '[WARN] migrate: failed to remove symlink: readonly tool store' >&2 ;;`));
   await expect(preflightRun(run, fake.path)).rejects.toThrow("mise migration failed");
+  const staged = (await readFile(fake.log, "utf8")).split("\n").find(line => line.startsWith("PREFLIGHT_HOME "))!.split(" ")[1]!;
+  expect(await Bun.file(join(staged, ".codex/config.toml")).exists()).toBe(false);
   const state = await readState(run);
   expect(state.arm_attempts?.current).toBeUndefined();
 });

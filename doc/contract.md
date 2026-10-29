@@ -39,8 +39,12 @@ Codex configuration symlinks into the setup repository are read from the snapsho
 and materialized before adaptation; targets outside the repository are rejected.
 
 Installed hook binaries, plugins, remote-skill caches, and tool-store sidecars remain
-runtime supplements, not historical builds. Revision-owned files are preserved;
-missing runtime dependencies fail before inference. A revision does not establish
+runtime supplements, not historical builds. Revision-owned files are preserved,
+except that Mekugi-launched setup-commit snapshots omit the obsolete
+`orchestration.reviewers` table from `.config/mekugi/config.toml` for compatibility
+with the shared runtime. Other settings remain intact; each affected manifest
+records the omission, and the selected configuration commit retains the original.
+Missing runtime dependencies fail before inference. A revision does not establish
 historical provenance for those installed binaries or fetched skill contents. The
 snapshot manifests retain the actual supplied bytes. The source checkout and its
 index remain unchanged. Historical stock-control reuse is unavailable for this mode;
