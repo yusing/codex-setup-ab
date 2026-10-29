@@ -108,6 +108,16 @@ test("Mekugi native cost is retained separately from captured list-price compari
   expect(direct.stock.usage.totals.estimated_api_usd).not.toBeNull();
 });
 
+test("report regeneration explains resource differences without another judge request", async () => {
+  const { run } = await fixtureRun();
+  const { jsonPath, markdownPath } = await buildReport(run);
+  const report = await Bun.file(jsonPath).json();
+  expect(report.resource_explanation[0].summary).toContain("10 more tokens");
+  expect(report.resource_explanation[0].drivers.join(" ")).toContain("1 model request");
+  expect(await readFile(markdownPath, "utf8")).toContain("Why token and request usage differs");
+  expect((await readState(run)).judge).toBeUndefined();
+});
+
 test("validated journal evidence survives rollout accounting fallback for a capture thread mismatch", async () => {
   const { run } = await fixtureRun();
   const state = await readState(run);

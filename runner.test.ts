@@ -935,6 +935,12 @@ test("task-pack CLI freezes pinned controls without exposing checks to either ar
     const prompt = await readFile(join(fake.stateDir, `codex-ab-${state.id}-judge-${pass}-${stage}-1.prompt`), "utf8");
     expect(prompt).toContain("Read index.json, relevant commit patches, and changes.patch");
     expect(prompt).toContain("Assess final results, not candidate commit correspondence");
+    if (stage === "assessment") {
+      expect(prompt).toContain("Lead with the decisive implementation difference");
+      expect(prompt).toContain("at most three short sentences");
+      expect(prompt).toContain("do not infer them from source quality");
+      expect(prompt).not.toContain("input_tokens");
+    }
   }
   expect(await readFile(join(run, "reports/report.md"), "utf8")).toContain("Task pack: fixture-pack");
   await writeFile(patch, `${original}\nchanged`);

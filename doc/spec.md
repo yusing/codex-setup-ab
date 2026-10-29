@@ -38,7 +38,12 @@ with visible keyboard focus. Fonts are served locally, including from the
 standalone executable; the browser does not contact an external font service.
 
 Pair results show the outcome, key measurements and percentage differences,
-source-assessment reasoning and issues, and criterion decisions directly.
+concise source-assessment explanations, and criterion decisions directly.
+Quality explanations connect concrete implementation decisions to their observed
+behavioral consequences instead of repeating scores or eligibility rules.
+Resource explanations separate request count, repeated input context, output,
+and delegated work. Supported workflow observations retain evidence references;
+unproven causes remain unknown. Full judge evidence and issues stay expandable.
 Readers do not need to expand sections to understand the result. Token breakdowns,
 execution evidence, pricing provenance, and diagnostics remain in one optional
 technical report and the retained evidence downloads.

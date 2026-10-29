@@ -251,6 +251,13 @@ judge attempt; historical failed attempts remain unchanged. The exception is an 
 ./dist/codex-ab report --run-dir "$run_dir"
 ```
 
+Source-assessment rationales explain the decisive implementation cause and its
+observed effect in a short comparison. Detailed evidence, criterion decisions,
+and issues remain retained. Quality judges stay blind to agent logs and costs.
+Report generation explains token and request differences from existing usage
+and visible workflow evidence without another model request. Unknown request
+counts, opaque work, and unsupported causal explanations remain unknown.
+
 The command prints one result path: `reports/report.md`. This self-contained Markdown includes
 the task and setup, behavioral explanation with inline event evidence, measurements, checks,
 source judgments, and limitations. JSON files and the checksummed bundle retain machine-readable

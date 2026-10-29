@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { serveWorkbench } from "./web-server";
+import { explainResources } from "./assessment-explanation";
 
 let root: string;
 let workbench: ReturnType<typeof serveWorkbench>;
@@ -272,7 +273,8 @@ test("source assessments replace numbered identities using each pass's presentat
   expect(rendered).toContain("Overall winner: Codex + Mekugi");
   expect(rendered).not.toMatch(/candidate[-_ ]([12])|>A[: ]|>B[: ]/i);
   const overview = rendered.split('<details class="tree">')[0];
-  expect(overview).not.toMatch(/<details(?! class="criterion-reasoning")/);
+  expect(overview).not.toMatch(/<details(?! class="(?:criterion-reasoning|assessment-details)")/);
+  expect(overview).toContain('<summary>Full evidence and issues</summary>');
   expect(overview).toContain('<span class="status-chip pass">P1 · pass</span>');
   expect(overview).toContain("Direct Codex inspected &lt;main&gt;");
   expect(overview).toContain("Direct Codex added checks");
@@ -285,6 +287,27 @@ test("source assessments replace numbered identities using each pass's presentat
   expect(rendered).toContain("<summary>Technical report</summary>");
   expect(rendered).not.toMatch(/<summary>(Criterion evidence and grading|Source assessments and judge reasoning|Time, token and cost differences|Usage details and pricing provenance|Diagnostics and workflow evidence)/);
   expect(input.report).toEqual(report);
+});
+
+test("resource explanations render recorded accounting and preserve unknown workflow causes", async () => {
+  const directory = await pair();
+  await file(join(directory, "reports/report.json"), JSON.stringify({
+    arms: { stock: {}, current: {} },
+    resource_explanation: explainResources([{ arm: "stock", label: "<Direct>" }, { arm: "current", label: "Router" }]),
+    judge: { result: { passes: [{ pass: 1, presentation: ["stock", "current"], winner: "none", rationale: "A concrete implementation cause" }] } },
+  }));
+  const entry = await attach(directory);
+  const input = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const rendered = runInNewContext(source + "\nresultContent(input)", { input });
+  expect(rendered).toContain("Why token and request usage differs");
+  expect(rendered).toContain("Router versus &lt;Direct&gt;: resource differences are unknown");
+  expect(rendered).toContain("recorded workflow does not establish why extra requests occurred");
+  expect(rendered).not.toContain("<Direct>");
+  input.state.invalidity_reasons = ["Evaluator evidence invalidated"];
+  const invalidated = runInNewContext(source + "\nresultContent(input)", { input });
+  expect(invalidated).not.toContain("Source assessment: why quality differs");
+  expect(invalidated).toContain("Why token and request usage differs");
 });
 
 test("setup output renders Markdown and activity without exposing event payloads", async () => {

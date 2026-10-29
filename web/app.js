@@ -426,14 +426,29 @@ function criterionTable(report, labels) {
       return "<tr" + (differs ? ' class="differs"' : "") + "><th>" + esc(item.id) + '<p class="hint">' + esc(item.description) + '</p></th>' + keys.map((arm, index) => "<td>" + cell(arm, item.id, lists[index]) + "</td>").join("") + "</tr>";
     }).join("") + "</tbody></table></div>";
 }
+function resourceSummary(report) {
+  const comparisons = Array.isArray(report.resource_explanation) ? report.resource_explanation : [];
+  const findings = Array.isArray(obj(report.workflow_mechanisms).findings) ? report.workflow_mechanisms.findings : [];
+  return '<h3>Why token and request usage differs</h3>'
+    + (comparisons.length ? comparisons.map((item) => '<section class="assessment-pass"><p>' + esc(item.summary) + '</p><ul>' + (Array.isArray(item.drivers) ? item.drivers : []).map((driver) => '<li>' + esc(driver) + '</li>').join('') + '</ul></section>').join('')
+      : '<p class="hint">Regenerate the report to explain resource differences from retained usage. Single-arm runs have no comparison.</p>')
+    + (findings.length ? '<h4>Observed workflow contributors</h4><ul>' + [...new Set(findings.map((item) => item.mechanism))].map((title) => '<li>' + esc(title) + '</li>').join('') + '</ul>'
+      + '<details class="assessment-details" data-key="workflow-causes"><summary>Workflow evidence and limits</summary>' + findings.map((item) => '<p><strong>' + esc(item.mechanism) + '</strong></p><p>' + esc(item.explanation) + '</p><ul>' + (item.evidence || []).map((evidence) => '<li>' + esc(evidence) + '</li>').join('') + '</ul><p class="hint">' + esc(item.limitation) + '</p>').join('') + '</details>'
+      : '<p class="hint">The recorded workflow does not establish why extra requests occurred. Request counts alone cannot identify the responsible instruction, retries, or cache-miss cause.</p>')
+    + '<p class="hint">Accounting locates the difference; observed workflow contributors do not establish a general causal effect from one run.</p>';
+}
 function judgeSummary(judge, labels) {
   const result = obj(obj(judge).result);
   if (!Array.isArray(result.passes) || !result.passes.length) return "";
-  return '<h3>Source assessment</h3><p class="hint">Judge prose as recorded. Use the score table above for exact per-setup scores.</p>' + result.passes.map((pass) => {
+  return '<h3>Source assessment: why quality differs</h3><p class="hint">Implementation causes and observed consequences. Full supporting evidence remains available below each explanation.</p>' + result.passes.map((pass) => {
     const names = assessmentNames(pass, labels);
+    const issues = Array.isArray(pass.issues) ? pass.issues : [];
+    const causes = [...new Set(issues.map((issue) => issue.candidate))].map((candidate) => issues.find((issue) => issue.candidate === candidate && issue.severity === 'critical') || issues.find((issue) => issue.candidate === candidate && issue.severity !== 'minor')).filter(Boolean);
     return '<section class="assessment-pass"><h4>Pass ' + esc(pass.pass) + " winner: " + esc(displayName(pass.winner, names)) + "</h4><p>" + esc(displayName(pass.rationale || "No reasoning recorded for this pass.", names)) + "</p>"
+      + (causes.length ? '<ul class="assessment-issues">' + causes.map((issue) => '<li><strong>' + esc(displayName(issue.candidate, names)) + '</strong>: ' + esc(displayName(issue.detail, names)) + '</li>').join('') + '</ul>' : '')
+      + '<details class="assessment-details" data-key="assessment-' + esc(pass.pass) + '"><summary>Full evidence and issues</summary>'
       + (Array.isArray(pass.evidence) ? "<ul>" + pass.evidence.map((item) => "<li>" + esc(displayName(item, names)) + "</li>").join("") + "</ul>" : "")
-      + (Array.isArray(pass.issues) && pass.issues.length ? '<ul class="assessment-issues">' + pass.issues.map((issue) => '<li><strong>' + esc(displayName(issue.candidate, names)) + (issue.severity ? ": " + esc(issue.severity) : "") + "</strong><p>" + esc(displayName(issue.detail, names)) + "</p></li>").join("") + "</ul>" : "") + "</section>";
+      + (issues.length ? '<ul class="assessment-issues">' + issues.map((issue) => '<li><strong>' + esc(displayName(issue.candidate, names)) + (issue.severity ? ": " + esc(issue.severity) : "") + "</strong><p>" + esc(displayName(issue.detail, names)) + "</p></li>").join("") + "</ul>" : "") + "</details></section>";
   }).join("");
 }
 function resultContent(data) {
@@ -452,7 +467,8 @@ function resultContent(data) {
       + scoreTable(report, labels)
       + "<h3>Measurements</h3>" + metricTable(report, state, labels)
       + (warnings.length ? '<ul class="warning-list">' + warnings.map((warning) => "<li>" + esc(warning) + "</li>").join("") + "</ul>" : "")
-      + criterionTable(report, labels) + judgeSummary(report.judge, labels)
+      + (invalidated || report.validity === "invalid" ? "" : judgeSummary(report.judge, labels))
+      + resourceSummary(report) + criterionTable(report, labels)
       + disclosure(invalidated ? "Technical report, regenerate after invalidation" : "Technical report", report, labels);
   }
   if (data.entry.kind === "trials") {
