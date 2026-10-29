@@ -18,8 +18,8 @@ import { runLaunch } from "./launch";
 import { serveWorkbench } from "./web-server";
 
 export const VERSION = "0.1.1";
-const DEFAULT_BASE = "bb9e740362fd86c9214f5c893c65ae6c46587a60";
-const DEFAULT_FORBIDDEN = "d50b9e6d7a2b01fc033a8aab523791876e4441b5";
+const DEFAULT_BASE = "0368c3b3abf4da904caec63948646b2a579c0695";
+const DEFAULT_FORBIDDEN = "495540d62e2e442f00455dc2c054de2d1f809505";
 
 const HELP = `codex-ab ${VERSION}
 
@@ -57,7 +57,7 @@ Prepare options:
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
-  --task FILE           task prompt (default ./task.md)
+  --task FILE           task prompt (default ./tasks/session-retention/task.md)
   --task-pack FILE      portable pinned manifest; requires --source; owns task/base/criteria
   --criteria FILE       predetermined behavioral contract; defaults to task profile
   --output-parent DIR   parent for mktemp run directory (default system temp)
@@ -177,7 +177,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       parallelWork: o["parallel-work"] === true,
       reasoningEffort: string(o, "reasoning-effort", o.comparison === "codex-mekugi-grok" ? "high" : "medium") as import("./types").ReasoningEffort,
       source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
-      forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("task.md")),
+      forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("tasks/session-retention/task.md")),
       taskPackPath: o["task-pack"] as string | undefined,
       criteriaPath: o.criteria as string | undefined,
       outputParent: o["output-parent"] as string | undefined,

@@ -27,7 +27,7 @@ export function taskCatalog() {
   return [
     { id: "nvm-download-no-eval", title: "NVM download arguments", source: process.env.CODEX_AB_SOURCE_DIR ?? join(tmpdir(), "codex-ab-nvm-source"), timeout: 1800, effort: "medium", pack: "tasks/nvm-download-no-eval/manifest.json", repository: "https://github.com/nvm-sh/nvm.git" },
     { id: "skills-mgr-agent-cli", title: "Skills manager repository-to-agent workflow", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-agent-cli/manifest.json" },
-    { id: "session-retention", title: "Mekugi session retention", source: process.env.CODEX_AB_MEKUGI_SOURCE ?? join(userRoot, "projects/mekugi"), timeout: 3600, effort: "xhigh", pack: "" },
+    { id: "session-retention", title: "Mekugi coordination checkpoints", source: process.env.CODEX_AB_MEKUGI_SOURCE ?? join(userRoot, "projects/mekugi"), timeout: 3600, effort: "xhigh", pack: "tasks/session-retention/manifest.json" },
     { id: "sqlite-utils-history", title: "sqlite-utils multi-commit upgrade", source: process.env.CODEX_AB_SQLITE_UTILS_SOURCE ?? join(tmpdir(), "codex-ab-sqlite-utils-source"), timeout: 3300, effort: "xhigh", pack: "tasks/sqlite-utils-history/manifest.json",
       repository: "https://github.com/simonw/sqlite-utils.git", compactLimit: 200000, preset: "stock-mekugi" },
     ...["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding"].map(id => ({ id, title: id === "gin-context-copy" ? "Gin context copy" : id === "flask-ipv6-server-name" ? "Flask IPv6 server name" : "Express transfer encoding", source: join(userRoot, "projects", id.split("-")[0]!), timeout: 1800, effort: "medium", pack: `tasks/${id}/manifest.json` })),
@@ -98,7 +98,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (!Number.isFinite(Number(cpus)) || Number(cpus) <= 0) throw new Error("CPU limit must be positive");
   const memory = stringOption(o, "memory", "4g");
   if (!/^[1-9]\d*(?:[bkmg])?$/i.test(memory)) throw new Error("Memory limit must be positive, for example 4g");
-  const profile = stringOption(o, "profile", task.id === "session-retention" ? "mekugi" : "task");
+  const profile = stringOption(o, "profile", "task");
   if (!["mekugi", "task", "skills-mgr-bundle", "godoxy-icons"].includes(profile)) throw new Error("Unknown task profile");
   return {
     prepare: {
@@ -107,10 +107,10 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
       comparison: comparison as PrepareOptions["comparison"], model: model as PrepareOptions["model"], reasoningEffort: effort as PrepareOptions["reasoningEffort"],
       parallelWork: o["parallel-work"] === true,
       source: source.trim() ? resolve(source) : "", profile: profile as PrepareOptions["profile"],
-      baseCommit: stringOption(o, "base", "302ee2d6691b406f30fcbea38459c6ddc16f6935"),
-      forbiddenCommit: stringOption(o, "forbidden", "d49862486236d8a507bc0986aa1d543481f8fb61"),
+      baseCommit: stringOption(o, "base"),
+      forbiddenCommit: stringOption(o, "forbidden"),
       taskPath: resolve(stringOption(o, "task-file", "tasks/session-retention/task.md")),
-      criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria", "tasks/session-retention/criteria.json")),
+      criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria")),
       taskPackPath: pack ? resolve(pack) : undefined,
       currentHome: resolve(stringOption(o, "current-home")), image: stringOption(o, "image"), cpus, memory,
       timeoutSeconds: positive(stringOption(o, "timeout", String(task.timeout)), "Timeout"), autoCompactLimit: limit,

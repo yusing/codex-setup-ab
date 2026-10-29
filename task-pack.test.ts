@@ -4,16 +4,35 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadTaskPack } from "./task-pack";
 
-test("portable packs pin source, task boundaries and fingerprint their controls", async () => {
+test("portable fixes pin evaluator references and allow relevant regression tests", async () => {
   for (const id of ["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding", "nvm-download-no-eval"]) {
     const pack = await loadTaskPack(join(import.meta.dir, "tasks", id, "manifest.json"));
     expect(pack.manifest.id).toBe(id);
     expect(pack.manifest.source.base_commit).toHaveLength(40);
     expect(pack.contract.task_sha256).toHaveLength(64);
-    expect(pack.contract.allowed_paths).toHaveLength(1);
+    expect(pack.manifest.source.reference_commit).toHaveLength(40);
+    expect(pack.contract.allowed_paths).toBeUndefined();
+    expect(pack.contract.evaluator_guidance).toContain("/reference");
     expect(Object.values(pack.snapshot.files).every(file => file.sha256.length === 64 && file.content.length > 0)).toBe(true);
     expect(Object.keys(pack.snapshot.files).sort()).toEqual(["manifest.json", "task.md"]);
   }
+});
+
+test("Mekugi coordination checkpoints pin a modern modular-workspace reference", async () => {
+  const pack = await loadTaskPack(join(import.meta.dir, "tasks/session-retention/manifest.json"));
+  expect(pack.manifest.id).toBe("session-retention");
+  expect(pack.manifest.source).toEqual({
+    repository: "https://github.com/yusing/mekugi.git",
+    base_commit: "0368c3b3abf4da904caec63948646b2a579c0695",
+    forbidden_commit: "495540d62e2e442f00455dc2c054de2d1f809505",
+    reference_commit: "97ea72b7ea54c4d70a78554908f911061df16bc1",
+  });
+  expect(pack.contract.allowed_paths).toBeUndefined();
+  expect(pack.contract.existing_tests).toContain("make test");
+  expect(pack.contract.preparation).not.toContain("go generate");
+  expect(pack.contract.evaluator_guidance).toContain("/reference");
+  expect(pack.contract.qualification).toBe("not-run");
+  expect(Object.keys(pack.snapshot.files).sort()).toEqual(["manifest.json", "task.md"]);
 });
 
 test("pack fingerprints change with task contents and reject escaping assets", async () => {
@@ -65,7 +84,7 @@ test("skills manager workflow pins its pre-install base and evaluator-only refer
 test("checked-in standalone criteria bind their task prompts", async () => {
   const { createHash } = await import("node:crypto");
   const { validateCriteria } = await import("./semantic");
-  for (const directory of [".", "tasks/shell-activity", "tasks/skills-mgr-bundle"]) {
+  for (const directory of ["tasks/skills-mgr-bundle"]) {
     const task = await readFile(join(import.meta.dir, directory, "task.md"));
     const criteria = JSON.parse(await readFile(join(import.meta.dir, directory, "criteria.json"), "utf8"));
     expect(validateCriteria(criteria, createHash("sha256").update(task).digest("hex")).criteria.length).toBeGreaterThan(0);

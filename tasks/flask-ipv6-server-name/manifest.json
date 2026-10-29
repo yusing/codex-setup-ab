@@ -4,19 +4,19 @@
   "source": {
     "repository": "https://github.com/pallets/flask.git",
     "base_commit": "de8429ffda8cfb54db175529e2bae72a24e1fa7e",
-    "forbidden_commit": "7203feabf723edae0286ae5dc64fec8ac4c91735"
+    "forbidden_commit": "7203feabf723edae0286ae5dc64fec8ac4c91735",
+    "reference_commit": "7203feabf723edae0286ae5dc64fec8ac4c91735"
   },
   "prompt": "task.md",
   "criteria": {
     "schema": "codex-ab.criteria.v1",
     "criteria": [
       {"id": "ipv6-server-name", "description": "Flask.run parses bracketed IPv6 SERVER_NAME with and without an explicit port, keeping the IPv6 host intact.", "required_interface": "Flask.run and SERVER_NAME"},
-      {"id": "existing-address-selection", "description": "DNS and IPv4 SERVER_NAME parsing, explicit host and port overrides including port zero, debug behavior, and server cleanup remain unchanged."}
+      {"id": "existing-address-selection", "description": "DNS and IPv4 addresses, host/port defaults and explicit overrides including port zero, debug behavior, and server cleanup retain their supported behavior. URL-parser hostname normalization and validation are permitted."}
     ],
-    "allowed_paths": ["src/flask/app.py"],
     "preparation": "if test ! -x /opt/task-deps/python/bin/pytest; then python3 -m venv /opt/task-deps/python && /opt/task-deps/python/bin/pip install 'blinker>=1.9.0' 'click>=8.1.3' 'itsdangerous>=2.2.0' 'jinja2>=3.1.2' 'markupsafe>=2.1.1' 'werkzeug>=3.1.0' asgiref pytest python-dotenv; fi",
     "existing_tests": "PYTHONPATH=src /opt/task-deps/python/bin/python -m pytest -p no:cacheprovider -q tests/test_basic.py -k 'test_run_from_config or test_run_server_port or test_run_defaults'",
-    "evaluator_guidance": "Use /opt/task-deps/python/bin/python with PYTHONPATH=src when importing the candidate Flask source. Pytest must use -p no:cacheprovider because candidate files are read-only. Dependencies are preinstalled in the immutable dependency image; do not install packages during offline checks.",
+    "evaluator_guidance": "Use /opt/task-deps/python/bin/python with PYTHONPATH=src and PYTHONDONTWRITEBYTECODE=1. Pytest must use -p no:cacheprovider because candidate files are read-only. Dependencies are preinstalled; do not install packages during offline checks. Inspect /reference/index.json and the 7203fea patch: Flask.run, its host/port documentation, and test_run_from_config, test_run_server_port, and test_run_defaults establish the outcomes. Exercise bracketed IPv6 with and without ports, existing defaults/overrides including zero, debug behavior, and cleanup through a mocked run_simple. The reference uses URL parsing, which lowercases DNS hostnames and changes validation for malformed inputs; do not require byte-identical parsing for every former input. Accept equivalent designs and safe improvements, assess relevant regression tests, and preserve unaffected behavior. Reference evidence is evaluator-only. Wiring failures are HARNESS_ERROR/unassessed; retain source-only observations without executed coverage as unassessed.",
     "qualification": "not-run"
   }
 }

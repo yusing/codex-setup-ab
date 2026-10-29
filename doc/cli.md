@@ -195,8 +195,9 @@ supported and explicitly reports missing source provenance.
 Portable packs include [nvm download](../tasks/nvm-download-no-eval/manifest.json),
 [Gin context copy](../tasks/gin-context-copy/manifest.json), and
 [skills manager repository-to-agent workflow](../tasks/skills-mgr-agent-cli/README.md). Each pins its upstream base and
-excluded solution commit, dependency preparation, and behavioral criteria. NVM and Gin also
-enforce their task-required single-file boundaries; the skills manager task leaves file scope open.
+excluded solution commit, evaluator reference endpoint, dependency preparation,
+and behavioral criteria. These tasks permit relevant regression tests and
+documentation alongside implementation changes, without synthetic single-file boundaries.
 They use the generic `task` profile, not a repository-specific runner branch.
 
 Obtain the source repository locally, then prepare from its manifest:
@@ -226,11 +227,68 @@ without adding them to implementation workspaces. The bundle retains these
 contents and hashes. No original pack directory is needed after preparation. A fingerprint
 identifies the supplied content; it is not a signature of upstream authenticity.
 
-Nvm needs no downloaded dependencies. Its pinned installer requires Bash to be sourced, so its existing checks run with Bash; the changed function must remain POSIX-compatible. Gin prepares pinned Go modules before inference and reuses separate evaluator caches offline. Nvm's existing tests exercise installer source selection, not network-dependent downloads. Adaptive semantic checks cover the task's remaining outcomes. Pack contracts record `qualification: "not-run"`; preparing a pack does not authorize inference or claim oracle qualification.
+Nvm needs no downloaded dependencies. Its pinned installer requires Bash to be
+sourced; argument translation retains POSIX-style constructs, and `sh -n` checks
+syntax rather than strict POSIX runtime portability. Gin prepares pinned Go
+modules before inference and reuses separate evaluator caches offline. Nvm's
+existing-test gate exercises installer source selection; adaptive checks use
+local fake download commands for argument handling. Pack contracts record
+`qualification: "not-run"`; preparation does not authorize inference or qualify
+an oracle.
+
+### Commit-backed task provenance
+
+The four external-project fixes retain their original baselines and identifiers.
+The Mekugi task uses a recent modular-workspace baseline and retains its existing
+CLI identifier. All include evaluator-only reference evidence and expectations
+grounded in upstream behavior. Earlier runs keep their original controls;
+compare them as different task versions, not repetitions of the migrated packs.
+
+| Pack | Baseline and commit date | Reference endpoint | Criterion evidence |
+| --- | --- | --- | --- |
+| [Gin](../tasks/gin-context-copy/manifest.json) | `2e4d4f3`, June 22, 2026 | [`293ad7e`](https://github.com/gin-gonic/gin/commit/293ad7edebb3ae30369288bd6416ca0d78474727) | `copy-isolation` and `existing-copy-behavior`: Context.Copy and the TestContextCopy family in context_test.go; the prefix gate includes the added regressions. |
+| [Flask](../tasks/flask-ipv6-server-name/manifest.json) | `de8429f`, August 11, 2026 (authored July 14) | [`7203fea`](https://github.com/pallets/flask/commit/7203feabf723edae0286ae5dc64fec8ac4c91735) | `ipv6-server-name` and `existing-address-selection`: Flask.run host/port documentation and test_run_from_config, test_run_server_port, test_run_defaults. URL-parser normalization is allowed. |
+| [Express](../tasks/express-transfer-encoding/manifest.json) | `59e205a`, June 15, 2026 | [`9a34acf`](https://github.com/expressjs/express/commit/9a34acf03cb818ff3f8bc40e44176e277a25cbb9) | `transfer-encoding-length`: 18e5985 and its four transfer-coding cases; `send-regressions`: the later ETag fix 9a34acf and test/res.send.js. |
+| [Nvm](../tasks/nvm-download-no-eval/manifest.json) | `52047ed`, July 15, 2026 | [`b17550a`](https://github.com/nvm-sh/nvm/commit/b17550a0b9ab691439815dfccc8b73e3a59fa103) | `literal-arguments`, `wget-translations`, and `curl-posix`: install.sh, the unchanged curl route, and nvm_download_no_eval_injection. Option-like output operands are outside the required scope. |
+| [Mekugi coordination checkpoints](../tasks/session-retention/README.md) | `0368c3b`, October 28, 2026 | [`97ea72b`](https://github.com/yusing/mekugi/commit/97ea72b7ea54c4d70a78554908f911061df16bc1) | `495540d` defines aggregate waits; `97ea72b` defines safe standalone/compound compaction. The task README maps all criteria to their contracts and tests. |
+
+Cutoffs verified October 29, 2026 for [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra)
+and [`gpt-6.1-sol`](https://developers.openai.com/api/docs/models/gpt-6.1-sol) are
+April 30, 2026. Every baseline above is later than both cutoffs. Verify other
+models, including Grok, separately before claiming a post-cutoff comparison.
+The [skills manager](../tasks/skills-mgr-agent-cli/README.md) and
+[sqlite-utils](../tasks/sqlite-utils-history/README.md) packs record their own
+multi-commit provenance and cutoff evidence.
+
+Express freezes 18 ancestry commits to reach its ETag correction; only the two
+named fixes define new requirements. Mekugi freezes nine commits with two
+selected features; intervening work is reference context. Gin, Flask, and Nvm
+each use one reference commit. Reference limitations are permitted, not mandatory
+rejection rules; safe improvements are acceptable.
+
+Select **Mekugi coordination checkpoints**, retaining CLI task ID
+`session-retention`. It uses the modular Go workspace and pinned Claude worker,
+without WASM/plugin generation. The obsolete root grouped-activity prompt,
+shell-activity task, and standalone retention criteria are retired; their old
+versions remain in Git history and retained runs. Use bare Codex when implementing
+Mekugi changes, and separate-project tasks when comparing launchers.
+
+The legacy skills-mgr bundle prompt has no reference solution, and the GoDoxy
+icons profile uses a synthetic baseline with external task inputs. They remain
+separate legacy profiles, without a commit-backed or post-cutoff qualification.
 
 ## Diverse task suite
 
-`tasks/diverse-suite.json` selects four pinned task packs: Gin, Flask, Express, and nvm. Supply a JSON object mapping each task ID to a local checkout of its source repository. The suite checks each checkout against its pack's base and forbidden commits, prepares at least two fresh pairs per task/setup, and runs model-free preflight before allowing inference. The new Flask and Express packs use adaptive grading, not prequalified hidden-test oracles. Their selected existing tests passed on the pinned baseline (Flask: 9; Express: 71).
+`tasks/diverse-suite.json` selects four pinned task packs: Gin, Flask, Express,
+and nvm. Supply a JSON object mapping each task ID to a local checkout containing
+its baseline and reference ancestry. The suite prepares at least two fresh pairs
+per task/setup and runs model-free preflight before allowing inference. These
+packs use adaptive grading, not prequalified hidden-test oracles. Earlier
+baseline checks passed for Flask (9 tests) and Express (71 tests). On October 29,
+2026, local reference checks passed for Gin's TestContextCopy family, Flask's
+focused address tests (10), Express's res.send suite (76), and Nvm's syntax,
+source-selection, and no-eval regression tests. These source-level checks do not
+qualify Docker execution, adaptive judges, or comparison outcomes.
 
 ```sh
 cat > /tmp/codex-ab-sources.json <<'JSON'

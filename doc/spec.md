@@ -73,7 +73,7 @@ Available pinned tasks are `nvm-download-no-eval`, `gin-context-copy`,
 `flask-ipv6-server-name`, `express-transfer-encoding`,
 [skills-mgr-agent-cli](../tasks/skills-mgr-agent-cli/README.md),
 [sqlite-utils-history](../tasks/sqlite-utils-history/README.md), and
-[session-retention](../tasks/session-retention/README.md). The `custom` choice accepts
+[Mekugi coordination checkpoints](../tasks/session-retention/README.md). The `custom` choice accepts
 a portable pack or explicit task inputs. The Web UI and CLI share the
 [launch catalog](../launch.ts); omitting `--task` keeps the NVM default.
 The skills manager task reproduces a 12-commit repository-to-agent workflow:
@@ -82,8 +82,13 @@ content checks, safe edits, and refresh backoff. Its pinned reference is availab
 only to evaluators; candidates choose their interface and implementation design.
 It uses a two-hour agent timeout;
 long-horizon runtime and compaction frequency have not been measured, and compaction is not guaranteed.
-`session-retention` is available only with `stock-current`. All Mekugi presets reject that
-Mekugi development task before external effects, so the launcher is compared on a separate project.
+Mekugi coordination checkpoints retains the `session-retention` identifier but
+uses an October 28 baseline on the modular Go architecture. Its two selected
+upstream features add aggregate delegate waits and safely settled compaction
+checkpoints across Codex and Claude delegates. It is available with `stock-current`
+and `setup-commits`; use bare Codex for this Mekugi development task.
+Launcher-comparison presets reject it before external effects, so launchers are
+compared on a separate project.
 Other presets are `stock-current`, `current-vs-current-mekugi`, and `codex-mekugi-grok`.
 Use `CODEX_AB_SKILLS_MGR_SOURCE` to select the skills manager task checkout
 (default `$HOME/projects/skills-mgr`). `CODEX_AB_MEKUGI_SOURCE` independently selects the

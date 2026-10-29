@@ -4,19 +4,19 @@
   "source": {
     "repository": "https://github.com/expressjs/express.git",
     "base_commit": "59e205a57a04fced6bb7b8ec0b5dec29461a9996",
-    "forbidden_commit": "18e5985b8a9d5e8423db0a9121f22bdaecd5b120"
+    "forbidden_commit": "18e5985b8a9d5e8423db0a9121f22bdaecd5b120",
+    "reference_commit": "9a34acf03cb818ff3f8bc40e44176e277a25cbb9"
   },
   "prompt": "task.md",
   "criteria": {
     "schema": "codex-ab.criteria.v1",
     "criteria": [
-      {"id": "transfer-encoding-length", "description": "res.send does not generate Content-Length when the application has set any Transfer-Encoding value.", "required_interface": "Express res.send"},
-      {"id": "send-regressions", "description": "Body conversion, content type, ETag, freshness, status-specific header removal, HEAD handling, and response completion retain existing behavior."}
+      {"id": "transfer-encoding-length", "description": "res.send does not generate Content-Length alongside a retained Transfer-Encoding header, for any transfer-coding value. Preserve status-specific header removal/replacement, including Content-Length: 0 after removing Transfer-Encoding for HTTP 205.", "required_interface": "Express res.send"},
+      {"id": "send-regressions", "description": "Body conversion, content type, ETag generation including with Transfer-Encoding, freshness, status-specific header removal, HEAD handling, and response completion retain existing behavior."}
     ],
-    "allowed_paths": ["lib/response.js"],
     "preparation": "if test -f /opt/task-deps/express-prepared; then bun install --offline --no-save; else bun install --no-save && touch /opt/task-deps/express-prepared; fi",
     "existing_tests": "bun x mocha --require test/support/env --reporter dot --check-leaks test/res.send.js",
-    "evaluator_guidance": "The dependency image contains the resolved Bun cache. Run bun install --offline --no-save in the candidate copy before invoking Express or Mocha; never use the network during grading.",
+    "evaluator_guidance": "The dependency image contains the resolved Bun cache. Run bun install --offline --no-save in the candidate copy before invoking Express or Mocha; never use the network during grading. Inspect /reference/index.json and the relevant upstream patches. Commit 18e5985 establishes Transfer-Encoding/Content-Length behavior with chunked, compress, deflate, and gzip cases in test/res.send.js; 9a34acf fixes its ETag regression and adds the should-still-generate-an-ETag case. Both define the requested outcome. The frozen ancestry contains 18 commits, but unrelated QUERY support, dependency, CI, and documentation changes are context, not task requirements. Keep baseline behavior outside res.send's requested change. Assess focused regression tests and accept equivalent implementations and safe improvements without exact patch or file-boundary requirements. Reference evidence is evaluator-only. Wiring failures are HARNESS_ERROR/unassessed; retain source-only observations without executed coverage as unassessed.",
     "qualification": "not-run"
   }
 }

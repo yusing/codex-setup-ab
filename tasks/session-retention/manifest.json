@@ -1,0 +1,48 @@
+{
+  "schema": "codex-ab.task-pack.v1",
+  "id": "session-retention",
+  "source": {
+    "repository": "https://github.com/yusing/mekugi.git",
+    "base_commit": "0368c3b3abf4da904caec63948646b2a579c0695",
+    "forbidden_commit": "495540d62e2e442f00455dc2c054de2d1f809505",
+    "reference_commit": "97ea72b7ea54c4d70a78554908f911061df16bc1"
+  },
+  "prompt": "task.md",
+  "criteria": {
+    "schema": "codex-ab.criteria.v1",
+    "criteria": [
+      {
+        "id": "aggregate-waits",
+        "description": "wait_agent supports wait_mode all alongside default any, resolves selected descendants once, and returns all selected outcomes only after settlement and result delivery. Failed and interrupted agents count as settled; selected identities, ordering, claims, and recovery remain correct."
+      },
+      {
+        "id": "messages-and-deadlines",
+        "description": "Addressed messages wake either wait mode without consuming queued completion notifications. Deadlines begin at registration, including compound waits, and may expire while compaction is pending."
+      },
+      {
+        "id": "checkpoint-admission",
+        "description": "An authenticated self-directed compact operation and compact:true on wait_agent atomically register checkpoint and compound-wait intent, including already-ready outcomes."
+      },
+      {
+        "id": "native-settlement",
+        "description": "Native compaction waits for successful requesting-execution and host-turn settlement. Yielded execution remains pending; failed execution retires the checkpoint without claiming events. Codex root/delegate and Claude delegate paths use authoritative native settlement."
+      },
+      {
+        "id": "continuation-barrier",
+        "description": "Standalone success continues unfinished work once. Compound success releases only the original wait, delivering an eligible outcome once or remaining waiting without inference. Pending compaction retains messages/results behind the barrier."
+      },
+      {
+        "id": "failure-and-supersession",
+        "description": "Compound compaction failure preserves the wait and events, reports immediately and in eventual delivery, and does not by itself start inference. Human input/interruption supersedes undispatched continuation. Uncertain dispatch pauses for reconciliation rather than blind retry."
+      },
+      {
+        "id": "integration-and-contracts",
+        "description": "Preserve authentication, logical work generations, coordination attribution, activity presentation, and unaffected behavior. Update Thread Control, Session Control, and Claude backend contracts and focused regression tests, including restart recovery. Keep automatic thresholds, SDK upgrades, same-cell continuation, and unrelated features outside scope."
+      }
+    ],
+    "preparation": "task_state=\"$(mktemp -d)\" && trap 'rm -rf \"$task_state\"' EXIT && export MEKUGI_TEST_CLAUDE_NATIVE=0 MEKUGI_TEST_WEBUI_BROWSER=0 XDG_STATE_HOME=\"$task_state/state\" XDG_RUNTIME_DIR=\"$task_state/runtime\" MEKUGI_RUNTIME_DIR=\"$task_state/mekugi\" && mkdir -p \"$XDG_STATE_HOME\" \"$XDG_RUNTIME_DIR\" \"$MEKUGI_RUNTIME_DIR\" && bun install --cwd backends/claude --frozen-lockfile && bun run --cwd backends/claude build && GOFLAGS=-mod=readonly make test RTK= TEST_PACKAGES='./modules/threadcontrol/... ./modules/activity/coordination ./apps/mekugi/internal/sessioncontrol ./apps/mekugi/internal/launch' TEST_PARALLEL=4 TEST_FLAGS='-count=1 -timeout=180s -p=2' TEST_RUN='^$'",
+    "existing_tests": "task_state=\"$(mktemp -d)\" && trap 'rm -rf \"$task_state\"' EXIT && export MEKUGI_TEST_CLAUDE_NATIVE=0 MEKUGI_TEST_WEBUI_BROWSER=0 XDG_STATE_HOME=\"$task_state/state\" XDG_RUNTIME_DIR=\"$task_state/runtime\" MEKUGI_RUNTIME_DIR=\"$task_state/mekugi\" && mkdir -p \"$XDG_STATE_HOME\" \"$XDG_RUNTIME_DIR\" \"$MEKUGI_RUNTIME_DIR\" && GOFLAGS=-mod=readonly make test RTK= TEST_PACKAGES='./modules/threadcontrol/... ./modules/activity/coordination ./apps/mekugi/internal/sessioncontrol ./apps/mekugi/internal/launch' TEST_PARALLEL=4 TEST_FLAGS='-count=1 -timeout=180s -p=2' TEST_RUN='Wait|Compaction'",
+    "evaluator_guidance": "Use the modular workspace make test runner, not a root-module go test or historical router/plugin commands. Preparation uses pinned Go and Claude worker dependencies; do not upgrade SDKs or enable live model/E2E tests. Set isolated temporary XDG_STATE_HOME, XDG_RUNTIME_DIR, and MEKUGI_RUNTIME_DIR before tests. Inspect /reference/index.json and the selected patches: 495540d defines aggregate waits through Thread Control, launch/session delivery, coordination presentation, and TestWaitAllSettlesSelectedOutcomesTogether/TestWaitAllMessageTimeoutAndStoppedTargets. 97ea72b defines compaction checkpoints, native settlement gates, continuation/failure/supersession, and corresponding control, Session Control, and Claude launch tests. Owning contracts are modules/threadcontrol/SPEC.md, apps/mekugi/internal/sessioncontrol/SPEC.md, and backends/claude/SPEC.md. The frozen range contains nine commits; the other seven cover capture, browser previews, parent-input/reply presentation, inspection events, environment facts, and contributor guidance, and are not extra requirements. Require selected behavior at least as good as the reference while preserving baseline behavior. Accept equivalent designs and safe improvements without exact helper/architecture or patch requirements. Reference evidence is evaluator-only and candidate implementation must remain unchanged by checks. Wiring failures are HARNESS_ERROR/unassessed; preserve source-only observations without executed coverage as unassessed. Native Codex/Claude acceptance tests are opt-in; report their absence rather than invent executed coverage. Do not score launcher identity, elapsed time, or observed compaction count as product correctness.",
+    "qualification": "not-run"
+  }
+}

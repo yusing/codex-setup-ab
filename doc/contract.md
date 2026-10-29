@@ -16,10 +16,7 @@ Reports and operator progress name arms by their actual launcher and setup (for 
 ```sh
 run_dir="$(./dist/codex-ab prepare \
   --source /home/ubuntu/projects/mekugi \
-  --base bb9e740362fd86c9214f5c893c65ae6c46587a60 \
-  --forbidden d50b9e6d7a2b01fc033a8aab523791876e4441b5 \
-  --task ./task.md \
-  --criteria ./criteria.json)"
+  --task-pack ./tasks/session-retention/manifest.json)"
 ```
 
 Preparation creates a new mode-0700 `mktemp` directory outside the repository. It shallow-fetches exactly the base commit into a bare seed, makes two `--no-local --no-hardlinks` clones, removes their remotes, and verifies tree identity, the lack of object alternates and linked worktrees, and absence of the future solution commit. Implementation workspaces never receive the solution. A task pack may pin a `source.reference_commit` endpoint for evaluator-only upstream evidence. Preparation freezes the actual ordered commit patches and the combined base-to-endpoint diff from the supplied source repository, with commit IDs and file hashes. The range must descend from the baseline and include the excluded solution commit. Judges can inspect this read-only reference when designing checks and assessing the final result; it does not enter implementation mounts. References are retained in trials and checksummed bundles. Older runs without a reference keep their original inputs.

@@ -4,18 +4,18 @@
   "source": {
     "repository": "https://github.com/nvm-sh/nvm.git",
     "base_commit": "52047edfb15547042bef6fac7c83b17cb66cf02f",
-    "forbidden_commit": "b17550a0b9ab691439815dfccc8b73e3a59fa103"
+    "forbidden_commit": "b17550a0b9ab691439815dfccc8b73e3a59fa103",
+    "reference_commit": "b17550a0b9ab691439815dfccc8b73e3a59fa103"
   },
   "prompt": "task.md",
   "criteria": {
     "schema": "codex-ab.criteria.v1",
     "criteria": [
-      {"id": "literal-arguments", "description": "The wget path passes URLs and output paths as single unchanged literal arguments, including spaces and shell metacharacters, without evaluating shell syntax.", "required_interface": "install.sh nvm_download"},
+      {"id": "literal-arguments", "description": "The wget path retains literal URLs and output paths containing spaces and shell metacharacters without reparsing shell syntax, for the installer's existing caller-supplied arguments. Option-like output operands are outside the required scope.", "required_interface": "install.sh nvm_download"},
       {"id": "wget-translations", "description": "Preserve wget translations for progress, compression, failure, redirect, headers, silence, output and resume flags; consume the argument after -C as its value."},
-      {"id": "curl-posix", "description": "The curl path remains unchanged and the implementation remains POSIX-shell compatible."}
+      {"id": "curl-posix", "description": "The curl path remains unchanged, argument translation uses POSIX-style shell constructs, and install.sh passes sh -n while retaining its existing Bash entry-point requirement."}
     ],
-    "allowed_paths": ["install.sh"],
-    "evaluator_guidance": "Source install.sh with Bash when executing nvm_download because its top-level runtime guard requires Bash. Check POSIX compatibility separately with sh -n. Do not enable nounset before sourcing unless every variable required by the existing entry point is initialized. For literal output arguments and -o translation, test an output value that resembles a translated option, such as --compressed or -s, and compare exact wget argument boundaries.",
+    "evaluator_guidance": "Source install.sh with Bash because its entry guard requires Bash; use sh -n as a syntax check, not proof of strict POSIX runtime portability. Do not enable nounset before sourcing unless every existing entry-point variable is initialized. Inspect /reference/index.json and the b17550a patch, especially nvm_download_no_eval_injection and the unchanged curl branch. Use local fake curl/wget fixtures to check literal substitution syntax, spaced paths, ampersand URLs, flag translations, and resume-value consumption. The reference translates each argument independently and does not preserve output operands resembling flags such as --compressed or -s; those cases are outside required scope, though safe improvements are acceptable. This is an argument-handling robustness task, not a claim of an exploitable vulnerability. Assess focused regression tests without exact patch or file-boundary requirements. Reference evidence is evaluator-only. Wiring failures are HARNESS_ERROR/unassessed; retain source-only observations without executed coverage as unassessed.",
     "preparation": "sh -n install.sh",
     "existing_tests": "cd test/install_script && bash nvm_source",
     "qualification": "not-run"

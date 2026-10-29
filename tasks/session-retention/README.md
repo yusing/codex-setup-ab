@@ -1,55 +1,95 @@
-# Session-aware replay retention benchmark
+# Mekugi coordination checkpoints benchmark
 
-This benchmark asks both arms to add automatic, session-aware retention to Mekugi's durable replay state. It is a cross-cutting storage and lifecycle task selected from an existing sibling-project change.
+Implement aggregate delegate waits and safe agent compaction checkpoints on
+Mekugi's modular Go workspace. These connected features come from two real
+October 28–29 commits: coordinators wait for all selected descendants, then
+compact without losing queued messages, outcomes, or unfinished work.
 
-- Source repository: Mekugi.
-- Base: `302ee2d6691b406f30fcbea38459c6ddc16f6935`.
-- Excluded solution: `d49862486236d8a507bc0986aa1d543481f8fb61`.
-- Task: [task.md](task.md).
-- Behavioral contract: [criteria.json](criteria.json).
-- Reference-change scale: 41 files, 1,888 additions, and 241 deletions.
+The [prompt](task.md) states the observable outcomes and leaves implementation
+design open. The [manifest](manifest.json) pins the source, tests, criteria, and
+evaluator-only reference evidence.
 
-The task covers the ownership, retention, lease, legacy-record, change-ID, capacity-error, compatibility, documentation, and test outcomes stated in the prompt. The evaluator should assess those observable outcomes rather than requiring the excluded solution's internal structure.
+## Baseline and reference
 
-## Prepare an isolated setup comparison
+Repository: [yusing/mekugi](https://github.com/yusing/mekugi).
 
-Use `stock-current` to compare minimal and current-home guidance, with both arms launching bare Codex. This task modifies Mekugi itself, so the preset launcher rejects Mekugi comparisons for it. Use a [separate-project task](../../doc/spec.md#stock-codex-versus-stock-plus-mekugi) to compare launchers. Follow the [build guide](../../doc/cli.md#prerequisites-and-build) before preparation.
+- Baseline: [`0368c3b3abf4da904caec63948646b2a579c0695`](https://github.com/yusing/mekugi/commit/0368c3b3abf4da904caec63948646b2a579c0695), October 28, 2026.
+- First excluded solution: [`495540d62e2e442f00455dc2c054de2d1f809505`](https://github.com/yusing/mekugi/commit/495540d62e2e442f00455dc2c054de2d1f809505), October 28, 2026, aggregate waits.
+- Reference endpoint: [`97ea72b7ea54c4d70a78554908f911061df16bc1`](https://github.com/yusing/mekugi/commit/97ea72b7ea54c4d70a78554908f911061df16bc1), October 29, 2026, compaction checkpoints.
+
+The baseline already contains server-owned agents, Thread Control, Session
+Control, and the Claude delegate backend. It has no WASM/plugin runtime and
+requires no architecture migration. Its date is later than the documented
+cutoffs for `gpt-6-astra` and `gpt-6.1-sol`; see
+[cutoff sources](../../doc/cli.md#commit-backed-task-provenance).
+
+Candidates receive only the baseline history. Judges inspect nine frozen
+ancestry patches and the combined diff under `/reference`. Only `495540d` and
+`97ea72b` define new requirements. The other seven commits concern capture,
+browser previews, parent-input/reply presentation, inspection events, environment
+facts, and contributor guidance. They provide context, not additional features.
+Equivalent designs and safe improvements are acceptable.
+
+| Criterion | Reference | Upstream evidence |
+| --- | --- | --- |
+| `aggregate-waits` | `495540d` | Thread Control waits/bindings, launch delivery, coordination presentation; TestWaitAllSettlesSelectedOutcomesTogether and TestWaitAllMessageTimeoutAndStoppedTargets |
+| `messages-and-deadlines` | Both | Logical-wait contracts and wait/control tests for messages, deadlines, retained claims, and recovery |
+| `checkpoint-admission` | `97ea72b` | Thread Control actions/lifecycle; TestCompactionCheckpointAdmission |
+| `native-settlement` | `97ea72b` | Session Control and Claude hooks; TestAgentCompactionUsesSoleLedgerAndBothGates and TestClaudeCompactionRequiresNativeSuccessBoundaryAndTerminal |
+| `continuation-barrier` | `97ea72b` | TestCompoundCompactionRetainsWaitAndEvents and TestClaudeCompoundCompactionKeepsWaitBehindNativeSettlement |
+| `failure-and-supersession` | `97ea72b` | TestCompactionSupersessionAndUncertainty and TestAgentCompactionCancellationPreservesLogicalSupersession |
+| `integration-and-contracts` | Both | Thread Control, Session Control, and Claude backend specifications; wait/compaction tests and TestUISnapshotLogicalWaitAllOutcome |
+
+Use these sources at the pinned endpoint, not the current working checkout.
+The interaction between durable waits, execution settlement, compaction,
+continuation, and two backend paths makes this a cross-cutting task. Workload size
+does not establish candidate duration or observed compaction frequency.
+
+## Prepare and run
+
+In the workbench select **Mekugi coordination checkpoints**. The CLI identifier
+remains `session-retention` to preserve existing selectors; new preparations use
+this task instead of the former replay-storage retention prompt. Earlier runs
+retain their original controls and form a different task.
+
+Use `stock-current` for minimal versus current-home guidance, or `setup-commits`
+for two committed setups. Use bare Codex for implementing Mekugi changes;
+launcher-comparison presets reject this task. Select a
+[separate-project task](../../doc/spec.md#stock-codex-versus-stock-plus-mekugi)
+when comparing launchers.
+
+After following the [build guide](../../doc/cli.md#prerequisites-and-build):
 
 ```sh
-mekugi_source="${MEKUGI_SOURCE:-$HOME/projects/mekugi}"
-
-run_dir="$(./dist/codex-ab prepare \
-  --profile mekugi \
-  --source "$mekugi_source" \
-  --base 302ee2d6691b406f30fcbea38459c6ddc16f6935 \
-  --forbidden d49862486236d8a507bc0986aa1d543481f8fb61 \
-  --task tasks/session-retention/task.md \
-  --criteria tasks/session-retention/criteria.json \
-  --comparison stock-current \
-  --current-home "$HOME" \
-  --current-launcher codex \
-  --reasoning-effort xhigh \
-  --timeout 3600 \
-  --image codex-ab:0.1.0)"
-./dist/codex-ab preflight --run-dir "$run_dir"
+./dist/codex-ab launch --task session-retention \
+  --source /path/to/mekugi --preset stock-current --prepare-only
 ```
 
-Review the frozen task, criteria, identities, and setup recorded in `run.json` before starting paid inference.
+Replace `--prepare-only` with `--confirm-paid-inference` to authorize candidate
+and judge inference. Defaults remain a one-hour candidate limit and xhigh
+reasoning. Alternatively, use `prepare --task-pack` with the manifest and source,
+then preflight; see [portable task packs](../../doc/cli.md#portable-task-packs).
 
-## Run repeated pairs
+## Environment and qualification
 
-A single pair is descriptive and is especially sensitive to first-turn cache state. Prepare at least four fresh pairs from the preflighted prototype:
+Use Go 1.27 or newer and the workspace's `make test` runner. Preparation builds
+the pinned Claude worker dependencies; the Agent SDK version is 0.3.312. It then
+compiles the affected test packages with no matching tests and readonly module
+resolution. Bulk `go mod download` adds incidental workspace checksums on these
+snapshots, so preparation acquires only the selected test dependency graph.
+Browser asset builds and general generation are unnecessary for this task.
 
-```sh
-trial_set="$(./dist/codex-ab prepare-trials \
-  --run-dir "$run_dir" \
-  --count 4)"
-./dist/codex-ab run-trials \
-  --trial-set "$trial_set" \
-  --auth-file "$HOME/.codex/auth.json" \
-  --confirm-paid-inference
-```
+The focused gate covers Thread Control, coordination presentation, Session
+Control, and launch tests matching `Wait|Compaction`. Run fixtures with isolated
+`XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, and `MEKUGI_RUNTIME_DIR`. Native-provider
+acceptance tests are opt-in and must be reported separately from offline fixtures.
 
-Keep the default concurrent arm schedule for this trial set. Do not pool these results with sequential or alternating-order trials.
+On October 29, 2026, both snapshots passed the focused gate with Go 1.27.3 and
+Bun 1.4.4, including an offline rerun. The baseline had 176 passing test/subtest
+outcomes; the reference had 234 and one native-Claude acceptance skip. Compile-only
+preparation preserved tracked source and checksum files on both snapshots with
+warm caches. Cold-cache and Docker preparation remain unverified.
 
-Compare correctness and completion first. For performance, separate first-turn cache behavior from later requests and inspect provider-reported usage, request count, model-visible tool-result sizes, and Mekugi's provider-call versus delivered-carrier diagnostics. Carrier expansion is executor-facing and must not be attributed to provider token usage.
+The manifest retains `qualification: "not-run"`. No Docker or paid-inference run
+has qualified this replacement task. Candidate duration, adaptive-judge quality,
+and observed compaction remain unmeasured.

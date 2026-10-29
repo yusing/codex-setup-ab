@@ -91,7 +91,9 @@ test("agent launch selects current task, model, launcher, reasoning and Mekugi f
   expect(grok.prepare.reasoningEffort).toBe("high");
   expect(grok.prepare.mekugiFlags).toEqual([]);
   const session = launchConfiguration({ task: "session-retention" });
-  expect(session.prepare.baseCommit).toBe("302ee2d6691b406f30fcbea38459c6ddc16f6935");
+  expect(session.prepare.taskPackPath).toEndWith("tasks/session-retention/manifest.json");
+  expect(session.prepare.profile).toBe("task");
+  expect(session.prepare.criteriaPath).toBeUndefined();
   expect(session.prepare.reasoningEffort).toBe("xhigh");
   expect(session.prepare.mekugiSource).toBeUndefined();
 });
@@ -131,6 +133,7 @@ test("sqlite-utils upgrade uses its pinned pack, cloned source and documented ru
 test("incompatible comparisons and malformed parameters reject before external work", () => {
   for (const [options, error] of [
     [{ preset: "same-setup", task: "session-retention" }, "require a task outside Mekugi"],
+    [{ task: "session-retention", base: "override" }, "task pack owns"],
     [{ task: "native-tool-frontends" }, "supported task"],
     [{ "journal-compaction": "auto" }, "no longer supported"],
     [{ "journal-compaction": "invalid", preset: "stock-mekugi" }, "no longer supported"],
