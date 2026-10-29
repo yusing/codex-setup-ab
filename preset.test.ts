@@ -1,10 +1,21 @@
 import { expect, test } from "bun:test";
+
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { ensureLaunchImage, launchConfiguration } from "./launch";
 import { main } from "./cli";
+
+test("custom launch composes ordered launcher revisions and rejects incomplete inputs", () => {
+  const arms = [{ launcher: "stock", setup_commit: "HEAD~1" }, { launcher: "mekugi", setup_commit: "HEAD~1" }, { launcher: "mekugi", setup_commit: "HEAD" }];
+  const configuration = launchConfiguration({ preset: "custom", arms: JSON.stringify(arms) });
+  expect(configuration.prepare.arms).toEqual(arms.map(arm => ({ ...arm, launcher: arm.launcher === "stock" ? "codex" : arm.launcher })));
+  expect(configuration.prepare.currentLauncher).toBe("mekugi");
+  expect(() => launchConfiguration({ preset: "custom", arms: "[]" })).toThrow("at least two");
+  expect(() => launchConfiguration({ preset: "custom", arms: JSON.stringify(arms), "review-treatment": "/overlay" })).toThrow();
+  expect(() => launchConfiguration({ preset: "stock-current", arms: JSON.stringify(arms) })).toThrow("requires");
+});
 
 type ImageState = "matching" | "missing-bun" | "bun-error" | "stale-codex" | "stale-host" | "wrong-operator" | "wrong-operator-missing-host" | "missing" | "inspect-error" | "identity-error" | "hash-error";
 

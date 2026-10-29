@@ -136,6 +136,64 @@ async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi"
     mekugiBinary: currentLauncher === "mekugi" ? join(currentHome, "go/bin/mekugi") : undefined });
 }
 
+test("custom composition executes and blindly assesses every isolated arm, then retains all trial controls", async () => {
+  const revision = (await checked(["git", "-C", home, "rev-parse", "HEAD"])).stdout.trim();
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    comparison: "custom", arms: [{ launcher: "codex", setup_commit: revision }, { launcher: "mekugi", setup_commit: revision }, { launcher: "mekugi", setup_commit: "HEAD" }],
+    mekugiSource, mekugiBinary: join(home, "go/bin/mekugi"), codexBinary: join(home, ".local/bin/codex") });
+  const initial = await readState(run);
+  const keys = ["stock", "current", "arm-3"];
+  expect(Object.keys(initial.arms)).toEqual(keys);
+  expect(new Set(Object.values(initial.arms).map(arm => arm.repository)).size).toBe(3);
+  expect(Object.keys(initial.setup_revisions!)).toEqual(keys);
+  expect(Object.keys(initial.mekugi_exports_by_arm!)).toEqual(["current", "arm-3"]);
+  await verifyPreparedInputs(run, initial);
+  initial.pricing = { fetched_at: "fixture", source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, initial);
+  const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, 3);
+  const trials = await prepareTrials({ runDir: run, count: 2, schedule: "alternating", outputParent: root, dockerBin: fake.path });
+  const set = await readTrialSet(trials);
+  const copied = await readState(join(trials, set.trials[0]!.run_dir));
+  expect(copied.arm_configurations).toEqual(initial.arm_configurations);
+  expect(await Bun.file(join(trials, set.trials[0]!.run_dir, copied.arms["arm-3"]!.repository, "go.mod")).exists()).toBe(true);
+  const auth = join(root, "custom-auth.json");
+  await file(auth, "{}", 0o600);
+  const ready = await readState(run);
+  ready.arm_order = "current-first";
+  await writeState(run, ready);
+  const originalWrite = process.stderr.write;
+  let operatorLog = "";
+  process.stderr.write = function (...args: Parameters<typeof originalWrite>) {
+    operatorLog += String(args[0]);
+    return originalWrite.apply(process.stderr, args);
+  } as typeof originalWrite;
+  try { await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path }); }
+  finally { process.stderr.write = originalWrite; }
+  expect(operatorLog).toContain("agent execution order: Setup 3 / Codex + Mekugi (setup " + revision.slice(0, 12) + ") first");
+  const finished = await readState(run);
+  expect(finished.selected_arms).toEqual(keys);
+  expect(finished.judge?.passes.map(pass => pass.presentation)).toEqual([keys, [...keys].reverse()]);
+  expect(finished.judge?.passes.every(pass => Object.keys(pass.scores).length === 3)).toBe(true);
+  expect(keys.every(arm => finished.results?.[arm]?.grade?.passed)).toBe(true);
+  const log = await readFile(fake.log, "utf8");
+  expect(log).toContain("/candidates/candidate-3:ro");
+  expect(log).toContain(`--name codex-ab-${initial.id}-arm-3 `);
+  const launches = keys.map(arm => log.split("\n").find(line => line.includes(" create ") && line.includes(`--name codex-ab-${initial.id}-${arm} `))!);
+  expect(launches[0]).toContain("/usr/local/bin/codex");
+  expect(launches[1]).toContain("/usr/local/bin/mekugi");
+  expect(launches[2]).toContain("/usr/local/bin/mekugi");
+  expect(log.indexOf(launches[2]!)).toBeLessThan(log.indexOf(launches[1]!));
+  expect(log.indexOf(launches[1]!)).toBeLessThan(log.indexOf(launches[0]!));
+  const report = await Bun.file(join(run, "reports/report.json")).json();
+  expect(Object.keys(report.arms)).toEqual(keys);
+  expect(Object.keys(report.baseline_differences_percent)).toEqual(["current", "arm-3"]);
+  expect(report.winner).toBe("none"); // Fake execution deliberately provides no usage or provider capture.
+  expect(await Bun.file(join(run, "reports/bundle/arm-3-snapshot-manifest.json")).exists()).toBe(true);
+  await file(join(run, initial.arms["arm-3"]!.home_template, ".codex/AGENTS.md"), "tampered");
+  await expect(verifyPreparedInputs(run, finished)).rejects.toThrow("arm-3 setup revision snapshot changed");
+}, 30_000);
+
 test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions with shared %s runtime", async launcher => {
   const setupHome = join(root, `revision-home-${launcher}`);
   await cp(home, setupHome, { recursive: true, verbatimSymlinks: true });
@@ -1139,19 +1197,20 @@ async function fakeDocker(sleepSeconds: number): Promise<{ path: string; log: st
 }
 
 async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = "", wrongProtectedBinary = false, networkFailure = false,
-  invalidAssessmentPass?: 1 | 2, failHarnessPass?: 1 | 2): Promise<{ path: string; log: string; stateDir: string }> {
+  invalidAssessmentPass?: 1 | 2, failHarnessPass?: 1 | 2, candidateCount = 2): Promise<{ path: string; log: string; stateDir: string }> {
   const path = join(root, `fake-owned-docker-${crypto.randomUUID()}.sh`);
   const log = `${path}.log`;
   const stateDir = `${path}.state`;
   await file(`${path}.patch`, candidatePatch);
+  const candidates = Array.from({ length: candidateCount }, (_, index) => `candidate-${index + 1}`);
   const judgeAssessment = (includeCriteria: boolean) => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({
-    scores: { "candidate-1": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 }, "candidate-2": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 } },
+    scores: Object.fromEntries(candidates.map(id => [id, { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 }])),
     evidence: ["fixture semantic assessment"], issues: [], winner: "tie", rationale: "Both fixtures meet the criterion.",
-    ...(includeCriteria ? { criteria: Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, [{ criterion: "fixture", status: "pass", basis: "executed", reasoning: "Executed fixture assertion." }]])) } : {}),
+    ...(includeCriteria ? { criteria: Object.fromEntries(candidates.map(id => [id, [{ criterion: "fixture", status: "pass", basis: "executed", reasoning: "Executed fixture assertion." }]])) } : {}),
   }) } });
   const validAssessment = judgeAssessment(true);
   const invalidAssessment = judgeAssessment(false);
-  const harnessPlan = JSON.stringify(Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id,
+  const harnessPlan = JSON.stringify(Object.fromEntries(candidates.map(id => [id,
     [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked." }]])));
   await file(path, `#!/bin/sh
 set -u
@@ -1250,7 +1309,7 @@ case "$operation" in
         cat >/dev/null
         printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ scores: { "candidate-1": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 }, "candidate-2": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 } }, evidence: ["fixture source assessment"], issues: [], winner: "tie", rationale: "Both fixtures satisfy the task." }) } })}'
         ;;
-      *-stock|*-current)
+      *-stock|*-current|*-arm-[0-9]*)
         trap 'exit 143' TERM INT
         sleep ${sleepSeconds}
         printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
@@ -1746,7 +1805,10 @@ test("failed agent execution preserves evidence and skips graders, judges and fi
   await writeState(run, state);
   const auth = join(root, "failed-agent-auth.json"); await file(auth, "{}", 0o600);
   const fake = await fakeOwnedDocker(0);
-  await file(fake.path, (await readFile(fake.path, "utf8")).replace("      *-stock|*-current)", "      *-stock) echo launcher-failed >&2; status=9 ;;\n      *-current)"));
+  const script = await readFile(fake.path, "utf8");
+  const failingScript = script.replace("      *-stock|", "      *-stock) echo launcher-failed >&2; status=9 ;;\n      ");
+  expect(failingScript).not.toBe(script);
+  await file(fake.path, failingScript);
   await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("agent exited with code 9");
   const failed = await readState(run);
   expect(failed.status).toBe("partial");

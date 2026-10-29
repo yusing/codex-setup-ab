@@ -1,3 +1,4 @@
+import { armNames, candidateIds, type CandidateId } from "./types";
 import { access, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { JUDGE_MODEL, runSemanticJudge } from "./semantic-judge";
@@ -5,19 +6,18 @@ import { armExecutionSucceeded, readState, withRunLock, writeState } from "./sta
 import { embeddedFallbackPricing, fetchPricing, type PricingSnapshot } from "./usage";
 import type { ArmName, CommandEvidence, JudgePass, JudgeReport, RunState } from "./types";
 
-const CANDIDATES = ["candidate-1", "candidate-2"] as const;
 const SCORE_KEYS = ["correctness", "completeness", "maintainability", "test_quality"] as const;
 type ScoreKey = (typeof SCORE_KEYS)[number];
-type Candidate = (typeof CANDIDATES)[number];
+type Candidate = CandidateId;
 
-export const OUTPUT_SCHEMA = {
+export function judgeOutputSchema(candidates: CandidateId[]) { return {
   $schema: "http://json-schema.org/draft-07/schema#",
   type: "object", additionalProperties: false,
   required: ["scores", "evidence", "issues", "winner", "rationale"],
   properties: {
     scores: {
-      type: "object", additionalProperties: false, required: [...CANDIDATES],
-      properties: Object.fromEntries(CANDIDATES.map(id => [id, {
+      type: "object", additionalProperties: false, required: [...candidates],
+      properties: Object.fromEntries(candidates.map(id => [id, {
         type: "object", additionalProperties: false,
         required: [...SCORE_KEYS],
         properties: Object.fromEntries(SCORE_KEYS.map(key => [key, { type: "number", minimum: 0, maximum: 5 }])),
@@ -27,15 +27,15 @@ export const OUTPUT_SCHEMA = {
     issues: { type: "array", items: {
       type: "object", additionalProperties: false, required: ["candidate", "severity", "detail"],
       properties: {
-        candidate: { type: "string", enum: [...CANDIDATES] },
+        candidate: { type: "string", enum: [...candidates] },
         severity: { type: "string", enum: ["critical", "major", "minor"] },
         detail: { type: "string", minLength: 1 },
       },
     } },
-    winner: { type: "string", enum: [...CANDIDATES, "tie", "none"] },
+    winner: { type: "string", enum: [...candidates, "tie", "none"] },
     rationale: { type: "string", minLength: 1 },
   },
-} as const;
+} as const; }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -66,9 +66,9 @@ function exactObject(value: unknown, fields: readonly string[], context: string)
   return value;
 }
 
-function candidate(value: unknown, context: string): Candidate {
-  if (value !== "candidate-1" && value !== "candidate-2") throw new Error(`${context} must be candidate-1 or candidate-2`);
-  return value;
+function candidate(value: unknown, context: string, candidates: Candidate[]): Candidate {
+  if (!candidates.includes(value as Candidate)) throw new Error(`${context} must be ${candidates.join(" or ")}`);
+  return value as Candidate;
 }
 
 function nonemptyString(value: unknown, context: string): string {
@@ -76,11 +76,12 @@ function nonemptyString(value: unknown, context: string): string {
   return value;
 }
 
-export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: [ArmName, ArmName], passing: Record<Candidate, boolean>): JudgePass {
+export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: ArmName[], passing: Record<Candidate, boolean>): JudgePass {
+  const candidates = candidateIds(presentation.length);
   const root = exactObject(value, ["scores", "evidence", "issues", "winner", "rationale"], `judge pass ${pass}`);
-  const rawScores = exactObject(root.scores, CANDIDATES, `judge pass ${pass}.scores`);
+  const rawScores = exactObject(root.scores, candidates, `judge pass ${pass}.scores`);
   const scores = {} as JudgePass["scores"];
-  for (const id of CANDIDATES) {
+  for (const id of candidates) {
     const source = exactObject(rawScores[id], SCORE_KEYS, `judge pass ${pass}.scores.${id}`);
     const validated = {} as Record<ScoreKey, number>;
     for (const key of SCORE_KEYS) {
@@ -98,20 +99,20 @@ export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: [Ar
     const issue = exactObject(item, ["candidate", "severity", "detail"], `judge pass ${pass}.issues[${index}]`);
     const severity = issue.severity;
     if (severity !== "critical" && severity !== "major" && severity !== "minor") throw new Error(`judge pass ${pass}.issues[${index}].severity is invalid`);
-    return { candidate: candidate(issue.candidate, `judge pass ${pass}.issues[${index}].candidate`), severity, detail: nonemptyString(issue.detail, `judge pass ${pass}.issues[${index}].detail`) };
+    return { candidate: candidate(issue.candidate, `judge pass ${pass}.issues[${index}].candidate`, candidates), severity, detail: nonemptyString(issue.detail, `judge pass ${pass}.issues[${index}].detail`) };
   });
-  const winner = root.winner;
-  if (winner !== "candidate-1" && winner !== "candidate-2" && winner !== "tie" && winner !== "none") throw new Error(`judge pass ${pass}.winner is invalid`);
+  const winner = root.winner as JudgePass["winner"];
+  if (!candidates.includes(winner as Candidate) && winner !== "tie" && winner !== "none") throw new Error(`judge pass ${pass}.winner is invalid`);
   const critical = new Set(issues.filter(issue => issue.severity === "critical").map(issue => issue.candidate));
-  if ((winner === "candidate-1" || winner === "candidate-2") && !passing[winner]) throw new Error(`judge pass ${pass} selected a candidate whose required benchmark gates failed or were not run`);
-  if ((winner === "candidate-1" || winner === "candidate-2") && critical.has(winner)) throw new Error(`judge pass ${pass} selected a candidate with a critical issue`);
-  if (winner === "tie" && CANDIDATES.some(id => !passing[id] || critical.has(id))) throw new Error(`judge pass ${pass} selected a tie containing an ineligible candidate`);
+  if ((winner !== "tie" && winner !== "none") && !passing[winner]) throw new Error(`judge pass ${pass} selected a candidate whose required benchmark gates failed or were not run`);
+  if ((winner !== "tie" && winner !== "none") && critical.has(winner)) throw new Error(`judge pass ${pass} selected a candidate with a critical issue`);
+  if (winner === "tie" && candidates.some(id => !passing[id] || critical.has(id))) throw new Error(`judge pass ${pass} selected a tie containing an ineligible candidate`);
   return { pass, presentation, scores, evidence, issues, winner, rationale: nonemptyString(root.rationale, `judge pass ${pass}.rationale`) };
 }
 
 export function mappedWinner(pass: JudgePass): ArmName | "tie" | "none" {
   if (pass.winner === "tie" || pass.winner === "none") return pass.winner;
-  return pass.presentation[pass.winner === "candidate-1" ? 0 : 1];
+  return pass.presentation[Number(pass.winner.slice("candidate-".length)) - 1];
 }
 
 export async function readJudgeResponse(runDirectory: string, pass: number): Promise<unknown> {
@@ -173,7 +174,7 @@ export async function assertRecoverableJudge(runDir: string, state: RunState): P
   const exists = async (path: string) => access(path).then(() => true, () => false);
   for (const pass of [1, 2]) {
     const root = join(runDir, "evaluator/semantic", `pass-${pass}`);
-    if (!(await Promise.all(CANDIDATES.map(id => exists(join(root, "existing", id, "__existing_tests/evidence.json"))))).every(Boolean)) {
+    if (!(await Promise.all(candidateIds(armNames(state).length).map(id => exists(join(root, "existing", id, "__existing_tests/evidence.json"))))).every(Boolean)) {
       throw new Error("recovery requires completed existing tests in both passes");
     }
     for (const round of [1, 2]) {
@@ -188,8 +189,8 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
   const runDir = resolve(runDirectory);
   const state = await readState(runDir);
   if (state.invalidity_reasons?.length) throw new Error(`judge refuses an infrastructure-invalid run: ${state.invalidity_reasons.join("; ")}`);
-  if (state.status !== "complete" || !state.results?.stock || !state.results.current) throw new Error("judge requires a complete pair");
-  if (![state.results.stock, state.results.current].every(armExecutionSucceeded)) throw new Error("judge requires successful agent execution in both arms");
+  if (state.status !== "complete" || armNames(state).some(arm => !state.results?.[arm])) throw new Error("judge requires a complete pair");
+  if (!armNames(state).every(arm => armExecutionSucceeded(state.results?.[arm]))) throw new Error("judge requires successful agent execution in both arms");
   if (recover) await assertRecoverableJudge(runDir, state);
   else if (state.judge) throw new Error("judge already started for this immutable run; it cannot be resumed or retried");
   const auth = resolve(authFile);

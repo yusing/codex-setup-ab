@@ -38,6 +38,26 @@ async function pair(): Promise<string> {
   return directory;
 }
 
+test("custom retained evidence exposes every arm log, label, and reversed candidate mapping", async () => {
+  const directory = await pair();
+  const keys = ["stock", "current", "arm-3"];
+  await file(join(directory, "run.json"), JSON.stringify({ schema_version: 1, status: "complete", comparison: "custom", execution: {},
+    arms: Object.fromEntries(keys.map(arm => [arm, { launcher: "codex" }])),
+    setup_revisions: Object.fromEntries(keys.map((arm, index) => [arm, { commit: String(index).repeat(40) }])) }));
+  await file(join(directory, "artifacts/arm-3/codex.jsonl"), '{"type":"thread.started","thread_id":"third-thread"}\n');
+  await file(join(directory, "reports/report.json"), JSON.stringify({ winner: "arm-3", arms: Object.fromEntries(keys.map(arm => [arm, {}])),
+    judge: { result: { passes: [{ pass: 1, presentation: keys, winner: "candidate-3", scores: {}, rationale: "candidate-3 preserves the required behavior." }] } } }));
+  const entry = await attach(directory);
+  const input = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
+  expect(input.live["arm-3"]).toContain("third-thread");
+  expect(input.artifacts.some((item: { path: string }) => item.path === "artifacts/arm-3/codex.jsonl")).toBe(true);
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const html = runInNewContext(source + "\nresultContent(input)", { input });
+  expect(html).toContain("Overall winner: Codex (setup 222222222222)");
+  expect(html).toContain("Codex (setup 222222222222) preserves the required behavior.");
+  expect(html).not.toContain("candidate-3 preserves");
+});
+
 async function subscribe(id?: string) {
   const abort = new AbortController();
   const response = await fetch(origin + "/api/events" + (id ? "?entry=" + id : ""), { signal: AbortSignal.any([abort.signal, AbortSignal.timeout(15000)]) });

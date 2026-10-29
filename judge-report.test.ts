@@ -188,6 +188,57 @@ async function fixtureJudge(run: string, first: "candidate-1" | "candidate-2", s
   return report;
 }
 
+test("third-arm quality winner maps through both blind orders and missing third-arm usage suppresses it", async () => {
+  const { run } = await fixtureRun();
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const state = await readState(run);
+  const third = "arm-3";
+  state.arms[third] = { repository: "arms/arm-3/repo", home_template: "snapshots/stock/home/ubuntu", launcher: "codex" };
+  state.comparison = "custom";
+  state.setup_revisions = Object.fromEntries(Object.keys(state.arms).map((arm, index) => [arm,
+    { commit: String(index).repeat(40), tree: "tree", manifest: "manifest", manifest_sha256: "hash" }]));
+  state.results![third] = armResult(third, true);
+  state.arm_attempts![third] = { codex_home: "arms/arm-3/home/ubuntu/.codex", container: "third", status: "stopped", started_at: "fixture" };
+  await usageSession(join(run, state.arm_attempts![third]!.codex_home), "third-agent", "gpt-6-astra");
+  const orders = [["stock", "current", third], [third, "current", "stock"]];
+  state.judge!.passes = orders.map((order, index) => {
+    const response = verdict("tie", "Third setup has the strongest implementation.");
+    const scores = response.scores as Record<string, unknown>;
+    scores["candidate-3"] = scores["candidate-1"];
+    response.winner = index === 0 ? "candidate-3" : "candidate-1";
+    return validateJudgePass(response, (index + 1) as 1 | 2, order, { "candidate-1": true, "candidate-2": true, "candidate-3": true });
+  });
+  expect(state.judge!.passes.map(mappedWinner)).toEqual([third, third]);
+  state.judge!.winner = third;
+  await writeState(run, state);
+  const report = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(report.winner).toBe(third);
+  expect(report.arm_labels[third]).toContain("222222222222");
+  expect(Object.keys(report.arms)).toEqual(["stock", "current", third]);
+  expect(report.current_minus_stock_percent).toEqual(report.baseline_differences_percent.current);
+  expect(report.baseline_differences_percent[third].grader_seconds).toBe(0);
+  expect(await readFile(join(run, "reports/report.md"), "utf8")).toContain("Codex (setup 222222222222): commit " + "2".repeat(40) + "; tree tree; manifest SHA-256 hash.");
+  await rm(join(run, state.arm_attempts![third]!.codex_home), { recursive: true });
+  const missingPaths = await buildReport(run);
+  const missing = await Bun.file(missingPaths.jsonPath).json();
+  expect(missing.winner).toBe("none");
+  expect(missing.baseline_differences_percent[third]).toMatchObject({ total_tokens: null, input_tokens: null, output_tokens: null, estimated_api_usd: null, command_seconds: null });
+  expect(missing.arms[third].usage.complete).toBe(false);
+  expect(missing.arms[third].usage.totals.total_tokens).toBe(0); // Retained raw accumulator, not a measured total.
+  const markdown = await readFile(missingPaths.markdownPath, "utf8");
+  const row = markdown.split("\n").find(line => line.startsWith("| Codex (setup 222222222222) |") && line.includes(" | pass | "));
+  expect(row?.split("|").slice(5, -1).map(value => value.trim())).toEqual(Array(9).fill("unknown"));
+  const source = (await readFile(join(import.meta.dir, "web/app.js"), "utf8")).replace(/\ninit\(\);\s*$/, "");
+  const { runInNewContext } = await import("node:vm");
+  const html = runInNewContext(source + "\nmetricTable(report, {}, report.arm_labels)", { report: missing });
+  for (const label of ["Total tokens", "Estimated API cost", "Command time"]) {
+    const cells = html.split("<tr><th>" + label + "</th>")[1].split("</tr>")[0].split("<td").slice(1);
+    expect(cells[2]).toContain(">Unknown<span");
+    expect(cells[2]).toContain("Not available");
+    expect(cells[2]).not.toContain("-100%");
+  }
+});
+
 test("a new judge on a historical pricing snapshot keeps complete accounting", async () => {
   const { run } = await fixtureRun();
   await fixtureJudge(run, "candidate-1", "candidate-2");

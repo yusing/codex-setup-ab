@@ -41,7 +41,8 @@ export function isPairedMekugiComparison(comparison: RunState["comparison"]): bo
   return comparison === "journal-compaction" || comparison === "duplicate-output";
 }
 
-export function usesMekugi(state: Pick<RunState, "comparison" | "execution">, arm: ArmName): boolean {
+export function usesMekugi(state: Pick<RunState, "comparison" | "execution"> & Partial<Pick<RunState, "arms">>, arm: ArmName): boolean {
+  if (state.comparison === "custom") return state.arms?.[arm]?.launcher === "mekugi";
   if (isPairedMekugiComparison(state.comparison)) return true;
   if (state.comparison === "codex-mekugi-grok") return arm === "stock";
   return (arm === "current" || state.comparison === "setup-commits") && state.execution.current_launcher === "mekugi";

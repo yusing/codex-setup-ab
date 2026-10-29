@@ -83,7 +83,7 @@ async function tail(root: string, path: string): Promise<string> {
   } catch { return ""; }
 }
 async function artifactList(root: string, kind: Kind): Promise<Artifact[]> {
-  const paths = kind === "pair" ? ["run.json", "reports", "artifacts/stock", "artifacts/current"]
+  const paths = kind === "pair" ? ["run.json", "reports", "artifacts"]
     : kind === "trials" ? ["trials.json", "reports"] : kind === "suite" ? ["suite.json"] : ["build.json", "build-result.json", "build.stdout", "build.stderr"];
   if (kind === "suite") {
     for (const file of await readdir(root)) if (/^report-[A-Za-z0-9]+$/.test(file)) paths.push(file);
@@ -308,13 +308,14 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       } catch { /* preparation can expose a child before its marker exists */ }
     }
     const live: Record<string, string> = {};
-    if (entry.kind === "pair") for (const arm of ["stock", "current"]) live[arm] = await tail(entry.directory, "artifacts/" + arm + "/codex.jsonl");
+    if (entry.kind === "pair") for (const arm of Object.keys(object(state.arms ?? state.results ?? { stock: {}, current: {} }))) live[arm] = await tail(entry.directory, "artifacts/" + arm + "/codex.jsonl");
     if (entry.kind === "build") {
       live.build = await tail(entry.directory, "build.stdout");
       live["build stderr"] = await tail(entry.directory, "build.stderr");
     }
     const labelState = entry.kind === "trials" ? object(state.controls) : state;
     const labels = entry.kind === "pair" || entry.kind === "trials" ? armLabels({
+      arms: labelState.arms as RunState["arms"],
       setup_revisions: labelState.setup_revisions as RunState["setup_revisions"],
       comparison: labelState.comparison as RunState["comparison"],
       execution: object(labelState.execution) as RunState["execution"],
@@ -361,7 +362,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       const paths = new Map<string, boolean>([[root, false]]);
       paths.set(dirname(root), false);
       if (entry.kind === "pair") {
-        for (const path of ["artifacts", "artifacts/stock", "artifacts/current"]) paths.set(join(root, path), false);
+        for (const path of ["artifacts", ...Object.keys(object(data.state?.arms ?? data.state?.results ?? { stock: {}, current: {} })).map(arm => "artifacts/" + arm)]) paths.set(join(root, path), false);
       }
       if (entry.kind === "trials") paths.set(join(root, "runs"), false);
       if (entry.kind === "pair" || entry.kind === "trials") paths.set(join(root, "reports"), true);

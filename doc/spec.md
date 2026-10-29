@@ -16,6 +16,7 @@ randomized causal estimates. See the [CLI guide](cli.md) for repeated runs and t
 
 | Selector | Comparison |
 | --- | --- |
+| `custom` | An ordered composition of two or more Codex or Mekugi launchers, each at a chosen configuration revision. |
 | `setup-commits` | Two configuration-repository revisions with shared pinned runtime binaries and the same launcher. |
 | `stock-current` | Minimal Codex versus an audited current-home setup, optionally launched through Mekugi. |
 | `stock-mekugi` | Minimal direct Codex versus minimal Codex through Mekugi, with identical configured tools. |
@@ -31,7 +32,7 @@ resolve identities through each pass's recorded presentation order. Missing
 identity mappings are shown as unavailable. Stored reports and evidence keep
 their original identifiers.
 
-The dark-mode workbench uses readable sans-serif typography, paired setup previews,
+The dark-mode workbench uses readable sans-serif typography, setup previews,
 and grouped run settings. Navigation, forms, and results adapt to narrow screens
 with visible keyboard focus. Fonts are served locally, including from the
 standalone executable; the browser does not contact an external font service.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { parseArmConfigurations } from "./arms";
 import { REASONING_EFFORTS } from "./types";
 import { BOOLEAN_FLAGS, COMMAND_OPTIONS } from "./cli-options";
 import { homedir } from "node:os";
@@ -64,7 +65,7 @@ Prepare options:
   --setup-a-commit REF  baseline setup commit in --current-home (setup-commits)
   --setup-b-commit REF  treatment setup commit in --current-home (setup-commits)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
-  --comparison NAME    stock-current (default), setup-commits, same-setup, stock-mekugi, codex-mekugi-grok, or duplicate-output
+  --comparison NAME    stock-current (default), custom, setup-commits, same-setup, stock-mekugi, codex-mekugi-grok, or duplicate-output
   --auto-compact-limit N shared positive token limit for both stock-mekugi arms
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
   --protect-mekugi      protect B's capture/runtime; A retains direct provider networking
@@ -84,7 +85,8 @@ Run/judge options (run includes automatic source assessment and reporting):
   --grok-auth-file FILE Grok OAuth store copied privately into isolated homes
   --auth-file FILE      auth copied privately into isolated homes
   --docker-bin FILE     Docker-compatible fixture or executable
-  --arm NAME            run only stock or current (run only; default is both)
+  --arms JSON           custom composition: [{"launcher":"codex","setup_commit":"HEAD"}, ...]
+  --arm NAME            run only the selected retained arm key (run only; default is all)
   --control-run DIR     reuse original stock from a completed run; execute only current
   --control-bundle-sha256 HEX  required published SHA-256 of control bundle/MANIFEST.sha256
 
@@ -179,6 +181,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       taskPackPath: o["task-pack"] as string | undefined,
       criteriaPath: o.criteria as string | undefined,
       outputParent: o["output-parent"] as string | undefined,
+      arms: o.arms ? parseArmConfigurations(JSON.parse(String(o.arms))) : undefined,
       setupACommit: o["setup-a-commit"] as string | undefined, setupBCommit: o["setup-b-commit"] as string | undefined,
       reviewTreatment: o["review-treatment"] as string | undefined,
       comparison: string(o, "comparison", "stock-current") as import("./types").Comparison,
@@ -255,8 +258,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const runDir = string(o, "run-dir");
     const auth = string(o, "auth-file", join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"));
     if (command === "run") {
-      const arm = o.arm;
-      if (arm !== undefined && arm !== "current" && arm !== "stock") throw new Error("--arm must be stock or current");
+      const arm = o.arm === undefined ? undefined : string(o, "arm");
+
       await runBenchmark({ runDir, authFile: auth, grokAuthFile: o["grok-auth-file"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined, arm,
         controlRun: o["control-run"] as string | undefined, controlBundleSha256: o["control-bundle-sha256"] as string | undefined });
     }

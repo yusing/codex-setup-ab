@@ -1,3 +1,4 @@
+import { armNames } from "./types";
 import { cp, mkdtemp } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { runPairUnlocked, type RunOptions } from "./runner";
@@ -20,7 +21,7 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
     if (mode === "run" && (initial.status !== "prepared" || initial.finishing)) throw new Error("prepare a new run instead of resuming or restarting it");
     if (mode === "finish") {
       if (initial.status !== "complete" || initial.finishing?.status !== "failed"
-        || !(initial.selected_arms ?? ["stock", "current"]).every(arm => armExecutionSucceeded(initial.results?.[arm]))) throw new Error("finish requires complete execution with failed finishing");
+        || !(initial.selected_arms ?? armNames(initial)).every(arm => armExecutionSucceeded(initial.results?.[arm]))) throw new Error("finish requires complete execution with failed finishing");
       if (options.recoverJudge && initial.judge?.status !== "failed") throw new Error("judge recovery requires a failed judge attempt");
       if (options.recoverJudge) await assertRecoverableJudge(runDir, initial);
       if (initial.judge && initial.judge.status !== "complete") {
@@ -41,13 +42,13 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
       failure = error;
     }
     const state = await readState(runDir);
-    if (state.status !== "complete" || !(state.selected_arms ?? ["stock", "current"]).every(arm => armExecutionSucceeded(state.results?.[arm]))) {
+    if (state.status !== "complete" || !(state.selected_arms ?? armNames(state)).every(arm => armExecutionSucceeded(state.results?.[arm]))) {
       failure ??= new Error(state.error ?? "benchmark execution incomplete");
     }
     state.finishing = { status: "running", started_at: new Date().toISOString(), bundle_path: "reports/bundle" };
     await writeState(runDir, state);
     try {
-      if (!failure && !controller.signal.aborted && state.status === "complete" && state.selected_arms?.length === 2 && (!state.judge || options.recoverJudge)) {
+      if (!failure && !controller.signal.aborted && state.status === "complete" && (state.selected_arms?.length ?? 0) >= 2 && (!state.judge || options.recoverJudge)) {
         process.stderr.write(options.recoverJudge
           ? "[finish] revalidating completed judge stages and continuing incomplete ones\n"
           : "[finish] starting independent reversed-order source assessment passes in parallel\n");

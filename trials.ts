@@ -54,6 +54,7 @@ export function trialControls(state: RunState) {
     comparison: state.comparison ?? "stock-current", execution: state.execution,
     image_id: state.image_id, dependency_image: state.dependency_image, resource_limits: state.resource_limits, timeout_seconds: state.timeout_seconds,
     setup_revisions: state.setup_revisions,
+    ...(state.arm_configurations ? { arm_configurations: state.arm_configurations } : {}),
     current_snapshot: state.current_snapshot, snapshot_manifest: state.snapshot_manifest,
     runtime_tools: state.runtime_tools, operator: state.operator, arms: state.arms,
     protected_runtime: state.protected_runtime, mekugi_flags: state.mekugi_flags,
@@ -130,7 +131,7 @@ export async function prepareTrials(options: {
         const target = join(directory, trial.run_dir);
         await mkdir(target, { recursive: true, mode: 0o700 });
         // Never copy executed arm homes, auth, reports, probe state or operation locks.
-        const paths = ["seed.git", "control", "evaluator", "snapshots", state.arms.stock.repository, state.arms.current.repository,
+        const paths = ["seed.git", "control", "evaluator", "snapshots", ...Object.values(state.arms).map(arm => arm.repository),
           ...(state.mekugi_build?.files.map(file => file.path) ?? []),
           ...(!state.dependency_image && state.runtime_tools.preflight_cache ? ["artifacts/preflight-cache"] : [])];
         for (const path of paths) {
@@ -242,13 +243,14 @@ type Metric = typeof metrics[number];
 function finite(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value); }
 function measurement(report: PairReport, arm: ArmName, metric: Metric): number | null {
   const item = report.arms[arm];
+  if (!item) return null;
   if (metric === "agent_seconds") return item.result ? item.result.agent_elapsed_ms / 1000 : null;
   if (metric === "grader_seconds") return item.result?.grade ? item.result.grade.elapsed_ms / 1000 : null;
   return item.usage?.totals[metric] ?? null;
 }
-export function aggregatePairs(reports: PairReport[]) {
+export function aggregatePairs(reports: PairReport[], baseline: ArmName = "stock", treatment: ArmName = "current") {
   return Object.fromEntries(metrics.map(metric => {
-    const pairs = reports.map(report => [measurement(report, "stock", metric), measurement(report, "current", metric)])
+    const pairs = reports.map(report => [measurement(report, baseline, metric), measurement(report, treatment, metric)])
       .filter((pair): pair is [number, number] => pair.every(finite));
     return [metric, { stock: summarize(pairs.map(pair => pair[0])), current: summarize(pairs.map(pair => pair[1])),
       difference: summarize(pairs.map(([a, b]) => b - a)),
@@ -293,21 +295,23 @@ async function reportTrialsUnlocked(directory: string, set: TrialSet): Promise<s
     sections.push(`## Pair ${trial.index}: ${trial.order}\n\n${reason ? `Excluded from paired aggregates: ${reason}\n\n` : ""}${markdown}`);
   }
   const eligible = rows.filter(row => row.eligible).map(row => row.report!);
-  const paired = aggregatePairs(eligible);
+  const arms = Object.keys(set.controls.arms ?? { stock: {}, current: {} });
+  const baselineComparisons = Object.fromEntries(arms.slice(1).map(arm => [arm, aggregatePairs(eligible, arms[0]!, arm)]));
   const judgeValues = rows.flatMap(row => {
     const usage = row.report?.judge?.usage;
     return usage?.complete && finite(usage.totals.estimated_api_usd) ? [usage.totals.estimated_api_usd] : [];
   });
-  const winners = Object.fromEntries(["stock", "current", "tie", "none"].map(winner => [winner, eligible.filter(report => report.winner === winner).length]));
+  const winners = Object.fromEntries([...arms, "tie", "none"].map(winner => [winner, eligible.filter(report => report.winner === winner).length]));
   const result = { schema: "codex-ab.trial-report.v1", generated_at: new Date().toISOString(), trial_set: set,
-    planned_pairs: set.trials.length, eligible_pairs: eligible.length, winners, current_minus_stock: paired,
+    planned_pairs: set.trials.length, eligible_pairs: eligible.length, winners, current_minus_stock: baselineComparisons.current,
+    baseline_arm: arms[0], baseline_comparisons: baselineComparisons, arm_labels: armLabels(set.controls),
     judge_estimated_api_usd: { ...summarize(judgeValues), total: judgeValues.length ? judgeValues.reduce((a, b) => a + b, 0) : null },
     pairs: rows };
   const display = (value: number | null): string => value === null ? "unavailable" : String(Number(value.toFixed(6)));
   const labels = armLabels(set.controls);
   const markdown = `# Repeated Codex A/B report
 
-- A: ${labels.stock}. B: ${labels.current}.
+${arms.map(arm => `- ${arm}: ${labels[arm]}.`).join("\n")}
 - Trial set: ${set.id}; status: ${set.status}.
 - Controls SHA-256: ${set.controls_sha256}; plan SHA-256: ${set.plan_sha256}.
 - Schedule: ${set.schedule}. Pairs run one after another; concurrent arms remain the default.
@@ -323,11 +327,13 @@ percent differences additionally omit zero A baselines. Differences are B minus 
 Judge costs below are separate from arm costs. Pair checks, usage, timing, pricing and source
 judgments are included inline after the summary; machine evidence is retained under trials/.
 
-| Metric | paired n | mean A | mean B | mean B-A | median B-A | sample SD B-A | percent n | mean % B-A |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-${Object.entries(paired).map(([key, value]) => `| ${key} | ${value.difference.n} | ${display(value.stock.mean)} | ${display(value.current.mean)} | ${display(value.difference.mean)} | ${display(value.difference.median)} | ${display(value.difference.sample_sd)} | ${value.percent.n} | ${display(value.percent.mean)} |`).join("\n")}
+${Object.entries(baselineComparisons).map(([arm, values]) => `## ${labels[arm]} minus ${labels[arms[0]!]}
 
-Eligible-pair winners: A ${winners.stock}, B ${winners.current}, tie ${winners.tie}, no eligible winner ${winners.none}. This count is descriptive, not an aggregate winner claim.
+| Metric | paired n | mean baseline | mean setup | mean difference | median difference | sample SD | percent n | mean % |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+${Object.entries(values).map(([key, value]) => `| ${key} | ${value.difference.n} | ${display(value.stock.mean)} | ${display(value.current.mean)} | ${display(value.difference.mean)} | ${display(value.difference.median)} | ${display(value.difference.sample_sd)} | ${value.percent.n} | ${display(value.percent.mean)} |`).join("\n")}`).join("\n\n")}
+
+Eligible-run winners: ${Object.entries(winners).map(([arm, count]) => `${labels[arm] ?? arm}: ${count}`).join(", ")}. This count is descriptive, not an aggregate winner claim.
 
 Judge estimated API USD: ${display(result.judge_estimated_api_usd.total)} across ${judgeValues.length}/${set.trials.length} pairs with complete judge accounting. Missing judge costs are unknown.
 

@@ -100,7 +100,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   await copy("reports/report.json", "report.json");
   await copy("reports/report.md", "report.md");
   await copy(state.snapshot_manifest, "snapshot-manifest.json");
-  if (state.setup_revisions) await copy(state.setup_revisions.stock.manifest, "setup-a-snapshot-manifest.json");
+  for (const [arm, identity] of Object.entries(state.setup_revisions ?? {})) await copy(identity.manifest, arm === "stock" ? "setup-a-snapshot-manifest.json" : `${arm}-snapshot-manifest.json`);
   await copy(state.runtime_tools.current_setup_files, state.runtime_tools.current_setup_files.endsWith(".gz") ? "mise-files.json.gz" : "mise-files.json");
   await copy(state.task.path, "task.md");
   if (state.mekugi_exports) {
@@ -129,7 +129,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     }
   }
   if (state.mekugi_exports_by_arm) {
-    const files = state.mekugi_exports_by_arm.stock ?? state.mekugi_exports_by_arm.current;
+    const files = Object.values(state.mekugi_exports_by_arm).find(Boolean);
     if (files) {
       await copy(files.validator.path, "analyze_capture.py");
       await copy(files.reader.path, "benchmark_jsonl.py");
@@ -172,7 +172,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   const integrity: Array<{ path: string; sha256: string; expected_sha256: string; matches: boolean }> = [];
   for (const [path, expected] of [
     [state.snapshot_manifest, state.current_snapshot.manifest_sha256],
-    ...(state.setup_revisions ? [[state.setup_revisions.stock.manifest, state.setup_revisions.stock.manifest_sha256]] : []),
+    ...Object.values(state.setup_revisions ?? {}).map(item => [item.manifest, item.manifest_sha256]),
     [state.task.path, state.task.sha256],
     ...(state.protected_runtime?.scripts.map(file => [file.path, file.sha256]) ?? []),
     ...(state.mekugi_build?.files.map(file => [file.path, file.sha256]) ?? []),
@@ -212,7 +212,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     rolloutFiles[arm] = await Promise.all(files.map(async file => ({ path: relative(directory, file), sha256: await sha256(file) })));
   }
   await write("rollout-files.json", rolloutFiles);
-  const audit = Object.fromEntries(Object.entries(sessions).map(([arm, entries]) => [arm, entries.map(session => {
+  const audit = Object.fromEntries(Object.entries(sessions).map(([arm, entries]) => [arm, (entries ?? []).map(session => {
     const names = session.calls.flatMap(call => [call.name.split(".").at(-1)!, ...call.nested_tools]);
     return {
       thread_id: session.thread_id, agent_path: session.agent_path,
@@ -228,7 +228,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   })]));
   await write("review-workflow.json", { sessions, scope: "Tool names, selected non-message parameters, timestamps and encryption markers. No raw arguments, prompts or message bodies. Timing does not prove message content or validation readiness." });
   await write("interaction-audit.json", { arms: audit, limitations: "Missing or encrypted events are unknown, not evidence of no interaction. Source edits performed inside shell commands are not inferred. Command waits are separate from reviewer-status polling." });
-  await write("role-metadata.json", Object.fromEntries(Object.entries(sessions).map(([arm, entries]) => [arm, entries.map(({ calls, received_messages, completions, malformed_lines, ...metadata }) => metadata)])));
+  await write("role-metadata.json", Object.fromEntries(Object.entries(sessions).map(([arm, entries]) => [arm, (entries ?? []).map(({ calls, received_messages, completions, malformed_lines, ...metadata }) => metadata)])));
   await write("supplemental-repeat.json", {
     required_benchmark_gate_replaced: false,
     arms: Object.fromEntries((state.selected_arms ?? []).map(arm => [arm, state.results?.[arm]?.grade?.supplemental_repeat ?? null])),
@@ -256,7 +256,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     }
   }
   const setupDescriptions = state.setup_revisions
-    ? { stock: `Configuration commit ${state.setup_revisions.stock.commit}; shared pinned runtime.`, current: `Configuration commit ${state.setup_revisions.current.commit}; shared pinned runtime.` }
+    ? Object.fromEntries(Object.entries(state.setup_revisions).map(([arm, revision]) => [arm, `Configuration commit ${revision.commit}; ${state.arms[arm].launcher ?? state.execution.current_launcher ?? "codex"}; shared pinned runtime.`]))
     : state.comparison === "duplicate-output"
     ? { stock: "Same current-home snapshot and Mekugi binary as B; duplicate-output projection off.", current: "Same current-home snapshot and Mekugi binary as A; duplicate-output projection on." }
     : state.comparison === "journal-compaction"
@@ -288,11 +288,12 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     setup_revisions: state.setup_revisions,
     resource_limits: state.resource_limits, current_configuration: manifest.configuration_repository,
     review_treatment: treatment,
+    arms: setupDescriptions,
     stock: setupDescriptions.stock,
     current: setupDescriptions.current,
   });
   await write("comparison.json", {
-    design: report.design, arms: report.arms, current_minus_stock_percent: report.current_minus_stock_percent,
+    design: report.design, arms: report.arms, current_minus_stock_percent: report.current_minus_stock_percent, baseline_differences_percent: report.baseline_differences_percent,
     source_quality: state.judge ?? null, validity: report.validity,
     limitations: "Single paired descriptive comparison. Different tasks and historical source snapshots are not equivalent baselines.",
   });

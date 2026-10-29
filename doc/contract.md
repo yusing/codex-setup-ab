@@ -9,7 +9,7 @@ described in the [specification](spec.md); build and multi-run workflows are in 
 
 ## Arm identities
 
-Reports and operator progress name arms by their actual launcher and setup (for example, `Codex (minimal setup)` versus `Codex + Mekugi (minimal setup)`). Duplicate-output comparisons and historical journal-compaction comparisons include off/on labels. Operator progress reveals the A/B mapping for each reversed-order judge pass; blinded judge/grader inputs still use `candidate-N`, and machine evidence retains those IDs. CLI selectors and storage paths retain `stock`/`current` keys; report JSON includes `arm_labels` for display. Regenerate a report to apply these names to an existing run.
+Reports and operator progress name arms by their actual launcher and setup (for example, `Codex (minimal setup)` versus `Codex + Mekugi (minimal setup)`). Duplicate-output comparisons and historical journal-compaction comparisons include off/on labels. Operator progress reveals the A/B mapping for each reversed-order judge pass; blinded judge/grader inputs still use `candidate-N`, and machine evidence retains those IDs. Legacy CLI selectors and storage paths retain `stock`/`current` keys; custom compositions append numbered arm keys; report JSON includes `arm_labels` for display. Regenerate a report to apply these names to an existing run.
 
 ## Prepare an isolated pair
 
@@ -37,6 +37,18 @@ asymmetric protected runtime are incompatible with this comparison. Candidate la
 uses the pinned image launchers even when a revision contains an older executable.
 Codex configuration symlinks into the setup repository are read from the snapshot
 and materialized before adaptation; targets outside the repository are rejected.
+
+For `custom`, supply `--arms` as an ordered JSON array, for example
+`[{"launcher":"stock","setup_commit":"commit1"},{"launcher":"mekugi","setup_commit":"commit1"},{"launcher":"mekugi","setup_commit":"HEAD"}]`.
+`stock` aliases the direct `codex` launcher. Each arm receives the chosen setup revision;
+HEAD means the committed revision, without working-tree edits. At least two arms are
+required. Shared model, reasoning, service tier (from the second revision), runtime,
+task, and resource controls apply to all arms. Reviewer overlays and protected runtime
+are unavailable for this composition. The first two retained keys are `stock` and
+`current`; subsequent keys are `arm-3`, `arm-4`, and so on. Each arm has an independent
+workspace, home, setup manifest, and launcher identity. Two blind assessment passes
+present all candidates in opposite orders. Reports retain every arm and show resource
+differences against the first arm; missing evidence never becomes zero usage.
 
 Installed hook binaries, plugins, remote-skill caches, and tool-store sidecars remain
 runtime supplements, not historical builds. Revision-owned files are preserved,
@@ -107,9 +119,9 @@ The command first checks that the base image exposes the exact Codex version rec
 
 Milestones go to stderr. Timeout or cancellation stops session-created containers and preserves available patches and results. A nonzero agent exit, timeout, cancellation, lifecycle failure, or collection failure leaves execution partial and skips grading and judge inference. The run command exits nonzero after metering and retaining its report bundle. Direct judging and finishing also require successful agent execution, including for older runs marked complete. Runs never restart or resume: prepare a new directory for another attempt. Completed historical reports remain readable.
 
-Semantic assessment requires both arms. Historical singleton reports remain descriptive records, not paired comparisons.
+Semantic assessment requires every configured arm. Historical singleton reports remain descriptive records, not paired comparisons.
 
-After both agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces. Independent semantic passes run the predetermined existing tests and author checks against each candidate's actual interfaces. Git inspection and patch capture run in separate offline containers, never on the host. Agent and grader times remain separate.
+After all agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces. Independent semantic passes run the predetermined existing tests and author checks against each candidate's actual interfaces. Git inspection and patch capture run in separate offline containers, never on the host. Agent and grader times remain separate.
 
 For Mekugi's original router task, use the `mekugi` profile and explicitly select `--current-launcher mekugi` with `--mekugi-bin`. Historical result bundles retain their recorded image names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
 
@@ -159,7 +171,7 @@ these commands rather than repository-specific Go targets. Commands run inside c
 not on the host. Prepare dependencies without introducing evaluator-only checks into agent
 workspaces; evaluator build storage stays separate.
 
-After both agents stop and their patches are captured, two blind passes inspect candidates in
+After all agents stop and their patches are captured, two blind passes inspect candidates in
 opposite orders and run concurrently. Each pass runs the predetermined existing tests, then asks
 Sol to author additional checks adapted to the actual candidate interfaces. The runner executes
 those checks offline, without credentials or a Docker socket, against private copies of read-only
@@ -186,7 +198,7 @@ judge's observation. Failures from other criteria remain separate evidence. Pass
 check actually covers the criterion. Both passes, disagreements, source, commands, outputs and
 repair attempts are retained.
 
-Prewritten hidden tests are no longer supported. Supply behavioral criteria, not evaluator source. Semantic assessment requires both arms and cannot restart a started assessment.
+Prewritten hidden tests are no longer supported. Supply behavioral criteria, not evaluator source. Semantic assessment requires every configured arm and cannot restart a started assessment.
 
 Harness authoring, an optional repair, and final assessment each have their own recorded model
 attempts, with the existing capacity-only retry policy. Model usage and timing remain separate
@@ -195,7 +207,7 @@ from offline check time. No semantic model request occurs during `prepare` or `p
 
 ## Blind judge
 
-The `run` command performs blind semantic assessment automatically after both candidates are captured. For a complete pair with criteria and no judge attempt:
+The `run` command performs blind semantic assessment automatically after all candidates are captured. For a complete pair with criteria and no judge attempt:
 
 ```sh
 ./dist/codex-ab judge --run-dir "$run_dir" --confirm-paid-inference
@@ -308,7 +320,7 @@ succeeds; the report never fabricates a complete cost or overall winner.
 
 If execution completed but finishing failed before a judge request, fix the reported issue and use `finish --run-dir DIR --confirm-paid-inference`. It archives the failed bundle, preserves the same candidates and grades, runs only a not-yet-started judge, and regenerates the report bundle. It never restarts either A/B agent. A completed judge can be reused when only artifact generation failed. For a judge timeout, the supported configuration-startup failure, or supported judge validation failures, add `--recover-judge` to continue the incomplete judge as described in the [judge contract](contract.md#blind-judge).
 
-For post-hoc troubleshooting deductions, use `remeter --run-dir DIR --exclusions FILE`. The JSON file contains `arm` (`stock` or `current`), `rationale`, and `responses` and `commands` arrays of `{ "id": "...", "reason": "..." }`. IDs must match recorded response and command IDs. The command writes a separate `reports/remeter-*/` accounting report using the recorded pricing, retaining the original run and reports. It does not rerun agents, rewrite later context usage, or claim an adjusted wall time.
+For post-hoc troubleshooting deductions, use `remeter --run-dir DIR --exclusions FILE`. The JSON file contains `arm` (a retained arm key, such as `stock`, `current`, or `arm-3`), `rationale`, and `responses` and `commands` arrays of `{ "id": "...", "reason": "..." }`. IDs must match recorded response and command IDs. The command writes a separate `reports/remeter-*/` accounting report using the recorded pricing, retaining the original run and reports. It does not rerun agents, rewrite later context usage, or claim an adjusted wall time.
 
 If an evaluator infrastructure fault prevents assessment outside the supported recovery cases, retain the failed evidence, fix the fault, and prepare a fresh pair. Candidate-interface wiring failures remain **unassessed**, not product failures. The legacy `regrade` command and hidden-test inputs are no longer supported.
 

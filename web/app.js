@@ -29,11 +29,11 @@ function setupLabels(data) {
 }
 function displayName(value, names) {
   const text = String(value ?? "");
-  return Object.hasOwn(names, text) ? names[text] : text.replace(/\bcandidate[-_ ]([12])\b/gi, (_, number) => names["candidate-" + number] || "Unmapped setup");
+  return Object.hasOwn(names, text) ? names[text] : text.replace(/\bcandidate[-_ ](\d+)\b/gi, (_, number) => names["candidate-" + number] || "Unmapped setup");
 }
 function assessmentNames(value, names) {
   const order = obj(value).presentation;
-  return Array.isArray(order) ? { ...names, "candidate-1": names[order[0]] || "Unmapped setup", "candidate-2": names[order[1]] || "Unmapped setup" } : names;
+  return Array.isArray(order) ? { ...names, ...Object.fromEntries(order.map((arm, index) => ["candidate-" + (index + 1), names[arm] || "Unmapped setup"])) } : names;
 }
 function semanticNames(key, passes, names) {
   const pass = (Array.isArray(passes) ? passes : []).find((item) => key === `pass-${item.pass}` || key === `pass-${item.pass}-existing`);
@@ -86,8 +86,24 @@ function sharedFields() {
     + field("Memory limit per arm", "memory", "4g")
     + field("Timeout in seconds (optional)", "timeout", "", "number", "Uses the selected task default.");
 }
+let customArmIndex = 0;
+function customArmRows() {
+  return [...$("custom-arms").querySelectorAll(".custom-arm")].map(row => ({ launcher: row.querySelector("select").value, setup_commit: row.querySelector("input").value }));
+}
+function addCustomArm(launcher = "mekugi", revision = "HEAD") {
+  const index = ++customArmIndex;
+  const row = document.createElement("div");
+  row.className = "custom-arm grid";
+  row.innerHTML = select("Launcher " + index, "arm-launcher-" + index, [["codex", "Stock Codex"], ["mekugi", "Mekugi"]], launcher)
+    + field("Setup revision " + index, "arm-revision-" + index, revision)
+    + '<button type="button">Remove setup</button>';
+  for (const input of row.querySelectorAll("input,select")) { input.removeAttribute("name"); input.addEventListener("input", updateCombination); }
+  row.querySelector("button").addEventListener("click", () => { row.remove(); updateCombination(); });
+  $("custom-arms").append(row);
+}
 function drawLaunch() {
   const defaults = config.defaults;
+  customArmIndex = 0;
   $("input-status").hidden = true;
   $("prepare-only").checked = false;
   $("paid-consent").checked = false;
@@ -101,7 +117,7 @@ function drawLaunch() {
       + '</div><div id="setup-commit-fields" class="grid" hidden>'
       + field("Setup commit A", "setup-a-commit", "", "text", "Baseline revision in the setup configuration repository.")
       + field("Setup commit B", "setup-b-commit", "", "text", "Treatment revision; live tracked edits are excluded.")
-      + '</div><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><section class="form-section" aria-labelledby="run-settings-title"><h2 id="run-settings-title">Run configuration</h2><div class="grid">'
+      + '</div><section id="custom-composition" hidden><h2>Compared setups</h2><p class="hint">Choose at least two launchers and committed setup revisions. Shared controls apply to every setup.</p><div id="custom-arms"></div><button id="add-custom-arm" type="button">Add setup</button></section><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><section class="form-section" aria-labelledby="run-settings-title"><h2 id="run-settings-title">Run configuration</h2><div class="grid">'
       + '<div class="source-field">' + field("Source checkout", "source", task.source, "text", sourceHint(task)) + '</div>'
       + select("Model", "model", [["gpt-6-astra", "GPT-6 Astra"], ["gpt-6.1-sol", "GPT-6.1 Sol"]], defaults.model)
       + select("Reasoning effort", "reasoning-effort", [["", "Task default"], ...config.reasoningEfforts.map((value) => [value, words(value)])], "", "NVM and portable packs: medium. Long-horizon tasks: xhigh. Grok: high.")
@@ -164,6 +180,8 @@ function drawLaunch() {
       }
       updateCombination();
     });
+    addCustomArm("codex"); addCustomArm("mekugi");
+    $("add-custom-arm").addEventListener("click", () => { addCustomArm(); updateCombination(); });
     for (const id of ["f-preset", "f-current-launcher", "f-mekugi-build", "f-task-pack"]) {
       $(id).addEventListener("input", updateCombination);
       $(id).addEventListener("change", updateCombination);
@@ -177,9 +195,14 @@ function setEnabled(id, enabled) { if ($(id)) $(id).disabled = !enabled; }
 function updateCombination() {
   const comparison = config.comparisons.find((item) => item.id === $("f-preset").value);
   const grok = comparison.id === "codex-mekugi-grok";
-  const mekugi = !["stock-current", "setup-commits"].includes(comparison.id) || $("f-current-launcher").value === "mekugi";
+  const composition = comparison.id === "custom";
+  const configuredArms = customArmRows();
+  for (const button of $("custom-arms").querySelectorAll("button")) button.disabled = configuredArms.length <= 2;
+  $("custom-composition").hidden = !composition;
+  const mekugi = composition ? configuredArms.some(arm => arm.launcher === "mekugi") : !["stock-current", "setup-commits"].includes(comparison.id) || $("f-current-launcher").value === "mekugi";
   const titleB = comparison.id === "stock-current" && mekugi ? "Mekugi · current setup" : comparison.b;
   $("comparison-preview").innerHTML = '<article><h2>' + esc(comparison.a) + '</h2><p>Fresh isolated workspace</p></article><article><h2>' + esc(titleB) + '</h2><p>Same task and resource limits</p></article>';
+  if (composition) $("comparison-preview").innerHTML = configuredArms.map(arm => "<article><h2>" + esc((arm.launcher === "mekugi" ? "Mekugi" : "Stock Codex") + " @ " + arm.setup_commit) + "</h2><p>Fresh isolated workspace</p></article>").join("");
   $("comparison-description").textContent = comparison.description + (grok ? " The fixed model is Grok 4.7." : "");
   setEnabled("f-model", !grok);
   setEnabled("f-current-launcher", ["stock-current", "setup-commits"].includes(comparison.id));
@@ -196,7 +219,7 @@ function updateCombination() {
   $("deduplication-owned").hidden = comparison.id !== "duplicate-output";
   for (const id of ["f-grok-bin", "f-grok-auth-file"]) setEnabled(id, grok);
   setEnabled("f-protect-mekugi", mekugi && ["stock-current", "same-setup"].includes(comparison.id));
-  setEnabled("f-review-treatment", !["stock-mekugi", "codex-mekugi-grok", "setup-commits"].includes(comparison.id));
+  setEnabled("f-review-treatment", !["custom", "stock-mekugi", "codex-mekugi-grok", "setup-commits"].includes(comparison.id));
   const custom = $("f-task").value === "custom";
   $("custom-task-fields").hidden = !custom;
   for (const input of $("custom-task-fields").querySelectorAll("input,select")) input.disabled = !custom;
@@ -216,6 +239,7 @@ function updateConsent() {
 function launchRequest() {
   const options = formOptions($("launch-form"));
   if (workflow === "pair") {
+    if (options.preset === "custom") options.arms = JSON.stringify(customArmRows());
     const flags = [];
     for (const name of [...MEKUGI_TOGGLES.map(([name]) => name), ...MEKUGI_VALUES]) {
       const key = "mekugi-" + name;
@@ -279,20 +303,22 @@ function disclosure(title, value, names, passes) {
 function metricTable(report, state, labels) {
   const arms = obj(report.arms);
   const results = obj(state.results);
-  const values = (arm) => ({ result: obj(obj(arms[arm]).result ?? results[arm]), totals: obj(obj(obj(arms[arm]).usage).totals) });
-  const a = values("stock"), b = values("current");
+  const values = (arm) => ({ result: obj(obj(arms[arm]).result ?? results[arm]), totals: obj(obj(arms[arm]).usage).complete === false ? {} : obj(obj(obj(arms[arm]).usage).totals) });
+  const keys = Object.keys(labels);
   const criteria = report.criteria ?? state.criteria;
   const rows = [
-    ["Behavioral grade", gradeChip(a.result, criteria), gradeChip(b.result, criteria), "", true],
-    ["Agent time", duration(a.result.agent_elapsed_ms), duration(b.result.agent_elapsed_ms), "agent_elapsed_ms"],
-    ["Estimated API cost", typeof a.totals.estimated_api_usd === "number" ? "$" + metric(a.totals.estimated_api_usd, 6) : "Unknown", typeof b.totals.estimated_api_usd === "number" ? "$" + metric(b.totals.estimated_api_usd, 6) : "Unknown", "estimated_api_usd"],
-    ["Total tokens", metric(a.totals.total_tokens), metric(b.totals.total_tokens), "total_tokens"],
-    ["Command time", metric(a.totals.command_seconds, 2) + (typeof a.totals.command_seconds === "number" ? " s" : ""), metric(b.totals.command_seconds, 2) + (typeof b.totals.command_seconds === "number" ? " s" : ""), "command_seconds"],
+    ["Behavioral grade", arm => gradeChip(values(arm).result, criteria), "", true],
+    ["Agent time", arm => duration(values(arm).result.agent_elapsed_ms), "agent_elapsed_ms"],
+    ["Estimated API cost", arm => typeof values(arm).totals.estimated_api_usd === "number" ? "$" + metric(values(arm).totals.estimated_api_usd, 6) : "Unknown", "estimated_api_usd"],
+    ["Total tokens", arm => metric(values(arm).totals.total_tokens), "total_tokens"],
+    ["Command time", arm => typeof values(arm).totals.command_seconds === "number" ? metric(values(arm).totals.command_seconds, 2) + " s" : "Unknown", "command_seconds"],
   ];
-  const changes = obj(report.current_minus_stock_percent);
-  const change = (key) => typeof changes[key] === "number" && Number.isFinite(changes[key]) ? (changes[key] > 0 ? "+" : "") + metric(changes[key], 2) + "%" : "Not available";
-  return '<div class="table-scroll" tabindex="0" role="region" aria-label="Pair measurements"><table><thead><tr><th>Measurement</th><th class="a">' + esc(labels.stock) + '</th><th class="b">' + esc(labels.current) + "</th></tr></thead><tbody>"
-    + rows.map(([label, av, bv, key, html]) => "<tr><th>" + esc(label) + '</th><td class="metric a">' + (html ? av : esc(av)) + '</td><td class="metric b">' + (html ? bv : esc(bv)) + (key ? '<span class="metric-change">' + esc(change(key)) + "</span>" : "") + "</td></tr>").join("") + '</tbody></table></div><p class="hint">Change compares ' + esc(labels.current) + " with " + esc(labels.stock) + ". Positive percentages mean more time, cost, or tokens, not better quality.</p>";
+  const change = (arm, key) => {
+    const changes = obj(obj(report.baseline_differences_percent)[arm] ?? (arm === "current" ? report.current_minus_stock_percent : null));
+    return typeof changes[key] === "number" && Number.isFinite(changes[key]) ? (changes[key] > 0 ? "+" : "") + metric(changes[key], 2) + "%" : "Not available";
+  };
+  return '<div class="table-scroll" tabindex="0" role="region" aria-label="Pair measurements"><table><thead><tr><th>Measurement</th>' + keys.map((arm, index) => '<th class="' + (index === 0 ? "a" : "b") + '">' + esc(labels[arm]) + "</th>").join("") + "</tr></thead><tbody>"
+    + rows.map(([label, value, key, html]) => "<tr><th>" + esc(label) + "</th>" + keys.map((arm, index) => '<td class="metric ' + (index === 0 ? 'a' : 'b') + '">' + (html ? value(arm) : esc(value(arm))) + (key && index ? '<span class="metric-change">' + esc(change(arm, key)) + "</span>" : "") + "</td>").join("") + "</tr>").join("") + '</tbody></table></div><p class="hint">' + (keys.length === 2 ? 'Change compares ' + esc(labels[keys[1]]) + ' with ' : 'Changes compare each setup with ') + esc(labels[keys[0]]) + ". Positive percentages mean more time, cost, or tokens, not better quality.</p>";
 }
 function statusChip(status, text = words(status)) {
   return '<span class="status-chip ' + esc(status) + '">' + esc(text) + "</span>";
@@ -332,7 +358,7 @@ function judgedPasses(report) {
   const passes = obj(obj(report.judge).result).passes;
   return (Array.isArray(passes) ? passes : []).map((pass) => {
     const order = Array.isArray(pass.presentation) ? pass.presentation : [];
-    const arm = (id) => ({ "candidate-1": order[0], "candidate-2": order[1] })[id] || id;
+    const arm = (id) => order[Number(String(id).replace("candidate-", "")) - 1] || id;
     const scores = {};
     for (const [id, value] of Object.entries(obj(pass.scores))) scores[arm(id)] = obj(value);
     return { pass: pass.pass, winner: arm(pass.winner), scores };
@@ -341,11 +367,11 @@ function judgedPasses(report) {
 function verdictSummary(report, state, labels, complete) {
   const name = (arm) => arm === "tie" ? "tie" : arm === "none" || !arm ? "neither" : labels[arm] || "Unmapped setup";
   const winner = report.winner;
-  const headline = winner === "stock" || winner === "current" ? "Overall winner: " + labels[winner] : winner === "tie" ? "Overall result: tie" : "No overall winner";
+  const headline = Object.hasOwn(labels, winner) ? "Overall winner: " + labels[winner] : winner === "tie" ? "Overall result: tie" : "No overall winner";
   const passes = judgedPasses(report);
   const agreement = obj(obj(report.judge).result).agreement;
   const judged = passes.length ? " Judge: " + passes.map((pass) => "pass " + pass.pass + " chose " + name(pass.winner)).join(", ") + (typeof agreement === "boolean" ? agreement ? "; passes agree." : "; passes disagree." : ".") : "";
-  const settled = complete && ["stock", "current", "tie"].includes(winner);
+  const settled = complete && [...Object.keys(labels), "tie"].includes(winner);
   const card = (arm, side) => {
     const semantic = armGrade(report, state, arm).semantic;
     const lines = passKeys(semantic).map((key) => {
@@ -361,21 +387,22 @@ function verdictSummary(report, state, labels, complete) {
   };
   return '<div class="result-summary' + (settled ? "" : " warn") + '"><strong>' + esc(headline) + "</strong><p>" + esc(report.winner_reason || report.comparison_exclusion || "Interpret the available evidence with its validity gates.") + "</p>"
     + '<p class="hint">' + (complete ? "Measurement complete." : "Measurement incomplete.") + esc(judged) + "</p></div>"
-    + '<div class="verdict-grid">' + card("stock", "a") + card("current", "b") + "</div>";
+    + '<div class="verdict-grid">' + Object.keys(labels).map((arm, index) => card(arm, index === 0 ? "a" : "b")).join("") + "</div>";
 }
 function scoreTable(report, labels) {
   const passes = judgedPasses(report);
   if (!passes.length) return "";
   const rows = [["correctness", "Correctness (50%)"], ["completeness", "Completeness (20%)"], ["maintainability", "Maintainability (20%)"], ["test_quality", "Test quality (10%)"], ["weighted_total", "Weighted total (of 100)"]];
-  const cell = (pass, arm, other, key, side) => {
-    const value = obj(pass.scores[arm])[key], rival = obj(pass.scores[other])[key];
-    const lead = typeof value === "number" && typeof rival === "number" && value > rival;
+  const keys = Object.keys(labels);
+  const cell = (pass, arm, key, side) => {
+    const value = obj(pass.scores[arm])[key];
+    const lead = typeof value === "number" && keys.every(other => other === arm || typeof obj(pass.scores[other])[key] === "number" && value > obj(pass.scores[other])[key]);
     return '<td class="metric ' + side + (lead ? " lead" : "") + '">' + esc(metric(value, 2)) + "</td>";
   };
-  return '<h3>Judge scores</h3><div class="table-scroll" tabindex="0" role="region" aria-label="Judge scores"><table><thead><tr><th rowspan="2">Score</th><th class="a" colspan="' + passes.length + '">' + esc(labels.stock) + '</th><th class="b" colspan="' + passes.length + '">' + esc(labels.current) + "</th></tr><tr>"
-    + ["a", "b"].map((side) => passes.map((pass, index) => '<th class="' + (index === 0 ? side : "") + '">Pass ' + esc(pass.pass) + "</th>").join("")).join("") + "</tr></thead><tbody>"
-    + rows.map(([key, label]) => "<tr><th>" + esc(label) + "</th>" + passes.map((pass, index) => cell(pass, "stock", "current", key, index === 0 ? "a" : "")).join("") + passes.map((pass, index) => cell(pass, "current", "stock", key, index === 0 ? "b" : "")).join("") + "</tr>").join("")
-    + '</tbody></table></div><p class="hint">Component scores range from 0 to 5; the weighted total ranges from 0 to 100. Bold marks the higher score within a pass. Judge prose may use another scale or candidate order; these are the recorded scores.</p>';
+  return '<h3>Judge scores</h3><div class="table-scroll" tabindex="0" role="region" aria-label="Judge scores"><table><thead><tr><th rowspan="2">Score</th>' + keys.map(arm => '<th colspan="' + passes.length + '">' + esc(labels[arm]) + "</th>").join("") + "</tr><tr>"
+    + keys.map(() => passes.map(pass => "<th>Pass " + esc(pass.pass) + "</th>").join("")).join("") + "</tr></thead><tbody>"
+    + rows.map(([key, label]) => "<tr><th>" + esc(label) + "</th>" + keys.map((arm, index) => passes.map((pass, passIndex) => cell(pass, arm, key, passIndex === 0 ? index === 0 ? "a" : "b" : "")).join("")).join("") + "</tr>").join("")
+    + '</tbody></table></div><p class="hint">Component scores range from 0 to 5; the weighted total ranges from 0 to 100. Bold marks the highest score within a pass. These are the recorded scores.</p>';
 }
 function criterionTable(report, labels) {
   const contract = obj(obj(report.criteria).contract);
@@ -391,11 +418,12 @@ function criterionTable(report, labels) {
     ? '<div class="chips">' + list.map(({ key, item }) => statusChip(item.status, "P" + key.slice(5) + " · " + words(item.status))).join("") + '</div><details class="criterion-reasoning" data-key="' + esc(arm + ":" + id) + '"><summary>Reasoning</summary>'
       + list.map(({ key, item, names }) => '<div class="criterion-finding"><p class="hint">' + esc(words(key)) + " · " + esc(item.basis) + "</p><p>" + esc(displayName(item.reasoning, names)) + "</p></div>").join("") + "</details>"
     : '<span class="hint">Not assessed</span>';
-  return '<h3>Criterion outcomes</h3><p class="hint">Highlighted rows differ between setups. Expand Reasoning for each pass\'s evidence.</p><div class="table-scroll" tabindex="0" role="region" aria-label="Criterion outcomes"><table class="criteria"><thead><tr><th>Criterion</th><th class="a">' + esc(labels.stock) + '</th><th class="b">' + esc(labels.current) + '</th></tr></thead><tbody>'
-    + criteria.map((item) => {
-      const a = findings("stock", item.id), b = findings("current", item.id);
-      const differs = JSON.stringify(a.map(({ item: found }) => found.status)) !== JSON.stringify(b.map(({ item: found }) => found.status));
-      return "<tr" + (differs ? ' class="differs"' : "") + "><th>" + esc(item.id) + '<p class="hint">' + esc(item.description) + '</p></th><td class="a">' + cell("stock", item.id, a) + '</td><td class="b">' + cell("current", item.id, b) + "</td></tr>";
+  const keys = Object.keys(labels);
+  return '<h3>Criterion outcomes</h3><p class="hint">Highlighted rows differ between setups. Expand Reasoning for each pass evidence.</p><div class="table-scroll" tabindex="0" role="region" aria-label="Criterion outcomes"><table class="criteria"><thead><tr><th>Criterion</th>' + keys.map((arm, index) => '<th class="' + (index === 0 ? "a" : "b") + '">' + esc(labels[arm]) + "</th>").join("") + '</tr></thead><tbody>'
+    + criteria.map(item => {
+      const lists = keys.map(arm => findings(arm, item.id));
+      const differs = new Set(lists.map(list => JSON.stringify(list.map(({ item: found }) => found.status)))).size > 1;
+      return "<tr" + (differs ? ' class="differs"' : "") + "><th>" + esc(item.id) + '<p class="hint">' + esc(item.description) + '</p></th>' + keys.map((arm, index) => "<td>" + cell(arm, item.id, lists[index]) + "</td>").join("") + "</tr>";
     }).join("") + "</tbody></table></div>";
 }
 function judgeSummary(judge, labels) {
@@ -428,14 +456,18 @@ function resultContent(data) {
       + disclosure(invalidated ? "Technical report, regenerate after invalidation" : "Technical report", report, labels);
   }
   if (data.entry.kind === "trials") {
-    const rows = Object.entries(obj(report.current_minus_stock)).map(([name, value]) => {
-      const stats = obj(value);
-      return "<tr><th>" + esc(words(name)) + "</th><td>" + metric(obj(stats.stock).mean, 3) + "</td><td>" + metric(obj(stats.current).mean, 3) + "</td><td>" + metric(obj(stats.difference).mean, 3) + "</td><td>" + metric(obj(stats.percent).mean, 2) + "</td><td>" + metric(obj(stats.difference).n) + "</td></tr>";
+    const comparisons = obj(report.baseline_comparisons ?? { current: report.current_minus_stock });
+    const baseline = report.baseline_arm || "stock";
+    const tables = Object.entries(comparisons).map(([arm, values]) => {
+      const rows = Object.entries(obj(values)).map(([name, value]) => {
+        const stats = obj(value);
+        return "<tr><th>" + esc(words(name)) + "</th><td>" + metric(obj(stats.stock).mean, 3) + "</td><td>" + metric(obj(stats.current).mean, 3) + "</td><td>" + metric(obj(stats.difference).mean, 3) + "</td><td>" + metric(obj(stats.percent).mean, 2) + "</td><td>" + metric(obj(stats.difference).n) + "</td></tr>";
+      }).join("");
+      return "<h3>" + esc(labels[arm]) + " minus " + esc(labels[baseline]) + '</h3><div class="table-scroll" tabindex="0" role="region" aria-label="Trial statistics"><table><thead><tr><th>Metric</th><th>' + esc(labels[baseline]) + ' mean</th><th>' + esc(labels[arm]) + ' mean</th><th>Difference mean</th><th>Percent mean</th><th>Runs</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
     }).join("");
-    return "<h2>Trial-set results</h2><p>" + metric(report.eligible_pairs) + " eligible pairs of " + metric(report.planned_pairs) + " planned. Differences are " + esc(labels.current) + " minus " + esc(labels.stock) + ".</p><p class='hint'>Unavailable metrics are excluded. These observations do not establish causality.</p>"
-      + '<div class="table-scroll" tabindex="0" role="region" aria-label="Trial statistics"><table><thead><tr><th>Metric</th><th>' + esc(labels.stock) + ' mean</th><th>' + esc(labels.current) + ' mean</th><th>Difference mean</th><th>Percent mean</th><th>Pairs</th></tr></thead><tbody>' + rows + "</tbody></table></div>"
-      + disclosure("Distributions, medians and sample variation", report.current_minus_stock, labels)
-      + disclosure("Pair eligibility, results and source assessments", report.pairs, labels)
+    return "<h2>Trial-set results</h2><p>" + metric(report.eligible_pairs) + " eligible runs of " + metric(report.planned_pairs) + " planned.</p><p class='hint'>Unavailable metrics are excluded. These observations do not establish causality.</p>" + tables
+      + disclosure("Distributions, medians and sample variation", comparisons, labels)
+      + disclosure("Run eligibility, results and source assessments", report.pairs, labels)
       + disclosure("Complete trial report", report, labels);
   }
   if (data.entry.kind === "suite") {
@@ -464,7 +496,7 @@ function updateActionFields() {
   $("action-options").innerHTML = fields.map((key) => {
     if (key === "confirm-paid-inference") return check("I authorize paid inference for this action", key, "a");
     if (["recover-judge", "protect-mekugi"].includes(key)) return check(labels[key] || words(key), key, "a");
-    if (key === "arm") return select("Selected setup (optional)", key, [["", "Both setups"], ["stock", setups.stock], ["current", setups.current]], "", "", "a");
+    if (key === "arm") return select("Selected setup (optional)", key, [["", "All setups"], ...Object.entries(setups)], "", "", "a");
     if (key === "order") return select(labels[key], key, [["concurrent", "Concurrent"], ["alternating", "Alternating"]], "concurrent", "", "a");
     return field(labels[key] || words(key), key, key === "count" ? "2" : config.defaults[key] || "", key === "count" ? "number" : "text", "", "a");
   }).join("");
@@ -515,8 +547,7 @@ function renderSnapshot(data) {
   const statuses = obj(state.arm_attempts);
   const errors = [job.error, state.error, obj(state.finishing).error, obj(state.judge).error].filter(Boolean);
   const phaseItems = entry.kind === "pair" ? [
-    [labels.stock + " execution", ...executionStatus(statuses.stock, obj(state.results).stock)],
-    [labels.current + " execution", ...executionStatus(statuses.current, obj(state.results).current)],
+    ...Object.keys(labels).map(arm => [labels[arm] + " execution", ...executionStatus(statuses[arm], obj(state.results)[arm])]),
     ["Source assessment", obj(state.judge).status || "Not started", TONES[obj(state.judge).status]],
     ["Report finishing", obj(state.finishing).status || (data.report ? "Report available" : "Not started"), TONES[obj(state.finishing).status]],
   ] : [["Evidence", state.status || "Preparing"], ["Operation", job.status || "Attached"], ["Completed children", data.children.filter((child) => child.status === "complete").length + " of " + data.children.length], ["Report", data.report ? "Available" : "Not yet generated"]];

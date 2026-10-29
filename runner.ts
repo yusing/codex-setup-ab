@@ -1,3 +1,4 @@
+import { armNames } from "./types";
 import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories, TASK_PATH } from "./dependencies";
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,12 +12,12 @@ import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { armExecutionSucceeded, readState, writeState, withRunLock } from "./state";
 import { isPairedMekugiComparison, usesMekugi, mekugiArmFlags, MEKUGI_METRICS_WRAPPER, validateMekugiFlags } from "./mekugi";
 import { importControl } from "./control";
-import { armLabels } from "./arm-labels";
+import { armLabels, presentationLabel } from "./arm-labels";
 import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
 
 export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; signal?: AbortSignal }
 
-const arms: ArmName[] = ["stock", "current"];
+
 function progress(message: string): void { process.stderr.write(`[run] ${message}\n`); }
 
 function prepareAssets(state: RunState): string {
@@ -32,11 +33,11 @@ function containerArgs(state: RunState): string[] {
 }
 
 async function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current", home?: string): Promise<string[]> {
-  const usesCurrentSetup = state.comparison === "setup-commits" || state.comparison === "same-setup" || state.comparison === "stock-mekugi" || isPairedMekugiComparison(state.comparison)
+  const usesCurrentSetup = (state.comparison === "setup-commits" || state.comparison === "custom") || state.comparison === "same-setup" || state.comparison === "stock-mekugi" || isPairedMekugiComparison(state.comparison)
     || (arm === "current" && state.comparison !== "codex-mekugi-grok");
   const mounts = launcherMounts(runDir, state, arm);
   if (!usesCurrentSetup) return mounts;
-  if (state.comparison === "duplicate-output" || state.comparison === "setup-commits") {
+  if (state.comparison === "duplicate-output" || (state.comparison === "setup-commits" || state.comparison === "custom")) {
     const snapshot = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8")) as { source_home?: string };
     const sourceHome = snapshot.source_home;
     if (typeof sourceHome !== "string" || !isAbsolute(sourceHome) || sourceHome === "/") throw new Error("invalid current setup home alias");
@@ -101,7 +102,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   }
   if (state.image_id && image !== state.image_id) throw new Error("prepared image changed");
   state.image_id = image;
-  for (const arm of arms) await inspectCandidate(docker, runDir, state, resolve(runDir, state.arms[arm].repository), `preflight-${arm}-baseline`, signal, true, true);
+  for (const arm of armNames(state)) await inspectCandidate(docker, runDir, state, resolve(runDir, state.arms[arm].repository), `preflight-${arm}-baseline`, signal, true, true);
   const prefix = `codex-ab-${state.id}-preflight`;
   progress(`checking bare Codex image ${image}`);
   const check = await runOwnedContainer({ docker, name: `${prefix}-image`, signal, createArgs: [image, "sh", "-lc", "printf 'codex_path=%s\\n' \"$(command -v codex || true)\"; if command -v hpatch >/dev/null || command -v mekugi >/dev/null; then printf 'mekugi_path=%s\\n' \"$(command -v mekugi)\"; exit 8; fi; codex --version"] });
@@ -173,9 +174,9 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
       }
     }
   } else {
-    for (const setupArm of state.comparison === "setup-commits" ? arms : ["current"] as const) {
+    for (const setupArm of (state.comparison === "setup-commits" || state.comparison === "custom") ? armNames(state) : ["current"] as const) {
       progress(`checking ${armLabels(state)[setupArm]} tools and configured Go hook offline`);
-      const snapshot = JSON.parse(await readFile(resolve(runDir, state.comparison === "setup-commits"
+      const snapshot = JSON.parse(await readFile(resolve(runDir, (state.comparison === "setup-commits" || state.comparison === "custom")
         ? state.setup_revisions![setupArm].manifest : state.snapshot_manifest), "utf8")) as { source_home: string };
       const hooks: {
         hooks?: Record<string, { hooks: { command?: string }[] }[]>;
@@ -199,15 +200,15 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   }
   if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
     progress("checking selected Mekugi flags and exports offline without model access");
-    const paired = isPairedMekugiComparison(state.comparison) || state.comparison === "setup-commits";
-    for (const arm of paired ? ["stock", "current"] as const : ["current"] as const) {
+    const paired = isPairedMekugiComparison(state.comparison) || (state.comparison === "setup-commits" || state.comparison === "custom");
+    for (const arm of state.comparison === "custom" ? armNames(state).filter(arm => usesMekugi(state, arm)) : paired ? ["stock", "current"] : ["current"]) {
       const exports = join(runDir, "artifacts/preflight-mekugi", paired ? arm : "");
       await mkdir(exports, { recursive: true, mode: 0o700 });
       const flags = mekugiArmFlags(state, arm);
       const launch = await checkSetup(state.comparison === "codex-mekugi-grok" ? "stock" : arm, { name: `${prefix}-mekugi${paired ? `-${arm}` : ""}`, timeoutMs: 30000,
         createArgs: ["-v", `${exports}:/mekugi-exports`, setupImage, "sh", "-lc",
           'export PATH=/home/ubuntu/.local/bin:$PATH && exec "$@"',
-          "preflight", ...(state.comparison === "setup-commits" ? ["mise", "exec", "--", "sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []), "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", state.comparison === "setup-commits" ? "/usr/local/bin/mekugi" : "mekugi", ...flags,
+          "preflight", ...((state.comparison === "setup-commits" || state.comparison === "custom") ? ["mise", "exec", "--", "sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []), "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", (state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/mekugi" : "mekugi", ...flags,
           ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),
           "--capture-output=/mekugi-exports/capture.jsonl", ...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"]), "--version"] });
       await writeFile(join(runDir, `artifacts/preflight-mekugi${paired ? `-${arm}` : ""}.json`), JSON.stringify(launch, null, 2));
@@ -216,13 +217,13 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   }
   const dependencyBase = dependencyImage(state);
   progress("checking candidate Git identity and Python PATH offline");
-  for (const arm of arms) {
+  for (const arm of armNames(state)) {
     const environment = await checkSetup(arm, { name: `${prefix}-environment-${arm}`, timeoutMs: 30000,
       createArgs: ["-e", `PATH=${TASK_PATH}`,
         "-v", `${resolve(runDir, state.arms[arm].repository)}:/workspace:ro`,
         dependencyBase, "sh", "-c",
         'if test -n "${MISE_INSTALLS_DIR:-}"; then exec mise exec -- bash -lc "$@"; fi; exec bash -lc "$@"', 'environment-launch',
-        (state.comparison === "setup-commits" ? 'export PATH="/opt/task-deps/python/bin:/usr/local/bin:$PATH"; test "$(command -v codex)" = /usr/local/bin/codex || exit 1; ' + (usesMekugi(state, arm) ? 'test "$(command -v mekugi)" = /usr/local/bin/mekugi || exit 1; ' : '') : '') + 'set -eu; git -c user.useConfigOnly=true var GIT_AUTHOR_IDENT; if test -x /opt/task-deps/python/bin/python; then for interpreter in python python3; do test "$(command -v "$interpreter")" = "/opt/task-deps/python/bin/$interpreter"; "$interpreter" -c "import sys; assert sys.prefix == \'/opt/task-deps/python\'"; done; fi; if test -n "${HOMEBREW_PREFIX:-}"; then command -v brew; brew --version; fi', 'environment-check'] });
+        ((state.comparison === "setup-commits" || state.comparison === "custom") ? 'export PATH="/opt/task-deps/python/bin:/usr/local/bin:$PATH"; test "$(command -v codex)" = /usr/local/bin/codex || exit 1; ' + (usesMekugi(state, arm) ? 'test "$(command -v mekugi)" = /usr/local/bin/mekugi || exit 1; ' : '') : '') + 'set -eu; git -c user.useConfigOnly=true var GIT_AUTHOR_IDENT; if test -x /opt/task-deps/python/bin/python; then for interpreter in python python3; do test "$(command -v "$interpreter")" = "/opt/task-deps/python/bin/$interpreter"; "$interpreter" -c "import sys; assert sys.prefix == \'/opt/task-deps/python\'"; done; fi; if test -n "${HOMEBREW_PREFIX:-}"; then command -v brew; brew --version; fi', 'environment-check'] });
     await writeFile(join(runDir, `artifacts/preflight-environment-${arm}.json`), JSON.stringify(environment, null, 2));
     if (environment.exitCode !== 0 || environment.timedOut || environment.canceled) throw new Error(`candidate environment preflight failed (${arm}): ${environment.stderr.trim()}`);
   }
@@ -282,7 +283,7 @@ async function prewarm(docker: string, runDir: string, state: RunState, arm: Arm
     "-v", `${repo}:/workspace`, "-v", `${home}:/home/ubuntu`,
     "--network", "none",
     imageRef(state), "sh", "-lc", command] });
-  if (result.exitCode !== 0) throw new Error(`${arm === "stock" ? "A" : "B"} / ${armLabels(state)[arm]} cache prewarm failed: ${result.stderr.trim()}`);
+  if (result.exitCode !== 0) throw new Error(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]} cache prewarm failed: ${result.stderr.trim()}`);
   await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true);
 }
 export async function gradeArm(docker: string, runDir: string, state: RunState, arm: ArmName, patchPath: string, signal: AbortSignal): Promise<ArmResult["grade"]> {
@@ -311,7 +312,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const stderrPath = join(output, "codex.stderr");
   const patchPath = join(output, "changes.patch");
   const started = new Date();
-  progress(`${arm === "stock" ? "A" : "B"} / ${armLabels(state)[arm]}: agent started`);
+  progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent started`);
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
@@ -330,9 +331,9 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const grokCommand = grokArm
     ? ["grok", "--prompt-file", "/control/task.md", "--cwd", "/workspace", "-m", "grok-4.7", "--reasoning-effort", state.execution.reasoning_effort, "--always-approve", "--sandbox", "off", "--output-format", "json", "--disable-web-search"]
     : undefined;
-  const codexLauncher = mekugiArm ? [state.comparison === "setup-commits" ? "/usr/local/bin/mekugi" : "mekugi", ...mekugiArmFlags(state, arm), ...exportArgs, ...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"])] : [state.comparison === "setup-commits" ? "/usr/local/bin/codex" : "codex"];
+  const codexLauncher = mekugiArm ? [(state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/mekugi" : "mekugi", ...mekugiArmFlags(state, arm), ...exportArgs, ...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"])] : [(state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/codex" : "codex"];
   const mekugiLauncher = exportArgs.length ? ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", ...codexLauncher] : codexLauncher;
-  const launcher = grokCommand ?? (mekugiArm && state.comparison === "codex-mekugi-grok" ? mekugiLauncher : arm === "current" || state.comparison === "setup-commits" || state.comparison === "stock-mekugi" || state.comparison === "same-setup" || isPairedMekugiComparison(state.comparison) ? ["mise", "exec", "--", ...(state.comparison === "setup-commits" ? ["sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []), ...mekugiLauncher] : ["codex"]);
+  const launcher = grokCommand ?? (mekugiArm && state.comparison === "codex-mekugi-grok" ? mekugiLauncher : arm === "current" || (state.comparison === "setup-commits" || state.comparison === "custom") || state.comparison === "stock-mekugi" || state.comparison === "same-setup" || isPairedMekugiComparison(state.comparison) ? ["mise", "exec", "--", ...((state.comparison === "setup-commits" || state.comparison === "custom") ? ["sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []), ...mekugiLauncher] : ["codex"]);
   const grokPath = grokArm ? ["-e", `PATH=/home/ubuntu/.grok/bin:${TASK_PATH}`, "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", `PATH=${TASK_PATH}`];
   const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
   const debugStorage = mekugiArm && !protectedArm
@@ -356,10 +357,10 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     catch (error) { lifecycleError = `${lifecycleError ?? ""} ${String(error)}`.trim(); }
   }
   const finishedAt = new Date().toISOString();
-  progress(`${arm === "stock" ? "A" : "B"} / ${armLabels(state)[arm]}: agent stopped after ${Math.round((result?.elapsedMs ?? 0) / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
+  progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent stopped after ${Math.round((result?.elapsedMs ?? 0) / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
   return {
     arm,
-    anonymous_id: arm === "stock" ? "candidate-1" : "candidate-2",
+    anonymous_id: `candidate-${armNames(state).indexOf(arm) + 1}`,
     container: name,
     started_at: started.toISOString(),
     finished_at: finishedAt,
@@ -394,7 +395,7 @@ async function collectArm(docker: string, runDir: string, state: RunState, arm: 
   } catch (error) {
     result.collection_error = error instanceof Error ? error.message : String(error);
     // Do not follow or overwrite a candidate-created capture symlink on failure.
-    progress(`${arm === "stock" ? "A" : "B"} / ${armLabels(state)[arm]}: inference evidence persisted but patch collection failed: ${result.collection_error}`);
+    progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: inference evidence persisted but patch collection failed: ${result.collection_error}`);
   }
 }
 
@@ -413,10 +414,12 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   if (options.signal?.aborted) controller.abort();
   const externalCancel = () => controller.abort();
   options.signal?.addEventListener("abort", externalCancel, { once: true });
+  const arms = armNames(state);
+  if (options.arm && !arms.includes(options.arm)) throw new Error("unknown arm key");
   const activeArms: ArmName[] = imported ? ["current"] : options.arm ? [options.arm] : arms;
   const selectedArms: ArmName[] = imported ? arms : activeArms;
   const labels = armLabels(state);
-  const displayArm = (arm: ArmName): string => `${arm === "stock" ? "A" : "B"} / ${labels[arm]}`;
+  const displayArm = (arm: ArmName): string => `${presentationLabel(arms.indexOf(arm))} / ${labels[arm]}`;
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
@@ -451,11 +454,11 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     }
     const order = state.arm_order ?? "concurrent";
     if (!["concurrent", "stock-first", "current-first"].includes(order)) throw new Error("invalid arm execution order");
-    progress(`agent execution order: ${order === "concurrent" ? "concurrent" : order === "stock-first" ? `${displayArm("stock")} first` : `${displayArm("current")} first`}`);
     state.arm_attempts = imported ? { stock: { codex_home: join(dirname(state.arms.stock.repository), "home/ubuntu/.codex"), container: imported.container,
       started_at: imported.started_at, finished_at: imported.finished_at, status: "stopped" } } : {};
     const batches: ArmName[][] = order === "concurrent" ? [activeArms]
       : (order === "stock-first" ? arms : [...arms].reverse()).filter(arm => activeArms.includes(arm)).map(arm => [arm]);
+    progress(`agent execution order: ${order === "concurrent" ? "concurrent" : `${displayArm(batches[0]![0]!)} first`}`);
     for (const batch of batches) {
       if (controller.signal.aborted) break;
       for (const arm of batch) state.arm_attempts[arm] = {

@@ -12,7 +12,7 @@ interface Exclusion {
 }
 
 interface RemeterSpec {
-  arm: "stock" | "current";
+  arm: string;
   rationale: string;
   responses: Exclusion[];
   commands: Exclusion[];
@@ -20,7 +20,7 @@ interface RemeterSpec {
 
 function parseSpec(text: string): RemeterSpec {
   const value = JSON.parse(text);
-  if (!value || !["stock", "current"].includes(value.arm) || typeof value.rationale !== "string" || !value.rationale.trim()) {
+  if (!value || typeof value.arm !== "string" || !value.arm || typeof value.rationale !== "string" || !value.rationale.trim()) {
     throw new Error("exclusions require arm and rationale");
   }
   for (const key of ["responses", "commands"]) {
@@ -40,6 +40,7 @@ export async function remeterRun(runDirectory: string, specification: string): P
   return withRunLock(runDir, async () => {
     const spec = parseSpec(await readFile(specification, "utf8"));
     const state = await readState(runDir);
+    if (!Object.hasOwn(state.arms, spec.arm)) throw new Error("unknown arm key");
     const home = state.arm_attempts?.[spec.arm]?.codex_home;
     if (!home || !state.pricing || state.status !== "complete") throw new Error("remeter requires a completed run with recorded pricing and sessions");
     const pricing = state.pricing as PricingSnapshot;

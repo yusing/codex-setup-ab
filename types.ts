@@ -2,14 +2,18 @@ import type { CriterionEvidence } from "./semantic";
 
 export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" | "task";
 export type CodexLauncher = "codex" | "mekugi" | "grok";
-export type Comparison = "stock-current" | "setup-commits" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "journal-compaction" | "duplicate-output";
+export type Comparison = "custom" | "stock-current" | "setup-commits" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "journal-compaction" | "duplicate-output";
 export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
 export type BenchmarkModel = "gpt-6-astra" | "gpt-6.1-sol" | "grok:grok-4.7";
 
 export type ArmOrder = "concurrent" | "stock-first" | "current-first";
 
-export type ArmName = "stock" | "current";
+export type ArmName = string;
+export type CandidateId = `candidate-${number}`;
+export interface ArmConfiguration { launcher: "codex" | "mekugi"; setup_commit: string }
+export const armNames = (state: Pick<RunState, "arms">): ArmName[] => Object.keys(state.arms);
+export const candidateIds = (count: number): CandidateId[] => Array.from({ length: count }, (_, index) => `candidate-${index + 1}` as const);
 
 export interface CommandEvidence {
   validation_error?: string;
@@ -23,7 +27,7 @@ export interface CommandEvidence {
 
 export interface ArmResult {
   arm: ArmName;
-  anonymous_id: "candidate-1" | "candidate-2";
+  anonymous_id: CandidateId;
   container: string;
   started_at: string;
   finished_at: string;
@@ -79,6 +83,7 @@ export interface RunState {
   execution: { model: BenchmarkModel | "gpt-6-sol"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;
+  arm_configurations?: ArmConfiguration[];
   setup_revisions?: Record<ArmName, { commit: string; tree: string; manifest: string; manifest_sha256: string }>;
   snapshot_manifest: string;
   current_snapshot: { captured_at: string; manifest_sha256: string };
@@ -114,7 +119,7 @@ export interface RunState {
   invalidity_reasons?: string[];
   /** Arms intentionally selected for this attempt; absent on a prepared run. */
   selected_arms?: ArmName[];
-  arms: Record<ArmName, { repository: string; home_template: string }>;
+  arms: Record<ArmName, { repository: string; home_template: string; launcher?: "codex" | "mekugi" }>;
   pricing?: unknown;
   /** New judge rate kept separate so historical trial pricing controls stay immutable. */
   judge_pricing?: { captured_at: string; rate: import("./usage").ModelPricing };
@@ -141,12 +146,12 @@ export interface RunState {
 
 export interface JudgePass {
   pass: 1 | 2;
-  presentation: [ArmName, ArmName];
-  scores: Record<"candidate-1" | "candidate-2", { correctness: number; completeness: number; maintainability: number; test_quality: number; weighted_total: number }>;
+  presentation: ArmName[];
+  scores: Record<CandidateId, { correctness: number; completeness: number; maintainability: number; test_quality: number; weighted_total: number }>;
   evidence: string[];
-  issues: Array<{ candidate: "candidate-1" | "candidate-2"; severity: "critical" | "major" | "minor"; detail: string }>;
-  winner: "candidate-1" | "candidate-2" | "tie" | "none";
-  criteria?: Record<"candidate-1" | "candidate-2", CriterionEvidence[]>;
+  issues: Array<{ candidate: CandidateId; severity: "critical" | "major" | "minor"; detail: string }>;
+  winner: CandidateId | "tie" | "none";
+  criteria?: Record<CandidateId, CriterionEvidence[]>;
   rationale: string;
 }
 

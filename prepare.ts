@@ -1,4 +1,5 @@
-import { REASONING_EFFORTS } from "./types";
+import { compositionKeys, parseArmConfigurations } from "./arms";
+import { REASONING_EFFORTS, armNames } from "./types";
 import { appendFile, chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -18,6 +19,7 @@ import { sha256, writeState } from "./state";
 import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort, JudgeReport } from "./types";
 
 export interface PrepareOptions {
+  arms?: import("./types").ArmConfiguration[];
   comparison?: import("./types").Comparison;
   setupACommit?: string;
   setupBCommit?: string;
@@ -147,13 +149,20 @@ export async function verifyPreparedInputs(runDir: string, state: RunState, purp
       if ((source || hash) && (!source || !hash || await sha256(resolve(runDir, source)) !== hash)) throw new Error(`snapshotted ${label} changed`);
     }
   }
+  if (state.comparison === "custom") {
+    const configurations = parseArmConfigurations(state.arm_configurations);
+    const keys = compositionKeys(configurations.length);
+    if (JSON.stringify(armNames(state)) !== JSON.stringify(keys) || keys.some((arm, index) =>
+      state.arms[arm].launcher !== configurations[index]!.launcher || state.arms[arm].home_template !== `snapshots/${arm}/home/ubuntu`
+      || state.setup_revisions?.[arm]?.commit !== configurations[index]!.setup_commit)) throw new Error("custom arm identities changed");
+  }
   if (state.task.path !== "control/task.md") throw new Error("copied benchmark control path changed");
   const stock = join(runDir, "snapshots/stock/home/ubuntu");
-  const commitComparison = state.comparison === "setup-commits";
+  const commitComparison = state.comparison === "setup-commits" || state.comparison === "custom";
   if (commitComparison) {
     if (!state.setup_revisions || state.arms.current.home_template !== "snapshots/current/home/ubuntu"
       || !["codex", "mekugi"].includes(state.execution.current_launcher ?? "codex")) throw new Error("setup revision identities missing or changed");
-    for (const arm of ["stock", "current"] as const) {
+    for (const arm of armNames(state)) {
       const identity = state.setup_revisions[arm];
       const expectedManifest = `snapshots/${arm}/home/snapshot-manifest.json`;
       if (!identity || identity.manifest !== expectedManifest || !/^[a-f0-9]{40}$/.test(identity.commit)
@@ -169,13 +178,14 @@ export async function verifyPreparedInputs(runDir: string, state: RunState, purp
   validatePairedMekugiComparison(state.comparison, state.auto_compact_limit, state.mekugi_flags ?? [], Boolean(state.protected_runtime));
   if (pairedMekugi || commitComparison && state.execution.current_launcher === "mekugi") {
     if (state.arms.current.home_template !== "snapshots/current/home/ubuntu") throw new Error(`${state.comparison} setup identity changed`);
-    for (const arm of ["stock", "current"] as const) {
+    for (const arm of armNames(state)) {
+      if (state.comparison === "custom" && state.arms[arm].launcher !== "mekugi") continue;
       const item = state.mekugi_exports_by_arm?.[arm];
       const exportRoot = state.arms[arm].repository.startsWith("sessions/") ? join(dirname(state.arms[arm].repository), "exports") : `artifacts/${arm}/mekugi`;
       if (!item || item.capture !== join(exportRoot, "capture.jsonl") || item.metrics !== join(exportRoot, "metrics.json")) throw new Error(`${state.comparison} per-arm exports changed`);
     }
-    if (state.mekugi_exports_by_arm!.stock!.validator.sha256 !== state.mekugi_exports_by_arm!.current!.validator.sha256
-      || state.mekugi_exports_by_arm!.stock!.reader.sha256 !== state.mekugi_exports_by_arm!.current!.reader.sha256) throw new Error(`${state.comparison} export validation identity changed`);
+    if (state.comparison !== "custom" && (state.mekugi_exports_by_arm!.stock!.validator.sha256 !== state.mekugi_exports_by_arm!.current!.validator.sha256
+      || state.mekugi_exports_by_arm!.stock!.reader.sha256 !== state.mekugi_exports_by_arm!.current!.reader.sha256)) throw new Error(`${state.comparison} export validation identity changed`);
   }
   const stockMekugi = state.comparison === "stock-mekugi";
   const grokComparison = state.comparison === "codex-mekugi-grok";
@@ -573,23 +583,26 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const profile = options.profile ?? (options.criteriaPath ? "task" : "mekugi");
   const mekugiFlags = validateMekugiFlags(options.mekugiFlags ?? []);
   const comparison = options.comparison ?? "stock-current";
-  if (!["stock-current", "setup-commits", "same-setup", "stock-mekugi", "codex-mekugi-grok", "journal-compaction", "duplicate-output"].includes(comparison)) throw new Error("unknown comparison");
-  const commitComparison = comparison === "setup-commits";
-  if (commitComparison !== Boolean(options.setupACommit && options.setupBCommit)
-    || !commitComparison && Boolean(options.setupACommit || options.setupBCommit)) {
+  if (!["custom", "stock-current", "setup-commits", "same-setup", "stock-mekugi", "codex-mekugi-grok", "journal-compaction", "duplicate-output"].includes(comparison)) throw new Error("unknown comparison");
+  const customArms = comparison === "custom" ? parseArmConfigurations(options.arms) : undefined;
+  if (comparison !== "custom" && options.arms) throw new Error("--arms requires custom comparison");
+  const keys = compositionKeys(customArms?.length ?? 2);
+  const commitComparison = comparison === "setup-commits" || comparison === "custom";
+  if ((comparison === "setup-commits") !== Boolean(options.setupACommit && options.setupBCommit)
+    || comparison !== "setup-commits" && Boolean(options.setupACommit || options.setupBCommit)) {
     throw new Error("setup-commits requires both --setup-a-commit and --setup-b-commit; other comparisons do not accept them");
   }
   if (commitComparison && (options.reviewTreatment || options.protectMekugi)) throw new Error("setup-commits does not accept reviewer overlays or asymmetric protected runtime");
-  const revisions = commitComparison ? await Promise.all([options.setupACommit!, options.setupBCommit!].map(async ref =>
+  const revisions = commitComparison ? await Promise.all((customArms?.map(arm => arm.setup_commit) ?? [options.setupACommit!, options.setupBCommit!]).map(async ref =>
     (await checked(["git", "-C", options.currentHome, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).stdout.trim())) : undefined;
   const pairedComparison = isPairedMekugiComparison(comparison);
-  const pairedExports = pairedComparison || commitComparison && (options.currentLauncher === "mekugi" || Boolean(build));
+  const pairedExports = pairedComparison || commitComparison && (customArms ? customArms.some(arm => arm.launcher === "mekugi") : options.currentLauncher === "mekugi" || Boolean(build));
   validatePairedMekugiComparison(comparison, options.autoCompactLimit, mekugiFlags, Boolean(options.protectMekugi));
   const grokComparison = comparison === "codex-mekugi-grok";
   const isolatedGuidance = comparison === "stock-mekugi" || grokComparison;
   const isolatedFromCurrentTools = grokComparison;
   const launcherComparison = comparison === "same-setup" || comparison === "stock-mekugi" || pairedComparison;
-  const currentLauncher = options.currentLauncher ?? (grokComparison ? "grok" : launcherComparison ? "mekugi" : "codex");
+  const currentLauncher = (customArms ? customArms.some(arm => arm.launcher === "mekugi") ? "mekugi" : "codex" : options.currentLauncher) ?? (grokComparison ? "grok" : launcherComparison ? "mekugi" : "codex");
   if (commitComparison && currentLauncher === "grok") throw new Error("setup-commits requires the Codex or Mekugi launcher");
   if ((launcherComparison || grokComparison || pairedExports) && !options.mekugiSource) throw new Error(`${comparison} requires --mekugi-source to select export validation`);
   if (launcherComparison && currentLauncher !== "mekugi") throw new Error(`${comparison} requires the Mekugi launcher`);
@@ -706,7 +719,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       join(directory, "source.tar"), options.mekugiSource]);
     buildProvenance = { identity: build, files };
   }
-  const repositories = { stock: join("sessions", randomUUID(), "repo"), current: join("sessions", randomUUID(), "repo") };
+  const repositories = Object.fromEntries(keys.map(arm => [arm, join("sessions", randomUUID(), "repo")]));
   const seed = join(runDir, "seed.git");
   await checked(["git", "init", "--bare", seed]);
   await checked(["git", "-C", seed, "fetch", "--depth=1", `file://${source}`, `${options.baseCommit}:refs/heads/work`]);
@@ -726,7 +739,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (profile === "godoxy-icons") verifyGodoxyIdentity({
     path: source, base_commit: base, base_tree: tree, source_timestamp: sourceTimestamp, forbidden_commit: options.forbiddenCommit,
   }, submodules);
-  for (const arm of ["stock", "current"] as const) {
+  for (const arm of keys) {
     const repo = join(runDir, repositories[arm]);
     await mkdir(dirname(repo), { recursive: true });
     await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "work", seed, repo]);
@@ -754,15 +767,16 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     miseBinary, !isolatedGuidance, reviewTreatment, revisions?.[1]);
   let setupRevisions: RunState["setup_revisions"];
   if (revisions) {
-    const baselineTemplate = join(runDir, "snapshots/stock/home/ubuntu");
-    await mkdir(baselineTemplate, { recursive: true });
-    const baselineManifest = await snapshotCurrent(options.currentHome, baselineTemplate, mekugiBinary, miseBinary, true, undefined, revisions[0], currentTemplate);
-    const identities = await Promise.all([baselineManifest, snapshotManifest].map(async path => {
+    setupRevisions = {};
+    for (const [index, arm] of keys.entries()) {
+      const template = join(runDir, `snapshots/${arm}/home/ubuntu`);
+      await mkdir(template, { recursive: true });
+      const path = index === 1 ? snapshotManifest : await snapshotCurrent(options.currentHome, template,
+        mekugiBinary, miseBinary, true, undefined, revisions[index], currentTemplate);
       const document = JSON.parse(await readFile(path, "utf8"));
-      return { commit: document.configuration_repository.commit, tree: document.configuration_repository.tree,
+      setupRevisions[arm] = { commit: document.configuration_repository.commit, tree: document.configuration_repository.tree,
         manifest: relative(runDir, path), manifest_sha256: await sha256(path) };
-    }));
-    setupRevisions = { stock: identities[0]!, current: identities[1]! };
+    }
   }
   const currentConfig = Bun.TOML.parse(await readFile(join(currentTemplate, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
   const configured = (key: string): string | undefined =>
@@ -840,8 +854,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       reader: { path: readerPath, sha256: await sha256(join(runDir, readerPath)) } };
   }
   const mekugiExportsByArm: RunState["mekugi_exports_by_arm"] = pairedExports && mekugiExports
-    ? Object.fromEntries((["stock", "current"] as const).map(arm => [arm, {
-      ...mekugiExports, capture: join(dirname(repositories[arm]), "exports/capture.jsonl"), metrics: join(dirname(repositories[arm]), "exports/metrics.json"),
+    ? Object.fromEntries(keys.filter((_, index) => !customArms || customArms[index]!.launcher === "mekugi").map(arm => [arm, {
+      ...mekugiExports!, capture: join(dirname(repositories[arm]), "exports/capture.jsonl"), metrics: join(dirname(repositories[arm]), "exports/metrics.json"),
     }])) : undefined;
   if (pairedExports) mekugiExports = undefined;
 
@@ -887,6 +901,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     resource_limits: { cpus: options.cpus, memory: options.memory },
     timeout_seconds: options.timeoutSeconds,
     setup_revisions: setupRevisions,
+    arm_configurations: customArms?.map((arm, index) => ({ ...arm, setup_commit: revisions![index]! })),
     snapshot_manifest: relative(runDir, snapshotManifest),
     current_snapshot: { captured_at: snapshotDocument.created_at, manifest_sha256: await sha256(snapshotManifest) },
     runtime_tools: {
@@ -904,7 +919,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       codex_code_mode_host_size: codeModeHostStat.size,
     },
     operator: { uid: 1000, gid: 1000 },
-    arms: {
+    arms: customArms ? Object.fromEntries(keys.map((arm, index) => [arm, { repository: repositories[arm], home_template: `snapshots/${arm}/home/ubuntu`, launcher: customArms[index]!.launcher }])) : {
       stock: { repository: repositories.stock, home_template: (comparison === "same-setup" || pairedComparison) ? "snapshots/current/home/ubuntu" : grokComparison ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/stock/home/ubuntu" },
       current: { repository: repositories.current, home_template: grokComparison ? "snapshots/stock-grok/home/ubuntu" : comparison === "stock-mekugi" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu" },
     },

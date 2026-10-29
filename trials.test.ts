@@ -7,6 +7,13 @@ import { writeBundleManifest } from "./bundle";
 import { sha256, writeState } from "./state";
 import type { RunState } from "./types";
 
+test("additional arms aggregate against the baseline without zero-filling missing values", () => {
+  const report = { arms: { stock: { result: { agent_elapsed_ms: 1000 } }, current: { result: { agent_elapsed_ms: 2000 } }, "arm-3": { result: { agent_elapsed_ms: 3000 } } } };
+  const aggregate = aggregatePairs([report as Parameters<typeof aggregatePairs>[0][number], { arms: { stock: { result: { agent_elapsed_ms: 5000 } } } } as Parameters<typeof aggregatePairs>[0][number]], "stock", "arm-3");
+  expect(aggregate.agent_seconds.difference).toMatchObject({ n: 1, mean: 2 });
+  expect(aggregate.agent_seconds.percent.mean).toBe(200);
+});
+
 test("paired aggregates preserve negatives, omit missing metrics, and never zero-fill", () => {
   const report = (a: number | null, b: number | null) => ({
     arms: {
