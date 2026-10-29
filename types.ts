@@ -12,6 +12,7 @@ export type ArmOrder = "concurrent" | "stock-first" | "current-first";
 export type ArmName = string;
 export type CandidateId = `candidate-${number}`;
 export interface ArmConfiguration { launcher: "codex" | "mekugi"; setup_commit: string }
+export interface ArmImport { target_arm: ArmName; run_dir: string; arm: ArmName; bundle_sha256?: string }
 export const armNames = (state: Pick<RunState, "arms">): ArmName[] => Object.keys(state.arms);
 export const candidateIds = (count: number): CandidateId[] => Array.from({ length: count }, (_, index) => `candidate-${index + 1}` as const);
 
@@ -80,6 +81,11 @@ export interface RunState {
   mekugi_exports_by_arm?: Partial<Record<ArmName, { capture: string; metrics: string; validator: { path: string; sha256: string }; reader: { path: string; sha256: string } }>>;
   mekugi_flags?: string[];
   imported_control?: { source_run_id: string; bundle_sha256: string; controls_sha256: string; stdout_sha256: string; stderr_sha256: string };
+  planned_imports?: ArmImport[];
+  imported_arms?: Record<ArmName, {
+    source_run_id: string; source_arm: ArmName; bundle_sha256: string; label: string;
+    directory: string; evidence_arm: ArmName; files: Array<{ path: string; sha256: string }>;
+  }>;
   execution: { model: BenchmarkModel | "gpt-6-sol"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;

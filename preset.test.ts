@@ -7,6 +7,17 @@ import { createHash } from "node:crypto";
 import { ensureLaunchImage, launchConfiguration } from "./launch";
 import { main } from "./cli";
 
+test("launch maps historical arms to slots while leaving fresh candidates", () => {
+  const imports = [{ target_arm: "stock", run_dir: "/previous run", arm: "current" }];
+  expect(launchConfiguration({ "import-arms": JSON.stringify(imports) }).importArms).toEqual(imports);
+  for (const invalid of [[], [imports[0], imports[0]], [{ ...imports[0], target_arm: "arm-3" }],
+    [{ ...imports[0], bundle_sha256: "bad" }], [{ target_arm: "stock" }]]) {
+    expect(() => launchConfiguration({ "import-arms": JSON.stringify(invalid) })).toThrow();
+  }
+  expect(() => launchConfiguration({ "import-arms": JSON.stringify(imports), count: "2" })).toThrow("count 1");
+  expect(() => launchConfiguration({ "import-arms": JSON.stringify([...imports, { ...imports[0], target_arm: "current" }]) })).toThrow("fresh arm");
+});
+
 test("custom launch composes ordered launcher revisions and rejects incomplete inputs", () => {
   const arms = [{ launcher: "codex", setup_commit: "stock" }, { launcher: "mekugi", setup_commit: "HEAD~1" }, { launcher: "mekugi", setup_commit: "HEAD" }];
   const configuration = launchConfiguration({ preset: "custom", arms: JSON.stringify(arms) });

@@ -2,7 +2,9 @@ import type { ArmName, RunState } from "./types";
 
 export const presentationLabel = (index: number): string => index === 0 ? "A" : index === 1 ? "B" : `Setup ${index + 1}`;
 
-export function armLabels(state: Pick<RunState, "comparison" | "execution" | "setup_revisions"> & Partial<Pick<RunState, "arms">>): Record<ArmName, string> {
+export function armLabels(state: Pick<RunState, "comparison" | "execution" | "setup_revisions"> & Partial<Pick<RunState, "arms" | "imported_arms">>): Record<ArmName, string> {
+  if (state.imported_arms) return { ...armLabels({ ...state, imported_arms: undefined }),
+    ...Object.fromEntries(Object.entries(state.imported_arms).map(([arm, source]) => [arm, source.label])) };
   if (state.comparison === "custom") return Object.fromEntries(Object.entries(state.arms ?? {}).map(([arm, setup]) =>
     [arm, `${setup.launcher === "mekugi" ? "Codex + Mekugi" : "Codex"} (${state.setup_revisions?.[arm]?.commit === "stock" ? "stock setup" : "setup " + (state.setup_revisions?.[arm]?.commit.slice(0, 12) ?? "unavailable")})`]));
   if (state.comparison === "setup-commits") {

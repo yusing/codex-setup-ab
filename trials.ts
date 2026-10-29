@@ -92,6 +92,7 @@ function assertMembership(set: TrialSet, trial: Trial, state: RunState): void {
     || state.trial.controls_sha256 !== set.controls_sha256 || state.trial.plan_sha256 !== set.plan_sha256) throw new Error("trial controls or membership changed");
 }
 function assertFresh(state: RunState): void {
+  if (state.planned_imports?.length || state.imported_arms) throw new Error("Historical arm imports cannot be repeated as fresh trials");
   if (state.status !== "prepared" || state.results || state.arm_attempts || state.finishing || state.judge) {
     throw new Error("trial preparation/execution requires a fresh prepared pair");
   }

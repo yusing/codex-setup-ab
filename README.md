@@ -62,6 +62,12 @@ Preparation only is off by default; explicitly consent to paid inference before
 starting a run, or select preparation only for a model-free check. Use the Mekugi
 behavior checkboxes and faint-text/timeout controls to configure the prepared run.
 A repeat count of two or more prepares fresh trial pairs.
+To compare one fresh candidate with earlier results, use **Compare with previous
+runs**, choose the slot to replace, and enter the retained run directory and arm
+key. Add more imports for a custom multi-arm comparison, leaving at least one fresh
+slot and repeat count 1. Imported slots keep their original setup labels, skip
+candidate execution, and receive new blind assessments with the fresh candidate.
+The [import guide](doc/cli.md#import-previous-arms) covers matching controls and CLI use.
 The suite workflow accepts a suite manifest and source-mapping file.
 
 The run view shows phase messages, elapsed time, persisted run/arm/judge status,

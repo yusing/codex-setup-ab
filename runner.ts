@@ -11,11 +11,11 @@ import { executorOwnership, launcherMounts, miseToolMounts, protectedArgs, prote
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { armExecutionSucceeded, readState, writeState, withRunLock } from "./state";
 import { isPairedMekugiComparison, usesMekugi, mekugiArmFlags, MEKUGI_METRICS_WRAPPER, validateMekugiFlags } from "./mekugi";
-import { importControl } from "./control";
+import { importArms, importControl } from "./control";
 import { armLabels, presentationLabel } from "./arm-labels";
-import type { ArmName, ArmResult, CommandEvidence, RunState } from "./types";
+import type { ArmImport, ArmName, ArmResult, CommandEvidence, RunState } from "./types";
 
-export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; signal?: AbortSignal }
+export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; importArms?: ArmImport[]; signal?: AbortSignal }
 
 
 function progress(message: string): void { process.stderr.write(`[run] ${message}\n`); }
@@ -406,11 +406,14 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`run is ${state.status}; prepare a new run instead of resuming or restarting it`);
   if (!state.criteria) throw new Error("run has no evaluator contract; prepare with --criteria");
+  options = { ...options, importArms: options.importArms ?? state.planned_imports };
+  if (options.importArms && (options.arm || options.controlRun || options.controlBundleSha256)) throw new Error("--import-arms cannot be combined with --arm or --control-run");
   if (options.controlRun && options.arm) throw new Error("--control-run selects the current treatment arm; do not pass --arm");
   if (Boolean(options.controlRun) !== Boolean(options.controlBundleSha256)) throw new Error("--control-run requires --control-bundle-sha256 and vice versa");
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
   state.image_id = await preflight(docker, state, runDir, options.signal);
   const imported = options.controlRun ? await importControl(runDir, state, options.controlRun, options.controlBundleSha256!) : undefined;
+  const importedResults = options.importArms ? await importArms(runDir, state, options.importArms) : {};
   await writeState(runDir, state);
   const controller = new AbortController();
   if (options.signal?.aborted) controller.abort();
@@ -418,8 +421,8 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   options.signal?.addEventListener("abort", externalCancel, { once: true });
   const arms = armNames(state);
   if (options.arm && !arms.includes(options.arm)) throw new Error("unknown arm key");
-  const activeArms: ArmName[] = imported ? ["current"] : options.arm ? [options.arm] : arms;
-  const selectedArms: ArmName[] = imported ? arms : activeArms;
+  const activeArms: ArmName[] = imported ? ["current"] : options.arm ? [options.arm] : arms.filter(arm => !importedResults[arm]);
+  const selectedArms: ArmName[] = imported || options.importArms ? arms : activeArms;
   const labels = armLabels(state);
   const displayArm = (arm: ArmName): string => `${presentationLabel(arms.indexOf(arm))} / ${labels[arm]}`;
   const cancel = () => controller.abort();
@@ -437,7 +440,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     const setups = Object.fromEntries(setupResults.map(result => (result as PromiseFulfilledResult<readonly [ArmName, Awaited<ReturnType<typeof setupArm>>]>).value)) as Partial<Record<ArmName, Awaited<ReturnType<typeof setupArm>>>>;
     if (controller.signal.aborted) throw new Error("canceled during private arm setup; no model was launched");
     state.status = "running";
-    state.results = imported ? { stock: imported } : {};
+    state.results = imported ? { stock: imported } : importedResults;
     state.selected_arms = selectedArms;
     await writeState(runDir, state);
     progress(activeArms.length === 1 ? "preparing task dependencies for the selected arm" : "preparing identical task dependencies for both arms");
@@ -457,7 +460,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     const order = state.arm_order ?? "concurrent";
     if (!["concurrent", "stock-first", "current-first"].includes(order)) throw new Error("invalid arm execution order");
     state.arm_attempts = imported ? { stock: { codex_home: join(dirname(state.arms.stock.repository), "home/ubuntu/.codex"), container: imported.container,
-      started_at: imported.started_at, finished_at: imported.finished_at, status: "stopped" } } : {};
+      started_at: imported.started_at, finished_at: imported.finished_at, status: "stopped" } } : state.arm_attempts ?? {};
     const batches: ArmName[][] = order === "concurrent" ? [activeArms]
       : (order === "stock-first" ? arms : [...arms].reverse()).filter(arm => activeArms.includes(arm)).map(arm => [arm]);
     progress(`agent execution order: ${order === "concurrent" ? "concurrent" : `${displayArm(batches[0]![0]!)} first`}`);
@@ -506,7 +509,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     if (collectionFailure?.status === "rejected") state.error = String(collectionFailure.reason);
     await writeState(runDir, state);
     if (!controller.signal.aborted && selectedArms.every(arm => armExecutionSucceeded(state.results?.[arm]))) {
-      progress(`${options.arm ? "selected agent" : "both agents"} stopped; starting evaluator-only grading`);
+      progress("all selected candidates captured; starting evaluator-only grading");
       const graded = await Promise.allSettled(selectedArms.map(async arm => {
         const result = state.results![arm]!;
         result.grade = await gradeArm(docker, runDir, state, arm, join(runDir, result.patch_path), controller.signal);

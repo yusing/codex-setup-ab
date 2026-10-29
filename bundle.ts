@@ -147,6 +147,16 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     await mkdir(join(destination, "upstream"), { recursive: true });
     for (const file of state.upstream_reference.files) await copy(file.path, `upstream/${basename(file.path)}`);
   }
+  for (const [arm, imported] of Object.entries(state.imported_arms ?? {})) {
+    for (const file of imported.files) {
+      // Private session bytes stay outside the portable bundle, as for fresh arms.
+      if (file.path.includes("/sessions/") || file.path === state.results?.[arm]?.stdout_path
+        || file.path === state.results?.[arm]?.stderr_path) continue;
+      const target = file.path;
+      await mkdir(dirname(join(destination, target)), { recursive: true });
+      await copy(file.path, target);
+    }
+  }
   if (state.imported_control) {
     await mkdir(join(destination, "imported-control"), { recursive: true });
     for (const name of ["MANIFEST.sha256", "report.json"]) await copy(`evaluator/imported-control/${name}`, `imported-control/${name}`);
@@ -182,6 +192,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     ...(state.imported_control ? [["evaluator/imported-control/MANIFEST.sha256", state.imported_control.bundle_sha256]] : []),
     ...(state.imported_control ? [["artifacts/stock/codex.jsonl", state.imported_control.stdout_sha256],
       ["artifacts/stock/codex.stderr", state.imported_control.stderr_sha256]] : []),
+    ...Object.values(state.imported_arms ?? {}).flatMap(imported => imported.files.map(file => [file.path, file.sha256])),
     [state.runtime_tools.current_setup_files, state.runtime_tools.current_setup_files_sha256],
   ] as Array<[string, string]>) {
     const actual = await sha256(within(runDir, path));

@@ -1,12 +1,145 @@
-import { copyFile, cp, mkdir, readFile, readdir } from "node:fs/promises";
+import { copyFile, cp, lstat, mkdir, readFile, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { verifyBundleManifest } from "./bundle";
-import { readState, sha256 } from "./state";
+import { armExecutionSucceeded, readState, sha256 } from "./state";
 import { meterRollouts, type PricingSnapshot, USAGE_KEYS } from "./usage";
-import type { ArmResult, RunState } from "./types";
+import { armNames, type ArmImport, type ArmResult, type RunState } from "./types";
 import { isPairedMekugiComparison } from "./mekugi";
+import { armLabels } from "./arm-labels";
 
 function digest(value: unknown): string { return new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex"); }
+
+export function parseArmImports(value: unknown): ArmImport[] {
+  if (!Array.isArray(value) || !value.length) throw new Error("--import-arms requires a nonempty JSON array");
+  const targets = new Set<string>();
+  return value.map(item => {
+    if (!item || typeof item !== "object" || Array.isArray(item)
+      || Object.keys(item).some(key => !["target_arm", "run_dir", "arm", "bundle_sha256"].includes(key))
+      || ["target_arm", "run_dir", "arm"].some(key => typeof item[key] !== "string" || !item[key].trim())
+      || item.bundle_sha256 !== undefined && !/^[a-f0-9]{64}$/.test(item.bundle_sha256)) {
+      throw new Error("Each import requires target_arm, run_dir, arm, and an optional bundle_sha256");
+    }
+    const target = item.target_arm.trim();
+    if (targets.has(target)) throw new Error(`Duplicate import target: ${target}`);
+    targets.add(target);
+    return { target_arm: target, run_dir: resolve(item.run_dir.trim()), arm: item.arm.trim(), bundle_sha256: item.bundle_sha256 };
+  });
+}
+
+/** Shared experiment controls, excluding the independently selected setup/launcher. */
+function comparisonIdentity(state: RunState): unknown {
+  return { profile: state.profile, base: state.source.base_commit, tree: state.source.base_tree,
+    forbidden: state.source.forbidden_commit, task: state.task.sha256, criteria: state.criteria?.sha256,
+    model: state.execution.model, effort: state.execution.reasoning_effort, tier: state.execution.service_tier,
+    image: state.image_id, dependencies: state.dependency_image?.image_id,
+    codex: state.runtime_tools.codex_sha256, host: state.runtime_tools.codex_code_mode_host_sha256,
+    resources: state.resource_limits, timeout: state.timeout_seconds, compact: state.auto_compact_limit };
+}
+
+function artifactPath(root: string, path: string): string {
+  if (!path || path.startsWith("/") || path.split("/").some(part => !part || part === "." || part === "..")) throw new Error("Imported artifact path must be run-relative");
+  return join(root, path);
+}
+
+/** Validate every selection before copying evidence or launching any new candidate. */
+export async function importArms(runDir: string, state: RunState, selections: ArmImport[]): Promise<Partial<Record<string, ArmResult>>> {
+  const imports = parseArmImports(selections);
+  const keys = armNames(state);
+  if (imports.some(item => !keys.includes(item.target_arm))) throw new Error("Unknown import target arm");
+  if (imports.length >= keys.length) throw new Error("Imports must leave at least one fresh arm");
+  const plans = [];
+  const publications = new Map<string, { bundle: string; hash: string; source: RunState;
+    published: { validity?: string }; rollouts: Record<string, RolloutFile[]> }>();
+  for (const item of imports) {
+    const sourceRun = resolve(item.run_dir);
+    if (sourceRun === resolve(runDir)) throw new Error("Import source and target run must differ");
+    let publication = publications.get(sourceRun);
+    if (!publication) {
+      const bundle = join(sourceRun, "reports/bundle");
+      const hash = item.bundle_sha256 ?? await sha256(join(bundle, "MANIFEST.sha256"));
+      await verifyBundleManifest(bundle, hash);
+      if (await sha256(join(sourceRun, "run.json")) !== await sha256(join(bundle, "run.json"))) throw new Error("Import source state differs from its published bundle");
+      const source = await readState(sourceRun);
+      const published = JSON.parse(await readFile(join(bundle, "report.json"), "utf8")) as { validity?: string };
+      const rollouts = JSON.parse(await readFile(join(bundle, "rollout-files.json"), "utf8")) as Record<string, RolloutFile[]>;
+      publication = { bundle, hash, source, published, rollouts };
+      publications.set(sourceRun, publication);
+    }
+    const { bundle, hash, source, published, rollouts } = publication;
+    if (item.bundle_sha256 && item.bundle_sha256 !== hash) throw new Error("Conflicting source bundle SHA-256");
+    const result = source.results?.[item.arm];
+    if (source.status !== "complete" || source.finishing?.status !== "complete" || source.invalidity_reasons?.length
+      || !source.selected_arms?.includes(item.arm) || !armExecutionSucceeded(result) || published.validity !== "valid") {
+      throw new Error("Import requires a completed, infrastructure-valid published arm");
+    }
+    if (digest(comparisonIdentity(source)) !== digest(comparisonIdentity(state))) throw new Error("Imported arm does not match task, model, runtime, or resource controls");
+    // Flatten an already-imported arm to its retained original measurement evidence.
+    const prior = source.imported_arms?.[item.arm];
+    const evidenceRoot = prior ? artifactPath(sourceRun, prior.directory) : sourceRun;
+    const evidenceState = prior ? await readState(evidenceRoot) : source;
+    const evidenceArm = prior?.evidence_arm ?? item.arm;
+    const original = evidenceState.results![evidenceArm]!;
+    const home = evidenceState.arm_attempts?.[evidenceArm]?.codex_home ?? join(dirname(evidenceState.arms[evidenceArm].repository), "home/ubuntu/.codex");
+    const expected = rollouts[item.arm] ?? [];
+    // Missing usage stays unknown; available rollout bytes must still match publication.
+    if (expected.length) await verifyRollouts(artifactPath(evidenceRoot, join(home, "sessions")), expected);
+    plans.push({ item, sourceRun, source, bundle, hash, result: result!, evidenceRoot, evidenceState, evidenceArm, original, home, expected });
+  }
+  const results: Partial<Record<string, ArmResult>> = {};
+  for (const plan of plans) {
+    const { item, sourceRun, source, bundle, hash, evidenceRoot, evidenceState, evidenceArm, original, home, expected } = plan;
+    const directory = `evaluator/imported-arms/${item.target_arm}`;
+    const root = join(runDir, directory);
+    const captured: Array<{ path: string; sha256: string }> = [];
+    const copy = async (from: string, path: string) => {
+      if (!(await lstat(from)).isFile()) throw new Error("Imported artifact must be a regular file");
+      const to = artifactPath(root, path);
+      await mkdir(dirname(to), { recursive: true, mode: 0o700 });
+      await copyFile(from, to);
+      captured.push({ path: join(directory, path), sha256: await sha256(to) });
+    };
+    await copy(join(bundle, "MANIFEST.sha256"), "MANIFEST.sha256");
+    await copy(join(bundle, "report.json"), "report.json");
+    await copy(join(sourceRun, "run.json"), "source-run.json");
+    await copy(join(evidenceRoot, "run.json"), "run.json");
+    await copy(artifactPath(evidenceRoot, original.stdout_path), original.stdout_path);
+    await copy(artifactPath(evidenceRoot, original.stderr_path), original.stderr_path);
+    const paths = new Set<string>();
+    const exports = evidenceState.mekugi_exports_by_arm?.[evidenceArm] ?? evidenceState.mekugi_exports;
+    if (exports) for (const path of [exports.capture, exports.metrics, exports.validator.path, exports.reader.path]) paths.add(path);
+    const setup = evidenceState.setup_revisions?.[evidenceArm]?.manifest ?? evidenceState.snapshot_manifest;
+    paths.add(setup);
+    paths.add(join(evidenceState.arms[evidenceArm].home_template, ".codex/AGENTS.md"));
+    paths.add(join(evidenceState.arms[evidenceArm].home_template, ".codex/config.toml"));
+    if (exports) paths.add(join(dirname(exports.metrics), "token-metrics.md"));
+    for (const path of paths) {
+      try { await copy(artifactPath(evidenceRoot, path), path); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    for (const file of expected) await copy(artifactPath(evidenceRoot, join(home, "sessions", file.path)), join(home, "sessions", file.path));
+    const grokHome = evidenceState.arm_attempts?.[evidenceArm]?.grok_home;
+    if (grokHome) {
+      // Grok accounting reads its session store, never the authentication file.
+      const sessions = artifactPath(evidenceRoot, join(grokHome, "sessions"));
+      for (const file of await files(sessions)) await copy(file, join(grokHome, "sessions", relative(sessions, file)));
+    }
+    const patchPath = `artifacts/${item.target_arm}/changes.patch`;
+    await mkdir(dirname(join(runDir, patchPath)), { recursive: true });
+    await copyFile(join(bundle, `${item.arm}-changes.patch`), join(runDir, patchPath));
+    captured.push({ path: patchPath, sha256: await sha256(join(runDir, patchPath)) });
+    state.imported_arms ??= {};
+    state.imported_arms[item.target_arm] = { source_run_id: source.id, source_arm: item.arm, bundle_sha256: hash,
+      label: armLabels(source)[item.arm], directory, evidence_arm: evidenceArm, files: captured };
+    const result: ArmResult = { ...plan.result, arm: item.target_arm, anonymous_id: `candidate-${armNames(state).indexOf(item.target_arm) + 1}`,
+      grade: undefined, patch_path: patchPath, stdout_path: join(directory, original.stdout_path), stderr_path: join(directory, original.stderr_path) };
+    results[item.target_arm] = result;
+    state.arm_attempts ??= {};
+    state.arm_attempts[item.target_arm] = { codex_home: join(directory, home), grok_home: grokHome ? join(directory, grokHome) : undefined,
+      container: result.container, started_at: result.started_at, finished_at: result.finished_at, status: "stopped" };
+    process.stderr.write(`[run] imported ${armLabels(source)[item.arm]} from ${source.id} into ${item.target_arm}; candidate execution skipped\n`);
+  }
+  return results;
+}
 
 /** Inputs that must match before a published stock result can be reused. */
 export function controlIdentity(state: RunState): unknown {

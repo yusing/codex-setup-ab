@@ -309,6 +309,44 @@ suite_run="$(./dist/codex-ab prepare-suite \
 
 The suite report gives task-level counts and B-minus-A time and estimated cost effects only for complete pairs where **both** candidates pass. Its macro mean weights each eligible task once; unknown cost is not zero-filled. The suite executes trial sets sequentially, does not resume interrupted runs, and retains partial reports. It is descriptive rather than a randomized causal estimate.
 
+## Import previous arms
+
+In the workbench, enter a completed directory under **Reuse a completed run** and
+click **Compare against HEAD**, or attach the directory and use that action on its
+results page. The draft imports every completed arm and adds one fresh setup at
+the configuration repository's `HEAD`. It copies matching task, model, reasoning,
+runtime and resource controls. Review the fresh launcher and runtime paths, then
+confirm inference to start. The original evidence remains unchanged.
+
+For individual arm selection, use **Compare with previous runs**, or pass `--import-arms` to
+`launch` or `run`. Map each selected source arm to an existing comparison slot.
+For example, import a previous run's Mekugi result into the first slot and execute
+only the second slot:
+
+```sh
+codex-ab launch --preset stock-current --task nvm-download-no-eval \
+  --import-arms '[{"target_arm":"stock","run_dir":"/path/to/previous-run","arm":"current"}]' \
+  --confirm-paid-inference
+```
+
+Use `--prepare-only` to save the selections without inference, then start that
+prepared run normally. For an existing prepared comparison, use
+`codex-ab run --run-dir "$run_dir" --import-arms 'JSON_ARRAY' --confirm-paid-inference`.
+Custom compositions can import multiple arms, from one or several previous runs,
+into `stock`, `current`, `arm-3`, and later slots. Leave at least one slot fresh;
+the prepared launcher/setup choice in an imported slot is not executed. Its source
+label and setup provenance identify the actual historical candidate.
+
+Sources must have completed execution and finishing with a valid published bundle.
+The same pinned task, criteria, model, reasoning, service tier, images, Codex
+binaries, resources, timeout, and compaction limit must match. Setup revisions,
+launchers, and their treatments can differ. Each mapping optionally accepts
+`bundle_sha256`; without it the current manifest is pinned automatically.
+Captured patches are regraded and judged together, not given their previous scores.
+Original usage evidence is copied and repriced using the new run's list prices;
+missing measurements remain unknown. Original runs are unchanged. Historical
+imports use repeat count 1 and cannot combine with `--arm` or `--control-run`.
+
 ## Reuse a completed stock control
 
 For a direct-Codex comparison, reuse the original stock result from a completed stock-only or paired run. You can also create a control with `run --arm stock --confirm-paid-inference`. Its finished bundle must be complete and valid. Prepare a second run with matching task, model, Codex/image, dependency image, resources, and recorded setup controls, then run it with `--control-run` and the SHA-256 of the published control bundle's `MANIFEST.sha256` file:

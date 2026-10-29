@@ -219,6 +219,59 @@ test("custom composition executes and blindly assesses every isolated arm, then 
   await expect(verifyPreparedInputs(run, finished)).rejects.toThrow("arm-3 setup revision snapshot changed");
 }, 30_000);
 
+test("historical multi-arm imports execute one new candidate and rejudge every retained patch", async () => {
+  const revision = (await checked(["git", "-C", home, "rev-parse", "HEAD"])).stdout.trim();
+  const options = { source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    comparison: "custom" as const, arms: [{ launcher: "codex" as const, setup_commit: "stock" },
+      { launcher: "mekugi" as const, setup_commit: revision }, { launcher: "codex" as const, setup_commit: revision }],
+    mekugiSource, mekugiBinary: join(home, "go/bin/mekugi"), codexBinary: join(home, ".local/bin/codex") };
+  const sourceRun = await prepare(options);
+  const sourceState = await readState(sourceRun);
+  sourceState.pricing = { fetched_at: "fixture", source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: { "gpt-6-astra": embeddedFallbackPricing("gpt-6-astra") } };
+  await writeState(sourceRun, sourceState);
+  const auth = join(root, "import-auth.json");
+  await file(auth, "{}", 0o600);
+  const first = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, 3);
+  await runBenchmark({ runDir: sourceRun, authFile: auth, dockerBin: first.path });
+  const completed = await readState(sourceRun);
+  for (const arm of ["current", "arm-3"]) await file(join(sourceRun, completed.arm_attempts![arm]!.codex_home, "sessions/usage.jsonl"), [
+    { type: "session_meta", payload: { id: arm } },
+    { type: "turn_context", payload: { model: "gpt-6-astra" } },
+    { type: "token_usage_record", payload: { response_id: arm, usage: { input_tokens: 10, cached_input_tokens: 2, cache_write_input_tokens: 0, output_tokens: 3, reasoning_output_tokens: 1, total_tokens: 13 } } },
+  ].map(event => JSON.stringify(event)).join("\n") + "\n");
+  await buildReport(sourceRun);
+  const bundleHash = await sha256(join(sourceRun, "reports/bundle/MANIFEST.sha256"));
+  const run = await prepare(options);
+  const ready = await readState(run);
+  ready.planned_imports = [{ target_arm: "stock", run_dir: sourceRun, arm: "current", bundle_sha256: bundleHash },
+    { target_arm: "current", run_dir: sourceRun, arm: "arm-3" }];
+  ready.pricing = sourceState.pricing;
+  await writeState(run, ready);
+  const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, 3);
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const finished = await readState(run);
+  expect(finished.status).toBe("complete");
+  expect(finished.finishing?.status).toBe("complete");
+  expect(finished.judge?.passes.map(pass => pass.presentation)).toEqual([["stock", "current", "arm-3"], ["arm-3", "current", "stock"]]);
+  const log = await readFile(fake.log, "utf8");
+  for (const arm of ["stock", "current"]) expect(log).not.toContain(`--name codex-ab-${finished.id}-${arm} `);
+  expect(log).toContain(`--name codex-ab-${finished.id}-arm-3 `);
+  const report = await Bun.file(join(run, "reports/report.json")).json();
+  expect(report.arm_labels.stock).toContain("Codex + Mekugi");
+  expect(report.arm_labels.current).toContain(revision.slice(0, 12));
+  expect(report.arms.stock.usage.totals.input_tokens).toBe(10);
+  expect(report.arms.current.usage.totals.input_tokens).toBe(10);
+  expect(report.setup.imported_arms.stock.source_arm).toBe("current");
+  expect(await sha256(join(sourceRun, "reports/bundle/MANIFEST.sha256"))).toBe(bundleHash);
+  await rename(sourceRun, sourceRun + "-moved");
+  await buildReport(run);
+  expect((await Bun.file(join(run, "reports/report.json")).json()).arms.stock.usage.totals.input_tokens).toBe(10);
+  expect(await Bun.file(join(run, "reports/bundle/evaluator/imported-arms/stock/run.json")).exists()).toBe(true);
+  expect(await Bun.file(join(run, "reports/bundle", finished.results!.stock!.stdout_path)).exists()).toBe(false);
+  expect((await Bun.file(join(run, "reports/bundle/final-integrity.json")).json()).passed).toBe(true);
+}, 30_000);
+
 test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions with shared %s runtime", async launcher => {
   const setupHome = join(root, `revision-home-${launcher}`);
   await cp(home, setupHome, { recursive: true, verbatimSymlinks: true });

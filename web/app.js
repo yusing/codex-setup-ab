@@ -94,7 +94,7 @@ function addCustomArm(launcher = "mekugi", revision = "HEAD") {
   const index = ++customArmIndex;
   const row = document.createElement("div");
   row.className = "custom-arm grid";
-  row.innerHTML = select("Launcher " + index, "arm-launcher-" + index, [["codex", "Codex"], ["mekugi", "Mekugi"]], launcher)
+  row.innerHTML = '<p class="imported-setup" hidden></p>' + select("Launcher " + index, "arm-launcher-" + index, [["codex", "Codex"], ["mekugi", "Mekugi"]], launcher)
     + select("Setup " + index, "arm-setup-" + index, [["stock", "Stock"], ["revision", "Committed SHA"]], revision === "stock" ? "stock" : "revision")
     + field("Setup revision " + index, "arm-revision-" + index, revision === "stock" ? "HEAD" : revision)
     + '<button type="button">Remove setup</button>';
@@ -104,8 +104,70 @@ function addCustomArm(launcher = "mekugi", revision = "HEAD") {
   setup.addEventListener("change", updateSetup);
   updateSetup();
   for (const input of row.querySelectorAll("input,select")) { input.removeAttribute("name"); input.addEventListener("input", updateCombination); input.addEventListener("change", updateCombination); }
-  row.querySelector("button").addEventListener("click", () => { row.remove(); updateCombination(); });
+  row.querySelector("button").addEventListener("click", () => {
+    const removed = [...$("custom-arms").children].indexOf(row);
+    for (const imported of [...$("imported-arms").children]) {
+      const target = imported.querySelector("select");
+      const slot = target.selectedIndex;
+      if (slot === removed) imported.remove();
+      else if (slot > removed) target.selectedIndex = slot - 1;
+    }
+    row.remove(); updateCombination();
+  });
   $("custom-arms").append(row);
+}
+function importedArmRows() {
+  return [...$("imported-arms").children].map(row => ({ target_arm: row.querySelector("select").value,
+    run_dir: row.querySelectorAll("input")[0].value.trim(), arm: row.querySelectorAll("input")[1].value.trim() }));
+}
+function addImportedArm(value = {}, label = "") {
+  const index = ++customArmIndex;
+  const row = document.createElement("div");
+  row.className = "custom-arm grid";
+  row.dataset.sourceLabel = label;
+  row.innerHTML = select("Comparison slot", "import-target-" + index, [["stock", "First setup"], ["current", "Second setup"]])
+    + field("Previous run directory", "import-directory-" + index, "", "text", "Absolute retained run directory, not its bundle directory.")
+    + field("Previous arm key", "import-arm-" + index, "current", "text", "Use stock, current, arm-3, etc. from the previous run.")
+    + '<button type="button">Remove import</button>';
+  for (const input of row.querySelectorAll("input,select")) { input.removeAttribute("name"); input.addEventListener("input", updateCombination); }
+  for (const input of row.querySelectorAll("input")) input.addEventListener("input", () => {
+    row.dataset.sourceLabel = "";
+    row.querySelectorAll("input")[1].closest(".field").querySelector(".hint").textContent = "Use stock, current, arm-3, etc. from the previous run.";
+    updateCombination();
+  });
+  row.querySelector("button").addEventListener("click", () => { row.remove(); updateCombination(); });
+  $("imported-arms").append(row);
+  updateCombination();
+  row.querySelector("select").value = value.target_arm || "stock";
+  row.querySelectorAll("input")[0].value = value.run_dir || "";
+  row.querySelectorAll("input")[1].value = value.arm || "current";
+  if (label) row.querySelectorAll("input")[1].closest(".field").querySelector(".hint").textContent = label;
+  updateCombination();
+}
+async function compareAgainstHead(directory, statusId, button) {
+  button.disabled = true;
+  showNotice(statusId, "Loading previous arms and matching run controls…");
+  try {
+    const draft = await api("comparison-draft", { directory });
+    workflow = "pair"; drawLaunch();
+    const options = draft.options;
+    for (const [name, value] of Object.entries(options)) if ($("f-" + name)) $("f-" + name).value = value;
+    $("custom-arms").replaceChildren();
+    for (const arm of JSON.parse(options.arms)) addCustomArm(arm.launcher, arm.setup_commit);
+    for (const flag of JSON.parse(options["mekugi-flags"])) {
+      const [name, value] = flag.slice(2).split("=");
+      const input = $("f-mekugi-" + name);
+      if (input?.type === "checkbox") input.checked = value !== "false";
+      else if (input) input.value = value;
+    }
+    for (const imported of JSON.parse(options["import-arms"])) addImportedArm(imported, draft.labels[imported.arm]);
+    updateCombination();
+    selected = undefined; $("launch-view").hidden = false; $("watch-view").hidden = true;
+    history.replaceState(null, "", "/"); connectEvents();
+    showNotice("input-status", "Previous arms loaded. Only the final HEAD setup executes; all patches receive fresh assessments. HEAD is the setup configuration repository revision. Review settings and confirm inference to start.");
+    $("f-preset").focus();
+  } catch (error) { showNotice(statusId, error.message, true); }
+  finally { button.disabled = false; }
 }
 function drawLaunch() {
   const defaults = config.defaults;
@@ -117,7 +179,9 @@ function drawLaunch() {
   let fields;
   if (workflow === "pair") {
     const task = config.tasks.find((item) => item.id === defaults.task);
-    fields = '<div class="grid">'
+    fields = '<section class="form-section"><h2>Reuse a completed run</h2>'
+      + field("Previous run directory", "reuse-directory", "", "text", "Load its arms and matching controls, then execute one fresh setup at HEAD.")
+      + '<button id="reuse-run" type="button">Compare against HEAD</button><p id="reuse-status" role="status" hidden></p></section><div class="grid">'
       + select("Comparison", "preset", config.comparisons.map((item) => [item.id, item.title]), defaults.preset)
       + select("Task", "task", config.tasks.map((item) => [item.id, item.title]), defaults.task)
       + '</div><div id="setup-commit-fields" class="grid" hidden>'
@@ -149,6 +213,7 @@ function drawLaunch() {
       + field("Grok executable", "grok-bin", defaults["grok-bin"])
       + field("Reviewer treatment (optional)", "review-treatment", "", "text", "Use an existing reviewer overlay path.")
       + '</div>' + check("Use protected Mekugi runtime", "protect-mekugi") + '</details>'
+      + '<section class="form-section"><h2>Compare with previous runs</h2><p class="hint">Import a previous arm into a comparison slot instead of executing it again. Leave at least one fresh setup. The same task and execution controls must match. Imported patches receive fresh blind assessments. Use repeat count 1.</p><div id="imported-arms"></div><button id="add-imported-arm" type="button">Import previous arm</button></section>'
       + '<details class="advanced" id="custom-task-fields"><summary>Custom task contract</summary><p class="hint">A portable pack owns its prompt, criteria, profile and commits. Otherwise supply all four standalone controls.</p><div class="grid">'
       + field("Portable task-pack manifest", "task-pack")
       + field("Task prompt file", "task-file")
@@ -188,6 +253,9 @@ function drawLaunch() {
     });
     addCustomArm("codex", "stock"); addCustomArm("mekugi");
     $("add-custom-arm").addEventListener("click", () => { addCustomArm(); updateCombination(); });
+    $("add-imported-arm").addEventListener("click", () => addImportedArm());
+    $("reuse-run").addEventListener("click", (event) => compareAgainstHead($("f-reuse-directory").value, "reuse-status", event.currentTarget));
+    $("f-reuse-directory").removeAttribute("name");
     for (const id of ["f-preset", "f-current-launcher", "f-mekugi-build", "f-task-pack"]) {
       $(id).addEventListener("input", updateCombination);
       $(id).addEventListener("change", updateCombination);
@@ -203,12 +271,34 @@ function updateCombination() {
   const grok = comparison.id === "codex-mekugi-grok";
   const composition = comparison.id === "custom";
   const configuredArms = customArmRows();
+  const slotCount = composition ? configuredArms.length : 2;
+  for (const row of $("imported-arms").children) {
+    const select = row.querySelector("select"), selected = select.value;
+    const keys = Array.from({ length: slotCount }, (_, i) => i === 0 ? "stock" : i === 1 ? "current" : "arm-" + (i + 1));
+    select.innerHTML = keys.map((key, i) => '<option value="' + key + '">' + esc("Setup " + (i + 1) + " (" + key + ")") + '</option>').join("");
+    select.value = keys.includes(selected) ? selected : "stock";
+  }
   for (const button of $("custom-arms").querySelectorAll("button")) button.disabled = configuredArms.length <= 2;
+  for (const [index, row] of [...$("custom-arms").children].entries()) {
+    for (const [i, label] of [...row.querySelectorAll(".field label")].entries()) label.textContent = ["Launcher ", "Setup ", "Setup revision "][i] + (index + 1);
+    const imported = [...$("imported-arms").children].find(source => source.querySelector("select").selectedIndex === index);
+    const label = row.querySelector(".imported-setup");
+    label.hidden = !imported;
+    label.textContent = imported ? "Imported: " + (imported.dataset.sourceLabel || imported.querySelectorAll("input")[1].value) : "";
+    for (const field of row.querySelectorAll(".field")) field.hidden = Boolean(imported);
+    if (!imported) row.querySelector("input").parentElement.hidden = row.querySelectorAll("select")[1].value === "stock";
+  }
   $("custom-composition").hidden = !composition;
   const mekugi = composition ? configuredArms.some(arm => arm.launcher === "mekugi") : !["stock-current", "setup-commits"].includes(comparison.id) || $("f-current-launcher").value === "mekugi";
   const titleB = comparison.id === "stock-current" && mekugi ? "Mekugi · current setup" : comparison.b;
   $("comparison-preview").innerHTML = '<article><h2>' + esc(comparison.a) + '</h2><p>Fresh isolated workspace</p></article><article><h2>' + esc(titleB) + '</h2><p>Same task and resource limits</p></article>';
   if (composition) $("comparison-preview").innerHTML = configuredArms.map(arm => "<article><h2>" + esc((arm.launcher === "mekugi" ? "Mekugi" : "Codex") + " + " + (arm.setup_commit === "stock" ? "Stock" : arm.setup_commit)) + "</h2><p>Fresh isolated workspace</p></article>").join("");
+  for (const imported of importedArmRows()) {
+    const index = imported.target_arm === "stock" ? 0 : imported.target_arm === "current" ? 1 : Number(imported.target_arm.slice(4)) - 1;
+    const preview = $("comparison-preview").children[index];
+    const sourceRow = [...$("imported-arms").children].find(row => row.querySelector("select").value === imported.target_arm);
+    if (preview) preview.innerHTML = '<h2>Imported ' + esc(sourceRow?.dataset.sourceLabel || imported.arm || "arm") + '</h2><p>' + esc(imported.run_dir || "Choose a previous run") + '</p>';
+  }
   $("comparison-description").textContent = comparison.description + (grok ? " The fixed model is Grok 4.7." : "");
   setEnabled("f-model", !grok);
   setEnabled("f-current-launcher", ["stock-current", "setup-commits"].includes(comparison.id));
@@ -246,6 +336,8 @@ function launchRequest() {
   const options = formOptions($("launch-form"));
   if (workflow === "pair") {
     if (options.preset === "custom") options.arms = JSON.stringify(customArmRows());
+    const imports = importedArmRows();
+    if (imports.length) options["import-arms"] = JSON.stringify(imports);
     const flags = [];
     for (const name of [...MEKUGI_TOGGLES.map(([name]) => name), ...MEKUGI_VALUES]) {
       const key = "mekugi-" + name;
@@ -514,7 +606,7 @@ function updateActionFields() {
   const setups = setupLabels(snapshot || {});
   const targetKeys = new Set(["run-dir", "trial-set", "suite-run"]);
   const fields = config.commands[command].filter((key) => !targetKeys.has(key));
-  const labels = { arm: "Selected arm (optional)", "control-run": "Completed stock control directory (optional)", "control-bundle-sha256": "Control bundle SHA-256 (optional)", "recover-judge": "Recover eligible failed judge stages", "source-assessments": "Supplied source-assessment JSON (optional)", exclusions: "Usage exclusions JSON file", reason: "Invalidation reason", "output-dir": "Report output directory (optional)", count: "Fresh pair count", order: "Trial arm order", "auth-file": "Codex authentication file", "grok-auth-file": "Grok authentication file", "docker-bin": "Docker executable", "output-parent": "Output parent (optional)" };
+  const labels = { "import-arms": "Previous arm mappings (JSON, optional)", arm: "Selected arm (optional)", "control-run": "Completed stock control directory (optional)", "control-bundle-sha256": "Control bundle SHA-256 (optional)", "recover-judge": "Recover eligible failed judge stages", "source-assessments": "Supplied source-assessment JSON (optional)", exclusions: "Usage exclusions JSON file", reason: "Invalidation reason", "output-dir": "Report output directory (optional)", count: "Fresh pair count", order: "Trial arm order", "auth-file": "Codex authentication file", "grok-auth-file": "Grok authentication file", "docker-bin": "Docker executable", "output-parent": "Output parent (optional)" };
   $("action-options").innerHTML = fields.map((key) => {
     if (key === "confirm-paid-inference") return check("I authorize paid inference for this action", key, "a");
     if (["recover-judge", "protect-mekugi"].includes(key)) return check(labels[key] || words(key), key, "a");
@@ -562,6 +654,7 @@ function renderSnapshot(data) {
   $("run-title").textContent = entry.title;
   $("run-directory").textContent = entry.directory || "Preparing the local environment; the evidence directory will appear here.";
   $("copy-reference").disabled = !entry.directory;
+  $("compare-head").hidden = entry.kind !== "pair" || state.status !== "complete";
   $("run-reference").value = entry.directory ? `${entry.title}\nEvidence directory: ${entry.directory}\nWorkbench entry: ${entry.id}` : "";
   $("stop-operation").hidden = activeId !== entry.id;
   $("stop-operation").disabled = job.status === "stopping";
@@ -708,6 +801,7 @@ async function init() {
       catch (error) { $("watch-error").textContent = error.message; $("stop-operation").disabled = false; }
     });
     $("copy-reference").addEventListener("click", copyReference);
+    $("compare-head").addEventListener("click", (event) => compareAgainstHead(snapshot.entry.directory, "reference-status", event.currentTarget));
     $("artifact-filter").addEventListener("input", renderArtifacts);
     $("watch-enabled").addEventListener("change", () => { if ($("watch-enabled").checked && latestSnapshot) renderSnapshot(latestSnapshot); else $("updated-at").textContent = "Evidence updates paused. Operation status stays live."; });
     const hash = location.hash.slice(1);

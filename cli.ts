@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { parseArmImports } from "./control";
 import { parseArmConfigurations } from "./arms";
 import { REASONING_EFFORTS } from "./types";
 import { BOOLEAN_FLAGS, COMMAND_OPTIONS } from "./cli-options";
@@ -27,7 +28,7 @@ const HELP = `codex-ab ${VERSION}
                                    Open the human workbench (default 127.0.0.1:4849)
   launch [--preset NAME] [--task NAME] [--prepare-only]
          [--model NAME] [--reasoning-effort LEVEL]
-         [--count N] [--order concurrent|alternating] [--confirm-paid-inference]
+         [--import-arms JSON] [--count N] [--order concurrent|alternating] [--confirm-paid-inference]
                                    Agent-directed preset launch with the existing path overrides
 
 Prepare, run, grade, blindly judge, and report isolated Codex pairs or a pinned trial set.
@@ -42,12 +43,16 @@ Usage:
   codex-ab run-trials --trial-set DIR --confirm-paid-inference [--auth-file FILE] [--docker-bin FILE]
   codex-ab report-trials --trial-set DIR
   codex-ab preflight --run-dir DIR [--docker-bin FILE]
-  codex-ab run --run-dir DIR --confirm-paid-inference [options]
+  codex-ab run --run-dir DIR --confirm-paid-inference [--import-arms JSON] [options]
   codex-ab finish --run-dir DIR --confirm-paid-inference [--recover-judge] [options]
   codex-ab judge --run-dir DIR --confirm-paid-inference [options]
   codex-ab remeter --run-dir DIR --exclusions FILE
   codex-ab report --run-dir DIR [--output-dir DIR]
   codex-ab invalidate --run-dir DIR --reason TEXT
+
+Import options (launch or run):
+  --import-arms JSON   [{"target_arm":"stock","run_dir":"/previous/run","arm":"current"}]
+                       import selected published arms; execute only the remaining slots
 
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
@@ -65,6 +70,7 @@ Prepare options:
   --setup-a-commit REF  baseline setup commit in --current-home (setup-commits)
   --setup-b-commit REF  treatment setup commit in --current-home (setup-commits)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
+  --arms JSON          ordered custom launcher/setup configurations
   --comparison NAME    stock-current (default), custom, setup-commits, same-setup, stock-mekugi, codex-mekugi-grok, or duplicate-output
   --auto-compact-limit N shared positive token limit for both stock-mekugi arms
   --mekugi-flags JSON   explicit Mekugi --flag=value array, before codex
@@ -261,6 +267,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       const arm = o.arm === undefined ? undefined : string(o, "arm");
 
       await runBenchmark({ runDir, authFile: auth, grokAuthFile: o["grok-auth-file"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined, arm,
+        importArms: o["import-arms"] ? parseArmImports(JSON.parse(String(o["import-arms"]))) : undefined,
         controlRun: o["control-run"] as string | undefined, controlBundleSha256: o["control-bundle-sha256"] as string | undefined });
     }
     else if (command === "finish") await finishBenchmark({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined, recoverJudge: o["recover-judge"] === true });

@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { controlIdentity, importControl } from "./control";
+import { controlIdentity, importArms, importControl } from "./control";
 import { writeBundleManifest } from "./bundle";
 import { runPair } from "./runner";
 import type { CriteriaContract } from "./semantic";
@@ -225,3 +225,46 @@ for (const comparisonName of ["journal-compaction", "duplicate-output"] as const
       .rejects.toThrow("direct-Codex stock controls only");
   });
 }
+
+test("general arm import rejects mismatched, invalid, missing, or altered published evidence before mutation", async () => {
+  for (const fault of ["task", "model", "invalid", "missing-arm", "bundle", "rollout"] as const) {
+    const f = await publishedControl();
+    if (fault === "task") f.treatment.task.sha256 = "9".repeat(64);
+    if (fault === "model") f.treatment.execution.model = "gpt-6.1-sol";
+    if (fault === "invalid") {
+      f.source.invalidity_reasons = ["Withdrawn"];
+      await writeState(f.sourceRun, f.source);
+      await writeFile(join(f.bundle, "run.json"), await readFile(join(f.sourceRun, "run.json")));
+      await writeBundleManifest(f.bundle);
+    }
+    if (fault === "bundle") await writeFile(join(f.bundle, "stock-changes.patch"), "altered");
+    if (fault === "rollout") await writeFile(f.rolloutPath, "altered");
+    const before = structuredClone(f.treatment);
+    await expect(importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun,
+      arm: fault === "missing-arm" ? "arm-3" : "stock" }])).rejects.toThrow();
+    expect(f.treatment).toEqual(before);
+    expect(await Bun.file(join(f.targetRun, "artifacts/current/changes.patch")).exists()).toBe(false);
+  }
+});
+
+test("general arm import can select a retained imported arm without its original source directory", async () => {
+  const f = await publishedControl();
+  const imported = await importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]);
+  f.treatment.results = imported;
+  f.treatment.selected_arms = ["current"];
+  await writeState(f.targetRun, f.treatment);
+  const bundle = join(f.targetRun, "reports/bundle");
+  await mkdir(bundle, { recursive: true });
+  for (const [from, to] of [["run.json", "run.json"], ["artifacts/current/changes.patch", "current-changes.patch"]]) {
+    await writeFile(join(bundle, to), await readFile(join(f.targetRun, from)));
+  }
+  await writeFile(join(bundle, "report.json"), JSON.stringify({ validity: "valid" }));
+  await writeFile(join(bundle, "rollout-files.json"), JSON.stringify({ current: [{ path: "rollout.jsonl", sha256: await sha256(f.rolloutPath) }] }));
+  await writeBundleManifest(bundle);
+  await rm(f.sourceRun, { recursive: true });
+  const target = join(f.directory, "second-target");
+  const state2 = state("second-target");
+  const again = await importArms(target, state2, [{ target_arm: "stock", run_dir: f.targetRun, arm: "current" }]);
+  expect(again.stock?.grade).toBeUndefined();
+  expect(await readFile(join(target, state2.arm_attempts!.stock!.codex_home, "sessions/rollout.jsonl"), "utf8")).toBe(rollout);
+});

@@ -1,4 +1,6 @@
-import { parseArmConfigurations } from "./arms";
+import { parseArmImports } from "./control";
+import { readState, writeState } from "./state";
+import { compositionKeys, parseArmConfigurations } from "./arms";
 import { REASONING_EFFORTS } from "./types";
 import { access, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -52,7 +54,7 @@ function positive(value: string, label: string): number {
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) throw new Error(`${label} must be a positive integer`);
   return Number(value);
 }
-export function launchConfiguration(input: CliOptions): { prepare: PrepareOptions; count: number; order: "concurrent" | "alternating"; docker: string; auth: string; grokAuth: string; prepareOnly: boolean } {
+export function launchConfiguration(input: CliOptions): { prepare: PrepareOptions; count: number; order: "concurrent" | "alternating"; docker: string; auth: string; grokAuth: string; prepareOnly: boolean; importArms?: import("./types").ArmImport[] } {
   const defaults = taskCatalog().find(task => task.id === input.task);
   const taskDefaults: CliOptions = defaults?.preset && !input.preset && !input.comparison
     ? { preset: defaults.preset } : {};
@@ -79,6 +81,12 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (limit !== undefined && comparison !== "stock-mekugi") throw new Error("A compaction token limit applies only to stock-mekugi");
   const customArms = comparison === "custom" ? parseArmConfigurations(JSON.parse(stringOption(o, "arms", "[]"))) : undefined;
   if (comparison !== "custom" && o.arms !== undefined) throw new Error("--arms requires the custom comparison");
+  const importArms = o["import-arms"] ? parseArmImports(JSON.parse(stringOption(o, "import-arms"))) : undefined;
+  if (importArms) {
+    const keys = compositionKeys(customArms?.length ?? 2);
+    if (count !== 1) throw new Error("Historical arm imports require count 1");
+    if (importArms.some(item => !keys.includes(item.target_arm)) || importArms.length >= keys.length) throw new Error("Imports must select existing slots and leave at least one fresh arm");
+  }
   const mekugi = customArms ? customArms.some(arm => arm.launcher === "mekugi") : !["stock-current", "setup-commits"].includes(comparison) || o["current-launcher"] === "mekugi";
   if (["stock-mekugi", "codex-mekugi-grok"].includes(comparison) && o["review-treatment"]) throw new Error("This comparison does not accept a reviewer overlay");
   if (o["protect-mekugi"] && (!mekugi || ["stock-mekugi", "codex-mekugi-grok", "duplicate-output"].includes(comparison))) throw new Error("Protected runtime requires current-setup Mekugi or same-setup");
@@ -123,7 +131,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
       protectMekugi: o["protect-mekugi"] === true, reviewTreatment: stringOption(o, "review-treatment") || undefined,
       outputParent: stringOption(o, "output-parent") || undefined,
     },
-    count, order, docker: stringOption(o, "docker-bin"), auth: stringOption(o, "auth-file"), grokAuth: stringOption(o, "grok-auth-file"), prepareOnly: o["prepare-only"] === true,
+    count, order, importArms, docker: stringOption(o, "docker-bin"), auth: stringOption(o, "auth-file"), grokAuth: stringOption(o, "grok-auth-file"), prepareOnly: o["prepare-only"] === true,
   };
 }
 
@@ -185,6 +193,11 @@ export async function runLaunch(o: CliOptions): Promise<string> {
     controller.signal.throwIfAborted();
     progress("Preparing isolated workspaces");
     let directory = await prepare(config.prepare);
+    if (config.importArms) {
+      const state = await readState(directory);
+      state.planned_imports = config.importArms;
+      await writeState(directory, state);
+    }
     process.stdout.write(`${directory}\n`);
     controller.signal.throwIfAborted();
     if (config.count > 1) {
@@ -196,7 +209,7 @@ export async function runLaunch(o: CliOptions): Promise<string> {
     if (!config.prepareOnly) {
       progress("Starting preflight, agents, grading, and reporting");
       if (config.count > 1) await runTrials({ directory, authFile: config.auth, grokAuthFile: config.grokAuth, dockerBin: config.docker, signal: controller.signal });
-      else await runBenchmark({ runDir: directory, authFile: config.auth, grokAuthFile: config.grokAuth, dockerBin: config.docker, signal: controller.signal });
+      else await runBenchmark({ runDir: directory, importArms: config.importArms, authFile: config.auth, grokAuthFile: config.grokAuth, dockerBin: config.docker, signal: controller.signal });
     }
     controller.signal.throwIfAborted();
     return directory;

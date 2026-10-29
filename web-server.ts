@@ -1,3 +1,4 @@
+import { parseArmImports } from "./control";
 import { REASONING_EFFORTS } from "./types";
 import { constants, watch, type FSWatcher } from "node:fs";
 import { access, lstat, open, readdir, realpath, stat } from "node:fs/promises";
@@ -9,6 +10,8 @@ import { COMPARISONS, launchConfiguration, launchDefaults, taskCatalog } from ".
 import { exec } from "./process";
 import { loadTaskPack } from "./task-pack";
 import { armLabels } from "./arm-labels";
+import { readState, sha256, armExecutionSucceeded } from "./state";
+import { compositionKeys } from "./arms";
 import { renderSetupOutput } from "./web-output";
 import type { RunState } from "./types";
 import html from "./web/index.html" with { type: "text" };
@@ -129,6 +132,46 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     notify();
     return result;
   }
+  async function comparisonDraft(directory: string) {
+    const root = await realpath(resolve(directory));
+    const state = await readState(root);
+    const report = await readJson(root, "reports/bundle/report.json");
+    if (state.status !== "complete" || state.finishing?.status !== "complete" || state.invalidity_reasons?.length || report?.validity !== "valid") {
+      throw new Error("Choose a completed run with a valid published bundle");
+    }
+    const arms = (state.selected_arms ?? []).filter(arm => armExecutionSucceeded(state.results?.[arm]));
+    if (!arms.length) throw new Error("This run has no completed arms to import");
+    const options: CliOptions = { preset: "custom", task: "custom", source: state.source.path,
+      model: state.execution.model, "reasoning-effort": state.execution.reasoning_effort,
+      cpus: state.resource_limits.cpus, memory: state.resource_limits.memory,
+      timeout: String(state.timeout_seconds), image: state.image_id ?? state.image,
+      "codex-bin": state.runtime_tools.codex_source, "bun-bin": state.runtime_tools.bun,
+      count: "1", "mekugi-flags": JSON.stringify(state.mekugi_flags ?? []) };
+    if (state.auto_compact_limit) throw new Error("Automatic HEAD comparison cannot preserve this run's compaction limit. Use the matching comparison preset and manual imports.");
+    if (state.task_pack) {
+      const captured = await readJson(root, state.task_pack.path);
+      const task = taskCatalog().find(task => task.id === state.task_pack!.id);
+      const pack = task?.pack ? await loadTaskPack(task.pack) : undefined;
+      if (!pack || JSON.stringify(pack.snapshot) !== JSON.stringify(captured)) {
+        throw new Error("The retained task pack differs from the launch catalog. Use manual imports with the original task pack.");
+      }
+      options["task-pack"] = resolve(task!.pack);
+      if (await sha256(pack.taskPath) !== state.task.sha256) throw new Error("The retained prompt differs from the task pack. Use manual imports with the original prompt controls.");
+    } else {
+      options.profile = state.profile ?? "task";
+      options.base = state.source.base_commit; options.forbidden = state.source.forbidden_commit;
+      options["task-file"] = await safeFile(root, state.task.path);
+      if (!state.criteria) throw new Error("The retained run has no criteria to reuse");
+      options.criteria = await safeFile(root, state.criteria.path);
+    }
+    const launcher = state.arms[arms.at(-1)!]!.launcher === "mekugi" ? "mekugi" : "codex";
+    // Imported slots do not execute; stock placeholders avoid rebuilding obsolete revisions.
+    options.arms = JSON.stringify([...arms.map(() => ({ launcher: "codex", setup_commit: "stock" })), { launcher, setup_commit: "HEAD" }]);
+    const targets = compositionKeys(arms.length + 1);
+    options["import-arms"] = JSON.stringify(arms.map((arm, i) => ({ target_arm: targets[i], run_dir: root, arm })));
+    launchConfiguration(options);
+    return { options, labels: armLabels(state) };
+  }
   function bodyOptions(value: unknown, command: string): CliOptions {
     const input = object(value);
     const allowed = COMMAND_OPTIONS[command];
@@ -162,6 +205,10 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         await access(actual, executable ? constants.X_OK : constants.R_OK);
       } catch { throw new Error(label + " is unavailable: " + path); }
     };
+    if (options["import-arms"]) {
+      const imports = parseArmImports(JSON.parse(String(options["import-arms"])));
+      for (const item of imports) await required(join(item.run_dir, "reports/bundle/MANIFEST.sha256"), "Previous run bundle");
+    }
     const paid = PAID.has(command) || command === "launch" && options["prepare-only"] !== true || command === "prepare-suite" && body.runAfterPrepare === true;
     if (consent && paid && options["confirm-paid-inference"] !== true && body.confirmPaid !== true) throw new Error("Confirm paid inference for this operation before starting");
     if (command === "launch") {
@@ -316,6 +363,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     const labelState = entry.kind === "trials" ? object(state.controls) : state;
     const labels = entry.kind === "pair" || entry.kind === "trials" ? armLabels({
       arms: labelState.arms as RunState["arms"],
+      imported_arms: labelState.imported_arms as RunState["imported_arms"],
       setup_revisions: labelState.setup_revisions as RunState["setup_revisions"],
       comparison: labelState.comparison as RunState["comparison"],
       execution: object(labelState.execution) as RunState["execution"],
@@ -491,6 +539,10 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
             return json(await attach(body.directory));
           }
           if (url.pathname === "/api/check") return json(await validate(body, false));
+          if (url.pathname === "/api/comparison-draft") {
+            if (typeof body.directory !== "string" || !body.directory.trim()) throw new Error("Enter a previous run directory");
+            return json(await comparisonDraft(body.directory));
+          }
           if (url.pathname === "/api/start") return json(await start(body), 202);
           if (entry && match?.[2] === "stop") {
             if (active?.entry.id !== entry.id) throw new Error("This entry has no active operation");

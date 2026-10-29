@@ -6,6 +6,43 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import { serveWorkbench } from "./web-server";
 import { explainResources } from "./assessment-explanation";
+import { loadTaskPack } from "./task-pack";
+import { launchConfiguration } from "./launch";
+
+test("HEAD draft imports a custom composition and preserves shared controls without starting a job", async () => {
+  const directory = join(root, "historical");
+  const pack = await loadTaskPack("tasks/skills-mgr-agent-cli/manifest.json");
+  const keys = ["stock", "current", "arm-3"];
+  const state = { schema_version: 1, status: "complete", finishing: { status: "complete" },
+    comparison: "custom", source: { path: root }, task: { sha256: pack.contract.task_sha256 },
+    task_pack: { id: pack.manifest.id, path: "evaluator/task-pack.json" },
+    execution: { model: "gpt-6.1-sol", reasoning_effort: "ultra" },
+    resource_limits: { cpus: "4", memory: "4g" }, timeout_seconds: 7200, image: "test-image",
+    runtime_tools: { codex_source: "/recorded/codex", bun: "/recorded/bun" },
+    selected_arms: keys, arms: Object.fromEntries(keys.map(key => [key, { launcher: "mekugi" }])),
+    results: Object.fromEntries(keys.map(key => [key, { exit_code: 0 }])) };
+  const original = JSON.stringify(state);
+  await file(join(directory, "run.json"), original);
+  await file(join(directory, "evaluator/task-pack.json"), JSON.stringify(pack.snapshot));
+  await file(join(directory, "reports/bundle/report.json"), '{"validity":"valid"}');
+  const response = await post("/api/comparison-draft", { directory });
+  expect(response.status).toBe(200);
+  const { options } = await response.json();
+  const config = launchConfiguration(options);
+  expect(config.prepare.arms).toHaveLength(4);
+  expect(config.prepare.arms?.at(-1)).toEqual({ launcher: "mekugi", setup_commit: "HEAD" });
+  expect(config.importArms?.map(item => item.arm)).toEqual(keys);
+  expect(config.prepare).toMatchObject({ cpus: "4", timeoutSeconds: 7200, model: "gpt-6.1-sol", reasoningEffort: "ultra" });
+  expect(options["confirm-paid-inference"]).toBeUndefined();
+  expect(await readFile(join(directory, "run.json"), "utf8")).toBe(original);
+  expect((await (await fetch(origin + "/api/entries")).json()).active).toBeUndefined();
+  // The draft stays editable: another fresh setup remains a valid custom composition.
+  options.arms = JSON.stringify([...config.prepare.arms!, { launcher: "codex", setup_commit: "HEAD" }]);
+  expect(launchConfiguration(options).prepare.arms).toHaveLength(5);
+  await file(join(directory, "reports/bundle/report.json"), '{"validity":"invalid"}');
+  expect((await post("/api/comparison-draft", { directory })).status).toBe(400);
+  expect(await readFile(join(directory, "run.json"), "utf8")).toBe(original);
+});
 
 let root: string;
 let workbench: ReturnType<typeof serveWorkbench>;
@@ -518,6 +555,7 @@ test("web Mekugi settings serialize unchecked and checked toggles and omit disab
     { name: "mekugi-child-reply-summary", type: "checkbox", checked: true, disabled: false },
   ];
   const elements = { "launch-form": { querySelectorAll: () => toggles }, "prepare-only": { checked: false }, "paid-consent": { checked: true },
+    "imported-arms": { children: [] },
     ...Object.fromEntries(toggles.map(input => ["f-" + input.name, input])),
     "f-mekugi-ansi-faint": { value: "off" }, "f-mekugi-timeout": { value: "30s" }, "f-mekugi-stream-idle-timeout": { value: "" },
   };

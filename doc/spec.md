@@ -24,6 +24,17 @@ randomized causal estimates. See the [CLI guide](cli.md) for repeated runs and t
 | `same-setup` | Direct Codex versus Mekugi with the same current-home guidance and tools. |
 | `duplicate-output` | Mekugi duplicate-output projection off versus on. |
 
+Any comparison can import selected arms from completed runs of the same pinned
+task and execution controls. Only the remaining arms execute new candidates, so
+one fresh candidate can be compared with one or more historical results. Imported
+patches receive fresh blind assessments alongside the new candidates. Reports
+identify historical arms and retain their original setup identities; these runs
+remain descriptive historical comparisons.
+
+The workbench can load a completed run into a new comparison against setup HEAD,
+prefilling shared controls and importing its completed arms without rerunning them.
+The operator reviews the draft and explicitly confirms inference before starting.
+
 The Web UI names each compared setup by its launcher, guidance, or treatment.
 Previews, measurements, execution status, output, and source assessments use these
 names instead of positional letters or numbered candidate aliases. Names are

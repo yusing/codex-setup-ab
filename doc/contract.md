@@ -59,8 +59,9 @@ records the omission, and the selected configuration commit retains the original
 Missing runtime dependencies fail before inference. A revision does not establish
 historical provenance for those installed binaries or fetched skill contents. The
 snapshot manifests retain the actual supplied bytes. The source checkout and its
-index remain unchanged. Historical stock-control reuse is unavailable for this mode;
-prepare a fresh pair or repeat the frozen pair through the existing trial workflow.
+index remain unchanged. Legacy `--control-run` reuse is unavailable for setup
+revisions; use `--import-arms` for historical comparisons, or repeat the frozen
+comparison through the existing trial workflow.
 
 To apply a benchmark-only reviewer overlay, add `--review-treatment DIR` with `parent-agents.md`, `review-correctness.toml`, `review-simplify.toml`, and `web-reviewer.toml`. Preparation applies them to the isolated current snapshot after copying the live home, records before/after hashes in the manifest, and leaves active guidance untouched. Omit this option to benchmark the current home without a treatment. Use `--current-launcher codex` to run bare Codex without Mekugi.
 
@@ -120,6 +121,30 @@ The command first checks that the base image exposes the exact Codex version rec
 Milestones go to stderr. Timeout or cancellation stops session-created containers and preserves available patches and results. A nonzero agent exit, timeout, cancellation, lifecycle failure, or collection failure leaves execution partial and skips grading and judge inference. The run command exits nonzero after metering and retaining its report bundle. Direct judging and finishing also require successful agent execution, including for older runs marked complete. Runs never restart or resume: prepare a new directory for another attempt. Completed historical reports remain readable.
 
 Semantic assessment requires every configured arm. Historical singleton reports remain descriptive records, not paired comparisons.
+
+`launch` and `run` accept `--import-arms`, a JSON array of mappings with
+`target_arm`, `run_dir`, and `arm`. Each mapping fills an existing comparison slot
+from a completed, infrastructure-valid published run. An optional `bundle_sha256`
+pins its bundle manifest; otherwise the harness captures the current manifest hash.
+Targets must be distinct and leave at least one fresh arm. Imported results retain
+their source setup labels, execution times, logs, rollouts, and available provider
+accounting. Task, baseline, criteria, model, reasoning, service tier, images, Codex
+binaries, resource limits, and timeout must match; setup and launcher treatments
+may differ. Evidence is verified and copied before candidate inference. All patches
+are graded and blindly assessed together with the new evaluator, without reusing
+old grades or judge decisions. Missing usage stays unknown. Costs are recomputed
+with the new run's pricing snapshot. Sources remain unchanged and the new run
+retains provenance and measurement evidence independently of their directories.
+Imports cannot be combined with `--arm`, legacy `--control-run`, or repeated-trial
+launches. Use one comparison per launch for historical imports.
+
+The workbench's **Compare against HEAD** action creates an editable draft with
+all completed source arms plus one fresh configuration-repository HEAD arm.
+It copies task and execution controls, uses the last source arm's Codex or Mekugi
+launcher for the fresh arm, and resets inference consent. Catalog task packs must
+match the retained snapshot; changed packs, modified pack prompts, and shared
+compaction limits require manual configuration. Draft creation performs no inference
+and leaves source evidence unchanged. Full import verification still runs before execution.
 
 After all agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces. Independent semantic passes run the predetermined existing tests and author checks against each candidate's actual interfaces. Git inspection and patch capture run in separate offline containers, never on the host. Agent and grader times remain separate.
 
