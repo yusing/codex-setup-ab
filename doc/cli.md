@@ -338,9 +338,12 @@ the prepared launcher/setup choice in an imported slot is not executed. Its sour
 label and setup provenance identify the actual historical candidate.
 
 Sources must have completed execution and finishing with a valid published bundle.
-The same pinned task, criteria, model, reasoning, service tier, images, Codex
+The same pinned task, criteria, model, reasoning, service tier, base image, Codex
 binaries, resources, timeout, and compaction limit must match. Setup revisions,
-launchers, and their treatments can differ. Each mapping optionally accepts
+launchers, and their treatments can differ, including captured Mekugi builds.
+Runtime images may differ only for launcher-binary changes under matching task
+dependency preparation inputs; see the [import contract](contract.md).
+Each mapping optionally accepts
 `bundle_sha256`; without it the current manifest is pinned automatically.
 Captured patches are regraded and judged together, not given their previous scores.
 Original usage evidence is copied and repriced using the new run's list prices;

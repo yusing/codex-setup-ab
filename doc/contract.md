@@ -128,7 +128,7 @@ from a completed, infrastructure-valid published run. An optional `bundle_sha256
 pins its bundle manifest; otherwise the harness captures the current manifest hash.
 Targets must be distinct and leave at least one fresh arm. Imported results retain
 their source setup labels, execution times, logs, rollouts, and available provider
-accounting. Task, baseline, criteria, model, reasoning, service tier, images, Codex
+accounting. Task, baseline, criteria, model, reasoning, service tier, base images, Codex
 binaries, resource limits, and timeout must match; setup and launcher treatments
 may differ. Evidence is verified and copied before candidate inference. All patches
 are graded and blindly assessed together with the new evaluator, without reusing
@@ -137,6 +137,13 @@ with the new run's pricing snapshot. Sources remain unchanged and the new run
 retains provenance and measurement evidence independently of their directories.
 Imports cannot be combined with `--arm`, legacy `--control-run`, or repeated-trial
 launches. Use one comparison per launch for historical imports.
+
+Runtime dependency images embed Mekugi binaries. Their IDs may differ when both
+recorded build keys match the current recipe and differ only in launcher-binary
+inputs; base image, task dependency preparation, source, submodules, and execution
+user must still match. This verifies shared preparation inputs, not byte-identical
+dependency outputs across rebuilds. An image change under an unchanged build key
+is rejected. Import errors name the mismatched controls.
 
 The workbench's **Compare against HEAD** action creates an editable draft with
 all completed source arms plus one fresh configuration-repository HEAD arm.

@@ -9,6 +9,7 @@ import type { CriteriaContract } from "./semantic";
 import { meterRollouts, type PricingSnapshot } from "./usage";
 import type { ArmResult, RunState } from "./types";
 import { sha256, writeState } from "./state";
+import { dependencyKey } from "./dependencies";
 
 const directories: string[] = [];
 
@@ -267,4 +268,29 @@ test("general arm import can select a retained imported arm without its original
   const again = await importArms(target, state2, [{ target_arm: "stock", run_dir: f.targetRun, arm: "current" }]);
   expect(again.stock?.grade).toBeUndefined();
   expect(await readFile(join(target, state2.arm_attempts!.stock!.codex_home, "sessions/rollout.jsonl"), "utf8")).toBe(rollout);
+});
+
+test("imports allow launcher-only image rebuilds and reject changed dependency controls", async () => {
+  for (const fault of ["none", "same-key", "operator", "recipe", "model"] as const) {
+    const f = await publishedControl();
+    for (const [i, state] of [f.source, f.treatment].entries()) {
+      state.runtime_tools.mekugi_in_image = true;
+      state.runtime_tools.mekugi_sha256 = String(i + 1).repeat(64);
+      state.runtime_tools.mekugi_exec_sha256 = String(i + 3).repeat(64);
+      if (i === 1 && fault === "same-key") state.runtime_tools = { ...f.source.runtime_tools };
+      if (i === 1 && fault === "operator") state.operator.uid++;
+      if (i === 1 && fault === "model") state.execution.model = "gpt-6.1-sol";
+      state.dependency_image = { base_image: state.image_id!, key: dependencyKey(state, state.image_id!), image_id: `sha256:${String(i + 5).repeat(64)}` };
+    }
+    if (fault === "recipe") f.treatment.dependency_image!.key = "unknown-recipe";
+    await writeState(f.sourceRun, f.source);
+    await writeFile(join(f.bundle, "run.json"), await readFile(join(f.sourceRun, "run.json")));
+    await writeBundleManifest(f.bundle);
+    const operation = importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]);
+    if (fault === "none") expect((await operation).current?.exit_code).toBe(0);
+    else {
+      await expect(operation).rejects.toThrow(fault === "model" ? "controls: model" : "controls: dependency image");
+      expect(await Bun.file(join(f.targetRun, "artifacts/current/changes.patch")).exists()).toBe(false);
+    }
+  }
 });

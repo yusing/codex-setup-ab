@@ -6,6 +6,7 @@ import { meterRollouts, type PricingSnapshot, USAGE_KEYS } from "./usage";
 import { armNames, type ArmImport, type ArmResult, type RunState } from "./types";
 import { isPairedMekugiComparison } from "./mekugi";
 import { armLabels } from "./arm-labels";
+import { dependencyKey } from "./dependencies";
 
 function digest(value: unknown): string { return new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex"); }
 
@@ -27,13 +28,25 @@ export function parseArmImports(value: unknown): ArmImport[] {
 }
 
 /** Shared experiment controls, excluding the independently selected setup/launcher. */
-function comparisonIdentity(state: RunState): unknown {
+function comparisonIdentity(state: RunState) {
   return { profile: state.profile, base: state.source.base_commit, tree: state.source.base_tree,
     forbidden: state.source.forbidden_commit, task: state.task.sha256, criteria: state.criteria?.sha256,
     model: state.execution.model, effort: state.execution.reasoning_effort, tier: state.execution.service_tier,
-    image: state.image_id, dependencies: state.dependency_image?.image_id,
+    image: state.image_id,
     codex: state.runtime_tools.codex_sha256, host: state.runtime_tools.codex_code_mode_host_sha256,
     resources: state.resource_limits, timeout: state.timeout_seconds, compact: state.auto_compact_limit };
+}
+
+function compatibleDependencyImages(source: RunState, target: RunState): boolean {
+  const a = source.dependency_image, b = target.dependency_image;
+  if (a?.image_id === b?.image_id) return true;
+  if (!a || !b || a.key === b.key || a.base_image !== b.base_image) return false;
+  // The runtime image embeds launcher binaries. Permit a different image only
+  // when both recorded recipes are known and their only changed inputs are those binaries.
+  if (a.key !== dependencyKey(source, a.base_image) || b.key !== dependencyKey(target, b.base_image)) return false;
+  const taskKey = (state: RunState, base: string) => dependencyKey({ ...state,
+    runtime_tools: { ...state.runtime_tools, mekugi_in_image: false } }, base);
+  return taskKey(source, a.base_image) === taskKey(target, b.base_image);
 }
 
 function artifactPath(root: string, path: string): string {
@@ -72,7 +85,11 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
       || !source.selected_arms?.includes(item.arm) || !armExecutionSucceeded(result) || published.validity !== "valid") {
       throw new Error("Import requires a completed, infrastructure-valid published arm");
     }
-    if (digest(comparisonIdentity(source)) !== digest(comparisonIdentity(state))) throw new Error("Imported arm does not match task, model, runtime, or resource controls");
+    const expectedControls = comparisonIdentity(source), actual = comparisonIdentity(state);
+    const differences = (Object.keys(expectedControls) as Array<keyof typeof expectedControls>).filter(key => JSON.stringify(expectedControls[key]) !== JSON.stringify(actual[key]));
+    const mismatches: string[] = differences;
+    if (!compatibleDependencyImages(source, state)) mismatches.push("dependency image");
+    if (mismatches.length) throw new Error(`Imported arm does not match controls: ${mismatches.join(", ")}`);
     // Flatten an already-imported arm to its retained original measurement evidence.
     const prior = source.imported_arms?.[item.arm];
     const evidenceRoot = prior ? artifactPath(sourceRun, prior.directory) : sourceRun;

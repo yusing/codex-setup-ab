@@ -49,6 +49,29 @@ let workbench: ReturnType<typeof serveWorkbench>;
 let origin: string;
 let token: string;
 
+test("preparation has progress rather than fabricated pair measurements", async () => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  for (const status of ["running", "failed", "canceled"]) {
+    const input = { entry: { kind: "pair", job: { status } }, artifacts: [], children: [], live: {} };
+    const html = runInNewContext(source + "\nresultContent(input)", { input });
+    expect(html).toContain(status === "running" ? "Preparing comparison" : "No results collected");
+    expect(html).not.toContain("<table>");
+    expect(html).not.toContain("Setup unavailable");
+    expect(Object.keys(runInNewContext(source + "\nsetupLabels(input)", { input }))).toHaveLength(0);
+  }
+  const input = { entry: { kind: "pair" }, state: { results: {} },
+    arm_labels: { stock: "Original", current: "Previous", "arm-3": "Fresh HEAD" } };
+  const html = runInNewContext(source + "\nresultContent(input)", { input });
+  expect(html).toContain("Partial results");
+  expect(html).toContain("Fresh HEAD");
+  expect(html).toContain("<table>");
+  const failed = { ...input, entry: { kind: "pair", job: { status: "failed" } },
+    state: { status: "prepared", results: {}, finishing: { status: "failed" } }, report: { validity: "invalid" } };
+  const failureHtml = runInNewContext(source + "\nresultContent(input)", { input: failed });
+  expect(failureHtml).toContain("No results collected");
+  expect(failureHtml).not.toContain("<table>");
+});
+
 async function file(path: string, contents: string): Promise<void> {
   await mkdir(join(path, ".."), { recursive: true });
   await writeFile(path, contents);

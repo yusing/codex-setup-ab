@@ -412,6 +412,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   if (Boolean(options.controlRun) !== Boolean(options.controlBundleSha256)) throw new Error("--control-run requires --control-bundle-sha256 and vice versa");
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
   state.image_id = await preflight(docker, state, runDir, options.signal);
+  await writeState(runDir, state);
   const imported = options.controlRun ? await importControl(runDir, state, options.controlRun, options.controlBundleSha256!) : undefined;
   const importedResults = options.importArms ? await importArms(runDir, state, options.importArms) : {};
   await writeState(runDir, state);
