@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
+import { createSessionDiagnostics, sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
 import { journalEvidence } from "./journal";
 import { mekugiMetricRuntimes, providerAttemptUsage } from "./provider-usage";
 
@@ -96,10 +96,8 @@ export interface MeteredRollouts {
 type JsonObject = Record<string, unknown>;
 
 interface SessionFile {
-  path: string;
   threadId: string;
-  events: JsonObject[];
-  lines: number[];
+  session: SessionDiagnostics;
 }
 
 interface UsageCandidate {
@@ -543,6 +541,23 @@ export interface MeterExclusions {
   command_ids: string[];
 }
 
+/** Keep at most one JSONL record plus the stream chunk while decoding UTF-8. */
+async function* rolloutLines(path: string): AsyncGenerator<string> {
+  const fragments: string[] = [];
+  for await (const text of Bun.file(path).stream().pipeThrough(new TextDecoderStream("utf-8", { ignoreBOM: true }))) {
+    let start = 0;
+    let end: number;
+    while ((end = text.indexOf("\n", start)) !== -1) {
+      const tail = text.slice(start, end);
+      yield fragments.length ? fragments.join("") + tail : tail;
+      fragments.length = 0;
+      start = end + 1;
+    }
+    if (start < text.length) fragments.push(text.slice(start));
+  }
+  if (fragments.length) yield fragments.join("");
+}
+
 /** Meter every rollout in a dedicated per-arm Codex home. */
 export async function meterRollouts(codexHome: string, pricing: PricingSnapshot, exclusions?: MeterExclusions, costSource: "rollout" | "native" = "rollout"): Promise<MeteredRollouts> {
   const warnings = [...pricing.warnings];
@@ -556,100 +571,121 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
     complete = false;
   }
 
+  const candidates: UsageCandidate[] = [];
+  const fallbackByThread = new Map<string, Pick<RequestUsage, "model" | "usage">>();
+  const modelsSeenByThread = new Map<string, Set<string>>();
+  const commandIds = new Set<string>();
+  let commandSeconds = 0;
+  // Parsing diagnostics precede accounting diagnostics, as with the batch reader.
+  const accountingWarnings: string[] = [];
+
   for (const path of paths) {
-    let contents: string;
+    const diagnostics = createSessionDiagnostics(path);
+    const fileWarnings: string[] = [];
+    const parseWarnings: string[] = [];
+    const fileCandidates: UsageCandidate[] = [];
+    const fileCommandIds = new Set<string>();
+    const modelsSeen = new Set<string>();
+    let fallback: Pick<RequestUsage, "model" | "usage"> | undefined;
+    let fileComplete = true;
+    let fileCommandSeconds = commandSeconds;
+    let currentModel = "unknown";
+    let threadId = "";
+    let metadataSeen = false;
+    let position = 0;
+    let lineNumber = 0;
     try {
-      contents = await readFile(path, "utf8");
+      for await (const line of rolloutLines(path)) {
+        lineNumber++;
+        if (!line.trim()) continue;
+        let event: JsonObject;
+        try {
+          const parsed: unknown = JSON.parse(line);
+          if (!isObject(parsed)) throw new Error("event is not an object");
+          event = parsed;
+        } catch (error) {
+          parseWarnings.push(`${path}:${lineNumber}: invalid JSONL (${error instanceof Error ? error.message : String(error)})`);
+          complete = false;
+          continue;
+        }
+        diagnostics.consume(event, lineNumber);
+        const eventPosition = position++;
+        const payload = isObject(event.payload) ? event.payload : {};
+        if (event.type === "session_meta" && isObject(event.payload) && !metadataSeen) {
+          metadataSeen = true;
+          threadId = typeof payload.id === "string" ? payload.id : typeof payload.session_id === "string" ? payload.session_id : "";
+        }
+        if (event.type === "turn_context" && typeof payload.model === "string") currentModel = payload.model;
+        if (event.type === "world_state" && isObject(payload.state) && typeof payload.state.model === "string") currentModel = payload.state.model;
+        if (currentModel !== "unknown") modelsSeen.add(currentModel);
+
+        if (event.type === "token_usage_record") {
+          const usage = usageFrom(payload.usage, `${path}: token_usage_record`, fileWarnings);
+          if (!usage) {
+            fileComplete = false;
+            continue;
+          }
+          const declared = typeof payload.thread_id === "string" ? payload.thread_id : typeof payload.session_id === "string" ? payload.session_id : "";
+          const key = responseKey(payload.response_id);
+          if (!key) {
+            fileWarnings.push(`${path}: token_usage_record has no usable response_id; cross-rollout deduplication is not guaranteed`);
+            fileComplete = false;
+          }
+          fileCandidates.push({ key, fileThreadId: "", ownerThreadId: declared, model: currentModel, usage, position: eventPosition });
+        }
+        if (event.type === "event_msg" && payload.type === "token_count" && isObject(payload.info)) {
+          const usage = usageFrom(payload.info.total_token_usage, `${path}: token_count.total_token_usage`, fileWarnings);
+          if (usage) fallback = { model: currentModel, usage };
+          else fileComplete = false;
+        }
+        if (event.type === "event_msg" && payload.type === "item_completed" && isObject(payload.item) && payload.item.type === "CommandExecution") {
+          const id = typeof payload.item.id === "string" ? payload.item.id : null;
+          if (id && (commandIds.has(id) || fileCommandIds.has(id))) continue;
+          const duration = durationSeconds(payload.item.duration);
+          if (duration === null) {
+            fileWarnings.push(`${path}: completed command has missing or invalid duration`);
+            fileComplete = false;
+          } else {
+            if (!id || !exclusions?.command_ids.includes(id)) fileCommandSeconds += duration;
+            if (id) fileCommandIds.add(id);
+          }
+        }
+      }
     } catch (error) {
       warnings.push(`${path}: cannot read rollout (${error instanceof Error ? error.message : String(error)})`);
       complete = false;
       continue;
     }
-    const events: JsonObject[] = [];
-    const eventLines: number[] = [];
-    const lines = contents.split(/\r?\n/);
-    for (let index = 0; index < lines.length; index++) {
-      if (!lines[index].trim()) continue;
-      try {
-        const event: unknown = JSON.parse(lines[index]);
-        if (!isObject(event)) throw new Error("event is not an object");
-        events.push(event);
-        eventLines.push(index + 1);
-      } catch (error) {
-        warnings.push(`${path}:${index + 1}: invalid JSONL (${error instanceof Error ? error.message : String(error)})`);
-        complete = false;
-      }
-    }
-    const metaEvent = events.find((event) => event.type === "session_meta" && isObject(event.payload));
-    const meta = metaEvent && isObject(metaEvent.payload) ? metaEvent.payload : null;
-    const threadId = typeof meta?.id === "string" ? meta.id : typeof meta?.session_id === "string" ? meta.session_id : "";
+    for (const warning of parseWarnings) warnings.push(warning);
     if (!threadId) {
       warnings.push(`${path}: missing session_meta thread id`);
       complete = false;
       continue;
     }
-    files.push({ path, threadId, events, lines: eventLines });
+    files.push({ threadId, session: diagnostics.finish(threadId) });
+    for (const candidate of fileCandidates) {
+      candidate.fileThreadId = threadId;
+      candidates.push(candidate);
+    }
+    if (fallback) fallbackByThread.set(threadId, fallback);
+    const priorModels = modelsSeenByThread.get(threadId) ?? new Set<string>();
+    for (const model of modelsSeen) priorModels.add(model);
+    modelsSeenByThread.set(threadId, priorModels);
+    for (const id of fileCommandIds) commandIds.add(id);
+    commandSeconds = fileCommandSeconds;
+    for (const warning of fileWarnings) accountingWarnings.push(warning);
+    complete &&= fileComplete;
   }
 
   if (files.length === 0) {
     warnings.push("no readable Codex rollout sessions found");
     complete = false;
   }
-
-  const knownThreads = new Set(files.map((file) => file.threadId));
-  const candidates: UsageCandidate[] = [];
-  const fallbackByThread = new Map<string, Pick<RequestUsage, "model" | "usage">>();
-  const modelsSeenByThread = new Map<string, Set<string>>();
-  const commandIds = new Set<string>();
-  let commandSeconds = 0;
-
-  for (const file of files) {
-    let currentModel = "unknown";
-    for (const [position, event] of file.events.entries()) {
-      const payload = isObject(event.payload) ? event.payload : {};
-      if (event.type === "turn_context" && typeof payload.model === "string") currentModel = payload.model;
-      if (event.type === "world_state" && isObject(payload.state) && typeof payload.state.model === "string") currentModel = payload.state.model;
-      if (currentModel !== "unknown") {
-        const seen = modelsSeenByThread.get(file.threadId) ?? new Set<string>();
-        seen.add(currentModel);
-        modelsSeenByThread.set(file.threadId, seen);
-      }
-
-      if (event.type === "token_usage_record") {
-        const usage = usageFrom(payload.usage, `${file.path}: token_usage_record`, warnings);
-        if (!usage) {
-          complete = false;
-          continue;
-        }
-        const declared = typeof payload.thread_id === "string" ? payload.thread_id : typeof payload.session_id === "string" ? payload.session_id : file.threadId;
-        const ownerThreadId = knownThreads.has(declared) ? declared : file.threadId;
-        const key = responseKey(payload.response_id);
-        if (!key) {
-          warnings.push(`${file.path}: token_usage_record has no usable response_id; cross-rollout deduplication is not guaranteed`);
-          complete = false;
-        }
-        candidates.push({ key, fileThreadId: file.threadId, ownerThreadId, model: currentModel, usage, position });
-      }
-
-      if (event.type === "event_msg" && payload.type === "token_count" && isObject(payload.info)) {
-        const usage = usageFrom(payload.info.total_token_usage, `${file.path}: token_count.total_token_usage`, warnings);
-        if (usage) fallbackByThread.set(file.threadId, { model: currentModel, usage });
-        else complete = false;
-      }
-
-      if (event.type === "event_msg" && payload.type === "item_completed" && isObject(payload.item) && payload.item.type === "CommandExecution") {
-        const id = typeof payload.item.id === "string" ? payload.item.id : null;
-        if (id && commandIds.has(id)) continue;
-        const duration = durationSeconds(payload.item.duration);
-        if (duration === null) {
-          warnings.push(`${file.path}: completed command has missing or invalid duration`);
-          complete = false;
-        } else {
-          if (!id || !exclusions?.command_ids.includes(id)) commandSeconds += duration;
-          if (id) commandIds.add(id);
-        }
-      }
-    }
+  for (const warning of accountingWarnings) warnings.push(warning);
+  const knownThreads = new Set(files.map(file => file.threadId));
+  // Cross-thread ownership can name a session encountered later in path order.
+  for (const candidate of candidates) {
+    if (!knownThreads.has(candidate.ownerThreadId)) candidate.ownerThreadId = candidate.fileThreadId;
   }
 
   const chosen = new Map<string, UsageCandidate>();
@@ -788,7 +824,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
         : null,
       prewarm: null,
     },
-    sessions: files.map(file => sessionDiagnostics(file.threadId, file.events, file.path, file.lines)),
+    sessions: files.map(file => file.session),
     totals: { ...usageTotals, estimated_api_usd: estimatedTotal, command_seconds: commandSeconds },
     warnings: [...new Set(warnings)],
     complete,

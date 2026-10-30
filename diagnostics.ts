@@ -1,5 +1,5 @@
 import type { CostComponents, MeteredRollouts } from "./usage";
-import { logicalSessionRoles, workflowTrace, type WorkflowTrace } from "./mechanisms";
+import { logicalSessionRoles, createWorkflowTrace, type WorkflowTrace } from "./mechanisms";
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue {
@@ -29,18 +29,28 @@ function unionSeconds(spans: Array<[number, number]>): number {
 }
 
 /** First matched output bounds observed blocking, not CPU time or nested command duration. */
-export function sessionDiagnostics(threadId: string, events: RecordValue[], source = threadId, lines?: number[]): SessionDiagnostics {
-  const metadata = record(events.find(event => event.type === "session_meta")?.payload);
-  const spawn = record(record(record(metadata.source).subagent).thread_spawn);
-  const parent = metadata.parent_thread_id ?? spawn.parent_thread_id;
+export function createSessionDiagnostics(source: string): { consume(event: RecordValue, line: number): void; finish(threadId: string): SessionDiagnostics } {
+  const workflow = createWorkflowTrace(source);
+  let metadataSeen = false;
+  let parent: string | null = null;
+  let role: string | null = null;
   const calls = new Map<string, { name: string; start: number }>();
   const spans: Array<[number, number]> = [];
   const byName = new Map<string, Array<[number, number]>>();
   let toolCalls = 0;
   let matched = 0;
   let unmatchedOutputs = 0;
-  for (const event of events) {
-    if (event.type !== "response_item") continue;
+  const consume = (event: RecordValue, line: number): void => {
+    workflow.consume(event, line);
+    if (event.type === "session_meta" && !metadataSeen) {
+      metadataSeen = true;
+      const metadata = record(event.payload);
+      const spawn = record(record(record(metadata.source).subagent).thread_spawn);
+      const parentId = metadata.parent_thread_id ?? spawn.parent_thread_id;
+      parent = typeof parentId === "string" ? parentId : null;
+      role = typeof metadata.agent_role === "string" ? metadata.agent_role : null;
+    }
+    if (event.type !== "response_item") return;
     const payload = record(event.payload);
     const timestamp = typeof event.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
     const id = typeof payload.call_id === "string" ? payload.call_id : null;
@@ -54,7 +64,7 @@ export function sessionDiagnostics(threadId: string, events: RecordValue[], sour
       const call = id ? calls.get(id) : undefined;
       if (!call || !Number.isFinite(timestamp) || timestamp < call.start) {
         unmatchedOutputs++;
-        continue;
+        return;
       }
       calls.delete(id!);
       matched++;
@@ -64,18 +74,27 @@ export function sessionDiagnostics(threadId: string, events: RecordValue[], sour
       namedSpans.push(span);
       byName.set(call.name, namedSpans);
     }
-  }
-  return {
-    thread_id: threadId,
-    parent_thread_id: typeof parent === "string" ? parent : null,
-    agent_role: typeof metadata.agent_role === "string" ? metadata.agent_role : null,
-    tool_calls: toolCalls,
-    matched_tool_calls: matched,
-    tool_timing_complete: matched === toolCalls && unmatchedOutputs === 0,
-    observed_tool_blocked_seconds: unionSeconds(spans),
-    observed_tool_seconds_by_name: Object.fromEntries([...byName].map(([name, intervals]) => [name, unionSeconds(intervals)])),
-    workflow: workflowTrace(events, source, lines),
   };
+  return {
+    consume,
+    finish: (threadId) => ({
+      thread_id: threadId,
+      parent_thread_id: parent,
+      agent_role: role,
+      tool_calls: toolCalls,
+      matched_tool_calls: matched,
+      tool_timing_complete: matched === toolCalls && unmatchedOutputs === 0,
+      observed_tool_blocked_seconds: unionSeconds(spans),
+      observed_tool_seconds_by_name: Object.fromEntries([...byName].map(([name, intervals]) => [name, unionSeconds(intervals)])),
+      workflow: workflow.result,
+    }),
+  };
+}
+
+export function sessionDiagnostics(threadId: string, events: RecordValue[], source = threadId, lines?: number[]): SessionDiagnostics {
+  const diagnostics = createSessionDiagnostics(source);
+  events.forEach((event, index) => diagnostics.consume(event, lines?.[index] ?? index + 1));
+  return diagnostics.finish(threadId);
 }
 
 interface UsageDifference {

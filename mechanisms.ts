@@ -86,23 +86,31 @@ function shellCommands(script: string): string[][] {
 }
 
 /** Classify visible execution records, never execute logged code or treat task prose as actions. */
-export function workflowTrace(events: ObjectValue[], source: string, lines?: number[]): WorkflowTrace {
-  const metadata = object(events.find(event => event.type === "session_meta")?.payload);
-  const trace: WorkflowTrace = { source, events: [], encrypted_messages: 0, agent_path: typeof metadata.agent_path === "string" ? metadata.agent_path : null };
+export function createWorkflowTrace(source: string): { consume(event: ObjectValue, line: number): void; result: WorkflowTrace } {
+  const trace: WorkflowTrace = { source, events: [], encrypted_messages: 0, agent_path: null };
+  let metadataSeen = false;
   const completedCommands = new Set<string>();
-  for (const [index, event] of events.entries()) {
+  const consume = (event: ObjectValue, line: number): void => {
     const payload = object(event.payload);
+    if (event.type === "session_meta" && !metadataSeen) {
+      metadataSeen = true;
+      trace.agent_path = typeof payload.agent_path === "string" ? payload.agent_path : null;
+    }
     if (event.type === "response_item" && payload.type === "agent_message") {
       if (Array.isArray(payload.content) && payload.content.some(block => object(block).type === "encrypted_content")) trace.encrypted_messages++;
     }
-    if (typeof event.timestamp !== "string" || !Number.isFinite(Date.parse(event.timestamp))) continue;
-    const base = { line: lines?.[index] ?? index + 1, timestamp: event.timestamp };
+    if (typeof event.timestamp !== "string" || !Number.isFinite(Date.parse(event.timestamp))) return;
+    const base = { line, timestamp: event.timestamp };
     if (event.type === "response_item" && payload.type === "agent_message" && Array.isArray(payload.content)) {
       const text = payload.content.filter(block => object(block).type === "input_text").map(block => object(block).text).filter(value => typeof value === "string").join("\n");
-      const verdict = /^#+ Recommendation: (COMMENT|FIX|APPROVE)\s*$/m.exec(text)?.[1] as WorkflowEvent["verdict"];
+      const recommendation = /^#+ Recommendation: (COMMENT|FIX|APPROVE)\s*$/m.exec(text)?.[1];
+      const verdict = recommendation === "COMMENT" ? "COMMENT" : recommendation === "FIX" ? "FIX" : recommendation === "APPROVE" ? "APPROVE" : undefined;
       if (verdict && typeof payload.author === "string") {
         // Retain only the short assessment heading, not private assignment/message bodies.
-        const finding = /^\*\*(?:CRITICAL|HIGH|MEDIUM|LOW),[^\n]*?: ([^\n*]{1,180})\*\*$/m.exec(text)?.[1];
+        const heading = /^\*\*(?:CRITICAL|HIGH|MEDIUM|LOW),[^\n]*?: ([^\n*]{1,180})\*\*$/m.exec(text)?.[1];
+        // Regex captures can share the entire message backing store. Copy bounded UTF-16
+        // code units to release private bodies without changing lone-surrogate strings.
+        const finding = heading === undefined ? undefined : Buffer.from(heading, "utf16le").toString("utf16le");
         trace.events.push({ ...base, kind: "review_result", target: payload.author, verdict, finding });
       }
     }
@@ -121,14 +129,14 @@ export function workflowTrace(events: ObjectValue[], source: string, lines?: num
       }
       if (name === "wait_agent") trace.events.push({ ...base, kind: "wait" });
     }
-    if (event.type !== "event_msg" || payload.type !== "item_completed") continue;
+    if (event.type !== "event_msg" || payload.type !== "item_completed") return;
     const item = object(payload.item);
     if (item.type === "FileChange" && item.status === "completed" && Object.keys(object(item.changes)).length > 0) {
       trace.events.push({ ...base, kind: "edit" });
     }
-    if (item.type !== "CommandExecution" || item.status !== "completed") continue;
+    if (item.type !== "CommandExecution" || item.status !== "completed") return;
     if (typeof item.id === "string") {
-      if (completedCommands.has(item.id)) continue;
+      if (completedCommands.has(item.id)) return;
       completedCommands.add(item.id);
     }
     trace.events.push({ ...base, kind: "command", seconds: seconds(item.duration), exit_code: typeof item.exit_code === "number" ? item.exit_code : undefined });
@@ -150,8 +158,14 @@ export function workflowTrace(events: ObjectValue[], source: string, lines?: num
         package_seconds: packageTimes.length === 1 ? Number(packageTimes[0]![1]) : undefined });
     }
     if (/overlayfs/i.test(output) && /(?:cop(?:y|ied|ying)|fallback)/i.test(output)) trace.events.push({ ...base, kind: "copy_fallback" });
-  }
-  return trace;
+  };
+  return { consume, result: trace };
+}
+
+export function workflowTrace(events: ObjectValue[], source: string, lines?: number[]): WorkflowTrace {
+  const trace = createWorkflowTrace(source);
+  events.forEach((event, index) => trace.consume(event, lines?.[index] ?? index + 1));
+  return trace.result;
 }
 
 export interface ReviewPolicy {

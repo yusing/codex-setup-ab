@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sessionDiagnostics } from "./diagnostics";
@@ -159,6 +159,59 @@ describe("meterRollouts", () => {
     expect(result.totals.output_tokens).toBe(17);
     expect(result.totals.reasoning_output_tokens).toBe(7);
     expect(result.totals.command_seconds).toBeCloseTo(1.75);
+  });
+
+  test("streams archived and active sessions with late metadata and exact source lines", async () => {
+    const consumed = usage({ input_tokens: 100, output_tokens: 10, total_tokens: 110 });
+    const timestamp = (seconds: number) => new Date(seconds * 1000).toISOString();
+    const message = "私密🙂".repeat(30_000);
+    const command = (id: string, duration: number) => ({ type: "event_msg", timestamp: timestamp(4),
+      payload: { type: "item_completed", item: { type: "CommandExecution", status: "completed", id,
+        duration, command: ["bun", "test"], aggregated_output: `${message}\nok pkg 0.125s\n`, exit_code: 0 } } });
+    const rootEvents = [
+      model("test-model"), record("root", "root-r", consumed),
+      record("child", "child-r", usage({ input_tokens: 1, total_tokens: 1 })),
+      { type: "response_item", timestamp: timestamp(0), payload: { type: "function_call", call_id: "tool",
+        name: "exec", arguments: JSON.stringify({ private_body: message }) } },
+      { type: "response_item", timestamp: timestamp(2), payload: { type: "function_call_output", call_id: "tool", output: message } },
+      { type: "response_item", timestamp: timestamp(3), payload: { type: "agent_message", author: "reviewer",
+        content: [{ type: "input_text", text: `${message}\n## Recommendation: APPROVE\n**LOW, scope: 短い🙂 finding**` }, { type: "encrypted_content", text: message }] } },
+      command("root-command", 0.1),
+      { ...meta("root"), payload: { id: "root", agent_path: "root-agent", agent_role: "root" } },
+    ];
+    const home = await homeWith({ "root.jsonl": rootEvents,
+      "child.jsonl": [model("test-model"), record("child", { response: { id: "child-r" } }, consumed),
+        command("root-command", 50), command("child-command", 0.2), command("last-command", 0.3),
+        meta("child", "root")],
+    });
+    await mkdir(join(home, "archived_sessions"));
+    const archived = join(home, "archived_sessions", "root.jsonl");
+    await rename(join(home, "sessions", "root.jsonl"), archived);
+    // Include blank/invalid lines and CRLF, with an unterminated final metadata record.
+    await writeFile(archived, `\r\n{bad json\r\n${rootEvents.map(event => JSON.stringify(event)).join("\r\n")}`);
+    const result = await meterRollouts(home, pricing({ "test-model": rate() }));
+    expect(result.complete).toBe(false);
+    expect(result.totals.total_tokens).toBe(220);
+    expect(result.totals.command_seconds).toBe(0.1 + 0.2 + 0.3);
+    expect(result.agents.map(agent => [agent.thread_id, agent.request_count, agent.usage.total_tokens])).toEqual([
+      ["child", 1, 110], ["root", 1, 110],
+    ]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toStartWith(`${archived}:2: invalid JSONL`);
+    const root = result.sessions.find(session => session.thread_id === "root")!;
+    expect(root.agent_role).toBe("root");
+    expect(root.tool_calls).toBe(1);
+    expect(root.tool_timing_complete).toBe(true);
+    expect(root.observed_tool_seconds_by_name).toEqual({ exec: 2 });
+    expect(root.workflow.source).toBe(archived);
+    expect(root.workflow.agent_path).toBe("root-agent");
+    expect(root.workflow.encrypted_messages).toBe(1);
+    expect(root.workflow.events).toEqual([
+      { kind: "review_result", line: 8, timestamp: timestamp(3), target: "reviewer", verdict: "APPROVE", finding: "短い🙂 finding" },
+      { kind: "command", line: 9, timestamp: timestamp(4), seconds: 0.1, exit_code: 0 },
+      { kind: "test", line: 9, timestamp: timestamp(4), seconds: 0.1, exit_code: 0, package_seconds: 0.125, wrapper: undefined },
+    ]);
+    expect(result.sessions.find(session => session.thread_id === "child")?.parent_thread_id).toBe("root");
   });
 
   test("uses only the latest cumulative token_count and labels request pricing approximate", async () => {
