@@ -102,13 +102,19 @@ interface UsageDifference {
   estimated_api_usd: number | null;
 }
 
+export type ArmDifference = UsageDifference & {
+  cost_components: CostComponents;
+  by_role: Record<"root" | "children", UsageDifference>;
+  uncached_input_by_phase: { first_requests: number | null; later_requests: number | null };
+};
+
 export interface PerformanceComparison {
   scope: string;
-  current_minus_stock: UsageDifference & {
-    cost_components: CostComponents;
-    by_role: Record<"root" | "children", UsageDifference>;
-    uncached_input_by_phase: { first_requests: number | null; later_requests: number | null };
-  };
+  baseline_arm: "stock";
+  /** Each non-stock arm minus stock, keyed by arm. */
+  baseline_differences: Record<string, ArmDifference>;
+  /** Retained alias of `baseline_differences.current` for existing readers. */
+  current_minus_stock?: ArmDifference;
 }
 
 function cachePhases(usage: MeteredRollouts) {
@@ -131,8 +137,18 @@ function cachePhases(usage: MeteredRollouts) {
 
 export function performanceComparison(arms: Array<{ arm: string; usage: MeteredRollouts }>): PerformanceComparison | null {
   const stock = arms.find(item => item.arm === "stock")?.usage;
-  const current = arms.find(item => item.arm === "current")?.usage;
-  if (!stock || !current) return null;
+  const others = arms.filter(item => item.arm !== "stock");
+  if (!stock || !others.length) return null;
+  const baseline_differences = Object.fromEntries(others.map(({ arm, usage }) => [arm, armDifference(stock, usage)]));
+  return {
+    scope: "Observed accounting differences, not causal attribution; root and child time can overlap.",
+    baseline_arm: "stock",
+    baseline_differences,
+    ...baseline_differences.current ? { current_minus_stock: baseline_differences.current } : {},
+  };
+}
+
+function armDifference(stock: MeteredRollouts, current: MeteredRollouts): ArmDifference {
   const costs = ["uncached_input_usd", "cached_input_usd", "cache_write_input_usd", "output_usd"] as const;
   const sumCost = (usage: MeteredRollouts, key: typeof costs[number]): number | null =>
     !usage.complete ? null : usage.agents.reduce<number | null>((total, agent) =>
@@ -145,33 +161,30 @@ export function performanceComparison(arms: Array<{ arm: string; usage: MeteredR
   const stockCache = cachePhases(stock);
   const currentCache = cachePhases(current);
   return {
-    scope: "Observed accounting differences, not causal attribution; root and child time can overlap.",
-    current_minus_stock: {
-      total_tokens: stock.complete && current.complete ? current.totals.total_tokens - stock.totals.total_tokens : null,
-      estimated_api_usd: stock.complete && current.complete ? delta(stock.totals.estimated_api_usd, current.totals.estimated_api_usd) : null,
-      cost_components: {
-        uncached_input_usd: componentDelta("uncached_input_usd"),
-        cached_input_usd: componentDelta("cached_input_usd"),
-        cache_write_input_usd: componentDelta("cache_write_input_usd"),
-        output_usd: componentDelta("output_usd"),
-      },
-      uncached_input_by_phase: {
-        first_requests: delta(stockCache?.first_requests.uncached ?? null, currentCache?.first_requests.uncached ?? null),
-        later_requests: delta(stockCache?.later_requests.uncached ?? null, currentCache?.later_requests.uncached ?? null),
-      },
-      by_role: Object.fromEntries([false, true].map(child => {
-        const role = child ? "child" : "root";
-        const a = stock.agents.filter(agent => stockRoles?.get(agent.thread_id) === role);
-        const b = current.agents.filter(agent => currentRoles?.get(agent.thread_id) === role);
-        const cost = (agents: typeof a) => agents.reduce<number | null>((total, agent) =>
-          total === null || agent.estimated_api_usd === null ? null : total + agent.estimated_api_usd, 0);
-        const tokens = (agents: typeof a) => agents.reduce((total, agent) => total + agent.usage.total_tokens, 0);
-        return [child ? "children" : "root", {
-          total_tokens: stock.complete && current.complete && rolesKnown ? tokens(b) - tokens(a) : null,
-          estimated_api_usd: stock.complete && current.complete && rolesKnown ? delta(cost(a), cost(b)) : null,
-        }];
-      })) as Record<"root" | "children", UsageDifference>,
+    total_tokens: stock.complete && current.complete ? current.totals.total_tokens - stock.totals.total_tokens : null,
+    estimated_api_usd: stock.complete && current.complete ? delta(stock.totals.estimated_api_usd, current.totals.estimated_api_usd) : null,
+    cost_components: {
+      uncached_input_usd: componentDelta("uncached_input_usd"),
+      cached_input_usd: componentDelta("cached_input_usd"),
+      cache_write_input_usd: componentDelta("cache_write_input_usd"),
+      output_usd: componentDelta("output_usd"),
     },
+    uncached_input_by_phase: {
+      first_requests: delta(stockCache?.first_requests.uncached ?? null, currentCache?.first_requests.uncached ?? null),
+      later_requests: delta(stockCache?.later_requests.uncached ?? null, currentCache?.later_requests.uncached ?? null),
+    },
+    by_role: Object.fromEntries([false, true].map(child => {
+      const role = child ? "child" : "root";
+      const a = stock.agents.filter(agent => stockRoles?.get(agent.thread_id) === role);
+      const b = current.agents.filter(agent => currentRoles?.get(agent.thread_id) === role);
+      const cost = (agents: typeof a) => agents.reduce<number | null>((total, agent) =>
+        total === null || agent.estimated_api_usd === null ? null : total + agent.estimated_api_usd, 0);
+      const tokens = (agents: typeof a) => agents.reduce((total, agent) => total + agent.usage.total_tokens, 0);
+      return [child ? "children" : "root", {
+        total_tokens: stock.complete && current.complete && rolesKnown ? tokens(b) - tokens(a) : null,
+        estimated_api_usd: stock.complete && current.complete && rolesKnown ? delta(cost(a), cost(b)) : null,
+      }];
+    })) as Record<"root" | "children", UsageDifference>,
   };
 }
 
@@ -196,7 +209,8 @@ export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRol
     return `| ${labels[arm] ?? arm} | ${number(sum("uncached_input_usd"), 6)} | ${number(sum("cached_input_usd"), 6)} | ${number(sum("cache_write_input_usd"), 6)} | ${number(sum("output_usd"), 6)} |`;
   });
   const providerArms = arms.filter(({ usage }) => usage.codex_visible_requests).map(({ arm }) => labels[arm] ?? arm).join(" and ");
-  const delta = comparison?.current_minus_stock;
+  const differences = Object.entries(comparison?.baseline_differences ?? {});
+  const minus = (arm: string) => `${labels[arm] ?? arm} minus ${labels.stock ?? "stock"}`;
   const cacheRows = arms.flatMap(({ arm, usage }) => {
     const phases = cachePhases(usage);
     return (["first_requests", "later_requests"] as const).map(phase => {
@@ -208,13 +222,13 @@ export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRol
     const warm = usage.cache_usage?.prewarm;
     return `| ${labels[arm] ?? arm} | ${number(warm?.request_count)} | ${number(warm?.usage.input_tokens)} | ${number(warm?.usage.cached_input_tokens)} | ${number(warm ? warm.usage.input_tokens - warm.usage.cached_input_tokens : null)} | ${number(warm?.estimated_api_usd, 6)} |`;
   });
-  const difference = delta ? `
+  const difference = differences.length ? `
 ### Where the measured difference sits
-
-- ${labels.current ?? "Current"} minus ${labels.stock ?? "stock"}: ${number(delta.total_tokens)} tokens and estimated USD ${number(delta.estimated_api_usd, 6)}.
-${Object.entries(delta.by_role).map(([role, value]) => `- ${role}: ${number(value.total_tokens)} additional tokens; estimated USD ${number(value.estimated_api_usd, 6)} difference.`).join("\n")}
-${Object.entries(delta.cost_components).map(([component, value]) => `- ${component}: USD ${number(value, 6)} difference.`).join("\n")}
-` : "";
+${differences.map(([arm, delta]) => `
+- ${minus(arm)}: ${number(delta.total_tokens)} tokens and estimated USD ${number(delta.estimated_api_usd, 6)}.
+${Object.entries(delta.by_role).map(([role, value]) => `  - ${role}: ${number(value.total_tokens)} additional tokens; estimated USD ${number(value.estimated_api_usd, 6)} difference.`).join("\n")}
+${Object.entries(delta.cost_components).map(([component, value]) => `  - ${component}: USD ${number(value, 6)} difference.`).join("\n")}
+`).join("")}` : "";
   return `## Programmatic performance breakdown
 
 These figures come from deduplicated usage records and tool timestamps, without a model request. Input tokens include context replayed on every request, not just newly read text. Cached input is still counted and billed at its recorded rate. Cumulative-only records cannot establish request counts or context sizes.${providerArms ? ` Rows for ${providerArms} count validated Mekugi provider attempts, including router-side re-sends and retries and excluding prewarm; other rows use Codex rollout records or Grok session counters.` : ""}
@@ -231,7 +245,7 @@ First means the first metered request in each thread, not each model or tool ste
 | --- | --- | ---: | ---: | ---: | ---: |
 ${cacheRows.join("\n")}
 
-${delta ? `${labels.current ?? "Current"} minus ${labels.stock ?? "stock"}, uncached input: first requests ${number(delta.uncached_input_by_phase.first_requests)}; later requests ${number(delta.uncached_input_by_phase.later_requests)}. These components sum to the paired uncached-input gap when both are known.\n` : ""}
+${differences.map(([arm, delta]) => `${minus(arm)}, uncached input: first requests ${number(delta.uncached_input_by_phase.first_requests)}; later requests ${number(delta.uncached_input_by_phase.later_requests)}. These components sum to the paired uncached-input gap when both are known.\n`).join("")}
 ### Excluded prewarm usage
 
 | Arm | Provider attempts | Input | Cached input | Uncached input | Estimated USD |

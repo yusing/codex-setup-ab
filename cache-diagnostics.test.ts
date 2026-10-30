@@ -156,3 +156,20 @@ test("provider completion order cannot change the first-request phase", async ()
     expect(current.totals.input_tokens).toBe(300);
   }
 });
+
+test("every additional arm gets its own stock difference and cache-phase delta", async () => {
+  const stock = await metered([100, 200], [0, 100]);
+  const current = await metered([110, 220], [0, 100]);
+  const third = await metered([150, 300], [0, 100]);
+  const arms = [{ arm: "stock", usage: stock }, { arm: "current", usage: current }, { arm: "arm-3", usage: third }];
+  const comparison = performanceComparison(arms)!;
+  expect(Object.keys(comparison.baseline_differences)).toEqual(["current", "arm-3"]);
+  expect(comparison.current_minus_stock).toBe(comparison.baseline_differences.current!);
+  expect(comparison.baseline_differences["arm-3"]!.total_tokens).toBe(150);
+  expect(comparison.baseline_differences["arm-3"]!.uncached_input_by_phase).toEqual({ first_requests: 50, later_requests: 100 });
+  const markdown = performanceMarkdown(arms, comparison, { stock: "Stock", current: "Current", "arm-3": "Third" });
+  expect(markdown).toContain("- Current minus Stock: 30 tokens");
+  expect(markdown).toContain("- Third minus Stock: 150 tokens");
+  expect(markdown).toContain("Third minus Stock, uncached input: first requests 50; later requests 100.");
+  expect(markdown).toContain("Current minus Stock, uncached input: first requests 10; later requests 20.");
+});

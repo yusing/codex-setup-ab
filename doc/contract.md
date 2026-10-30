@@ -420,8 +420,9 @@ To leave a historical run and its original reports unchanged, export elsewhere u
 
 If supplemental source assessments were already recorded separately, add
 `--source-assessments FILE` to include them in the same Markdown. The JSON input contains
-`passes`, an array of two objects with `presentation` (candidate-1/candidate-2 arm labels,
-`["stock", "current"]` then the reverse, or vice versa) and `response` (the original judge-schema
+`passes`, an array of two objects with `presentation` (the arm keys in candidate-1, candidate-2,
+... order, listing every arm with results exactly once, such as `["stock", "current"]`; the second
+pass uses the reverse order) and `response` (the original judge-schema
 JSON with scores, evidence, issues, winner, and rationale). The report validates both responses,
 recalculates weighted scores, records the input hash, and shows agreement or disagreement inline.
 Imported assessments do not restart inference, replace the official judge, supply missing usage,
@@ -449,8 +450,16 @@ The behavioral explanation matches captured review instructions against visible 
 It recognizes isolated reviewer preparation, review gated until after validation,
 finding/edit/test/re-review cycles, and copied-workspace test overhead. Every supported mechanism
 includes its event locations and limits. Edits require completed file-change records. Test
-classification requires a single recognized command; compound scripts, quoted examples, and
-unsupported shell syntax are not treated as proof of individual operations or successful reads.
+classification requires exactly one recognized test command, and it must be the last command
+of a simple list joined only by newlines, `;`, or `&&`. A non-zero status after `&&` is not
+attributed to the test, because an earlier command may have stopped the list. A test in a
+multi-command list carries no overall duration, because the record's time also covers the other
+commands; copied-workspace test overhead uses single-command test records only. Pipes, `||`,
+background jobs, redirections, grouping, expansion, control flow, `exit`/`exec`/`return`, quoted
+examples, and other shell syntax are not treated as proof of individual operations or successful
+reads. An exact Mekugi shell-instrumentation envelope is removed before classification, and `mrun`
+output options and `rtk`, `rtk proxy`, `rtk bypass`, and `rtk test` prefixes are treated as
+launchers of the command they wrap; an inexact envelope leaves the command unclassified.
 Encrypted messages are not decoded or labeled as known
 readiness signals: their ordering can support a qualified handoff inference, not a claim about
 their contents. Unrecognized workflows and cache-miss causes remain explicitly unknown. Rules do
@@ -458,7 +467,9 @@ not call a model, assume every extra action is waste, or estimate counterfactual
 
 The programmatic performance section separates root and child usage, model-request counts,
 mean and peak input context, uncached/cached/output cost components, and matched outer-tool
-blocking spans. JSON includes these diagnostics and current-minus-stock role/cost differences.
+blocking spans. JSON includes these diagnostics and each additional arm's role/cost differences
+against stock (`baseline_differences`, with `current_minus_stock` retained for the second arm).
+Root request-accounting findings likewise compare every additional arm with stock.
 Independent Mekugi runtimes retain host metadata without logical role ancestry.
 When that lineage is unavailable, family totals remain measured and role-specific
 comparisons remain unknown rather than charging every runtime to Main.

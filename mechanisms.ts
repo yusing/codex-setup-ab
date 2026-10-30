@@ -42,14 +42,84 @@ function literalShellScript(command: string): string {
   return wrapper[1]!.replace(/\\([nrt\\'])/g, (_, key: string) => escapes[key]!);
 }
 
-/** Recognize simple literal commands only. Shell control flow/expansion stays unknown. */
-function shellCommands(script: string): string[][] {
-  const commands: string[][] = [];
+// Mirrors ShOriginal in Mekugi's libraries/shellinstrumentation/posix.go: only the exact
+// instrumentation prefix with one single-quoted tracker path, repeated verbatim, is removed.
+const MEKUGI_SH_ENVELOPE = /^:; __mekugi_b\(\) \{ return \$\?; \}; __mekugi_e\(\) \{ return \$\?; \}; \[ ! -r ('(?:[^']|'\\'')*') \] \|\| \. \1; /;
+const MEKUGI_SH_BOUNDARY = /\{ __mekugi_b [0-9]+ && :; |; __mekugi_e [0-9]+ && :; \}/g;
+
+/** Recover the authored script from a Mekugi instrumentation envelope without evaluating it. */
+function mekugiOriginalScript(script: string): string {
+  const prefix = MEKUGI_SH_ENVELOPE.exec(script);
+  return prefix ? script.slice(prefix[0].length).replace(MEKUGI_SH_BOUNDARY, "") : script;
+}
+
+/** Child argv of `mrun`, following Mekugi's commandargs.ParseRunOptions grammar; undefined when invalid. */
+function mrunChild(args: string[]): string[] | undefined {
+  let tokens = false, lines = false, tail = false;
+  while (args.length) {
+    const option = args[0]!;
+    if (option.startsWith("--max-tokens=")) args = ["--max-tokens", option.slice("--max-tokens=".length), ...args.slice(1)];
+    const [flag, value] = args;
+    if (flag === "--max-tokens") {
+      if (tokens || value === undefined || !/^[1-9][0-9]*$/.test(value)) return undefined;
+      tokens = true;
+      args = args.slice(2);
+    } else if (flag === "-n") {
+      if (lines || value === undefined || !/^[1-9][0-9]*$/.test(value)) return undefined;
+      lines = true;
+      args = args.slice(2);
+    } else if (flag === "--tail") {
+      if (tail) return undefined;
+      tail = true;
+      args = args.slice(1);
+    } else if (flag === "--") {
+      return (tokens || lines) && value ? args.slice(1) : undefined;
+    } else return (tokens || lines) && flag && !flag.startsWith("-") ? args : undefined;
+  }
+  return undefined;
+}
+
+/** Remove launcher words (`mrun` options and `rtk` proxies) that run their arguments as a command. */
+function launchedCommand(words: string[]): string[] {
+  for (;;) {
+    if (words[0] === "mrun") {
+      const child = mrunChild(words.slice(1));
+      if (!child) return words;
+      words = child;
+    } else if (words[0] === "rtk") words = ["proxy", "bypass", "test"].includes(words[1] ?? "") ? words.slice(2) : words.slice(1);
+    else return words;
+  }
+}
+
+interface ListCommand {
+  words: string[];
+  /** Separator before this command; the first command has none. */
+  after?: ";" | "&&";
+}
+
+/**
+ * Recognize simple literal commands joined by newlines, `;`, or `&&` only.
+ * Pipes, `||`, background jobs, redirections, grouping, expansion and control flow stay unknown.
+ */
+function shellCommands(script: string): ListCommand[] {
+  const commands: ListCommand[] = [];
   let words: string[] = [];
   let word = "";
   let quote: "'" | '"' | null = null;
+  let separator: ";" | "&&" | undefined;
+  let pending = false;
   const finishWord = (): void => { if (word) words.push(word); word = ""; };
-  const finishCommand = (): void => { finishWord(); if (words.length) commands.push(words); words = []; };
+  /** Returns false for an `&&` without a command on both sides. */
+  const finishCommand = (next: ";" | "&&"): boolean => {
+    finishWord();
+    if (words.length) {
+      commands.push(separator ? { words, after: separator } : { words });
+      separator = next;
+      pending = next === "&&";
+    } else if (next === "&&" || pending) return false;
+    words = [];
+    return true;
+  };
   for (let index = 0; index < script.length; index++) {
     const char = script[index]!;
     if (quote === "'") {
@@ -71,17 +141,28 @@ function shellCommands(script: string): string[][] {
       continue;
     }
     if (char === "'" || char === '"') { quote = char; continue; }
+    if (char === "&" && script[index + 1] === "&") {
+      index++;
+      if (!finishCommand("&&")) return [];
+      continue;
+    }
     if ("|&<>(){}".includes(char)) return [];
     if (char === "#" && !word) {
       while (index < script.length && script[index] !== "\n") index++;
-      finishCommand();
-    } else if (char === ";" || char === "\n") finishCommand();
-    else if (/\s/.test(char)) finishWord();
+      if (!finishCommand(";")) return [];
+    } else if (char === ";" || char === "\n") {
+      // A newline directly after `&&` continues the list.
+      if (char === "\n" && pending && !word && !words.length) continue;
+      if (!finishCommand(";")) return [];
+    } else if (/\s/.test(char)) finishWord();
     else word += char;
   }
   if (quote) return [];
-  finishCommand();
-  if (commands.some(words => /^(?:if|then|elif|else|fi|for|while|until|case|esac|do|done|select|function|eval|source|\.)$/.test(words[0]!))) return [];
+  finishWord();
+  if (words.length) commands.push(separator ? { words, after: separator } : { words });
+  else if (pending) return [];
+  // exit/exec/return and loop jumps decide whether later commands run at all.
+  if (commands.some(({ words }) => /^(?:if|then|elif|else|fi|for|while|until|case|esac|do|done|select|function|eval|source|\.|exit|exec|return|break|continue)$/.test(words[0]!))) return [];
   return commands;
 }
 
@@ -142,18 +223,24 @@ export function createWorkflowTrace(source: string): { consume(event: ObjectValu
     trace.events.push({ ...base, kind: "command", seconds: seconds(item.duration), exit_code: typeof item.exit_code === "number" ? item.exit_code : undefined });
     const argv = Array.isArray(item.command) && item.command.every(part => typeof part === "string") ? item.command : [];
     const shell = argv.length >= 3 && /(?:^|\/)(?:bash|sh|zsh)$/.test(argv[0]!) && /^-[a-z]*c$/.test(argv[1]!);
-    const command = literalShellScript(typeof item.command === "string" ? item.command : shell ? argv[2]! : argv.join(" "));
+    const command = mekugiOriginalScript(literalShellScript(typeof item.command === "string" ? item.command : shell ? argv[2]! : argv.join(" ")));
     const output = typeof item.aggregated_output === "string" ? item.aggregated_output : "";
     // Only completed command records are classified. Quoted instructions in prompts are ignored.
-    const commands = shellCommands(command).map(words => words[0] === "rtk" ? words.slice(1) : words);
-    const testCommands = commands.filter(words => (words[0] === "pytest")
+    const commands = shellCommands(command).map(item => ({ ...item, words: launchedCommand(item.words) }));
+    const isTest = (words: string[]): boolean => (words[0] === "pytest")
       || (["go", "bun", "npm"].includes(words[0] ?? "") && words[1] === "test")
-      || (words[0] === "shadowtree" && (words[1] === "test" || words[1] === "check")));
-    if (commands.length === 1 && testCommands.length === 1 && !testCommands[0]!.some(word => /^--?(?:h|help|list)$/.test(word))) {
+      || (words[0] === "shadowtree" && (words[1] === "test" || words[1] === "check"));
+    const tests = commands.filter(item => isTest(item.words));
+    const last = commands.at(-1);
+    // Only a sole test that ends the record can own its exit status; the record's duration is the
+    // test's only when nothing else ran in it.
+    if (last && tests.length === 1 && tests[0] === last && !last.words.some(word => /^--?(?:h|help|list)$/.test(word))) {
+      const exitCode = typeof item.exit_code === "number" ? item.exit_code : undefined;
       const packageTimes = [...output.matchAll(/^ok\s+\S+\s+(\d+(?:\.\d+)?)s(?:\s|$)/gm)];
-      trace.events.push({ ...base, kind: "test", seconds: seconds(item.duration),
-        wrapper: commands.length === 1 && testCommands[0]![0] === "shadowtree" ? "shadowtree" : undefined,
-        exit_code: typeof item.exit_code === "number" && commands.length === 1 ? item.exit_code : undefined,
+      trace.events.push({ ...base, kind: "test", seconds: commands.length === 1 ? seconds(item.duration) : undefined,
+        wrapper: last.words[0] === "shadowtree" ? "shadowtree" : undefined,
+        // After `&&`, a non-zero status may belong to an earlier command that stopped the list.
+        exit_code: exitCode !== undefined && (last.after !== "&&" || exitCode === 0) ? exitCode : undefined,
         // Sum package durations only for a single reported package; parallel suites are not additive.
         package_seconds: packageTimes.length === 1 ? Number(packageTimes[0]![1]) : undefined });
     }
@@ -294,8 +381,10 @@ export function explainMechanisms(arms: MechanismArm[], labels: Record<string, s
     if (!usage.sessions.some(session => session.workflow?.events.length)) unknowns.add(`${labels[arm] ?? arm}: no recognized visible workflow events; missing evidence is not evidence of no overhead.`);
   }
   const stock = arms.find(arm => arm.arm === "stock")?.usage;
-  const current = arms.find(arm => arm.arm === "current")?.usage;
-  if (stock?.complete && current?.complete) {
+  // Compare every additional arm with the stock baseline, matching the resource explanation.
+  for (const { arm, usage: current } of arms.filter(item => item.arm !== "stock")) {
+    if (!stock?.complete || !current.complete) continue;
+    const label = labels[arm] ?? arm;
     const roots = (usage: MeteredRollouts) => {
       const roles = logicalSessionRoles(usage);
       if (!roles || usage.agents.some(agent => !roles.has(agent.thread_id))) return [];
@@ -347,10 +436,10 @@ export function explainMechanisms(arms: MechanismArm[], labels: Record<string, s
           return visible === null || visible >= requests ? ""
             : ` ${requests - visible} of ${name}'s ${requests} requests were provider attempts that Codex did not record, such as router-local tool re-sends or retries.`;
         };
-        const hiddenDetail = hidden(current, b, requestsB, `${labels.current ?? "the current"} parent`) + hidden(stock, a, requestsA, `${labels.stock ?? "the stock"} parent`);
+        const hiddenDetail = hidden(current, b, requestsB, `${labels[arm] ?? `the ${arm}`} parent`) + hidden(stock, a, requestsA, `${labels.stock ?? "the stock"} parent`);
         findings.push({
-          mechanism: "Extra workflow turns repeatedly process accumulated context",
-          explanation: `${labels.current ?? "The current"} parent made ${requestsB} model requests versus ${requestsA} for ${labels.stock ?? "stock"} and processed ${inputB.toLocaleString("en-US")} versus ${inputA.toLocaleString("en-US")} input tokens, a difference of ${deltaInput.toLocaleString("en-US")}.${hiddenDetail} ${componentDetail} Every request processes accumulated history again; caching reduces its price but not its token count.${costDetail}`,
+          mechanism: `${label}: extra workflow turns repeatedly process accumulated context`,
+          explanation: `${labels[arm] ?? `The ${arm}`} parent made ${requestsB} model requests versus ${requestsA} for ${labels.stock ?? "stock"} and processed ${inputB.toLocaleString("en-US")} versus ${inputA.toLocaleString("en-US")} input tokens, a difference of ${deltaInput.toLocaleString("en-US")}.${hiddenDetail} ${componentDetail} Every request processes accumulated history again; caching reduces its price but not its token count.${costDetail}`,
           evidence: [hiddenDetail
             ? "Validated Mekugi provider attempts (excluding prewarm), Codex-recorded request counts, and per-root usage in the tables below."
             : "Deduplicated per-root token usage, request counts, and model-specific cost components in the tables below."],
@@ -359,7 +448,7 @@ export function explainMechanisms(arms: MechanismArm[], labels: Record<string, s
       }
     }
   }
-  unknowns.add("Unrecognized command forms and opaque messages are not classified. No rule infers a general causal effect from this single pair, or explains cache misses from token counts alone.");
+  unknowns.add("Unrecognized command forms and opaque messages are not classified. No rule infers a general causal effect from this single run’s arm comparisons, or explains cache misses from token counts alone.");
   return { findings, unknowns: [...unknowns] };
 }
 

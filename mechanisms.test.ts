@@ -152,7 +152,7 @@ test("request accounting explains token and cost deltas without claiming causali
     cost_components: { uncached_input_usd: 3.372500, cached_input_usd: 15.542784, cache_write_input_usd: 0, output_usd: 3.786850 },
   }];
   const finding = explainMechanisms([{ arm: "stock", usage: stock }, { arm: "current", usage: current }]).findings
-    .find(item => item.mechanism === "Extra workflow turns repeatedly process accumulated context");
+    .find(item => item.mechanism === "current: extra workflow turns repeatedly process accumulated context");
   expect(finding?.explanation).toContain("a difference of 3,865,220");
   expect(finding?.explanation).toContain("75.5%");
   expect(finding?.explanation).toContain("+$3.745152 cached input");
@@ -180,4 +180,100 @@ test("request accounting explains token and cost deltas without claiming causali
   const hidden = explainMechanisms([{ arm: "stock", usage: stock }, { arm: "current", usage: current }]).findings.at(-1)!;
   expect(hidden.explanation).toContain("1 of the current parent's 2 requests were provider attempts that Codex did not record");
   expect(hidden.evidence[0]).toContain("Validated Mekugi provider attempts");
+});
+
+test("request accounting compares every additional arm with stock", () => {
+  const agent = (input: number, requests: number) => ({
+    model: "gpt-6-astra", thread_id: "root", method: "token_usage_record" as const,
+    usage: { input_tokens: input, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: input },
+    estimated_api_usd: 0, request_count: requests, mean_input_tokens: input / requests, max_input_tokens: input,
+    cost_components: { uncached_input_usd: 0, cached_input_usd: 0, cache_write_input_usd: 0, output_usd: 0 },
+  });
+  const [stock, current, third] = [meter([]), meter([]), meter([])];
+  stock.agents = [agent(100, 1)];
+  current.agents = [agent(300, 2)];
+  third.agents = [agent(600, 3)];
+  const findings = explainMechanisms([{ arm: "stock", usage: stock }, { arm: "current", usage: current }, { arm: "arm-3", usage: third }],
+    { stock: "Stock", current: "Current", "arm-3": "Third" }).findings;
+  expect(findings.map(item => item.mechanism)).toEqual([
+    "Current: extra workflow turns repeatedly process accumulated context",
+    "Third: extra workflow turns repeatedly process accumulated context",
+  ]);
+  expect(findings[1]!.explanation).toContain("Third parent made 3 model requests versus 1 for Stock");
+  expect(findings[1]!.explanation).toContain("a difference of 500");
+});
+
+const tracker = "/tmp/task-runtime.X/mekugi-tools-1/exec-track.sh";
+const envelope = `:; __mekugi_b() { return $?; }; __mekugi_e() { return $?; }; [ ! -r '${tracker}' ] || . '${tracker}'; `;
+
+test("Mekugi-instrumented scripts expose launcher-wrapped tests", () => {
+  const segments = (scripts: string[]) => envelope + scripts.map((script, index) => `{ __mekugi_b ${index} && :; ${script}; __mekugi_e ${index} && :; }`).join("; ");
+  const trace = workflowTrace([
+    command(1, segments(["skills-mgr get golang-best-practices", "skills-mgr run use-modern-go/scripts/run-tool.sh list --go-version 1.26"])),
+    command(2, envelope + "mrun --max-tokens 6000 go test . -count=1", "ok example/pkg 0.3s", 2),
+    command(3, envelope + "mrun --max-tokens=5000 -- go test . -count=1"),
+    command(4, segments(["rtk test go test ./..."])),
+    command(5, envelope + "mrun -n 40 --tail rtk proxy shadowtree test ./pkg", "ok example/pkg 0.1s", 3),
+    command(6, envelope + "rtk bypass bun test"),
+  ], "source");
+  expect(trace.events.filter(event => event.kind === "test")).toEqual([
+    expect.objectContaining({ line: 2, seconds: 2, package_seconds: 0.3, exit_code: 0 }),
+    expect.objectContaining({ line: 3 }),
+    expect.objectContaining({ line: 4 }),
+    expect.objectContaining({ line: 5, wrapper: "shadowtree", package_seconds: 0.1 }),
+    expect.objectContaining({ line: 6 }),
+  ]);
+});
+
+test("inexact envelopes and invalid launcher options stay unclassified", () => {
+  for (const text of [
+    envelope.replace(`. '${tracker}'`, `. '/other/exec-track.sh'`) + "go test ./...",
+    envelope.replace(`'${tracker}'`, tracker).replace(`'${tracker}'`, tracker) + "go test ./...",
+    envelope.replace("__mekugi_e() { return $?; }; ", "") + "go test ./...",
+    envelope + "mrun go test ./...",
+    envelope + "mrun --max-tokens 0 go test ./...",
+    envelope + "mrun --tail -- go test ./...",
+    envelope + "mrun -n 5 -n 6 go test ./...",
+    envelope + "{ __mekugi_b 0 && :; go test ./...; __mekugi_e 0 && :; }; { __mekugi_b 1 && :; true; __mekugi_e 1 && :; }",
+  ]) {
+    expect(workflowTrace([command(1, text)], "source").events.filter(event => event.kind === "test")).toEqual([]);
+  }
+});
+
+test("a sole test ending a ; or && list is recognized, with && failures left unattributed", () => {
+  const exited = (time: number, text: string, exitCode: number, output = "") => {
+    const event = command(time, text, output, 2);
+    (event.payload.item as { exit_code: number }).exit_code = exitCode;
+    return event;
+  };
+  const trace = workflowTrace([
+    exited(1, "shadowtree fmt; mrun --max-tokens 4500 go test . -count=1", 1, "FAIL"),
+    exited(2, "shadowtree fmt && mrun --max-tokens 4500 rtk proxy shadowtree test .", 0, "ok example/pkg 0.4s"),
+    exited(3, "shadowtree fmt &&\n  go test ./...", 1, "FAIL"),
+    exited(4, envelope + "{ __mekugi_b 0 && :; shadowtree fmt; __mekugi_e 0 && :; } && { __mekugi_b 1 && :; mrun --max-tokens 7000 rtk proxy go test . -count=1; __mekugi_e 1 && :; }", 0),
+  ], "source");
+  expect(trace.events.filter(event => event.kind === "test")).toEqual([
+    expect.objectContaining({ line: 1, exit_code: 1, wrapper: undefined }),
+    // The record's duration also covers `shadowtree fmt`, so it is not the test's duration.
+    expect.objectContaining({ line: 2, exit_code: 0, wrapper: "shadowtree", package_seconds: 0.4, seconds: undefined }),
+    expect.objectContaining({ line: 3, exit_code: undefined }),
+    expect.objectContaining({ line: 4, exit_code: 0, wrapper: undefined }),
+  ]);
+});
+
+test("lists with a non-final test, two tests, || or other operators stay unclassified", () => {
+  for (const text of [
+    "go test ./... && shadowtree fmt",
+    "go test ./...; true",
+    "shadowtree fmt; go test ./...; bun test",
+    "go test ./a && go test ./b",
+    "shadowtree fmt || go test ./...",
+    "shadowtree fmt & go test ./...",
+    "shadowtree fmt | go test ./...",
+    "shadowtree fmt && && go test ./...",
+    "go build ./... &&",
+    "exit 0; go test ./...",
+  ]) {
+    expect(workflowTrace([command(1, text)], "source").events.filter(event => event.kind === "test")).toEqual([]);
+  }
 });

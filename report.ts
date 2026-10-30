@@ -69,7 +69,7 @@ async function suppliedAssessments(path: string, results: Partial<Record<ArmName
   const passes = value.passes.map((item: unknown, index) => {
     if (!item || typeof item !== "object" || !("presentation" in item) || !Array.isArray(item.presentation) || !("response" in item)
       || item.presentation.length !== Object.keys(results).length || new Set(item.presentation).size !== item.presentation.length || Object.keys(results).some(arm => !(item.presentation as unknown[]).includes(arm))) {
-      throw new Error("each supplied assessment must map candidate-1 and candidate-2 to stock/current");
+      throw new Error("each supplied assessment must present every arm with results exactly once, in candidate order");
     }
     const order = item.presentation as ArmName[];
     return reportedPass(validateJudgePass(item.response, (index + 1) as 1 | 2, order, Object.fromEntries(order.map((arm, index) => [`candidate-${index + 1}`, results[arm]?.grade?.passed === true]))));
@@ -399,8 +399,13 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       const uncached = totals ? totals.input_tokens - totals.cached_input_tokens : null;
       return `| ${labels[arm as ArmName]}${result?.recovery ? " (recovered)" : ""} | ${gradeLabel(result, state.criteria)} | ${number(result ? result.agent_elapsed_ms / 1000 : null, 3)}${result?.recovery ? " (Docker container duration)" : ""} | ${number(graderSeconds(result), 3)} | ${number(totals?.input_tokens)} | ${number(uncached)} | ${number(totals?.cached_input_tokens)} | ${number(totals?.cache_write_input_tokens)} | ${number(totals?.output_tokens)} | ${number(totals?.reasoning_output_tokens)} | ${number(totals?.total_tokens)} | ${number(totals?.command_seconds, 3)} | ${number(totals?.estimated_api_usd, 6)} |`;
     });
-    const costExplanation = usage.stock?.complete && usage.current?.complete
-      ? `Total input alone does not determine cost. ${labels.current} minus ${labels.stock}: ${usage.current.totals.input_tokens - usage.stock.totals.input_tokens} total input tokens, but ${usage.current.totals.input_tokens - usage.current.totals.cached_input_tokens - usage.stock.totals.input_tokens + usage.stock.totals.cached_input_tokens} uncached input tokens. Uncached, cached, cache-write, and output tokens have separate prices; their dollar contributions appear below.`
+    const stockTotals = usage.stock?.complete ? usage.stock.totals : undefined;
+    const inputDifferences = stockTotals ? selectedArms.filter(arm => arm !== "stock").flatMap(arm => {
+      const totals = usage[arm]?.complete ? usage[arm]!.totals : undefined;
+      return totals ? [`${labels[arm]} minus ${labels.stock}: ${totals.input_tokens - stockTotals.input_tokens} total input tokens, but ${totals.input_tokens - totals.cached_input_tokens - stockTotals.input_tokens + stockTotals.cached_input_tokens} uncached input tokens.`] : [];
+    }) : [];
+    const costExplanation = inputDifferences.length
+      ? `Total input alone does not determine cost. ${inputDifferences.join(" ")} Uncached, cached, cache-write, and output tokens have separate prices; their dollar contributions appear below.`
       : "Uncached, cached, cache-write, and output tokens have separate prices; available dollar contributions appear below.";
     const recordedCostRows = selectedArms.map(arm => {
       const meter = usage[arm];

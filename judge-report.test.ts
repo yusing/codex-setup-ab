@@ -297,7 +297,15 @@ test("third-arm quality winner maps through both blind orders and missing third-
   expect(Object.keys(report.arms)).toEqual(["stock", "current", third]);
   expect(report.current_minus_stock_percent).toEqual(report.baseline_differences_percent.current);
   expect(report.baseline_differences_percent[third].grader_seconds).toBe(0);
-  expect(await readFile(join(run, "reports/report.md"), "utf8")).toContain("Codex (setup 222222222222): commit " + "2".repeat(40) + "; tree tree; manifest SHA-256 hash.");
+  const reportMarkdown = await readFile(join(run, "reports/report.md"), "utf8");
+  expect(reportMarkdown).toContain("Codex (setup 222222222222): commit " + "2".repeat(40) + "; tree tree; manifest SHA-256 hash.");
+  expect(Object.keys(report.performance_breakdown.baseline_differences)).toEqual(["current", third]);
+  for (const arm of ["current", third]) {
+    const minus = `${report.arm_labels[arm]} minus ${report.arm_labels.stock}`;
+    expect(reportMarkdown).toMatch(new RegExp(`${minus.replace(/[()]/g, "\\$&")}: -?\\d+ total input tokens, but -?\\d+ uncached input tokens`));
+    expect(reportMarkdown).toContain(`- ${minus}: `);
+    expect(reportMarkdown).toContain(`${minus}, uncached input:`);
+  }
   await rm(join(run, state.arm_attempts![third]!.codex_home), { recursive: true });
   const missingPaths = await buildReport(run);
   const missing = await Bun.file(missingPaths.jsonPath).json();
