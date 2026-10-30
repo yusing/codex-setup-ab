@@ -37,33 +37,64 @@ function markdown(text: string): string {
   }, { noHtmlBlocks: true, noHtmlSpans: true });
 }
 
-export function renderSetupOutput(text: string): string {
-  const messages = new Map<string, string>();
-  for (const [index, line] of text.split("\n").entries()) {
-    let event: Event;
-    try { event = object(JSON.parse(line)); }
-    catch { continue; } // A bounded tail or a live write can contain an incomplete record.
-    const headless = typeof event.method === "string";
-    const payload = headless ? object(event.params) : event;
-    const item = object(payload.item);
-    const type = event.method === "item/started" ? "item.started" : event.method === "item/completed" ? "item.completed"
-      : event.method === "error" ? "error" : event.type;
-    const itemType = headless && typeof item.type === "string" ? headlessItemTypes[item.type] ?? item.type : item.type;
-    const exitCode = headless ? item.exitCode : item.exit_code;
-    const key = typeof item.id === "string" ? item.id : `event-${index}`;
-    if (typeof type === "string" && ["item.started", "item.updated", "item.completed"].includes(type)) {
-      if ((itemType === "agent_message" || itemType === "reasoning") && typeof item.text === "string") {
-        messages.set(key, `<article class="output-message">${markdown(item.text)}</article>`);
-      } else if (itemType === "command_execution" || itemType === "mcp_tool_call" || itemType === "file_change" || itemType === "web_search") {
-        const label = { command_execution: "Command", mcp_tool_call: "Tool call", file_change: "File changes", web_search: "Web search" }[itemType];
-        const failed = item.status === "failed" || (typeof exitCode === "number" && exitCode !== 0);
-        const status = failed ? "failed" : type === "item.completed" ? "completed" : "in progress";
-        messages.set(key, `<p class="output-activity">${label} ${status}${typeof exitCode === "number" ? ` (exit ${exitCode})` : ""}</p>`);
-      }
-    } else if (type === "error" || type === "turn.failed") {
-      const message = payload.message ?? object(payload.error).message;
-      messages.set(key, `<p class="notice error">${Bun.escapeHTML(typeof message === "string" ? message : "Execution failed. Open the raw log for details.")}</p>`);
+export class SetupOutput {
+  private messages = new Map<string, string>();
+  private index = 0;
+  private size = 0;
+  private rendered: string | undefined;
+
+  private set(key: string, html: string): void {
+    this.size += html.length - (this.messages.get(key)?.length ?? 0);
+    this.messages.set(key, html);
+    this.rendered = undefined;
+    // Bound readable messages, not raw transport. Keep a complete newest item.
+    while (this.messages.size > 1 && this.size > 16001) {
+      const oldest = [...this.messages.keys()].find(item => item !== key)!;
+      this.size -= this.messages.get(oldest)!.length;
+      this.messages.delete(oldest);
     }
   }
-  return [...messages.values()].join("") || '<p class="hint">No readable messages in the current log excerpt. Raw events are available in the evidence files.</p>';
+
+  append(text: string): void {
+    for (const line of text.split("\n")) {
+      const index = this.index++;
+      let event: Event;
+      try { event = object(JSON.parse(line)); }
+      catch { continue; } // A bounded tail or a live write can contain an incomplete record.
+      const headless = typeof event.method === "string";
+      const payload = headless ? object(event.params) : event;
+      const item = object(payload.item);
+      const type = event.method === "item/started" ? "item.started" : event.method === "item/completed" ? "item.completed"
+        : event.method === "error" ? "error" : event.type;
+      const itemType = headless && typeof item.type === "string" ? headlessItemTypes[item.type] ?? item.type : item.type;
+      const exitCode = headless ? item.exitCode : item.exit_code;
+      const key = typeof item.id === "string" ? item.id : `event-${index}`;
+      if (typeof type === "string" && ["item.started", "item.updated", "item.completed"].includes(type)) {
+        if ((itemType === "agent_message" || itemType === "reasoning") && typeof item.text === "string") {
+          this.set(key, `<article class="output-message">${markdown(item.text)}</article>`);
+        } else if (itemType === "command_execution" || itemType === "mcp_tool_call" || itemType === "file_change" || itemType === "web_search") {
+          const label = { command_execution: "Command", mcp_tool_call: "Tool call", file_change: "File changes", web_search: "Web search" }[itemType];
+          const failed = item.status === "failed" || (typeof exitCode === "number" && exitCode !== 0);
+          const status = failed ? "failed" : type === "item.completed" ? "completed" : "in progress";
+          this.set(key, `<p class="output-activity">${label} ${status}${typeof exitCode === "number" ? ` (exit ${exitCode})` : ""}</p>`);
+        }
+      } else if (type === "error" || type === "turn.failed") {
+        const message = payload.message ?? object(payload.error).message;
+        this.set(key, `<p class="notice error">${Bun.escapeHTML(typeof message === "string" ? message : "Execution failed. Open the raw log for details.")}</p>`);
+      }
+    }
+  }
+
+  preview(text: string): string {
+    const preview = new SetupOutput();
+    preview.messages = new Map(this.messages);
+    preview.size = this.size;
+    preview.index = this.index;
+    preview.append(text);
+    return preview.html();
+  }
+
+  html(): string {
+    return this.rendered ??= [...this.messages.values()].join("") || '<p class="hint">No readable messages in the current log excerpt. Raw events are available in the evidence files.</p>';
+  }
 }

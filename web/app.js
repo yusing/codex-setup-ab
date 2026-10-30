@@ -723,7 +723,7 @@ function renderSnapshot(data) {
   const atBottom = log.scrollHeight - log.clientHeight - log.scrollTop < 40;
   log.textContent = job.log || "No phase messages from this server operation. Attached runs expose persisted state and setup output below.";
   if ($("follow-log").checked && atBottom) log.scrollTop = log.scrollHeight;
-  const live = Object.entries(obj(data.live)).filter(([, text]) => text);
+  const live = Object.entries(obj(entry.kind === "pair" ? data.live_html : data.live));
   const keys = live.map(([arm]) => arm).join(",");
   if (liveKeys !== keys) {
     $("live-output").innerHTML = live.map(([arm]) => '<details class="panel" open><summary></summary><div tabindex="0" role="region" class="' + (entry.kind === "pair" ? "rendered-output" : "log") + '" data-live="' + esc(arm) + '"></div></details>').join("");
@@ -797,6 +797,17 @@ function renderElapsed() {
   const job = obj(snapshot.entry.job);
   element.textContent = job.startedAt ? duration(Date.parse(job.finishedAt || new Date().toISOString()) - Date.parse(job.startedAt)) : "Not measured by this server";
 }
+function applySnapshotDelta(value, change) {
+  if (Object.hasOwn(change, "value")) return change.value;
+  if (!change.children) return undefined;
+  const result = Array.isArray(value) ? value.slice(0, change.length ?? value.length) : { ...value };
+  for (const [key, patch] of Object.entries(change.children)) {
+    const next = applySnapshotDelta(value != null && Object.hasOwn(value, key) ? value[key] : undefined, patch);
+    if (next === undefined) delete result[key];
+    else Object.defineProperty(result, key, { value: next, enumerable: true, configurable: true, writable: true });
+  }
+  return result;
+}
 function connectEvents() {
   eventStream?.close();
   const id = selected;
@@ -808,12 +819,16 @@ function connectEvents() {
     renderEntries(JSON.parse(event.data));
     $("connection").textContent = activeId ? "Local service · operation active" : "Local service · ready";
   });
-  stream.addEventListener("snapshot", (event) => {
-    if (!current()) return;
-    const data = JSON.parse(event.data);
+  const receiveSnapshot = (data) => {
     latestSnapshot = data;
     $("watch-error").textContent = "";
     if ($("watch-enabled").checked || !snapshot || data.entry.job?.status !== snapshot.entry.job?.status) renderSnapshot(data);
+  };
+  stream.addEventListener("snapshot", (event) => {
+    if (current()) receiveSnapshot(JSON.parse(event.data));
+  });
+  stream.addEventListener("snapshot-patch", (event) => {
+    if (current() && latestSnapshot) receiveSnapshot(applySnapshotDelta(latestSnapshot, JSON.parse(event.data)));
   });
   stream.addEventListener("snapshot-error", (event) => {
     if (current()) $("watch-error").textContent = JSON.parse(event.data).error;

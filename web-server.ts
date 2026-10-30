@@ -1,9 +1,12 @@
 import { parseArmImports } from "./control";
 import { REASONING_EFFORTS } from "./types";
 import { constants, watch, type FSWatcher } from "node:fs";
+import { Duplex } from "node:stream";
+import { ReadableStream as NodeReadableStream } from "node:stream/web";
+import { constants as zlibConstants, createGzip } from "node:zlib";
 import { access, lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { BOOLEAN_FLAGS, COMMAND_OPTIONS, type CliOptions } from "./cli-options";
 import { COMPARISONS, launchConfiguration, launchDefaults, taskCatalog } from "./launch";
@@ -12,7 +15,7 @@ import { loadTaskPack } from "./task-pack";
 import { armLabels } from "./arm-labels";
 import { readState, sha256, armExecutionSucceeded } from "./state";
 import { compositionKeys } from "./arms";
-import { renderSetupOutput } from "./web-output";
+import { SetupOutput } from "./web-output";
 import type { RunState } from "./types";
 import html from "./web/index.html" with { type: "text" };
 import css from "./web/style.css" with { type: "text" };
@@ -44,6 +47,23 @@ const MARKERS: [Kind, string, string | number][] = [
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 const object = (value: unknown): JsonObject => value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
+
+function snapshotDelta(before: unknown, after: unknown): JsonObject | undefined {
+  if (before === after) return;
+  if (before && after && typeof before === "object" && typeof after === "object" && Array.isArray(before) === Array.isArray(after)) {
+    const previous = before as JsonObject, next = after as JsonObject;
+    const children: JsonObject = Object.create(null);
+    for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+      if (Array.isArray(after) && !Object.hasOwn(next, key)) continue;
+      const change = snapshotDelta(Object.hasOwn(previous, key) ? previous[key] : undefined, Object.hasOwn(next, key) ? next[key] : undefined);
+      if (change) children[key] = change;
+    }
+    const length = Array.isArray(after) && Array.isArray(before) && after.length !== before.length ? after.length : undefined;
+    if (Object.keys(children).length || length !== undefined) return { children, ...(length === undefined ? {} : { length }) };
+    return;
+  }
+  return after === undefined ? {} : { value: after };
+}
 
 async function safeFile(root: string, path: string): Promise<string> {
   const target = await realpath(join(root, path));
@@ -118,6 +138,58 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
   const defaults = launchDefaults();
   const subscribers = new Set<() => void>();
   const streams = new Set<() => void>();
+  const outputs = new Map<string, { identity: string; offset: number; modified: number; hash: ReturnType<typeof createHash>; pending: string; decoder: TextDecoder; output: SetupOutput; html: string }>();
+  let outputRead = Promise.resolve();
+  async function setupOutput(root: string, path: string): Promise<string> {
+    // Snapshots and reconnects share the projection, including incomplete writes.
+    const previous = outputRead;
+    const completion = Promise.withResolvers<void>();
+    outputRead = completion.promise;
+    await previous;
+    try {
+      const target = await safeFile(root, path);
+      const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const info = await file.stat();
+        const identity = `${info.dev}:${info.ino}`;
+        let cached = outputs.get(target);
+        if (cached?.identity === identity && cached.offset === info.size && cached.modified === info.mtimeMs) return cached.html;
+        const buffer = Buffer.alloc(65536);
+        let unchanged = Boolean(cached && cached.identity === identity && cached.offset <= info.size);
+        if (unchanged && cached) {
+          // External evidence can be rewritten in place as well as appended.
+          // Verify the consumed prefix before reusing its readable projection.
+          const prefix = createHash("sha256");
+          let position = 0;
+          while (position < cached.offset) {
+            const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, cached.offset - position), position);
+            if (!bytesRead) break;
+            prefix.update(buffer.subarray(0, bytesRead));
+            position += bytesRead;
+          }
+          unchanged = position === cached.offset && prefix.digest("hex") === cached.hash.copy().digest("hex");
+        }
+        if (!cached || !unchanged) {
+          cached = { identity, offset: 0, modified: info.mtimeMs, hash: createHash("sha256"), pending: "", decoder: new TextDecoder(), output: new SetupOutput(), html: "" };
+          outputs.set(target, cached);
+        }
+        while (cached.offset < info.size) {
+          const { bytesRead } = await file.read(buffer, 0, Math.min(buffer.length, info.size - cached.offset), cached.offset);
+          if (!bytesRead) break;
+          cached.hash.update(buffer.subarray(0, bytesRead));
+          cached.offset += bytesRead;
+          const text = cached.pending + cached.decoder.decode(buffer.subarray(0, bytesRead), { stream: true });
+          const end = text.lastIndexOf("\n");
+          if (end >= 0) cached.output.append(text.slice(0, end));
+          cached.pending = text.slice(end + 1);
+        }
+        cached.modified = info.mtimeMs;
+        cached.html = cached.pending ? cached.output.preview(cached.pending) : cached.output.html();
+        return cached.html;
+      } finally { await file.close(); }
+    } catch { return ""; } // Setup output is optional; reports and state must remain available.
+    finally { completion.resolve(); }
+  }
   const notify = () => { for (const update of subscribers) update(); };
   const entryList = () => ({ entries: [...entries.values()].map(entry => ({ id: entry.id, title: entry.title, kind: entry.kind, directory: entry.directory, job: entry.job ? { status: entry.job.status } : undefined })), active: active?.entry.id });
 
@@ -329,7 +401,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     })();
     return entry;
   }
-  async function snapshot(entry: Entry) {
+  async function snapshot(entry: Entry, includeRaw = true) {
     if (!entry.directory) return { entry, artifacts: [], children: [], live: {} };
     const { state } = await marker(entry.directory);
     const artifacts = await artifactList(entry.directory, entry.kind);
@@ -355,7 +427,8 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       } catch { /* preparation can expose a child before its marker exists */ }
     }
     const live: Record<string, string> = {};
-    if (entry.kind === "pair") for (const arm of Object.keys(object(state.arms ?? state.results ?? { stock: {}, current: {} }))) live[arm] = await tail(entry.directory, "artifacts/" + arm + "/codex.jsonl");
+    const arms = entry.kind === "pair" ? Object.keys(object(state.arms ?? state.results ?? { stock: {}, current: {} })) : [];
+    if (includeRaw) for (const arm of arms) live[arm] = await tail(entry.directory, "artifacts/" + arm + "/codex.jsonl");
     if (entry.kind === "build") {
       live.build = await tail(entry.directory, "build.stdout");
       live["build stderr"] = await tail(entry.directory, "build.stderr");
@@ -368,13 +441,14 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       comparison: labelState.comparison as RunState["comparison"],
       execution: object(labelState.execution) as RunState["execution"],
     }) : undefined;
-    const live_html = entry.kind === "pair" ? Object.fromEntries(Object.entries(live).map(([arm, text]) => [arm, renderSetupOutput(text)])) : {};
+    const live_html = entry.kind === "pair" ? Object.fromEntries(await Promise.all(arms.map(async arm => [arm, await setupOutput(entry.directory!, "artifacts/" + arm + "/codex.jsonl")]))) : {};
     return { entry, state, report, arm_labels: labels, artifacts, children, live, live_html };
   }
   function events(req: Request, entry?: Entry): Response {
     const encoder = new TextEncoder();
     const watchers = new Map<string, { watcher: FSWatcher; identity: string }>();
     const previous = new Map<string, string>();
+    let previousSnapshot: Awaited<ReturnType<typeof snapshot>> | undefined;
     let closed = false, running = false, dirty = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -390,10 +464,12 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       try { controller.close(); } catch { /* The response may already be canceled. */ }
     }
     function send(event: string, value: unknown) {
+      if (closed) return;
       const data = JSON.stringify(value);
-      if (closed || previous.get(event) === data) return;
+      const deduplicate = event === "entries" || event === "snapshot-error";
+      if (deduplicate && previous.get(event) === data) return;
       if (controller.desiredSize !== null && controller.desiredSize <= 0) { close(); return; }
-      previous.set(event, data);
+      if (deduplicate) previous.set(event, data);
       controller.enqueue(encoder.encode(`event: ${event}\ndata: ${data}\n\n`));
     }
     function watchUnavailable(error: unknown): boolean {
@@ -463,11 +539,18 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
           // Install the root watcher before reading so changes during a read cause another update.
           if (!entry.directory || !watchers.has(entry.directory)) await observe({ entry, artifacts: [], children: [], live: {} });
           try {
-            const data = await snapshot(entry);
+            const data = await snapshot(entry, false);
             await observe(data);
-            if (previous.delete("snapshot-error")) previous.delete("snapshot");
+            if (previous.delete("snapshot-error")) previousSnapshot = undefined;
             send("entries", entryList());
-            send("snapshot", data);
+            if (!previousSnapshot) send("snapshot", data);
+            else {
+              const change = snapshotDelta(previousSnapshot, data);
+              if (change) send("snapshot-patch", change);
+            }
+            // The operation mutates entry.job in place; preserve its old value
+            // while retaining the independently read evidence as the baseline.
+            previousSnapshot = { ...data, entry: structuredClone(data.entry) };
           } catch (error) { send("snapshot-error", { error: message(error) }); }
         }
         send("entries", entryList());
@@ -481,7 +564,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       dirty = true;
       if (!closed && !running && !timer) timer = setTimeout(() => { timer = undefined; void update(); }, 50);
     }
-    const stream = new ReadableStream<Uint8Array>({
+    const stream = new NodeReadableStream<Uint8Array>({
       start(value) {
         controller = value;
         subscribers.add(schedule); streams.add(close);
@@ -496,7 +579,23 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       },
       cancel: close,
     }, { highWaterMark: 16 });
-    return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" } });
+    const compress = req.headers.get("accept-encoding")?.split(",").some(value => {
+      const [encoding, ...parameters] = value.trim().toLowerCase().split(";");
+      return encoding.trim() === "gzip" && !parameters.some(parameter => /^q=0(?:\.0*)?$/.test(parameter.trim()));
+    });
+    // Flush every event, including small progress updates, rather than waiting
+    // for the compression buffer or the long-lived response to finish.
+    const body = compress ? stream.pipeThrough<Uint8Array>(Duplex.toWeb(createGzip({ flush: zlibConstants.Z_SYNC_FLUSH }))) : stream;
+    const reader = body.getReader();
+    const responseBody = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+      cancel: reason => reader.cancel(reason),
+    });
+    return new Response(responseBody, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no", "Vary": "Accept-Encoding", ...(compress ? { "Content-Encoding": "gzip" } : {}) } });
   }
   const server = Bun.serve({
     hostname, port, maxRequestBodySize: 128000,

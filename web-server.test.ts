@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -126,17 +126,26 @@ async function subscribe(id?: string) {
   expect(response.headers.get("content-type")).toBe("text/event-stream");
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const applyDelta = runInNewContext(source + "\napplySnapshotDelta");
   let pending = "";
+  let snapshot: Record<string, unknown> = {};
   return {
+    encoding: response.headers.get("content-encoding"),
     close: () => abort.abort(),
     async next(event: string, accept: (data: ReturnType<typeof JSON.parse>) => boolean = () => true) {
       while (true) {
         const end = pending.indexOf("\n\n");
         if (end >= 0) {
           const frame = pending.slice(0, end); pending = pending.slice(end + 2);
-          if (!frame.startsWith("event: " + event + "\n")) continue;
+          if (!frame.startsWith("event: ")) continue;
+          const name = frame.slice(7, frame.indexOf("\n"));
           const data = JSON.parse(frame.slice(frame.indexOf("data: ") + 6));
-          if (accept(data)) return data;
+          if (name === "snapshot") snapshot = data;
+          if (name === "snapshot-patch") snapshot = applyDelta(snapshot, data);
+          if (event === "snapshot" && (name === "snapshot" || name === "snapshot-patch")) {
+            if (accept(snapshot)) return snapshot;
+          } else if (name === event && accept(data)) return data;
           continue;
         }
         const { value, done } = await reader.read();
@@ -458,6 +467,222 @@ test("Markdown output escapes active content and handles bounded and partial eve
   } finally { stream.close(); }
 });
 
+test("SSE sends changed fields without repeating reports or raw transport", async () => {
+  const directory = await pair();
+  await file(join(directory, "reports/report.json"), JSON.stringify({ winner_reason: "Retained report".repeat(12000) }));
+  const path = join(directory, "artifacts/current/codex.jsonl");
+  const row = (text: string) => JSON.stringify({ type: "item.completed", item: { id: "answer", type: "agent_message", text } }) + "\n";
+  await file(path, row("Before update"));
+  const entry = await attach(directory);
+  const stream = await subscribe(entry.id);
+  try {
+    const initial = await stream.next("snapshot");
+    expect(initial.report.winner_reason).toContain("Retained report");
+    expect(initial.live).toEqual({});
+    await appendFile(path, row("After update"));
+    const patch = await stream.next("snapshot-patch", data => data.children?.live_html?.children.current.value.includes("After update"));
+    expect(patch.children).not.toHaveProperty("report");
+    expect(patch.children).not.toHaveProperty("state");
+    expect(patch.children).not.toHaveProperty("live");
+    expect(JSON.stringify(patch).length).toBeLessThan(JSON.stringify(initial).length / 10);
+    // Returning to an earlier value must still be delivered after an intervening patch.
+    await appendFile(path, row("Before update"));
+    await stream.next("snapshot", data => data.live_html.current.includes("Before update"));
+    await appendFile(path, row("After update"));
+    await stream.next("snapshot", data => data.live_html.current.includes("After update"));
+  } finally { stream.close(); }
+});
+
+test("compressed snapshots retain complete evidence and nested changes send only changed values", async () => {
+  const directory = await pair();
+  const evidence = { stdout: "Retained full command output. ".repeat(10000), source: "Recorded test source" };
+  const state = { schema_version: 1, status: "partial", results: { current: { grade: { passed: false, evidence } } } };
+  const report = { arms: { current: { result: state.results.current } }, judge: { passes: [{ evidence }] } };
+  await file(join(directory, "run.json"), JSON.stringify(state));
+  await file(join(directory, "reports/report.json"), JSON.stringify(report));
+  const entry = await attach(directory);
+  const stream = await subscribe(entry.id);
+  try {
+    expect(stream.encoding).toBe("gzip");
+    const initial = await stream.next("snapshot");
+    expect(initial.state).toEqual(state);
+    expect(initial.report).toEqual(report);
+    const changed = { ...state, results: { current: { grade: { ...state.results.current.grade, passed: true } } } };
+    await file(join(directory, "run.json"), JSON.stringify(changed));
+    const patch = await stream.next("snapshot-patch", value => Boolean(value.children?.state));
+    expect(patch.children.state).toEqual({ children: { results: { children: { current: { children: { grade: { children: { passed: { value: true } } } } } } } } });
+    expect(JSON.stringify(patch)).not.toContain("stdout");
+    const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+    const updated = runInNewContext(source + "\napplySnapshotDelta(input, patch)", { input: initial, patch });
+    expect(updated.state).toEqual(changed);
+    expect(updated.report).toEqual(report);
+    expect(initial.state.results.current.grade.passed).toBe(false);
+    const changedReport = { ...report, judge: { passes: [{ evidence, status: "complete" }] } };
+    await file(join(directory, "reports/report.json"), JSON.stringify(changedReport));
+    const next = await stream.next("snapshot", data => data.report.judge.passes[0].status === "complete");
+    expect(next.state).toEqual(changed);
+    expect(next.report).toEqual(changedReport);
+  } finally { stream.close(); }
+});
+
+test.each(["identity", "gzip;q=0", "gzip;q=0.0, identity"])('SSE honors uncompressed negotiation %s', async encoding => {
+  const abort = new AbortController();
+  const response = await fetch(origin + "/api/events", { headers: { "Accept-Encoding": encoding }, signal: abort.signal });
+  try {
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("vary")).toBe("Accept-Encoding");
+    expect(new TextDecoder().decode((await response.body!.getReader().read()).value)).toContain("retry: 1500");
+  } finally { abort.abort(); }
+});
+
+test("nested patches preserve sibling values, array growth/truncation, deletion, and data keys", async () => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const apply = runInNewContext(source + "\napplySnapshotDelta");
+  const original = { rows: [{ keep: "Original", status: "pending" }, { retained: "Sibling" }], remove: "Old" };
+  const grown = apply(original, { children: { rows: { children: { 0: { children: { status: { value: "done" } } }, 2: { value: "Appended" } } }, remove: {}, ["__proto__"]: { value: "Literal data" } } });
+  expect(grown.rows).toEqual([{ keep: "Original", status: "done" }, { retained: "Sibling" }, "Appended"]);
+  expect(grown).not.toHaveProperty("remove");
+  expect(Object.getOwnPropertyDescriptor(grown, "__proto__")?.value).toBe("Literal data");
+  expect(original.rows[0]!.status).toBe("pending");
+  const shortened = apply(grown, { children: { rows: { children: {}, length: 1 } } });
+  expect(shortened.rows).toEqual([{ keep: "Original", status: "done" }]);
+  expect(grown.rows).toHaveLength(3);
+});
+
+test("streamed literal data keys follow additions, replacements, and deletions", async () => {
+  const directory = await pair();
+  const state = { schema_version: 1, status: "partial", nested: {} };
+  await file(join(directory, "run.json"), JSON.stringify(state));
+  const entry = await attach(directory), stream = await subscribe(entry.id);
+  try {
+    await stream.next("snapshot");
+    for (const nested of [JSON.parse('{"__proto__":{}}'), JSON.parse('{"__proto__":{"value":1}}'), {}]) {
+      await file(join(directory, "run.json"), JSON.stringify({ ...state, nested }));
+      const updated = await stream.next("snapshot");
+      expect(Object.hasOwn(updated.state.nested, "__proto__")).toBe(Object.hasOwn(nested, "__proto__"));
+      expect(JSON.stringify(updated.state.nested)).toBe(JSON.stringify(nested));
+    }
+  } finally { stream.close(); }
+});
+
+test("browser merges paused patches and replaces its baseline on a full snapshot", async () => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const streams: { handlers: Record<string, (event: { data: string }) => void> }[] = [];
+  const watched = { checked: true };
+  const rendered: ReturnType<typeof JSON.parse>[] = [];
+  const context = {
+    document: { getElementById: (id: string) => id === "watch-enabled" ? watched : {} }, rendered,
+    EventSource: class {
+      handlers: Record<string, (event: { data: string }) => void> = {};
+      constructor() { streams.push(this); }
+      close() {}
+      addEventListener(name: string, handler: (event: { data: string }) => void) { this.handlers[name] = handler; }
+    },
+  };
+  const vm = source + `
+    selected = "selected";
+    renderSnapshot = data => { snapshot = data; rendered.push(data); };
+    connectEvents();`;
+  runInNewContext(vm, context);
+  const emit = (index: number, name: string, data: unknown) => streams[index]!.handlers[name]!({ data: JSON.stringify(data) });
+  const entry = { id: "selected", job: { status: "running" } };
+  emit(0, "snapshot", { entry, report: { winner_reason: "Retained" }, live_html: { current: "First" } });
+  watched.checked = false;
+  emit(0, "snapshot-patch", { children: { live_html: { children: { current: { value: "Second" } } } } });
+  expect(rendered).toHaveLength(1);
+  emit(0, "snapshot-patch", { children: { entry: { children: { job: { children: { status: { value: "stopping" } } } } } } });
+  expect(rendered.at(-1).report.winner_reason).toBe("Retained");
+  expect(rendered.at(-1).live_html.current).toBe("Second");
+  // A full snapshot replaces the baseline before further patches.
+  streams[0]!.handlers["snapshot"]!({ data: JSON.stringify({ entry, report: null }) });
+  expect(rendered.at(-1).report).toBeNull();
+});
+
+test("readable output survives large transport rows, partial writes, and reconnects", async () => {
+  const directory = await pair();
+  const path = join(directory, "artifacts/current/codex.jsonl");
+  const answer = JSON.stringify({ type: "item.updated", item: { id: "answer", type: "agent_message", text: "Still reading **output**" } }) + "\n";
+  await file(path, answer);
+  const entry = await attach(directory);
+  const stream = await subscribe(entry.id);
+  try {
+    expect((await stream.next("snapshot")).live_html.current).toContain("Still reading <strong>output</strong>");
+    const command = JSON.stringify({ type: "item.completed", item: { id: "command", type: "command_execution", exit_code: 0, aggregated_output: "hidden-transport".repeat(12000) } });
+    await appendFile(path, command.slice(0, -1));
+    const partial = await stream.next("snapshot-patch", data => Boolean(data.children?.artifacts));
+    expect(partial.children).not.toHaveProperty("live_html");
+    await appendFile(path, "}\n");
+    const completed = await stream.next("snapshot", data => data.live_html.current.includes("Command completed"));
+    expect(completed.live_html.current).toContain("Still reading <strong>output</strong>");
+    expect(completed.live_html.current).not.toContain("hidden-transport");
+    const unicode = Buffer.from(JSON.stringify({ type: "item.completed", item: { id: "next", type: "agent_message", text: "Unicode café 🌱" } }) + "\n");
+    const split = unicode.indexOf(Buffer.from("🌱")) + 1;
+    await appendFile(path, unicode.subarray(0, split));
+    await stream.next("snapshot-patch", data => Boolean(data.children?.artifacts));
+    await appendFile(path, unicode.subarray(split));
+    expect((await stream.next("snapshot", data => data.live_html.current.includes("Unicode"))).live_html.current).toContain("café 🌱");
+  } finally { stream.close(); }
+  const reconnected = await subscribe(entry.id);
+  try { expect((await reconnected.next("snapshot")).live_html.current).toContain("Still reading <strong>output</strong>"); }
+  finally { reconnected.close(); }
+});
+
+test("readable output follows in-place rewrites even when the consumed suffix is unchanged", async () => {
+  const directory = await pair();
+  const path = join(directory, "artifacts/current/codex.jsonl");
+  const row = (text: string) => JSON.stringify({ type: "item.completed", item: { id: "answer", type: "agent_message", text } }) + "\n";
+  const command = JSON.stringify({ type: "item.completed", item: { id: "command", type: "command_execution", exit_code: 0, aggregated_output: "same-suffix".repeat(100) } }) + "\n";
+  await file(path, row("Before") + command);
+  const entry = await attach(directory);
+  const read = async () => (await (await fetch(`${origin}/api/entries/${entry.id}`)).json()).live_html.current as string;
+  expect(await read()).toContain("Before");
+  await file(path, row("After!") + command + '{"type":"thread.started"}\n');
+  const updated = await read();
+  expect(updated).toContain("After!");
+  expect(updated).not.toContain("Before");
+});
+
+test("complete final records without newlines render once when their newline arrives", async () => {
+  const directory = await pair();
+  const path = join(directory, "artifacts/current/codex.jsonl");
+  await file(path, JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "Complete final record" } }));
+  const entry = await attach(directory);
+  const read = async () => (await (await fetch(`${origin}/api/entries/${entry.id}`)).json()).live_html.current as string;
+  expect(await read()).toContain("Complete final record");
+  await appendFile(path, "\n");
+  expect((await read()).match(/Complete final record/g)).toHaveLength(1);
+});
+
+test("unreadable optional output preserves reports and state on entry and event APIs", async () => {
+  const directory = await pair();
+  const path = join(directory, "artifacts/current/codex.jsonl");
+  await file(path, '{"type":"thread.started"}\n');
+  await file(join(directory, "reports/report.json"), JSON.stringify({ winner_reason: "Retained report" }));
+  const entry = await attach(directory);
+  await chmod(path, 0);
+  const stream = await subscribe(entry.id);
+  try {
+    const response = await fetch(`${origin}/api/entries/${entry.id}`);
+    expect(response.status).toBe(200);
+    expect((await response.json()).state.status).toBe("complete");
+    expect((await stream.next("snapshot")).report.winner_reason).toBe("Retained report");
+  } finally { stream.close(); await chmod(path, 0o600); }
+});
+
+test("an oversized update retains the updated item instead of unrelated older output", async () => {
+  const directory = await pair();
+  const path = join(directory, "artifacts/current/codex.jsonl");
+  const row = (id: string, text: string) => JSON.stringify({ type: "item.updated", item: { id, type: "agent_message", text } }) + "\n";
+  await file(path, row("first", "Initial answer") + row("second", "Unrelated older output"));
+  const entry = await attach(directory);
+  await fetch(`${origin}/api/entries/${entry.id}`);
+  const newest = "Updated answer ".repeat(1300).trimEnd();
+  await appendFile(path, row("first", newest));
+  const rendered = (await (await fetch(`${origin}/api/entries/${entry.id}`)).json()).live_html.current;
+  expect(rendered.includes(newest)).toBe(true);
+  expect(rendered).not.toContain("Unrelated older output");
+});
+
 test("artifact access exposes evidence while rejecting private files, traversal, and symlinks", async () => {
   const directory = await pair();
   await file(join(directory, "reports/report.md"), "# Recorded outcome\n");
@@ -513,13 +738,13 @@ test("SSE pushes attachment, external evidence changes, and current state on rec
   expect((await stream.next("snapshot-error")).error).toBeString();
   await file(join(directory, "run.json"), JSON.stringify({ schema_version: 1, status: "partial" }));
   expect((await stream.next("snapshot")).state.status).toBe("partial");
-  await file(join(directory, "artifacts/current/codex.jsonl"), '{"type":"item.completed","item":{"text":"Pushed output"}}\n');
-  expect((await stream.next("snapshot", data => data.live.current?.includes("Pushed output"))).live.current).toContain("Pushed output");
+  await file(join(directory, "artifacts/current/codex.jsonl"), '{"type":"item.completed","item":{"type":"agent_message","text":"Pushed output"}}\n');
+  expect((await stream.next("snapshot", data => data.live_html.current?.includes("Pushed output"))).live_html.current).toContain("Pushed output");
   await rename(join(directory, "artifacts/current"), join(directory, "artifacts/old-current"));
-  await file(join(directory, "artifacts/current/codex.jsonl"), "Replacement output\n");
-  await stream.next("snapshot", data => data.live.current?.includes("Replacement output"));
-  await file(join(directory, "artifacts/current/codex.jsonl"), "Later replacement output\n");
-  expect((await stream.next("snapshot", data => data.live.current?.includes("Later replacement output"))).live.current).toContain("Later replacement output");
+  await file(join(directory, "artifacts/current/codex.jsonl"), '{"type":"item.completed","item":{"type":"agent_message","text":"Replacement output"}}\n');
+  await stream.next("snapshot", data => data.live_html.current?.includes("Replacement output"));
+  await file(join(directory, "artifacts/current/codex.jsonl"), '{"type":"item.completed","item":{"type":"agent_message","text":"Later replacement output"}}\n');
+  expect((await stream.next("snapshot", data => data.live_html.current?.includes("Later replacement output"))).live_html.current).toContain("Later replacement output");
   await file(join(directory, "reports/report.json"), JSON.stringify({ winner_reason: "Pushed report" }));
   const reported = await stream.next("snapshot", data => data.report?.winner_reason === "Pushed report");
   expect(reported.artifacts.map((item: { path: string }) => item.path)).toContain("reports/report.json");
