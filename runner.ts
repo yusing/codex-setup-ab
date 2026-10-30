@@ -1,5 +1,6 @@
 import { armNames } from "./types";
-import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories, TASK_PATH } from "./dependencies";
+import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories, discardDownloadedCatalog, TASK_PATH } from "./dependencies";
+import { prepareRuntimeHome, runtimeHomeMounts } from "./runtime-home";
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -42,7 +43,7 @@ async function currentSetupMounts(runDir: string, state: RunState, arm: ArmName 
     const snapshot = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8")) as { source_home?: string };
     const sourceHome = snapshot.source_home;
     if (typeof sourceHome !== "string" || !isAbsolute(sourceHome) || sourceHome === "/") throw new Error("invalid current setup home alias");
-    if (sourceHome !== "/home/ubuntu") {
+    if (sourceHome !== "/home/ubuntu" && !state.runtime_homes?.[arm]) {
       mounts.push("-v", `${home ?? resolve(runDir, state.arms[arm].home_template)}:${sourceHome}${home ? "" : ":ro"}`);
     }
   }
@@ -62,12 +63,15 @@ async function inspectCandidate(docker: string, runDir: string, state: RunState,
   if (result.exitCode !== 0 || result.timedOut || result.canceled) throw new Error(`candidate ${label} verification failed: ${result.stderr.trim()}`);
 }
 
-async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string, grokAuthFile?: string): Promise<{ home: string; output: string }> {
+async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile: string, grokAuthFile?: string, docker = "docker", signal?: AbortSignal): Promise<{ home: string; output: string }> {
   const armRoot = dirname(resolve(runDir, state.arms[arm].repository));
   const home = join(armRoot, "home/ubuntu");
   const output = join(runDir, "artifacts", arm);
-  await cp(join(runDir, state.arms[arm].home_template), home, { recursive: true, force: false, verbatimSymlinks: true });
+  const template = join(runDir, state.arms[arm].home_template);
+  const cow = state.home_storage === "docker-cow" && !(arm === "current" && (state.protected_runtime || state.comparison === "codex-mekugi-grok"));
+  if (!cow) await cp(template, home, { recursive: true, force: false, verbatimSymlinks: true });
   await mkdir(join(home, ".codex"), { recursive: true, mode: 0o700 });
+  if (cow && await Bun.file(join(template, ".codex/config.toml")).exists()) await copyFile(join(template, ".codex/config.toml"), join(home, ".codex/config.toml"));
   await copyFile(authFile, join(home, ".codex/auth.json"));
   await chmod(home, 0o700);
   await chmod(join(home, ".codex"), 0o700);
@@ -82,6 +86,14 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
   }
   await chmod(join(home, ".codex/auth.json"), 0o600);
   await mkdir(output, { recursive: true });
+  if (cow) {
+    const document = JSON.parse(await readFile(join(runDir, state.setup_revisions?.[arm]?.manifest ?? state.snapshot_manifest), "utf8"));
+    const current = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8"));
+    state.runtime_homes ??= {};
+    state.runtime_homes[arm] = { ...await prepareRuntimeHome({ runDir, state, template, auth: authFile, docker, signal,
+      identity: { files: document.files, repository: document.configuration_repository, template: state.arms[arm].home_template },
+      sourceHome: current.source_home }) };
+  }
   return { home, output };
 }
 
@@ -306,10 +318,13 @@ async function prewarm(docker: string, runDir: string, state: RunState, arm: Arm
   const name = `codex-ab-${state.id}-${arm}-agent-warm`;
   const repo = resolve(runDir, state.arms[arm].repository);
   const command = prepareAssets(state);
-  const result = await runOwnedContainer({ docker, name, signal, createArgs: [...containerArgs(state),
-    "-v", `${repo}:/workspace`, "-v", `${home}:/home/ubuntu`,
+  const cow = state.runtime_homes?.[arm];
+  const result = await runOwnedContainer({ docker, name, signal, snapshotImage: cow ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
+    onSnapshot: image_id => { if (cow) cow.image_id = image_id; }, createArgs: [...containerArgs(state),
+    "-v", `${repo}:/workspace`, ...(cow ? await runtimeHomeMounts(home) : ["-v", `${home}:/home/ubuntu`]),
     "--network", "none",
-    imageRef(state), "sh", "-lc", command] });
+    cow?.image_id ?? imageRef(state), "sh", "-lc", command] });
+  if (cow && result.snapshotImageId) cow.image_id = result.snapshotImageId;
   if (result.exitCode !== 0) throw new Error(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]} cache prewarm failed: ${result.stderr.trim()}`);
   await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true);
 }
@@ -342,6 +357,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent started`);
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
+  let homeImage = state.runtime_homes?.[arm]?.image_id;
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
   const exports = state.mekugi_exports_by_arm?.[arm] ?? (arm === exportArm ? state.mekugi_exports : undefined);
   const exportArgs = exports
@@ -377,18 +393,23 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   ];
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
-    result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
-      "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, ...await currentSetupMounts(runDir, state, arm, home), ...exportMount, ...grokTask, ...debugStorage,
+    const execution = await runOwnedContainer({ docker, name, signal, snapshotImage: homeImage ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
+      onSnapshot: image_id => { homeImage = image_id; }, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
+      "-v", `${repository}:/workspace`, ...(homeImage ? await runtimeHomeMounts(home) : ["-v", `${home}:/home/ubuntu`]), ...await currentSetupMounts(runDir, state, arm, home), ...exportMount, ...grokTask, ...debugStorage,
       ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
-      imageRef(state), ...launcher, ...executionArgs] });
+      homeImage ?? imageRef(state), ...launcher, ...executionArgs] });
+    result = execution;
+    if (execution.snapshotImageId) homeImage = execution.snapshotImageId;
   } catch (error) {
     lifecycleError = error instanceof Error ? error.message : String(error);
     if (error instanceof OwnedContainerError && error.result) result = error.result;
+    if (error instanceof OwnedContainerError && error.snapshotImageId) homeImage = error.snapshotImageId;
   }
   if (protectedArm) {
     try { await executorOwnership(docker, state, `${name}-restore`, ownedPaths, true); }
     catch (error) { lifecycleError = `${lifecycleError ?? ""} ${String(error)}`.trim(); }
   }
+  if (!lifecycleError) await discardDownloadedCatalog(home, resolve(runDir, state.arms[arm].home_template));
   const finishedAt = new Date().toISOString();
   progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent stopped after ${Math.round((result?.elapsedMs ?? 0) / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
   return {
@@ -407,6 +428,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     changed_files: [],
     head_after_agent: "",
     lifecycle_error: lifecycleError,
+    home_image_id: homeImage,
   };
 }
 
@@ -468,7 +490,11 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     const auth = resolve(options.authFile);
     const authMode = (await import("node:fs/promises")).stat(auth).then(s => s.mode & 0o777);
     if ((await authMode) & 0o077) throw new Error("auth file must not be accessible by group or others (expected mode 0600)");
-    const setupResults = await Promise.allSettled(activeArms.map(async arm => [arm, await setupArm(runDir, state, arm, auth, options.grokAuthFile)] as const));
+    const setupResults: PromiseSettledResult<readonly [ArmName, Awaited<ReturnType<typeof setupArm>>]>[] = [];
+    for (const arm of activeArms) {
+      try { setupResults.push({ status: "fulfilled", value: [arm, await setupArm(runDir, state, arm, auth, options.grokAuthFile, docker, controller.signal)] }); }
+      catch (reason) { setupResults.push({ status: "rejected", reason }); break; }
+    }
     const setupFailure = setupResults.find(result => result.status === "rejected");
     if (setupFailure?.status === "rejected") throw setupFailure.reason;
     const setups = Object.fromEntries(setupResults.map(result => (result as PromiseFulfilledResult<readonly [ArmName, Awaited<ReturnType<typeof setupArm>>]>).value)) as Partial<Record<ArmName, Awaited<ReturnType<typeof setupArm>>>>;
@@ -516,6 +542,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         if (item.status === "fulfilled") {
           state.results![arm] = item.value;
           const result = item.value;
+          attempt.home_image_id = result.home_image_id;
           attempt.status = armExecutionSucceeded(result) ? "stopped" : "failed";
           if (attempt.status === "failed") {
             attempt.error = result.lifecycle_error ?? (result.canceled ? "agent canceled" : result.timed_out ? "agent timed out" : `agent exited with code ${result.exit_code}`);

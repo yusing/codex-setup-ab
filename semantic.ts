@@ -1,6 +1,9 @@
 import { dependencyImage } from "./dependencies";
 import { join, posix } from "node:path";
 import { access, mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { exec } from "./process";
+import { writeState } from "./state";
 import { runOwnedContainer } from "./container";
 import type { ArmName, CommandEvidence, RunState } from "./types";
 
@@ -107,31 +110,19 @@ export function checkOutcome(check: SemanticCheck, execution: CommandEvidence): 
   };
 }
 
-// Candidate source is mounted read-only. Only added harness files and private temporary
-// storage are writable. The interpreter never sees model credentials or a Docker socket.
+// Candidate source is mounted read-only. Workspace and cache writes use private
+// container storage. The interpreter never sees model credentials or a Docker socket.
 const CHECK_PROGRAM = `
-import hashlib, json, os, pathlib, shutil, subprocess, sys
+import hashlib, json, os, pathlib, shutil, subprocess, sys, time
 candidate, harness = pathlib.Path('/candidate'), json.load(open('/harness.json'))
 workspace = pathlib.Path('/tmp/evaluation')
 shutil.copytree(candidate, workspace, symlinks=True)
-build_seed = '/compiler-seed' if pathlib.Path('/compiler-seed').is_dir() else os.environ.get('GOCACHE')
-if build_seed and build_seed.startswith(('/compiler-seed', '/opt/task-deps/', '/opt/codex-ab-deps/')) and pathlib.Path(build_seed).is_dir():
-    writable_build = pathlib.Path('/tmp/go-build')
-    writable_build.mkdir(parents=True, exist_ok=True)
-    copied = subprocess.run(['cp', '-a', '--reflink=auto', build_seed + '/.', str(writable_build)])
-    if copied.returncode:
-        print('HARNESS_ERROR: evaluator compiler cache setup failed', file=sys.stderr)
-        raise SystemExit(125)
-os.environ['GOCACHE'] = '/tmp/go-build'
-cache = os.environ.get('BUN_INSTALL_CACHE_DIR')
-if cache and cache.startswith(('/opt/task-deps/', '/opt/codex-ab-deps/')) and pathlib.Path(cache).is_dir():
-    writable_cache = pathlib.Path('/tmp/bun-cache')
-    try:
-        shutil.copytree(cache, writable_cache)
-    except (OSError, shutil.Error) as error:
-        print('HARNESS_ERROR: evaluator Bun cache setup failed: ' + str(error), file=sys.stderr)
-        raise SystemExit(125)
-    os.environ['BUN_INSTALL_CACHE_DIR'] = str(writable_cache)
+# Each check has a disposable cache lifetime. Defer background eviction so Go
+# does not delete old immutable payloads whose access timestamps cannot change.
+# Explicit native cache cleaning still works normally.
+cache = pathlib.Path('/opt/task-deps/go-build')
+if cache.is_dir():
+    (cache / 'trim.txt').write_text(str(int(time.time())))
 def fingerprints(root):
     result = {}
     for path in root.rglob('*'):
@@ -170,27 +161,72 @@ if any(current_identity(path) != identity for path, identity in baseline.items()
 raise SystemExit(result.returncode)
 `;
 
-/** Warm only pinned baseline code; candidate checks receive this cache read-only. */
+/** Warm only pinned baseline code; checks share its immutable image seed. */
 export async function prepareEvaluatorCache(runDir: string, state: RunState, docker: string, signal?: AbortSignal): Promise<void> {
   const arm = Object.keys(state.arms).find(arm => state.evaluation?.mode !== "reuse" || !state.imported_arms?.[arm]);
   if (!arm || !await access(join(runDir, "evaluator", arm, "go.mod")).then(() => true, () => false)) return;
   const root = join(runDir, "evaluator/compiler-cache");
-  if (await access(join(root, "ready")).then(() => true, () => false)) return;
-  await mkdir(join(root, "go-build"), { recursive: true, mode: 0o700 });
+  const base = dependencyImage(state);
+  const timeout = Math.min(state.timeout_seconds, 120);
+  const key = createHash("sha256").update(JSON.stringify({ version: 4, base,
+    commit: state.source.base_commit, timeout, operator: state.operator, limits: state.resource_limits })).digest("hex");
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await writeFile(join(root, "warm.json"), JSON.stringify({ key, base_image: base,
+    base_commit: state.source.base_commit, timeout_seconds: timeout, resource_limits: state.resource_limits,
+    command: "git clone --no-hardlinks /seed.git /tmp/base && cd /tmp/base && git checkout --detach $BASE_COMMIT && go test -c -o /tmp/baseline-cache.test ." }, null, 2));
+  if (state.evaluator_cache_image && state.evaluator_cache_image.key !== key) throw new Error("evaluator cache inputs changed");
+  const tag = `codex-ab-evaluator-cache:${key}`;
+  const inspect = () => exec([docker, "image", "inspect", "--format", "{{.Id}}", state.evaluator_cache_image?.image_id ?? tag], { signal });
+  let image = await inspect();
+  if (image.canceled || signal?.aborted) throw new Error("compiler cache warming canceled");
+  if (image.exitCode === 0) {
+    const id = image.stdout.trim();
+    if (!/^sha256:[a-f0-9]{64}$/.test(id)) throw new Error("invalid evaluator cache image identity");
+    if (state.evaluator_cache_image && state.evaluator_cache_image.image_id !== id) throw new Error("evaluator cache image changed");
+    state.evaluator_cache_image = { key, image_id: id };
+    return;
+  }
+  if (state.evaluator_cache_image) throw new Error("pinned evaluator cache image unavailable");
+  if (!/no such (image|object)/i.test(image.stderr)) {
+    process.stderr.write("[grade] optional baseline cache image unavailable; using dependency image cache\n");
+    return;
+  }
   process.stderr.write("[grade] warming shared baseline compiler cache offline\n");
   const result = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-compiler-cache`, signal,
-    timeoutMs: Math.min(state.timeout_seconds * 1000, 120_000),
-    createArgs: ["--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+    timeoutMs: timeout * 1000, snapshotImage: `codex-ab-evaluator-warm:${crypto.randomUUID()}`,
+    onSnapshot: async image_id => { await writeFile(join(root, "warm-image.json"), JSON.stringify({ image_id })); },
+    createArgs: ["--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
       "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
       "--tmpfs", "/tmp:exec,size=4g,mode=1777", "-v", `${join(runDir, "seed.git")}:/seed.git:ro`,
-      "-v", `${join(root, "go-build")}:/cache`, "-e", "GOCACHE=/cache", "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
-      "-e", `BASE_COMMIT=${state.source.base_commit}`,
-      dependencyImage(state), "sh", "-c", 'git clone --no-hardlinks /seed.git /tmp/base && cd /tmp/base && git checkout --detach "$BASE_COMMIT" && go test -c -o /tmp/baseline-cache.test .'],
+      "-e", "GOCACHE=/opt/task-deps/go-build", "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
+      "-e", `BASE_COMMIT=${state.source.base_commit}`, base, "sh", "-c",
+      'git clone --no-hardlinks /seed.git /tmp/base && cd /tmp/base && git checkout --detach "$BASE_COMMIT" && go test -c -o /tmp/baseline-cache.test .'],
     stdoutFile: join(root, "warm.stdout"), stderrFile: join(root, "warm.stderr"),
   });
   if (result.canceled || signal?.aborted) throw new Error("compiler cache warming canceled");
   if (result.timedOut || result.exitCode !== 0) process.stderr.write(`[grade] baseline cache warming ${result.timedOut ? "timed out" : `exited ${result.exitCode}`}; retaining available compiler entries\n`);
-  await writeFile(join(root, "ready"), "baseline cache prepared\n", { mode: 0o600 });
+  if (!result.snapshotImageId) throw new Error("compiler cache warming image was not retained");
+  // Go's best-effort access-time updates otherwise copy aged immutable payloads
+  // into every OverlayFS upper layer. Keep payloads readable/executable but owned
+  // by root; native action indexes and all newly produced entries remain writable.
+  const sealed = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-compiler-cache-seal`, signal, timeoutMs: 60_000,
+    snapshotImage: `codex-ab-evaluator-sealed:${crypto.randomUUID()}`, snapshotUser: `${state.operator.uid}:${state.operator.gid}`,
+    onSnapshot: async image_id => { await writeFile(join(root, "sealed-image.json"), JSON.stringify({ image_id })); },
+    createArgs: ["--network", "none", "--user", "0:0", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER",
+      "--security-opt", "no-new-privileges", "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
+      result.snapshotImageId, "python3", "-c", `import os,pathlib,stat
+for path in pathlib.Path('/opt/task-deps/go-build').rglob('*'):
+    mode=path.lstat().st_mode
+    if stat.S_ISREG(mode) and (path.name.endswith('-d') or path.parent.name.endswith('-d')):
+        os.chown(path,0,0,follow_symlinks=False)
+        path.chmod(0o555 if mode & 0o111 else 0o444)
+`], stdoutFile: join(root, "seal.stdout"), stderrFile: join(root, "seal.stderr"),
+  });
+  if (sealed.exitCode !== 0 || sealed.timedOut || sealed.canceled || signal?.aborted || !sealed.snapshotImageId) throw new Error("compiler cache publication failed; see evaluator/compiler-cache/seal.stderr");
+  state.evaluator_cache_image = { key, image_id: sealed.snapshotImageId };
+  await writeState(runDir, state);
+  const published = await exec([docker, "tag", sealed.snapshotImageId, tag], { signal });
+  if (published.exitCode !== 0 || published.canceled || signal?.aborted) throw new Error("compiler cache publication failed");
 }
 
 export async function executeSemanticCheck(options: {
@@ -202,23 +238,20 @@ export async function executeSemanticCheck(options: {
   const harnessPath = join(options.output, "harness.json");
   await writeFile(harnessPath, JSON.stringify({ ...check, preparation: options.state.criteria?.contract.preparation ?? "true" }, null, 2), { mode: 0o600 });
   const started = new Date();
-  const cacheSeed = join(runDir, "evaluator/compiler-cache/go-build");
-  const hasCacheSeed = await access(join(runDir, "evaluator/compiler-cache/ready")).then(() => true, () => false);
   const result = await runOwnedContainer({
     docker: options.docker, name: options.name, signal: options.signal,
     timeoutMs: state.timeout_seconds * 1000,
-    createArgs: ["--network", "none", "--read-only", "--cap-drop", "ALL",
+    createArgs: ["--network", "none", "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges", "--cpus", state.resource_limits.cpus,
       "--memory", state.resource_limits.memory, "--tmpfs", "/tmp:exec,size=4g,mode=1777",
       "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
       "-e", "XDG_STATE_HOME=/tmp/state", "-e", "XDG_CONFIG_HOME=/tmp/config",
       "-e", "MEKUGI_RUNTIME_DIR=/tmp/runtime",
-      ...(hasCacheSeed ? ["-v", `${cacheSeed}:/compiler-seed:ro`] : []),
       "-e", "PYTHONDONTWRITEBYTECODE=1", "-v", `${options.candidate}:/candidate:ro`,
       "-v", `${harnessPath}:/harness.json:ro`,
       ...(options.arm && !state.dependency_image ? ["-v", `${join(runDir, "arms", options.arm, "grader-go-pkg-cache")}:/home/ubuntu/go/pkg:ro`,
         ...(state.profile !== "godoxy-icons" ? ["-v", `${join(runDir, "arms", options.arm, "grader-bun-cache")}:/home/ubuntu/.bun/install/cache:ro`] : [])] : []),
-      dependencyImage(state), "python3", "-c", CHECK_PROGRAM],
+      state.evaluator_cache_image?.image_id ?? dependencyImage(state), "python3", "-c", CHECK_PROGRAM],
   });
   const execution: CommandEvidence = {
     command: JSON.stringify(check.command), started_at: started.toISOString(), elapsed_ms: result.elapsedMs,

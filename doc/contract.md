@@ -79,6 +79,20 @@ preparing a new run.
 
 Each arm sees only its own clone, caches, and private home. New implementation-agent contexts use neutral task instructions, paths, environment names, and Git branches rather than comparison identifiers. Judges retain their paired inputs. Fresh runs use random session directories for implementation workspaces, active homes, runtime state, and capture exports, including their host-side mount sources. Their mapping is recorded in `run.json`; operator-only logs retain setup labels. Historical records keep their original identities. The shared dependency environment uses `/opt/task-deps`; older prepared inputs require fresh preparation to use the neutral context. The host installed-tool store is mounted read-only into the current arm for `stock-current`, into both arms for `setup-commits`, `stock-mekugi`, `same-setup`, `journal-compaction`, and `duplicate-output`, and into neither arm for `codex-mekugi-grok`. Agent logs and captured patches stay outside its writable mounts. Behavioral criteria are fixed before execution; adaptive checks are authored after both candidates stop and run in separate evaluator workspaces.
 
+Fresh unprotected Codex implementation and judge homes use private Docker copy-on-write
+layers from immutable setup images. Model-free plugin reconciliation prefetches shared
+account-visible runtime inputs; normal launcher refresh behavior remains enabled.
+Original setup snapshots, live logs, sessions, authentication, and SQLite state
+remain ordinary private host files. Other home changes are retained in immutable
+Docker images recorded in `run.json`, including after failure or cancellation.
+Keep those images available alongside the dependency images. To inspect a saved
+home, create a stopped container from its recorded image ID and use `docker cp`
+to copy `/home/ubuntu` into a separate private inspection directory. Authentication
+and live-state bind mounts are excluded from image snapshots. If image capture
+fails, the stopped owned container is retained and the failure identifies it;
+its writable layer is not discarded. Grok, protected runtime, and older prepared runs
+retain their host-mounted homes.
+
 Fresh preparation seeds the same repository-local Git author identity in both candidate
 clones. The dependency image places the task Python
 environment on PATH for direct commands and login shells. Captured Bash login
@@ -116,7 +130,7 @@ After reviewing `run.json`, start the model runs explicitly:
   --confirm-paid-inference
 ```
 
-The command first checks that the base image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. Preflight builds or reuses a `codex-ab-deps:<key>` Docker image keyed by the base image ID, source commit/tree, submodules, preparation command, pinned Mekugi hash when selected, and operator identity. Dependency caches and the frozen Mekugi executable enter the final image, not source, homes, credentials, or evaluator controls. Mekugi startup checks and execution use that immutable image without a host Mekugi bind mount. Fresh containers share immutable image layers and get private copy-on-write storage; dependency changes made by an agent never reach another arm, another run, or grading. Each arm materializes its generated workspace assets offline using those cached dependencies. Grading uses the original dependency image offline with a read-only root and a shared immutable build-cache seed; cache writes and execution workspaces stay temporary. Evaluator cache reuse is described in the blind-judge section. Protected execution uses temporary Go build output because its root filesystem is read-only. Ignored `node_modules` directories created during preparation are removed after successful patch capture, unless an agent has tracked them or redirected their path; removed paths are recorded per arm. They can be regenerated from the shared image. The first image build may download dependencies; later matching runs reuse it. Build logs are saved under `artifacts/dependencies.stdout` and `artifacts/dependencies.stderr`, and the immutable dependency image ID is recorded in `run.json`. Keep that image available for later grading or trial runs. Docker images and build cache occupy shared disk space outside the corpus; this does not impose a 1 GB cap on source, tool snapshots, or captured logs. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both arms with the selected model and reasoning effort (defaults: gpt-6-astra and medium) concurrently with identical two-CPU and 4 GiB limits. Preflight and the final launch check verify copied controls, both setup templates, the host installed-tool file manifest, the selected Bun executable, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
+The command first checks that the base image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. Preflight builds or reuses a `codex-ab-deps:<key>` Docker image keyed by the base image ID, source commit/tree, submodules, preparation command, pinned Mekugi hash when selected, and operator identity. Dependency caches and the frozen Mekugi executable enter the final image, not source, homes, credentials, or evaluator controls. Mekugi startup checks and execution use that immutable image without a host Mekugi bind mount. Fresh containers share immutable image layers and get private copy-on-write storage; dependency changes made by an agent never reach another arm, another run, or grading. Each arm materializes its generated workspace assets offline using those cached dependencies. Grading uses the original dependency image offline with read-only candidate and harness mounts, a fresh private Docker copy-on-write root, and a shared immutable build-cache seed; cache writes and execution workspaces stay temporary. Evaluator cache reuse is described in the blind-judge section. Protected execution uses temporary Go build output because its root filesystem is read-only. Ignored `node_modules` directories created during preparation are removed after successful patch capture, unless an agent has tracked them or redirected their path; removed paths are recorded per arm. They can be regenerated from the shared image. The first image build may download dependencies; later matching runs reuse it. Build logs are saved under `artifacts/dependencies.stdout` and `artifacts/dependencies.stderr`, and the immutable dependency image ID is recorded in `run.json`. Keep that image available for later grading or trial runs. Docker images and build cache occupy shared disk space outside the corpus; this does not impose a 1 GB cap on source, tool snapshots, or captured logs. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both arms with the selected model and reasoning effort (defaults: gpt-6-astra and medium) concurrently with identical two-CPU and 4 GiB limits. Preflight and the final launch check verify copied controls, both setup templates, the host installed-tool file manifest, the selected Bun executable, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
 
 Mekugi arms use `mekugi codex headless --yolo` (without `codex` for third-party
 routing), admitting Main and its children through Mekugi's server-owned runtime.
@@ -293,14 +307,29 @@ Judge cost estimates use recorded model list rates; fast-tier surcharges are
 not included.
 Offline evaluator checks across both candidates and passes reuse the same
 prewarmed Go build cache from the pinned baseline and the Bun dependency cache
-seed in the pinned dependency image. Baseline cache warming runs once offline
-before both passes, compiling without running baseline tests. Warming is optional
+seed in the pinned dependency image. Baseline cache warming runs offline in a
+shared Docker image keyed by the pinned dependency image, baseline commit,
+operator, and warming timeout. The run records its immutable image ID rather
+than storing another compiler cache in its directory. Matching runs reuse that
+image; keep it available for later checks. Warming compiles without running
+baseline tests and retains its warming inputs, command, and diagnostics. Compilation is optional
 and bounded to two minutes or the shorter run timeout; partial cache entries
 remain reusable after a timeout. Cancellation still stops the operation.
-Each evaluator makes a private writable copy, using copy-on-write cloning where
-available. Candidate code cannot change another check's cache. Cache writes stay
+Each check uses its fresh private Docker writable layer to update native Go and
+Bun caches directly over the immutable image seed. No full cache is copied into
+its temporary workspace. Native cache behavior, including Go executable reuse,
+remains intact. Existing Go seed payloads remain read-only to prevent access-time
+bookkeeping from copying aged payloads into every check; native action indexes
+and new cache entries remain writable. Checks stay offline, non-root, capability-free, and resource
+bounded, with read-only candidate and harness mounts. A check cannot change its
+image, another check's cache, or original candidate files. Cache writes stay
 outside report bundles and credential-bearing judge containers. Candidate source
 copies, outputs, and temporary execution workspaces remain separate.
+
+After an implementation or judge container is confirmed stopped and removed,
+the runner discards its downloaded remote plugin catalog if that path was absent
+from the selected setup. Executable plugin contents, sessions, databases, logs,
+auth, and check artifacts remain retained. Redirected cache paths are left alone.
 
 Capacity errors retry automatically within the active judge command, with at most three launches per stage and 5-second and 15-second delays. Each launch gets a fresh isolated home and distinct logs; the state and report retain every attempt and its usage. A completed stage is never repeated.
 Cancellation interrupts the delay and prevents another launch. Other failures, timeouts, invalid

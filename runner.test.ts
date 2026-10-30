@@ -18,6 +18,7 @@ import * as usage from "./usage";
 import * as mekugi from "./mekugi";
 import * as containers from "./container";
 import { prepareEvaluatorCache } from "./semantic";
+import * as processes from "./process";
 import { buildReport } from "./report";
 import { embeddedFallbackPricing, type PricingSnapshot } from "./usage";
 import { readToolStoreManifest } from "./snapshot";
@@ -475,7 +476,11 @@ test("same-setup uses one immutable configuration for both arms and rejects drif
   expect(launches.some(line => line.includes(" mise exec -- codex exec "))).toBe(true);
   expect(launches.some(line => line.includes(" mise exec -- sh -c ") && line.includes("mekugi --capture-output=/mekugi-exports/capture.jsonl --debug codex headless --yolo "))).toBe(true);
   expect(launches.every(line => line.includes(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`))).toBe(true);
-  expect(await readlink(join(run, dirname(state.arms.current.repository), "home/ubuntu/linked-guidance"))).toBe("AGENTS.md");
+  const runtime = await readState(run);
+  expect(runtime.runtime_homes?.stock?.image_id).not.toBe(runtime.runtime_homes?.current?.image_id);
+  for (const arm of ["stock", "current"] as const) {
+    expect(launches.find(line => line.includes(`--name codex-ab-${state.id}-${arm} `))).toContain(`${runtime.runtime_homes![arm]!.image_id} mise exec`);
+  }
   await file(join(run, "reports/report.json"), "{}");
   await file(join(run, "reports/report.md"), "fixture report");
   await file(join(run, state.mekugi_exports!.capture), "retained capture");
@@ -654,7 +659,7 @@ test("duplicate-output launches equal controls with distinct treatment and per-a
     expect(preflight).toContain(`${join(run, "artifacts/preflight-mekugi", arm)}:/mekugi-exports`);
     const stagedHome = preflight.match(/-v (\S+):\/home\/ubuntu /)![1]!;
     expect(preflight).toContain(`${stagedHome}:${snapshot.source_home} `);
-    expect(launch).toContain(`${join(run, dirname(state.arms[arm].repository), "home/ubuntu")}:${snapshot.source_home}`);
+    expect(launch).toContain(`${join(run, dirname(state.arms[arm].repository), "home/ubuntu/.codex")}:/runtime-state/codex`);
     expect(launch).not.toContain(`${snapshot.source_home}:${snapshot.source_home}`);
     expect(log.indexOf(preflight)).toBeLessThan(log.indexOf(launch));
     expect(launch).toContain(`${dirname(join(run, state.mekugi_exports_by_arm![arm]!.capture))}:/mekugi-exports`);
@@ -1094,7 +1099,7 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   expect(log.indexOf("-stock-capture")).toBeLessThan(log.indexOf("-judge-1-harness"));
   const modelLaunches = log.split("\n").filter(line => (line.includes(" exec --json ") || line.includes(" headless --yolo ")) && !line.includes("-judge-"));
   expect(modelLaunches.every(line => line.includes(`--network codex-ab-${state.id}-provider`))).toBe(true);
-  const judgeLaunches = log.split("\n").filter(line => / create --rm --name codex-ab-.*-judge-[12]-(?:harness-1|assessment)-1 /.test(line));
+  const judgeLaunches = log.split("\n").filter(line => / create (?:--rm )?--name codex-ab-.*-judge-[12]-(?:harness-1|assessment)-1 /.test(line));
   expect(judgeLaunches).toHaveLength(4);
   const firstHarnessFinish = Math.min(
     log.indexOf(`FINISH codex-ab-${state.id}-judge-1-harness-1-1`),
@@ -1112,9 +1117,14 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   expect(done.judge?.service_tier).toBe("fast");
   expect(done.judge?.attempts?.every(attempt => attempt.service_tier === "fast")).toBe(true);
   expect(evaluatorLaunches.every(line => !line.includes(":/build-cache") && !line.includes("GOCACHE=/tmp/go-build"))).toBe(true);
-  expect(evaluatorLaunches.every(line => line.includes("--read-only"))).toBe(true);
-  expect(evaluatorLaunches.every(line => line.includes(":/compiler-seed:ro"))).toBe(true);
+  expect(evaluatorLaunches.every(line => !line.includes("--read-only") && line.includes(":/candidate:ro") && line.includes(":/harness.json:ro"))).toBe(true);
+  expect(evaluatorLaunches.every(line => line.includes(done.evaluator_cache_image!.image_id) && !line.includes(":/compiler-seed"))).toBe(true);
   expect(judgeLaunches.every(line => !line.includes(":/compiler-seed") && !line.includes(":/cache"))).toBe(true);
+  for (const home of [...Object.values(done.arm_attempts!).map(attempt => attempt!.codex_home), ...done.judge!.usage_homes]) {
+    expect(await Bun.file(join(run, home, "cache/remote_plugin_catalog/download.json")).exists()).toBe(false);
+    expect(await Bun.file(join(run, home, "plugins/cache/tool.js")).text()).toBe("plugin source\n");
+    expect(await Bun.file(join(run, home, "auth.json")).text()).toBe("{}\n");
+  }
 });
 test("parallel semantic passes preserve the initiating failure", async () => {
   const run = await prepared();
@@ -1154,20 +1164,42 @@ test.each(["missing", "malformed", "symlink"])("harness plan artifacts reject %s
     fault === "missing" ? "ENOENT" : fault === "malformed" ? "invalid semantic harness plan JSON" : "ELOOP");
   expect((await readFile(fake.log, "utf8"))).not.toContain("-round-1-");
 });
-test("optional baseline cache timeout preserves judging and cancellation", async () => {
+test("baseline compiler cache is image-pinned without a per-run cache copy", async () => {
   const run = await prepared(); const state = await readState(run);
   await file(join(run, "evaluator/stock/go.mod"), "module fixture\n");
-  const result = { exitCode: -1, timedOut: true, canceled: false, elapsedMs: 1, stdout: "", stderr: "" };
-  const warm = spyOn(containers, "runOwnedContainer").mockResolvedValue(result);
+  const result = { exitCode: 0, timedOut: false, canceled: false, elapsedMs: 1, stdout: "", stderr: "" };
+  const image = `sha256:${"c".repeat(64)}`;
+  let built = false;
+  const warm = spyOn(processes, "exec").mockImplementation(async () =>
+    ({ ...result, exitCode: built ? 0 : 1, stdout: built ? image : "", stderr: built ? "" : "No such image" }));
+  const launch = spyOn(containers, "runOwnedContainer").mockImplementation(async options => {
+    expect(options.createArgs).toContain("--network");
+    expect(options.createArgs).toContain(state.resource_limits.memory);
+    expect(options.createArgs).toContain(state.resource_limits.cpus);
+    if (options.name.endsWith("-seal")) {
+      expect(options.timeoutMs).toBe(60_000);
+      expect(options.snapshotUser).toBe("1000:1000");
+      expect(options.createArgs).toContain("0:0");
+    } else {
+      expect(options.timeoutMs).toBe(state.timeout_seconds * 1000);
+      expect(options.createArgs.at(-1)).toContain('go test -c');
+    }
+    built = true;
+    await options.onSnapshot?.(image);
+    return { ...result, cleanupVerified: true, snapshotImageId: image };
+  });
   try {
     await prepareEvaluatorCache(run, state, "unused");
-    expect(await Bun.file(join(run, "evaluator/compiler-cache/ready")).exists()).toBe(true);
-    expect(warm.mock.calls[0]![0].createArgs.join(" ")).toContain("go test -c");
-    await rm(join(run, "evaluator/compiler-cache/ready"));
+    expect(state.evaluator_cache_image?.image_id).toBe(image);
+    expect(await Bun.file(join(run, "evaluator/compiler-cache/go-build")).exists()).toBe(false);
+    const other = structuredClone(state); delete other.evaluator_cache_image;
+    const builds = launch.mock.calls.length;
+    await prepareEvaluatorCache(run, other, "unused");
+    expect(other.evaluator_cache_image).toEqual(state.evaluator_cache_image);
+    expect(launch.mock.calls).toHaveLength(builds);
     warm.mockResolvedValue({ ...result, canceled: true });
     await expect(prepareEvaluatorCache(run, state, "unused")).rejects.toThrow("warming canceled");
-    expect(await Bun.file(join(run, "evaluator/compiler-cache/ready")).exists()).toBe(false);
-  } finally { warm.mockRestore(); }
+  } finally { warm.mockRestore(); launch.mockRestore(); }
 });
 test("semantic file boundaries reject unrelated changes", async () => {
   const criteriaPath = join(root, "boundary-criteria.json");
@@ -1372,11 +1404,19 @@ case "$operation" in
       case "$argument" in
         *:/capture) printf '%s' "\${argument%:/capture}" >'${stateDir}/'$name.capture ;;
         *:/home/ubuntu) setup="\${argument%:/home/ubuntu}" ;;
+        *:/runtime-state/codex) setup="\${argument%:/runtime-state/codex}"; setup="\${setup%/.codex}" ;;
         *:/harness) printf '%s' "\${argument%:/harness}" >'${stateDir}/'$name.harness ;;
       esac
       previous="$argument"
     done
     test -n "$name" || exit 2
+    case "$name" in
+      *-judge-*|*-stock|*-current|*-arm-[0-9]*)
+        mkdir -p "$setup/.codex/cache/remote_plugin_catalog" "$setup/.codex/plugins/cache"
+        printf '%s\\n' '{}' > "$setup/.codex/cache/remote_plugin_catalog/download.json"
+        printf '%s\\n' 'plugin source' > "$setup/.codex/plugins/cache/tool.js"
+        ;;
+    esac
     case "$name" in
       *-judge-*) cp "$setup/.codex/config.toml" '${stateDir}/'$name.config.toml ;;
       *-preflight-setup|*-preflight-grok|*-preflight-mekugi*|*-preflight-environment-*)
@@ -1441,9 +1481,11 @@ case "$operation" in
         ;;
     esac
     printf '%s FINISH %s\\n' "$(date +%s%N)" "$name" >> '${log}'
-    rm -f '${stateDir}/'$name
+    case "$(cat '${stateDir}/'$name)" in *--rm*) rm -f '${stateDir}/'$name ;; esac
     exit "$status"
     ;;
+  stop) echo stopped ;;
+  commit) printf 'sha256:%s\\n' "$(printf '%s' "$1" | sha256sum | cut -d ' ' -f 1)" ;;
   container)
     test "$1" = inspect || exit 4
     target=; for argument in "$@"; do target="$argument"; done
@@ -1697,7 +1739,7 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain(" mise exec -- codex exec ");
   expect(log).toContain(`${state.runtime_tools.current_setup_installs}:${state.runtime_tools.current_setup_installs}:ro`);
-  const agentWarmCalls = log.split("\n").filter(line => /-agent-warm /.test(line));
+  const agentWarmCalls = log.split("\n").filter(line => line.includes(" create ") && /-agent-warm /.test(line));
   expect(agentWarmCalls).toHaveLength(2);
   expect(agentWarmCalls.every(line => line.includes("--network none") && !line.includes("go-pkg-cache"))).toBe(true);
   expect(log).not.toContain("grader-go-pkg-cache");

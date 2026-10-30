@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { DEPENDENCY_ENV, dependencyKey, ensureDependencyImage } from "./dependencies";
+import { DEPENDENCY_ENV, dependencyKey, ensureDependencyImage, discardDownloadedCatalog } from "./dependencies";
 import { protectedArgs } from "./isolation";
 import { sha256 } from "./state";
 import type { RunState } from "./types";
@@ -13,6 +13,33 @@ function fixture(): RunState {
     operator: { uid: 1000, gid: 1000 }, runtime_tools: { bun_sha256: "bun" },
     criteria: { contract: { preparation: "true" } } } as RunState;
 }
+
+test("catalog reclamation preserves evidence, plugins, setup-owned data and redirected paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "task-catalog-"));
+  try {
+    const home = join(root, "home"), template = join(root, "template");
+    const catalog = ".codex/cache/remote_plugin_catalog";
+    for (const path of [catalog + "/download.json", ".codex/sessions/session.jsonl", ".codex/logs_2.sqlite", ".codex/plugins/cache/plugin.js"]) {
+      await mkdir(join(home, path, ".."), { recursive: true });
+      await writeFile(join(home, path), "retain unless catalog");
+    }
+    await discardDownloadedCatalog(home, template);
+    expect(await Bun.file(join(home, catalog, "download.json")).exists()).toBe(false);
+    for (const path of [".codex/sessions/session.jsonl", ".codex/logs_2.sqlite", ".codex/plugins/cache/plugin.js"]) {
+      expect(await Bun.file(join(home, path)).text()).toBe("retain unless catalog");
+    }
+    await mkdir(join(template, catalog), { recursive: true });
+    await mkdir(join(home, catalog), { recursive: true });
+    await writeFile(join(home, catalog, "owned.json"), "setup-owned");
+    await discardDownloadedCatalog(home, template);
+    expect(await Bun.file(join(home, catalog, "owned.json")).text()).toBe("setup-owned");
+    await rm(join(home, ".codex/cache"), { recursive: true });
+    await symlink(join(template, ".codex/cache"), join(home, ".codex/cache"));
+    await writeFile(join(template, catalog, "outside.json"), "outside");
+    await discardDownloadedCatalog(home);
+    expect(await Bun.file(join(template, catalog, "outside.json")).text()).toBe("outside");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("dependency key pins build inputs, not per-run paths or source locations", () => {
   const state = fixture();

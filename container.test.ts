@@ -26,8 +26,13 @@ case "$operation" in
  start)
   name=; for argument in "$@"; do name="$argument"; done
   spec="$(cat "$state/$name")"
-  case "$spec" in *'sleep-command'*) trap 'exit 143' TERM INT; sleep 2;; *'fail-command'*) rm -f "$state/$name"; exit 7;; *'auto-remove-race'*) exit 0;; *) echo harmless;; esac
-  rm -f "$state/$name";;
+  case "$spec" in *'sleep-command'*) trap 'exit 143' TERM INT; sleep 2;; *'fail-command'*) case "$spec" in *--rm*) rm -f "$state/$name";; esac; exit 7;; *'auto-remove-race'*) exit 0;; *) echo harmless;; esac
+  case "$spec" in *--rm*) rm -f "$state/$name";; esac;;
+ stop) echo stopped;;
+ commit)
+  target="$1"
+  case "$target" in *snapshot-fails*) echo snapshot-failed >&2; exit 7;; esac
+  echo sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc;;
  container)
   target=; for argument in "$@"; do target="$argument"; done
   case "$target" in *daemon-inspect*) echo 'daemon permission denied' >&2; exit 2;; esac
@@ -105,4 +110,50 @@ test("a preexisting name collision is preserved", async () => {
   await writeFile(collision, "--label codex-ab.owner=somebody-else fixture harmless\n");
   expect(runOwnedContainer({ docker, name: "collision", createArgs: ["fixture", "harmless"] })).rejects.toThrow("name already exists");
   expect(await Bun.file(collision).exists()).toBe(true);
+});
+
+
+test.each(["ordinary", "failure", "timeout"])("snapshot retains %s execution before removal", async kind => {
+  const name = `snapshot-${kind}`;
+  const result = await runOwnedContainer({ docker, name, snapshotImage: `retained:${kind}`,
+    timeoutMs: kind === "timeout" ? 50 : undefined,
+    createArgs: ["fixture", kind === "timeout" ? "sleep-command" : kind === "failure" ? "fail-command" : "harmless"] });
+  expect(result.snapshotImageId).toBe(`sha256:${"c".repeat(64)}`);
+  expect(result.cleanupVerified).toBe(true);
+  const calls = await readFile(log, "utf8");
+  expect(calls).toContain(`create --name ${name}`);
+  expect(calls.indexOf(`commit ${name}`)).toBeLessThan(calls.indexOf(`rm --force ${name}`));
+});
+
+test("cancellation snapshots the stopped writable layer before removal", async () => {
+  const controller = new AbortController();
+  const pending = runOwnedContainer({ docker, name: "snapshot-abort", snapshotImage: "retained:abort", signal: controller.signal,
+    createArgs: ["fixture", "sleep-command"] });
+  await Bun.sleep(50); controller.abort();
+  const result = await pending;
+  expect(result.canceled).toBe(true);
+  expect(result.snapshotImageId).toBe(`sha256:${"c".repeat(64)}`);
+});
+
+test("failed snapshots retain the stopped container instead of discarding evidence", async () => {
+  await expect(runOwnedContainer({ docker, name: "evidence-snapshot-fails", snapshotImage: "retained:failure",
+    createArgs: ["fixture", "harmless"] })).rejects.toThrow("stopped container retained for evidence");
+  expect(await Bun.file(join(root, "state/evidence-snapshot-fails")).exists()).toBe(true);
+  expect(await readFile(log, "utf8")).not.toContain("rm --force evidence-snapshot-fails");
+});
+
+test("snapshot identity is delivered before cleanup and survives cleanup failure", async () => {
+  let retained: string | undefined;
+  const failure = await runOwnedContainer({ docker, name: "snapshot-cleanup-fails", snapshotImage: "retained:cleanup",
+    onSnapshot: image => { retained = image; }, createArgs: ["fixture", "harmless"] }).catch(error => error);
+  expect(retained).toBe(`sha256:${"c".repeat(64)}`);
+  expect(failure).toBeInstanceOf(OwnedContainerError);
+  expect(failure.snapshotImageId).toBe(retained);
+  expect(await Bun.file(join(root, "state/snapshot-cleanup-fails")).exists()).toBe(true);
+});
+
+test("metadata preparation snapshots restore the non-root runtime image identity", async () => {
+  await runOwnedContainer({ docker, name: "snapshot-user", snapshotImage: "retained:user", snapshotUser: "1000:1000",
+    createArgs: ["--user", "0:0", "fixture", "harmless"] });
+  expect(await readFile(log, "utf8")).toContain("commit --change USER 1000:1000 snapshot-user retained:user");
 });

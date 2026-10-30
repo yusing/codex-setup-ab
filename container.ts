@@ -10,13 +10,20 @@ export interface OwnedContainerOptions {
   stderrFile?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Retain private writable-layer changes before removal, including failed/canceled commands. */
+  snapshotImage?: string;
+  /** Restore the image's runtime identity after a root-only metadata preparation. */
+  snapshotUser?: string;
+  onSnapshot?: (imageId: string) => void | Promise<void>;
 }
 
 export interface OwnedContainerResult extends ExecResult {
   cleanupVerified: true;
+  snapshotImageId?: string;
 }
 
 export class OwnedContainerError extends Error {
+  snapshotImageId?: string;
   constructor(message: string, readonly result?: ExecResult) { super(message); this.name = "OwnedContainerError"; }
 }
 
@@ -111,13 +118,31 @@ export async function runOwnedContainer(options: OwnedContainerOptions): Promise
   let created = false;
   let containerId: string | undefined;
   let result: ExecResult | undefined;
+  let snapshotImageId: string | undefined;
+  let finishing: Promise<void> | undefined;
+  let started = false;
+  const finish = (): Promise<void> => finishing ??= (async () => {
+    if (options.snapshotImage && containerId && started) {
+      const ownership = await inspect(docker, containerId, '{{ index .Config.Labels "codex-ab.owner" }}');
+      if (!ownership.present || ownership.value !== owner) throw new OwnedContainerError(`cannot snapshot owned container ${name}`);
+      const stopped = await exec([docker, "stop", "--time", "1", containerId], { timeoutMs: 30_000 });
+      if (stopped.exitCode !== 0) throw new OwnedContainerError(`cannot stop ${name}; container retained for evidence`);
+      const image = await exec([docker, "commit", ...(options.snapshotUser ? ["--change", `USER ${options.snapshotUser}`] : []), containerId, options.snapshotImage], { timeoutMs: 120_000 });
+      if (image.exitCode !== 0 || !/^sha256:[a-f0-9]{64}$/.test(image.stdout.trim())) {
+        throw new OwnedContainerError(`cannot snapshot ${name}: ${image.stderr.trim() || image.stdout.trim() || `exit ${image.exitCode}`}; stopped container retained for evidence`);
+      }
+      snapshotImageId = image.stdout.trim();
+      await options.onSnapshot?.(snapshotImageId);
+    }
+    await removeAndVerify(docker, name, owner, containerId);
+  })();
   if (signal?.aborted) {
     if (!(await absent(docker, name))) throw new OwnedContainerError(`container name collision before canceled creation: ${name}`);
     throw new OwnedContainerError(`container ${name} canceled before creation`);
   }
   if (!(await absent(docker, name))) throw new OwnedContainerError(`container name already exists and is not owned by this attempt: ${name}`);
   try {
-    const create = await exec([docker, "create", "--rm", "--name", name, "--label", `codex-ab.owner=${owner}`, ...options.createArgs], { signal });
+    const create = await exec([docker, "create", ...(options.snapshotImage ? [] : ["--rm"]), "--name", name, "--label", `codex-ab.owner=${owner}`, ...options.createArgs], { signal });
     if (create.exitCode !== 0 || create.canceled || signal?.aborted) {
       await removeAndVerify(docker, name, owner);
       throw new OwnedContainerError(`container ${name} was not safely created: ${create.stderr.trim()}`, create);
@@ -132,12 +157,13 @@ export async function runOwnedContainer(options: OwnedContainerOptions): Promise
     }
     let abortCleanup: Promise<{ error?: unknown }> | undefined;
     const cleanupOnAbort = () => {
-      abortCleanup ??= removeAndVerify(docker, name, owner, containerId).then(
+      abortCleanup ??= finish().then(
         () => ({}),
         error => ({ error }),
       );
     };
     signal?.addEventListener("abort", cleanupOnAbort, { once: true });
+    started = true;
     result = await exec([docker, "start", "--attach", ...(options.stdin === undefined ? [] : ["--interactive"]), containerId], {
       stdin: options.stdin,
       stdoutFile: options.stdoutFile,
@@ -150,20 +176,24 @@ export async function runOwnedContainer(options: OwnedContainerOptions): Promise
       const outcome = await abortCleanup;
       if (outcome.error) throw outcome.error;
     }
-    await removeAndVerify(docker, name, owner, containerId);
-    return { ...result, cleanupVerified: true };
+    await finish();
+    return { ...result, cleanupVerified: true, snapshotImageId };
   } catch (error) {
     try {
-      if (created) await removeAndVerify(docker, name, owner, containerId);
+      if (created) await finish();
       else {
         const raced = await inspect(docker, name, '{{ index .Config.Labels "codex-ab.owner" }}');
         if (raced.present && raced.value === owner) await removeAndVerify(docker, name, owner);
         else if (raced.present) throw new OwnedContainerError(`refusing to remove unowned container after create failure: ${name}`);
       }
     } catch (cleanupError) {
-      throw new OwnedContainerError(`${error instanceof Error ? error.message : String(error)}; ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, result);
+      const failure = new OwnedContainerError(`${error instanceof Error ? error.message : String(error)}; ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, result);
+      failure.snapshotImageId = snapshotImageId;
+      throw failure;
     }
-    if (error instanceof OwnedContainerError) throw error;
-    throw new OwnedContainerError(`container ${name} failed: ${error instanceof Error ? error.message : String(error)}`, result);
+    if (error instanceof OwnedContainerError) { error.snapshotImageId = snapshotImageId; throw error; }
+    const failure = new OwnedContainerError(`container ${name} failed: ${error instanceof Error ? error.message : String(error)}`, result);
+    failure.snapshotImageId = snapshotImageId;
+    throw failure;
   }
 }

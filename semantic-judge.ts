@@ -7,10 +7,12 @@ import { runOwnedContainer, withOwnedNetwork } from "./container";
 import { judgeOutputSchema, lastAgentMessage, mappedWinner, validateJudgePass } from "./judge";
 import { criterionAssessmentSchema, prepareSemanticAssessment, semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
 import { minimalCodexConfig, verifyPreparedInputs } from "./prepare";
-import { writeState } from "./state";
+import { sha256, writeState } from "./state";
 import { armLabels, presentationLabel } from "./arm-labels";
 import type { ArmName, JudgeAttempt, JudgeReport, RunState } from "./types";
 import { prepareEvaluatorCache } from "./semantic";
+import { discardDownloadedCatalog } from "./dependencies";
+import { prepareRuntimeHome, runtimeHomeMounts } from "./runtime-home";
 import { retainedEvaluations } from "./evaluation";
 import type { CandidateId, JudgePass } from "./types";
 
@@ -170,22 +172,31 @@ ${prompt}`;
           const outputPath = join(runDir, attempt.stdout_path);
           const errorPath = join(runDir, attempt.stderr_path);
           try {
+            const cow = state.home_storage === "docker-cow";
+            const image = cow ? (await prepareRuntimeHome({ runDir, state, template: home, auth, docker, signal: controller.signal,
+              identity: { config: await sha256(join(home, ".codex/config.toml")) }, baseImage: state.image_id ?? state.image })).image_id : state.image_id ?? state.image;
+            if (cow) { attempt.home_image_id = image; await persistState(); }
+            const homeMounts = cow ? await runtimeHomeMounts(home) : ["-v", `${home}:/home/ubuntu`];
             const result = await withOwnedNetwork(docker,
               `codex-ab-${state.id}-judge-provider-${pass}-${stage}-${number}`, controller.signal,
               providerNetwork => runOwnedContainer({
                 docker, name: `codex-ab-${state.id}-judge-${pass}-${stage}-${number}`, signal: controller.signal,
+                snapshotImage: cow ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
+                onSnapshot: async image_id => { attempt.home_image_id = image_id; await persistState(); },
                 timeoutMs: state.timeout_seconds * 1000, stdin: prompt, stdoutFile: outputPath, stderrFile: errorPath,
                 createArgs: ["--network", providerNetwork, "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "-i",
-                  "-v", `${home}:/home/ubuntu`, "-v", `${schemaPath}:/schema.json:ro`,
+                  ...homeMounts, "-v", `${schemaPath}:/schema.json:ro`,
                   "-v", `${join(runDir, "evaluator/semantic", `pass-${pass}`)}:/evidence:ro`,
                   ...(harness ? ["-v", `${scratchDirectory(number)}:/harness`] : []),
                   ...(state.upstream_reference ? ["-v", `${join(runDir, "evaluator/upstream")}:/reference:ro`] : []),
                   ...order.flatMap((arm, candidateIndex) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${ids[candidateIndex]}:ro`]),
-                  state.image_id ?? state.image, "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check",
+                  image, "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check",
                   "--output-schema", "/schema.json", "--model", report.model, "-c", 'model_reasoning_effort="high"',
                   "-c", 'service_tier="fast"',
                   "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"', "-"],
               }));
+            if (result.snapshotImageId) attempt.home_image_id = result.snapshotImageId;
+            await discardDownloadedCatalog(home);
             const raw = await readFile(outputPath, "utf8");
             const stderr = await readFile(errorPath, "utf8");
             if (result.timedOut) {

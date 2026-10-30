@@ -44,6 +44,7 @@ export interface ArmResult {
   head_after_agent: string;
   collection_error?: string;
   lifecycle_error?: string;
+  home_image_id?: string;
   grade?: {
     preparation: CommandEvidence;
     evaluator_error?: string;
@@ -72,6 +73,10 @@ export interface RunState {
   image: string;
   image_id?: string;
   dependency_image?: { key: string; base_image: string; image_id: string };
+  evaluator_cache_image?: { key: string; image_id: string };
+  home_storage?: "docker-cow";
+  runtime_plugin_image?: { key: string; image_id: string };
+  runtime_homes?: Record<string, { key: string; image_id: string }>;
   comparison?: Comparison;
   auto_compact_limit?: number;
   arm_order?: ArmOrder;
@@ -140,6 +145,7 @@ export interface RunState {
     finished_at?: string;
     status: "started" | "stopped" | "failed";
     error?: string;
+    home_image_id?: string;
   }>>;
   finishing_history?: NonNullable<RunState["finishing"]>[];
   finishing?: {
@@ -165,6 +171,7 @@ export interface JudgePass {
 }
 
 export interface JudgeAttempt {
+  home_image_id?: string;
   service_tier?: "default" | "priority" | "fast";
   stage?: string;
   pass: 1 | 2;

@@ -1,4 +1,4 @@
-import { cp, copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, copyFile, lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -102,4 +102,27 @@ export function dependencyImage(state: RunState): string {
 export async function generatedDependencyDirectories(repository: string): Promise<string[]> {
   const result = await checked(["git", "-C", repository, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]);
   return result.stdout.split("\0").filter(path => path === "node_modules/" || path.endsWith("/node_modules/"));
+}
+
+/** Reclaim generated catalog downloads only after the owning container is absent. */
+export async function discardDownloadedCatalog(home: string, template?: string): Promise<void> {
+  const relative = ".codex/cache/remote_plugin_catalog";
+  try {
+    // Auth, sessions, databases, logs and executable plugin contents stay retained.
+    // A selected setup may own this path, in which case its bytes stay too.
+    if (template && await lstat(join(template, relative)).then(() => true, error => {
+      if (error.code !== "ENOENT") throw error;
+      return false;
+    })) return;
+    let current = home;
+    for (const part of ["", ...relative.split("/")]) {
+      current = join(current, part);
+      if (!(await lstat(current)).isDirectory()) return;
+    }
+    await rm(current, { recursive: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      process.stderr.write(`[cache] downloaded plugin catalog retained: ${String(error)}\n`);
+    }
+  }
 }

@@ -899,6 +899,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     mekugi_exports_by_arm: mekugiExportsByArm,
     submodules,
     schema_version: 1,
+    home_storage: "docker-cow",
     id: basename(runDir),
     created_at: new Date().toISOString(),
     status: "prepared",
