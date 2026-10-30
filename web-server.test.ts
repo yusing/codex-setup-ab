@@ -329,7 +329,10 @@ test("source assessments replace numbered identities using each pass's presentat
   const entry = await attach(directory);
   const input = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
   const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
-  const rendered = runInNewContext(source + "\nresultContent(input)", { input });
+  const rendered = runInNewContext(source + `
+    let html = resultContent(input);
+    for (const render of pendingTrees.values()) html += render();
+    html;`, { input });
   expect(rendered).toContain("Pass 1 winner: Codex + Mekugi");
   expect(rendered).toContain("Pass 2 winner: Codex + Mekugi");
   expect(rendered).toContain("Pass 3 winner: Unmapped setup");
@@ -342,7 +345,7 @@ test("source assessments replace numbered identities using each pass's presentat
   expect(rendered).not.toContain("Codex + Mekugi met the criterion");
   expect(rendered).toContain("Overall winner: Codex + Mekugi");
   expect(rendered).not.toMatch(/candidate[-_ ]([12])|>A[: ]|>B[: ]/i);
-  const overview = rendered.split('<details class="tree">')[0];
+  const overview = rendered.split(/<details class="tree"[ >]/)[0];
   expect(overview).not.toMatch(/<details(?! class="(?:criterion-reasoning|assessment-details)")/);
   expect(overview).toContain('<summary>Full evidence and issues</summary>');
   expect(overview).toContain('<span class="status-chip pass">P1 · pass</span>');
@@ -596,6 +599,67 @@ test("streamed literal data keys follow additions, replacements, and deletions",
       expect(JSON.stringify(updated.state.nested)).toBe(JSON.stringify(nested));
     }
   } finally { stream.close(); }
+});
+
+test("browser follows fragment navigation and ignores the previously selected stream", async () => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const handlers: Record<string, () => unknown> = {}, rendered: string[] = [];
+  const element = (id: string) => ({ checked: true, hidden: false, addEventListener: (name: string, callback: () => unknown) => { handlers[id + ":" + name] = callback; }, replaceChildren() {} });
+  const elements = new Map<string, ReturnType<typeof element>>();
+  const document = { querySelectorAll: () => [], addEventListener() {}, getElementById(id: string) {
+    const node = elements.get(id) ?? element(id); elements.set(id, node); return node;
+  } };
+  const location = { hash: "#aaaa" };
+  const streams: { url: string; closed: boolean; handlers: Record<string, (event: { data: string }) => void> }[] = [];
+  await runInNewContext(source + '\ndrawLaunch = () => {}; api = async () => ({}); renderSnapshot = data => { snapshot = data; rendered.push(data.entry.id); }; init();', {
+    document, location, rendered, setInterval() {},
+    window: { matchMedia: () => ({ matches: false }), addEventListener: (name: string, callback: () => unknown) => { handlers[name] = callback; } },
+    history: { replaceState: (_data: unknown, _unused: string, url: string) => { location.hash = url.startsWith("#") ? url : ""; } },
+    EventSource: class {
+      closed = false; handlers: Record<string, (event: { data: string }) => void> = {};
+      constructor(public url: string) { streams.push(this); }
+      close() { this.closed = true; }
+      addEventListener(name: string, handler: (event: { data: string }) => void) { this.handlers[name] = handler; }
+    },
+  });
+  expect(streams[0]!.url).toBe("/api/events?entry=aaaa");
+  location.hash = "#bbbb";
+  await handlers.hashchange!();
+  expect(streams[0]!.closed).toBe(true);
+  expect(streams[1]!.url).toBe("/api/events?entry=bbbb");
+  for (const [index, id] of ["aaaa", "bbbb"].entries()) streams[index]!.handlers.snapshot!({ data: JSON.stringify({ entry: { id } }) });
+  expect(rendered).toEqual(["bbbb"]);
+  await handlers.hashchange!();
+  expect(streams).toHaveLength(2);
+  location.hash = "#aaaa";
+  await handlers.hashchange!();
+  expect(streams[2]!.url).toBe("/api/events?entry=aaaa");
+  location.hash = "";
+  await handlers.hashchange!();
+  expect(document.getElementById("launch-view").hidden).toBe(false);
+  expect(document.getElementById("watch-view").hidden).toBe(true);
+  expect(streams[3]!.url).toBe("/api/events");
+});
+
+test("evidence trees mount nested content only when its disclosure opens", async () => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const input = { retained: { score: 4, evidence: { detail: "Recorded evidence <source>" } } };
+  const context = runInNewContext(source + '\n({ html: disclosure("Technical report", input), bindTrees, pendingTrees })', { input });
+  expect(context.html).not.toContain("Recorded evidence");
+  let toggle = () => {}, inserted = "";
+  const detail = { dataset: { tree: context.html.match(/data-tree="(\d+)"/)[1] }, open: false,
+    querySelector: () => ({ textContent: "Technical report" }), querySelectorAll: () => [], removeAttribute() {},
+    addEventListener: (_name: string, callback: () => void) => { toggle = callback; }, removeEventListener() {},
+    insertAdjacentHTML: (_position: string, html: string) => { inserted += html; } };
+  context.bindTrees({ querySelectorAll: () => [detail] });
+  expect(inserted).toBe("");
+  detail.open = true; toggle();
+  expect(inserted).toContain("retained");
+  expect(inserted).not.toContain("Recorded evidence");
+  const retained = context.pendingTrees.get(inserted.match(/data-tree="(\d+)"/)![1])();
+  expect(retained).toContain("<dd>4</dd>");
+  const evidence = context.pendingTrees.get(retained.match(/data-tree="(\d+)"/)![1])();
+  expect(evidence).toContain("Recorded evidence &lt;source&gt;");
 });
 
 test("browser merges paused patches and replaces its baseline on a full snapshot", async () => {

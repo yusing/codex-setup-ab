@@ -420,6 +420,30 @@ async function perform(id, endpoint, body) {
   } catch (error) { showNotice(id, error.message, true); }
   finally { busy = false; updateConsent(); }
 }
+// Transfer deferred evidence to its disclosure so closed branches stay out of the DOM.
+const pendingTrees = new Map();
+let treeIndex = 0;
+function treeBranch(value, depth, names, passes) {
+  const id = String(++treeIndex);
+  pendingTrees.set(id, () => tree(value, depth, names, passes));
+  return ' data-tree="' + id + '"';
+}
+function bindTrees(root, opened = []) {
+  for (const detail of root.querySelectorAll("details[data-tree]")) {
+    const render = pendingTrees.get(detail.dataset.tree);
+    pendingTrees.delete(detail.dataset.tree);
+    detail.removeAttribute("data-tree");
+    const expand = () => {
+      if (!detail.open) return;
+      detail.removeEventListener("toggle", expand);
+      detail.insertAdjacentHTML("beforeend", render());
+      bindTrees(detail, opened);
+    };
+    detail.addEventListener("toggle", expand);
+    if (opened.includes(detail.querySelector("summary").textContent)) detail.open = true;
+    expand();
+  }
+}
 function tree(value, depth = 0, names = {}, passes = []) {
   names = assessmentNames(value, { ...names, ...obj(obj(value).arm_labels) });
   const judge = obj(obj(value).judge), recordedPasses = obj(judge.result).passes ?? judge.passes;
@@ -433,10 +457,10 @@ function tree(value, depth = 0, names = {}, passes = []) {
   const scalar = entries.filter(([, item]) => item === null || typeof item !== "object");
   const nested = entries.filter(([, item]) => item !== null && typeof item === "object");
   return (scalar.length ? "<dl>" + scalar.map(([key, item]) => "<dt>" + esc(label(key)) + "</dt><dd>" + tree(item, depth + 1, names, passes) + "</dd>").join("") + "</dl>" : "")
-    + nested.map(([key, item]) => "<details><summary>" + esc(label(key)) + (Array.isArray(item) ? " (" + item.length + ")" : "") + "</summary>" + tree(item, depth + 1, semanticNames(key, passes, names), passes) + "</details>").join("");
+    + nested.map(([key, item]) => "<details" + treeBranch(item, depth + 1, semanticNames(key, passes, names), passes) + "><summary>" + esc(label(key)) + (Array.isArray(item) ? " (" + item.length + ")" : "") + "</summary></details>").join("");
 }
 function disclosure(title, value, names, passes) {
-  return '<details class="tree"><summary>' + esc(title) + "</summary><div>" + tree(value, 0, names, passes) + "</div></details>";
+  return '<details class="tree"' + treeBranch(value, 0, names, passes) + '><summary>' + esc(title) + "</summary></details>";
 }
 function metricTable(report, state, labels) {
   const arms = obj(report.arms);
@@ -803,10 +827,12 @@ function renderSnapshot(data) {
     const opened = [...$("results").querySelectorAll("details[open]")].map(key);
     $("results").innerHTML = resultContent(data);
     for (const detail of $("results").querySelectorAll("details")) if (opened.includes(key(detail))) detail.open = true;
+    bindTrees($("results"), opened);
     reportSignature = signature;
   }
   if (stateSignature !== JSON.stringify([state, labels])) {
     $("state-details").innerHTML = '<div class="tree">' + tree(state, 0, labels) + "</div>"; stateSignature = JSON.stringify([state, labels]);
+    bindTrees($("state-details"));
   }
   artifactItems = data.artifacts; renderArtifacts();
   if (actionEntry !== entry.id + entry.kind + Boolean(entry.directory)) {
@@ -895,7 +921,18 @@ async function init() {
     if (window.matchMedia("(max-width: 960px)").matches) $("evidence-nav").open = false;
     config = await api("config");
     drawLaunch();
-    $("new-run").addEventListener("click", () => { selected = undefined; $("launch-view").hidden = false; $("watch-view").hidden = true; history.replaceState(null, "", "/"); connectEvents(); });
+    const followLocation = () => {
+      const hash = location.hash.slice(1);
+      if (/^[a-f0-9-]+$/.test(hash)) {
+        if (hash !== selected) return selectEntry(hash).catch((error) => showNotice("watch-error", error.message, true));
+      } else {
+        selected = undefined;
+        $("launch-view").hidden = false; $("watch-view").hidden = true;
+        connectEvents();
+      }
+    };
+    $("new-run").addEventListener("click", () => { history.replaceState(null, "", "/"); followLocation(); });
+    window.addEventListener("hashchange", followLocation);
     document.addEventListener("click", (event) => {
       const button = event.target.closest("[data-entry]");
       if (button) selectEntry(button.dataset.entry).catch((error) => showNotice("watch-error", error.message, true));
@@ -921,9 +958,7 @@ async function init() {
     $("compare-head").addEventListener("click", (event) => compareAgainstHead(snapshot.entry.directory, "reference-status", event.currentTarget));
     $("artifact-filter").addEventListener("input", renderArtifacts);
     $("watch-enabled").addEventListener("change", () => { if ($("watch-enabled").checked && latestSnapshot) renderSnapshot(latestSnapshot); else $("updated-at").textContent = "Evidence updates paused. Operation status stays live."; });
-    const hash = location.hash.slice(1);
-    if (/^[a-f0-9-]+$/.test(hash)) await selectEntry(hash);
-    else connectEvents();
+    await followLocation();
     setInterval(renderElapsed, 1000);
     window.addEventListener("pagehide", () => eventStream?.close());
     window.addEventListener("pageshow", (event) => { if (event.persisted) connectEvents(); });
