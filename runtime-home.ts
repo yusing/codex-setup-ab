@@ -108,7 +108,7 @@ export async function prepareRuntimeHome(options: {
 }): Promise<Image> {
   const { runDir, state, docker, signal } = options;
   const base = await pluginSeed(runDir, state, options.auth, docker, options.baseImage ?? dependencyImage(state), signal);
-  const key = digest({ version: 2, base, setup: options.identity, sourceHome: options.sourceHome, operator: state.operator });
+  const key = digest({ version: 3, base, setup: options.identity, sourceHome: options.sourceHome, operator: state.operator });
   const pending = homePreparations.get(state) ?? new Map<string, Promise<Image>>();
   homePreparations.set(state, pending);
   const existingPreparation = pending.get(key);
@@ -140,7 +140,9 @@ export async function prepareRuntimeHome(options: {
           "if p.exists() or p.is_symlink():\n backup=pathlib.Path(tempfile.mkdtemp(prefix='task-home-base-'))\n" +
           " if p.is_dir() and not p.is_symlink():\n  for child in p.iterdir(): shutil.move(str(child),str(backup/child.name))\n  p.rmdir()\n" +
           " else: p.rename(backup/'original')\np.symlink_to('/home/ubuntu',target_is_directory=True)", alias])}`] : []),
-        `USER ${state.operator.uid}:${state.operator.gid}`, ""].join("\n");
+        `USER ${state.operator.uid}:${state.operator.gid}`,
+        // Docker creates missing tmpfs ancestors as root, blocking sibling mise state.
+        "RUN mkdir -p /home/ubuntu/.local/state/mekugi/debug", ""].join("\n");
       await writeFile(join(context, "Dockerfile"), recipe);
       const output = join(runDir, "artifacts/runtime-home", key);
       await mkdir(output, { recursive: true });
