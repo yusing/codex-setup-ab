@@ -1398,11 +1398,13 @@ case "$operation" in
     case "$name" in
       *-isolation-codex) printf '%s\\n' 'codex-cli 0.154.0' ;;
       *-isolation-probe) printf '%s\\n' CODEX_AB_PROTECTED_RUNTIME_OK ;;
-      *-preflight-image) printf '%s\\n' 'codex_path=/usr/local/bin/codex' 'codex-cli 0.154.0' ;;
-      *-preflight-identity) printf '%s\\n' '1000:1000' ;;
-      *-preflight-hash) ${missingHost ? `printf '%s  %s\\n' '${codexHash}' '/usr/local/bin/codex'; status=1` : `printf '%s  %s\\n%s  %s\\n' '${codexHash}' '/usr/local/bin/codex' '${codeModeHostHash}' '/usr/local/bin/codex-code-mode-host'; printf '%s  %s\\n' '${wrongProtectedBinary ? "bad" : codexHash}' '/usr/local/libexec/codex-real'`} ;;
+      *-preflight-image) printf '%s\\n' '${JSON.stringify([
+        { exitCode: 0, stdout: "codex_path=/usr/local/bin/codex\ncodex-cli 0.154.0\n", stderr: "" },
+        { exitCode: 0, stdout: "1000:1000\n", stderr: "" },
+        { exitCode: missingHost ? 1 : 0, stdout: `${codexHash}  /usr/local/bin/codex\n${missingHost ? "" : `${codeModeHostHash}  /usr/local/bin/codex-code-mode-host\n${wrongProtectedBinary ? "bad" : codexHash}  /usr/local/libexec/codex-real\n`}`, stderr: "" },
+        { exitCode: 0, stdout: "CODEX_AB_TOOL_HOST_OK\n", stderr: "" },
+      ])}' ;;
       *-preflight-network-*) ${networkFailure ? "echo 'curl: (7) Network unreachable' >&2; status=7" : "printf '%s' '403'"} ;;
-      *-preflight-toolhost) printf '%s\\n' 'CODEX_AB_TOOL_HOST_OK' ;;
       *-preflight-environment-*) : ;;
       *-preflight-grok) printf '%s\\n' 'grok 1.0.30' ;;
       *-warm) ${failWarm ? "echo prewarm-failed >&2; status=9" : ":"} ;;
@@ -1536,6 +1538,51 @@ test("preflight pins shared dependencies and compiles offline without cache moun
   expect(compile).not.toContain("preflight-cache");
 });
 
+test("preflight qualifies the immutable image in one credential-free owned lifecycle", async () => {
+  const run = await prepared();
+  const fake = await fakeOwnedDocker(0);
+  await preflightRun(run, fake.path);
+  const log = (await readFile(fake.log, "utf8")).split("\n");
+  const creates = log.filter(line => line.includes(" create ") && /-preflight-(image|identity|hash|toolhost) /.test(line));
+  expect(creates).toHaveLength(1);
+  expect(creates[0]).toContain("--network none sha256:");
+  expect(creates[0]).not.toContain(" -v ");
+  expect(creates[0]).not.toContain("--env");
+  const state = await readState(run);
+  expect(await Bun.file(join(fake.stateDir, `codex-ab-${state.id}-preflight-image`)).exists()).toBe(false);
+});
+
+test("preflight bounds a stalled image qualification attachment and verifies cleanup", async () => {
+  const run = await prepared();
+  const fake = await fakeOwnedDocker(0);
+  await file(fake.path, (await readFile(fake.path, "utf8")).replace("*-preflight-image) printf", "*-preflight-image) sleep 1; printf"), 0o755);
+  const original = containers.runOwnedContainer;
+  let qualificationTimeout: number | undefined;
+  const owned = spyOn(containers, "runOwnedContainer").mockImplementation(options => {
+    if (!options.name.endsWith("-preflight-image")) return original(options);
+    qualificationTimeout = options.timeoutMs;
+    return original({ ...options, timeoutMs: options.timeoutMs === undefined ? undefined : 100 });
+  });
+  try {
+    await expect(preflightRun(run, fake.path)).rejects.toThrow("immutable image qualification failed: Docker attachment timed out");
+    expect(qualificationTimeout).toBe(30_000);
+    expect(await Bun.file(join(fake.stateDir, `codex-ab-${(await readState(run)).id}-preflight-image`)).exists()).toBe(false);
+  } finally { owned.mockRestore(); }
+});
+
+test.each([
+  ["codex_path=/usr/local/bin/codex", "codex_path=/wrapped/codex", "image Codex is not the direct"],
+  ["1000:1000", "0:0", "container operator identity must be 1000:1000, got 0:0"],
+  ["CODEX_AB_TOOL_HOST_OK", "wrong protocol result", "code-mode tool host smoke failed: wrong protocol result"],
+])("preflight preserves the diagnostic for %s", async (before, after, message) => {
+  const run = await prepared();
+  const fake = await fakeOwnedDocker(0);
+  await file(fake.path, (await readFile(fake.path, "utf8")).replace(before, after), 0o755);
+  await expect(preflightRun(run, fake.path)).rejects.toThrow(message);
+  expect((await readState(run)).status).toBe("prepared");
+  expect(await Bun.file(join(fake.stateDir, `codex-ab-${(await readState(run)).id}-preflight-image`)).exists()).toBe(false);
+});
+
 test("preflight reports expected and actual Codex versions with a rebuild action", async () => {
   const run = await prepared();
   const state = await readState(run);
@@ -1551,7 +1598,7 @@ test("preflight reports expected and actual Codex versions with a rebuild action
 test("preflight rejects an image missing the recorded code-mode host", async () => {
   const run = await prepared();
   const fake = await fakeOwnedDocker(0, false, true);
-  expect(preflightRun(run, fake.path)).rejects.toThrow("container Codex hash differs from prepared source");
+  await expect(preflightRun(run, fake.path)).rejects.toThrow("container Codex hash differs from prepared source");
   expect((await readState(run)).status).toBe("prepared");
 });
 

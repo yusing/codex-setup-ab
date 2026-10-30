@@ -105,22 +105,49 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   state.image_id = image;
   for (const arm of armNames(state)) await inspectCandidate(docker, runDir, state, resolve(runDir, state.arms[arm].repository), `preflight-${arm}-baseline`, signal, true, true);
   const prefix = `codex-ab-${state.id}-preflight`;
-  progress(`checking bare Codex image ${image}`);
-  const check = await runOwnedContainer({ docker, name: `${prefix}-image`, signal, createArgs: [image, "sh", "-lc", "printf 'codex_path=%s\\n' \"$(command -v codex || true)\"; if command -v hpatch >/dev/null || command -v mekugi >/dev/null; then printf 'mekugi_path=%s\\n' \"$(command -v mekugi)\"; exit 8; fi; codex --version"] });
+  progress(`checking bare Codex image ${image}, operator, binary hashes, and local code-mode host protocol`);
+  // These checks use only the immutable image, without credentials or networking.
+  // Keep each command's output separate so failures retain their specific diagnosis.
+  const commands = [
+    ["sh", "-lc", "printf 'codex_path=%s\\n' \"$(command -v codex || true)\"; if command -v hpatch >/dev/null || command -v mekugi >/dev/null; then printf 'mekugi_path=%s\\n' \"$(command -v mekugi)\"; exit 8; fi; codex --version"],
+    ["sh", "-lc", "printf '%s:%s\\n' \"$(id -u)\" \"$(id -g)\""],
+    ["sha256sum", "/usr/local/bin/codex", "/usr/local/bin/codex-code-mode-host", ...(state.protected_runtime ? ["/usr/local/libexec/codex-real"] : [])],
+    ["node", "-e", TOOLHOST_SMOKE_SCRIPT],
+  ];
+  // Allow time for all checks while also bounding a stalled Docker attachment.
+  const qualification = await runOwnedContainer({ docker, name: `${prefix}-image`, signal, timeoutMs: 30_000,
+    createArgs: ["--network", "none", image, "node", "-e", `
+      const { spawnSync } = require("node:child_process");
+      const results = ${JSON.stringify(commands)}.map(([command, ...args], index) => {
+        const result = spawnSync(command, args, {
+          encoding: "utf8",
+          ...(index === 3 ? { timeout: 15000, killSignal: "SIGKILL" } : {}),
+        });
+        return { exitCode: result.status ?? -1, stdout: result.stdout ?? "",
+          stderr: (result.stderr ?? "") + (result.error ? String(result.error) : "") };
+      });
+      process.stdout.write(JSON.stringify(results));
+    `] });
+  if (qualification.exitCode !== 0) throw new Error(`immutable image qualification failed: ${qualification.timedOut ? "Docker attachment timed out" : [qualification.stdout.trim(), qualification.stderr.trim()].filter(Boolean).join("; ")}`);
+  const [check, identity, binaryHash, toolHost] = JSON.parse(qualification.stdout) as [
+    Pick<ExecResult, "exitCode" | "stdout" | "stderr">,
+    Pick<ExecResult, "exitCode" | "stdout" | "stderr">,
+    Pick<ExecResult, "exitCode" | "stdout" | "stderr">,
+    Pick<ExecResult, "exitCode" | "stdout" | "stderr">,
+  ];
   if (check.exitCode !== 0) throw new Error(`image is not a bare Codex image (${check.exitCode}): ${[check.stdout.trim(), check.stderr.trim()].filter(Boolean).join("; ")}`);
   if (!check.stdout.includes("codex_path=/usr/local/bin/codex")) throw new Error(`image Codex is not the direct /usr/local/bin/codex entry: ${check.stdout.trim()}`);
   const containerVersion = check.stdout.split("\n").map(line => line.trim()).find(line => line.startsWith("codex-cli "));
   if (containerVersion !== state.runtime_tools.codex_version) {
     throw new Error(`unexpected container Codex version: expected ${state.runtime_tools.codex_version}, got ${containerVersion ?? check.stdout.trim()}. Rebuild ${state.image} from the selected host Codex and prepare a new run; the preset runner does this automatically`);
   }
-  const identity = await runOwnedContainer({ docker, name: `${prefix}-identity`, signal, createArgs: [image, "sh", "-lc", "printf '%s:%s\\n' \"$(id -u)\" \"$(id -g)\""] });
   const expectedIdentity = `${state.operator.uid}:${state.operator.gid}`;
   if (identity.exitCode !== 0 || identity.stdout.trim() !== expectedIdentity) throw new Error(`container operator identity must be ${expectedIdentity}, got ${identity.stdout.trim()}`);
-  const binaryHash = await runOwnedContainer({ docker, name: `${prefix}-hash`, signal, createArgs: [image, "sha256sum", "/usr/local/bin/codex", "/usr/local/bin/codex-code-mode-host", ...(state.protected_runtime ? ["/usr/local/libexec/codex-real"] : [])] });
   const hashes = binaryHash.stdout.trim().split("\n").map(line => line.trim().split(/\s+/)[0]);
   if (binaryHash.exitCode !== 0 || hashes[0] !== state.runtime_tools.codex_sha256 || hashes[1] !== state.runtime_tools.codex_code_mode_host_sha256 || (state.protected_runtime && hashes[2] !== state.runtime_tools.codex_sha256)) {
     throw new Error(`container Codex hash differs from prepared source: ${binaryHash.stdout.trim()}`);
   }
+  if (toolHost.exitCode !== 0 || toolHost.stdout.trim() !== "CODEX_AB_TOOL_HOST_OK") throw new Error(`code-mode tool host smoke failed: ${[toolHost.stdout.trim(), toolHost.stderr.trim()].filter(Boolean).join("; ")}`);
   progress("checking required provider network reachability without model inference");
   const providerEndpoints = [
     ["chatgpt", "https://chatgpt.com/"],
@@ -140,9 +167,6 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
     }
   });
   await writeFile(join(runDir, "artifacts/preflight-network.json"), JSON.stringify(networkChecks, null, 2));
-  progress("exercising the local code-mode host protocol without model access");
-  const toolHost = await runOwnedContainer({ docker, name: `${prefix}-toolhost`, signal, timeoutMs: 15_000, createArgs: ["--network", "none", image, "node", "-e", TOOLHOST_SMOKE_SCRIPT] });
-  if (toolHost.exitCode !== 0 || toolHost.stdout.trim() !== "CODEX_AB_TOOL_HOST_OK") throw new Error(`code-mode tool host smoke failed: ${[toolHost.stdout.trim(), toolHost.stderr.trim()].filter(Boolean).join("; ")}`);
   await ensureDependencyImage(docker, runDir, state, signal);
   const setupImage = dependencyImage(state);
   const workspace = resolve(runDir, state.arms.current.repository);
