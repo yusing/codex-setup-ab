@@ -12,6 +12,11 @@ test("additional arms aggregate against the baseline without zero-filling missin
   const aggregate = aggregatePairs([report as Parameters<typeof aggregatePairs>[0][number], { arms: { stock: { result: { agent_elapsed_ms: 5000 } } } } as Parameters<typeof aggregatePairs>[0][number]], "stock", "arm-3");
   expect(aggregate.agent_seconds.difference).toMatchObject({ n: 1, mean: 2 });
   expect(aggregate.agent_seconds.percent.mean).toBe(200);
+  const recovered = structuredClone(report);
+  Object.assign(recovered.arms["arm-3"].result, { recovery: { timing_source: "docker-inspect", controller_elapsed_available: false } });
+  const mixed = aggregatePairs([recovered as Parameters<typeof aggregatePairs>[0][number]], "stock", "arm-3");
+  expect(mixed.agent_seconds.difference.n).toBe(0);
+  expect(mixed.agent_seconds.percent.mean).toBeNull();
 });
 
 test("paired aggregates preserve negatives, omit missing metrics, and never zero-fill", () => {

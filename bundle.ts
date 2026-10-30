@@ -149,6 +149,14 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     await mkdir(join(destination, "isolation"), { recursive: true });
     for (const file of state.protected_runtime.scripts) await copy(file.path, `isolation/${file.path.split("/").at(-1)}`);
     await copy("artifacts/preflight-isolation.json", "isolation/preflight.json");
+    if (state.evaluation?.mode === "fresh" && Object.keys(state.arms).every(arm => state.imported_arms?.[arm])) {
+      const imported = state.imported_arms![Object.keys(state.arms)[0]!]!;
+      await write("isolation/preflight-source.json", {
+        execution: "historical", scope: "Source implementation isolation preflight; not rerun for this reevaluation.",
+        source_run_id: imported.source_run_id, bundle_sha256: imported.bundle_sha256,
+        source_path: "isolation/preflight.json", sha256: await sha256(join(destination, "isolation/preflight.json")),
+      });
+    }
   }
   if (state.mekugi_build) await mkdir(join(destination, "mekugi-build"), { recursive: true });
   for (const file of state.mekugi_build?.files ?? []) await copy(file.path, `mekugi-build/${file.path.split("/").at(-1)}`);
@@ -198,6 +206,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     ...(state.mekugi_build?.files.map(file => [file.path, file.sha256]) ?? []),
     ...(state.task_pack ? [[state.task_pack.path, state.task_pack.sha256]] : []),
     ...(state.upstream_reference?.files.map(file => [file.path, file.sha256]) ?? []),
+    ...Object.values(state.results ?? {}).flatMap(result => result?.recovery?.files.map(file => [file.path, file.sha256]) ?? []),
     ...(state.criteria ? [[state.criteria.path, state.criteria.sha256]] : []),
     ...(state.imported_control ? [["evaluator/imported-control/MANIFEST.sha256", state.imported_control.bundle_sha256]] : []),
     ...(state.imported_control ? [["artifacts/stock/codex.jsonl", state.imported_control.stdout_sha256],
@@ -213,6 +222,13 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     state.invalidity_reasons = [...new Set([...(state.invalidity_reasons ?? []), "finishing control integrity check failed"])];
     await writeState(runDir, state);
     throw new Error("finishing integrity checks failed; evidence preserved");
+  }
+  // Preserve run-relative recovery references in the portable publication.
+  for (const result of Object.values(state.results ?? {})) {
+    for (const file of result?.recovery?.files ?? []) {
+      await mkdir(dirname(join(destination, file.path)), { recursive: true, mode: 0o700 });
+      await copy(file.path, file.path);
+    }
   }
   for (const arm of state.selected_arms ?? []) {
     const result = state.results?.[arm];

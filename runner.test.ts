@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { writeFileSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { prepare, verifyPreparedInputs, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
-import { finishBenchmark, runBenchmark } from "./workflow";
+import { finishBenchmark, reevaluateBenchmark, runBenchmark } from "./workflow";
+import { importArms } from "./control";
+import { prepareReevaluation } from "./reevaluate";
 import { prepareTrials, readTrialSet, reportTrials, runTrials } from "./trials";
 import { main, parseMekugiFlags } from "./cli";
 import { checked } from "./process";
@@ -253,6 +255,15 @@ test.each(["reuse", "fresh"])("historical multi-arm imports execute one new cand
   const completed = await readState(sourceRun);
   // One retained pass predates qualitative evidence; the other records it.
   delete completed.judge!.passes[0]!.quality_aspects;
+  for (const pass of completed.judge!.passes) for (const score of Object.values(pass.scores)) {
+    delete score.simplicity; delete score.performance; delete score.approach; delete score.rubric;
+  }
+  const recoveryPath = "artifacts/recovery/docker-timing.json";
+  await file(join(sourceRun, recoveryPath), JSON.stringify({ Id: "recovered-container", State: { ExitCode: 0 } }));
+  completed.results!.current!.recovery = { source_run_id: completed.id, source_arm: "current", collected_at: "2026-10-30T08:00:00.000Z",
+    container_id: "recovered-container", timing_source: "docker-inspect", controller_elapsed_available: false,
+    caveats: ["The original controller was canceled by the user. Later container completion does not erase that cancellation."],
+    files: [{ path: recoveryPath, sha256: await sha256(join(sourceRun, recoveryPath)) }] };
   await writeState(sourceRun, completed);
   for (const arm of ["current", "arm-3"]) await file(join(sourceRun, completed.arm_attempts![arm]!.codex_home, "sessions/usage.jsonl"), [
     { type: "session_meta", payload: { id: arm } },
@@ -278,6 +289,8 @@ test.each(["reuse", "fresh"])("historical multi-arm imports execute one new cand
   for (const arm of ["stock", "current"]) expect(log).not.toContain(`--name codex-ab-${finished.id}-${arm} `);
   expect(log).toContain(`--name codex-ab-${finished.id}-arm-3 `);
   if (mode === "reuse") {
+    expect(finished.judge!.winner).toBe("none");
+    expect(finished.judge!.passes.every(pass => pass.winner === "none")).toBe(true);
     expect(finished.results!.stock!.grade).toEqual(completed.results!.current!.grade);
     expect(finished.results!.current!.grade).toEqual(completed.results!["arm-3"]!.grade);
     expect(log).not.toContain(`${finished.id}-stock-grade-verify`);
@@ -311,7 +324,16 @@ test.each(["reuse", "fresh"])("historical multi-arm imports execute one new cand
   expect(report.arms.stock.usage.totals.input_tokens).toBe(10);
   expect(report.arms.current.usage.totals.input_tokens).toBe(10);
   expect(report.setup.imported_arms.stock.source_arm).toBe("current");
+  const recovery = finished.results!.stock!.recovery!;
+  expect(recovery.source_run_id).toBe(completed.id);
+  expect(recovery.files[0]!.path).toBe(`evaluator/imported-arms/stock/${recoveryPath}`);
+  expect(report.recovery.stock).toEqual(recovery);
+  expect(report.efficiency.faster).toBeNull();
+  expect(report.baseline_differences_percent.current.agent_elapsed_ms).toBeNull();
+  expect(await sha256(join(run, "reports/bundle", recovery.files[0]!.path))).toBe(recovery.files[0]!.sha256);
   if (mode === "reuse") {
+    expect(report.winner).toBe("none");
+    expect(report.score_comparison_issue).toContain("different scoring rubrics");
     expect(report.judge.result.passes[0].quality_aspects["candidate-1"].approach.status).toBe("unassessed");
     expect(await readFile(join(run, "reports/report.md"), "utf8")).toContain("| candidate-1 | approach | unassessed | none |");
   }
@@ -322,6 +344,19 @@ test.each(["reuse", "fresh"])("historical multi-arm imports execute one new cand
   expect(await Bun.file(join(run, "reports/bundle/evaluator/imported-arms/stock/run.json")).exists()).toBe(true);
   expect(await Bun.file(join(run, "reports/bundle", finished.results!.stock!.stdout_path)).exists()).toBe(false);
   expect((await Bun.file(join(run, "reports/bundle/final-integrity.json")).json()).passed).toBe(true);
+  const nestedDirectory = join(root, "nested-recovery-import");
+  const mutableEvidenceRoot = join(run, finished.imported_arms!.stock!.directory);
+  const mutableEvidenceState = await readState(mutableEvidenceRoot);
+  delete mutableEvidenceState.results!.current!.recovery;
+  await writeState(mutableEvidenceRoot, mutableEvidenceState);
+  const nested = await importArms(nestedDirectory, structuredClone(finished), [{ target_arm: "current", run_dir: run, arm: "stock" }]);
+  expect(nested.current!.recovery!.files[0]!.path).toBe(`evaluator/imported-arms/current/${recoveryPath}`);
+  expect(nested.current!.recovery!.source_run_id).toBe(completed.id);
+  expect(nested.current!.recovery!.caveats).toEqual(recovery.caveats);
+  expect(await sha256(join(nestedDirectory, nested.current!.recovery!.files[0]!.path))).toBe(recovery.files[0]!.sha256);
+  await file(join(run, recovery.files[0]!.path), "changed sanitized timing evidence\n");
+  await expect(bundles.collectBundle(run)).rejects.toThrow("finishing integrity checks failed");
+  expect((await readState(run)).invalidity_reasons).toContain("finishing control integrity check failed");
 }, 30_000);
 
 test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions with shared %s runtime", async launcher => {
@@ -1392,7 +1427,7 @@ async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHo
   await file(`${path}.patch`, candidatePatch);
   const candidates = Array.from({ length: candidateCount }, (_, index) => `candidate-${index + 1}`);
   const judgeAssessment = (omit?: "criteria" | "quality_aspects") => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({
-    scores: Object.fromEntries(candidates.map(id => [id, { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 }])),
+    scores: Object.fromEntries(candidates.map(id => [id, { correctness: 5, simplicity: 5, completeness: 5, performance: 5, maintainability: 5, approach: 5, test_quality: 5 }])),
     ...(omit === "quality_aspects" ? {} : { quality_aspects: Object.fromEntries(candidates.map(id => [id, Object.fromEntries(["simplicity", "performance", "approach"].map(key => [key,
       { status: "satisfactory", basis: "source", reasoning: `${id.replace("candidate", "Candidate")} / ${id.replace("-", " ")} / ${id.replace("-", "_")} uses a focused implementation for ${key}.` }]))])) }),
     evidence: ["fixture semantic assessment"], issues: [], winner: "tie", rationale: "Both fixtures meet the criterion.",
@@ -2385,7 +2420,12 @@ test(`${judgeModel} ${failure} judge recovery reuses saved pass 1 and runs only 
   }
   const event = JSON.parse((await readFile(join(run, saved.stdout_path), "utf8")).trim());
   const response = JSON.parse(event.item.text);
-  if (failure === "timeout" || failure === "missing-new-aspects") delete response.quality_aspects;
+  if (failure === "timeout" || failure === "missing-new-aspects") {
+    delete response.quality_aspects;
+    for (const score of Object.values(response.scores) as Array<Record<string, unknown>>) {
+      delete score.simplicity; delete score.performance; delete score.approach;
+    }
+  }
   response.criteria["candidate-2"][0] = { criterion: "fixture", status: "fail", basis: failure === "executed-failure" ? "executed" : "source-only", reasoning: "Unverified failure observation." };
   response.winner = "candidate-1";
   event.item.text = JSON.stringify(response);
@@ -2647,3 +2687,175 @@ test.each([false, true])("parallel work %s preserves task and criteria integrity
   expect(await readFile(task, "utf8")).toBe(original);
   await verifyPreparedInputs(run, state);
 });
+
+async function retainedBytes(directory: string): Promise<Record<string, string>> {
+  const entries: Record<string, string> = {};
+  const visit = async (path: string) => {
+    for (const entry of await readdir(path, { withFileTypes: true })) {
+      const file = join(path, entry.name);
+      if (entry.isDirectory()) await visit(file);
+      else entries[relative(directory, file)] = entry.isSymbolicLink() ? `link:${await readlink(file)}` : entry.isFile() ? await sha256(file) : "special-file";
+    }
+  };
+  await visit(directory);
+  return entries;
+}
+
+test("reevaluation independently rejudges every retained arm without implementation launches or source writes", async () => {
+  const revision = (await checked(["git", "-C", home, "rev-parse", "HEAD"])).stdout.trim();
+  const pack = join(root, "reevaluation-pack");
+  await file(join(pack, "task.md"), "Make the fixture better.\n");
+  await file(join(pack, "manifest.json"), JSON.stringify({ schema: "codex-ab.task-pack.v1", id: "reevaluation-fixture", prompt: "task.md",
+    source: { repository: "https://example.test/fixture.git", base_commit: base, forbidden_commit: future, reference_commit: future },
+    criteria: { schema: "codex-ab.criteria.v1", criteria: [{ id: "fixture", description: "Make the fixture better." }],
+      preparation: "true", existing_tests: "true", qualification: "not-run" } }));
+  const sourceRun = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, taskPackPath: join(pack, "manifest.json"),
+    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    comparison: "custom", arms: [{ launcher: "codex", setup_commit: "stock" }, { launcher: "mekugi", setup_commit: revision }, { launcher: "codex", setup_commit: revision }],
+    mekugiSource, mekugiBinary: join(home, "go/bin/mekugi"), codexBinary: join(home, ".local/bin/codex") });
+  const initial = await readState(sourceRun);
+  initial.pricing = { fetched_at: "fixture", source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(sourceRun, initial);
+  const auth = join(root, "reevaluation-auth.json");
+  await file(auth, "{}", 0o600);
+  const patch = "diff --git a/retained.txt b/retained.txt\nnew file mode 100644\n--- /dev/null\n+++ b/retained.txt\n@@ -0,0 +1 @@\n+retained implementation\n";
+  const originalDocker = await fakeOwnedDocker(0, false, false, patch, false, false, undefined, undefined, 3);
+  await runBenchmark({ runDir: sourceRun, authFile: auth, dockerBin: originalDocker.path });
+  const original = await readState(sourceRun);
+  const originalBytes = await retainedBytes(sourceRun);
+  const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, 3);
+  const executed = await checked(["bun", join(import.meta.dir, "cli.ts"), "reevaluate", "--run-dir", sourceRun,
+    "--output-parent", root, "--auth-file", auth, "--docker-bin", fake.path, "--confirm-paid-inference"]);
+  const directory = executed.stdout.trim();
+  const fresh = await readState(directory);
+  const keys = Object.keys(original.arms);
+  expect(fresh.id).not.toBe(original.id);
+  expect(fresh.finishing?.status).toBe("complete");
+  expect(fresh.selected_arms).toEqual(keys);
+  expect(fresh.evaluation).toEqual({ mode: "fresh" });
+  expect(fresh.judge?.passes.map(pass => pass.presentation)).toEqual([keys, [...keys].reverse()]);
+  for (const key of ["source", "task", "criteria", "task_pack", "upstream_reference", "setup_revisions", "runtime_tools", "image_id", "dependency_image", "arm_configurations"] as const) {
+    expect(fresh[key]).toEqual(original[key]);
+  }
+  for (const arm of keys) {
+    expect(fresh.imported_arms?.[arm]?.source_run_id).toBe(original.id);
+    const { grade: oldGrade, patch_path: oldPatch, stdout_path: oldOut, stderr_path: oldErr, ...oldMeasurement } = original.results![arm]!;
+    const { grade: newGrade, patch_path: newPatch, stdout_path: newOut, stderr_path: newErr, ...newMeasurement } = fresh.results![arm]!;
+    expect(newMeasurement).toEqual(oldMeasurement);
+    expect(newGrade?.passed).toBe(true);
+    expect(await sha256(join(directory, newPatch))).toBe(await sha256(join(sourceRun, oldPatch)));
+    expect(await sha256(join(directory, newOut))).toBe(await sha256(join(sourceRun, oldOut)));
+    expect(await sha256(join(directory, newErr))).toBe(await sha256(join(sourceRun, oldErr)));
+    expect(await Bun.file(join(directory, "evaluator", arm, "go.mod")).exists()).toBe(true);
+    expect(await readFile(join(directory, "evaluator", arm, "retained.txt"), "utf8")).toBe("retained implementation\n");
+    expect(await Bun.file(join(directory, "evaluator", arm, "future.txt")).exists()).toBe(false);
+    expect(await Bun.file(join(directory, fresh.arms[arm].repository, "go.mod")).exists()).toBe(false);
+  }
+  expect(Date.parse(fresh.judge!.started_at)).toBeGreaterThan(Date.parse(original.judge!.finished_at!));
+  expect(await Bun.file(join(directory, "reports/bundle/MANIFEST.sha256")).exists()).toBe(true);
+  expect((await Bun.file(join(directory, "reports/report.json")).json()).design).toContain("fresh reevaluation of retained implementations");
+  expect((await readFile(join(directory, "reports/report.md"), "utf8")).includes("without rerunning implementation agents")).toBe(true);
+  expect(await Bun.file(join(directory, "snapshots/current/mise/installs/fixture-runner/1/bin/project-runner")).exists()).toBe(false);
+  const log = await readFile(fake.log, "utf8");
+  for (const arm of keys) expect(log).not.toContain(`--name codex-ab-${fresh.id}-${arm} `);
+  expect(log).not.toContain("-preflight-");
+  expect(log).not.toContain("-launch-verify");
+  expect(log).toContain("-semantic-");
+  expect(log).toContain("-judge-");
+  expect(await retainedBytes(sourceRun)).toEqual(originalBytes);
+
+  // The ordinary launch import path must continue requiring a new implementation.
+  await expect(importArms(join(root, "unused-import-target"), { ...original, evaluation: { mode: "fresh" } },
+    keys.map(arm => ({ target_arm: arm, arm, run_dir: sourceRun })))).rejects.toThrow("at least one fresh arm");
+  await expect(main(["reevaluate", "--run-dir", sourceRun])).rejects.toThrow("--confirm-paid-inference");
+  await expect(prepareReevaluation(sourceRun, sourceRun)).rejects.toThrow("outside source run");
+
+  const failDocker = join(root, "reevaluation-fail-docker.sh");
+  await file(failDocker, `#!/bin/sh\ncase "$*" in *-grade-verify*) echo 'candidate materialization failed' >&2; exit 7 ;; esac\nexec '${fake.path}' "$@"\n`, 0o755);
+  const logBeforeFailure = await readFile(fake.log, "utf8");
+  const beforeFailure = new Set(await readdir(root));
+  try {
+    await reevaluateBenchmark({ runDir: sourceRun, outputParent: root, authFile: auth, dockerBin: failDocker });
+    throw new Error("expected reevaluation failure");
+  } catch (error) {
+    expect(String(error)).toContain("retained ");
+    expect(String(error)).toContain("candidate materialization failed");
+  }
+  const failedName = (await readdir(root)).find(name => name.startsWith("task-reevaluation-") && !beforeFailure.has(name));
+  expect(failedName).toBeDefined();
+  const failedDirectory = join(root, failedName!);
+  expect((await readState(failedDirectory)).finishing?.status).toBe("failed");
+  expect((await Bun.file(join(failedDirectory, "reports/bundle/report.json")).json()).finishing.status).toBe("failed");
+  expect(await readFile(fake.log, "utf8")).toBe(logBeforeFailure);
+  expect(await retainedBytes(sourceRun)).toEqual(originalBytes);
+
+  // Valid seals cannot turn a partial selection or invalid publication into an eligible source.
+  for (const fault of ["partial", "invalid", "unsealed"] as const) {
+    if (fault === "partial") {
+      const partial = structuredClone(original);
+      partial.selected_arms = [keys[0]!];
+      await writeState(sourceRun, partial);
+      await cp(join(sourceRun, "run.json"), join(sourceRun, "reports/bundle/run.json"));
+    } else if (fault === "invalid") {
+      const published = await Bun.file(join(sourceRun, "reports/bundle/report.json")).json();
+      published.validity = "invalid";
+      await writeFile(join(sourceRun, "reports/bundle/report.json"), JSON.stringify(published));
+    } else await writeState(sourceRun, { ...original, id: "changed-after-sealing" });
+    if (fault !== "unsealed") await bundles.writeBundleManifest(join(sourceRun, "reports/bundle"));
+    await expect(prepareReevaluation(sourceRun, root)).rejects.toThrow();
+    expect(await readFile(fake.log, "utf8")).toBe(logBeforeFailure);
+    // Restore fixture state and publication before the next rejection case.
+    await writeState(sourceRun, original);
+    await cp(join(sourceRun, "run.json"), join(sourceRun, "reports/bundle/run.json"));
+    await bundles.collectBundle(sourceRun);
+    await bundles.finalizeBundle(sourceRun);
+  }
+}, 60_000);
+
+test("protected reevaluation publishes sealed historical isolation evidence without repeating preflight", async () => {
+  const sourceRun = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    comparison: "same-setup", protectMekugi: true, mekugiSource });
+  const initial = await readState(sourceRun);
+  initial.pricing = { fetched_at: "fixture", source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(sourceRun, initial);
+  const auth = join(root, "protected-reevaluation-auth.json");
+  await file(auth, "{}", 0o600);
+  const originalDocker = await fakeOwnedDocker(0);
+  await runBenchmark({ runDir: sourceRun, authFile: auth, dockerBin: originalDocker.path });
+  const original = await readState(sourceRun);
+  const sourceBundle = join(sourceRun, "reports/bundle");
+  const preflight = await readFile(join(sourceBundle, "isolation/preflight.json"), "utf8");
+  // The sealed publication, rather than adjacent mutable artifacts, owns imported evidence.
+  await writeFile(join(sourceRun, "artifacts/preflight-isolation.json"), "unsealed adjacent evidence\n");
+  const originalBytes = await retainedBytes(sourceRun);
+  const fake = await fakeOwnedDocker(0);
+  const directory = await reevaluateBenchmark({ runDir: sourceRun, outputParent: root, authFile: auth, dockerBin: fake.path });
+  const fresh = await readState(directory);
+  expect(fresh.finishing?.status).toBe("complete");
+  expect(fresh.protected_runtime).toEqual(original.protected_runtime);
+  expect(await readFile(join(directory, "artifacts/preflight-isolation.json"), "utf8")).toBe(preflight);
+  const bundle = join(directory, "reports/bundle");
+  expect(await readFile(join(bundle, "isolation/preflight.json"), "utf8")).toBe(preflight);
+  expect((await readFile(join(directory, "reports/report.md"), "utf8")).includes("isolation preflight was not rerun")).toBe(true);
+  expect(await Bun.file(join(bundle, "isolation/preflight-source.json")).json()).toEqual({
+    execution: "historical", scope: "Source implementation isolation preflight; not rerun for this reevaluation.",
+    source_run_id: original.id, bundle_sha256: await sha256(join(sourceBundle, "MANIFEST.sha256")),
+    source_path: "isolation/preflight.json", sha256: await sha256(join(sourceBundle, "isolation/preflight.json")),
+  });
+  const integrity = await Bun.file(join(bundle, "final-integrity.json")).json();
+  expect(integrity.passed).toBe(true);
+  expect(fresh.imported_arms!.stock!.files).toContainEqual({ path: "artifacts/preflight-isolation.json", sha256: await sha256(join(sourceBundle, "isolation/preflight.json")) });
+  const log = await readFile(fake.log, "utf8");
+  expect(log).not.toContain("-isolation-");
+  expect(log).not.toContain("-preflight-");
+  for (const arm of Object.keys(fresh.arms)) expect(log).not.toContain(`--name codex-ab-${fresh.id}-${arm} `);
+  expect(fresh.judge?.passes).toHaveLength(2);
+  expect(await retainedBytes(sourceRun)).toEqual(originalBytes);
+
+  // Copied controls are checked once, at their destination, before evaluator calls.
+  await writeFile(join(sourceRun, original.task.path), "changed task control\n");
+  await expect(reevaluateBenchmark({ runDir: sourceRun, outputParent: root, authFile: auth, dockerBin: fake.path }))
+    .rejects.toThrow("copied benchmark control changed");
+  expect(await readFile(fake.log, "utf8")).toBe(log);
+}, 30_000);

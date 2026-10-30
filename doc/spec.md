@@ -34,12 +34,20 @@ the tested outcomes. Only fresh candidates execute tests and receive new scores.
 identify historical arms and retain their original setup identities; these runs
 remain descriptive historical comparisons.
 
+Results-only reevaluation creates a separate comparison from every captured arm
+of a completed published run. It runs fresh evaluator checks and blind judging
+under the current rubric without repeating implementation execution. Original
+reports and implementation measurements remain intact; new evaluation costs and
+outcomes are recorded separately. This permits comparable expanded scores without
+silently rewriting historical totals.
+
 The workbench can load a completed run into a new comparison against setup HEAD,
 prefilling shared controls and importing its completed arms without rerunning them.
 The operator reviews the draft and explicitly confirms inference before starting.
 Each fresh setup can select an imported setup as its evaluation baseline. Reused
-scores and new scores are distinguished; their ranking is a historical score
-comparison, not a new joint blind verdict.
+scores and new scores are distinguished; comparable complete scores under the same
+rubric form a historical score comparison, not a new joint blind verdict. Different
+rubrics remain visible without a combined quality ranking.
 
 The Web UI names each compared setup by its launcher, guidance, or treatment.
 Previews, measurements, execution status, output, and source assessments use these
@@ -59,8 +67,10 @@ concise source-assessment explanations, and criterion decisions directly.
 Quality explanations connect concrete implementation decisions to their observed
 behavioral consequences instead of repeating scores or eligibility rules.
 Each fresh assessment explicitly considers simplicity, implementation performance,
-and approach, with evidence and uncertainty kept visible. These aspects supplement
-the existing scores; historical assessments that lack them remain unassessed.
+and approach in its weighted score, with evidence and uncertainty kept visible.
+Correctness and simplicity have equal priority, followed by completeness,
+performance, maintainability, then approach and test quality. Historical assessments
+retain their original rubric; missing dimensions remain unassessed, not zero.
 Resource explanations separate request count, repeated input context, output,
 and delegated work. Supported workflow observations retain evidence references;
 unproven causes remain unknown. Full judge evidence and issues stay expandable.

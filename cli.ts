@@ -12,7 +12,7 @@ import { prepareSuite, reportSuite, runSuite } from "./suite";
 import { prepare } from "./prepare";
 import { preflightRun } from "./runner";
 import { remeterRun } from "./remeter";
-import { finishBenchmark, runBenchmark } from "./workflow";
+import { finishBenchmark, reevaluateBenchmark, runBenchmark } from "./workflow";
 import { judgeRun } from "./judge";
 import { buildReport, invalidateRun } from "./report";
 import { runLaunch } from "./launch";
@@ -45,10 +45,14 @@ Usage:
   codex-ab preflight --run-dir DIR [--docker-bin FILE]
   codex-ab run --run-dir DIR --confirm-paid-inference [--import-arms JSON] [options]
   codex-ab finish --run-dir DIR --confirm-paid-inference [--recover-judge] [options]
+  codex-ab reevaluate --run-dir SOURCE [--output-parent DIR] --confirm-paid-inference [options]
   codex-ab judge --run-dir DIR --confirm-paid-inference [options]
   codex-ab remeter --run-dir DIR --exclusions FILE
   codex-ab report --run-dir DIR [--output-dir DIR]
   codex-ab invalidate --run-dir DIR --reason TEXT
+
+Reevaluation creates an independent comparison from all arms in a complete sealed run.
+It reruns evaluator tests and paid judges, preserving implementation measurements without launching implementation agents.
 
 Import options (launch or run):
   --import-arms JSON   [{"target_arm":"stock","run_dir":"/previous/run","arm":"current"}]
@@ -259,6 +263,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
   if (command === "report-trials") {
     process.stdout.write(`${await reportTrials(string(o, "trial-set"))}\n`);
+    return 0;
+  }
+  if (command === "reevaluate") {
+    if (o["confirm-paid-inference"] !== true) throw new Error("reevaluate launches paid evaluator inference; pass --confirm-paid-inference");
+    process.stdout.write(`${await reevaluateBenchmark({ runDir: string(o, "run-dir"), outputParent: o["output-parent"] as string | undefined,
+      authFile: string(o, "auth-file", join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json")),
+      dockerBin: o["docker-bin"] as string | undefined })}\n`);
     return 0;
   }
   if (command === "run" || command === "judge" || command === "finish") {

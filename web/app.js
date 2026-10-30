@@ -17,6 +17,7 @@ const MEKUGI_TOGGLES = [
 const MEKUGI_VALUES = ["ansi-faint", "timeout", "stream-idle-timeout"];
 const ATTEMPT_STATUS = { started: "Running", stopped: "Finished", failed: "Failed" };
 const TONES = { stopped: "positive", complete: "positive", failed: "negative", canceled: "negative" };
+const QUALITY_ASPECT_KEYS = ["simplicity", "performance", "approach"];
 function executionStatus(attempt, result) {
   attempt = obj(attempt); result = obj(result);
   if (!attempt.status) return ["Not started", ""];
@@ -445,17 +446,30 @@ function metricTable(report, state, labels) {
   const criteria = report.criteria ?? state.criteria;
   const rows = [
     ["Behavioral grade", arm => gradeChip(values(arm).result, criteria), "", true],
-    ["Agent time", arm => duration(values(arm).result.agent_elapsed_ms), "agent_elapsed_ms"],
+    ["Agent time", arm => duration(values(arm).result.agent_elapsed_ms) + (values(arm).result.recovery ? " (recovered Docker container duration)" : ""), "agent_elapsed_ms"],
     ["Estimated API cost", arm => typeof values(arm).totals.estimated_api_usd === "number" ? "$" + metric(values(arm).totals.estimated_api_usd, 6) : "Unknown", "estimated_api_usd"],
     ["Total tokens", arm => metric(values(arm).totals.total_tokens), "total_tokens"],
     ["Command time", arm => typeof values(arm).totals.command_seconds === "number" ? metric(values(arm).totals.command_seconds, 2) + " s" : "Unknown", "command_seconds"],
   ];
   const change = (arm, key) => {
+    if (key === "agent_elapsed_ms" && (values(arm).result.recovery?.timing_source || "native-controller") !== (values(keys[0]).result.recovery?.timing_source || "native-controller")) return "Not available";
     const changes = obj(obj(report.baseline_differences_percent)[arm] ?? (arm === "current" ? report.current_minus_stock_percent : null));
     return typeof changes[key] === "number" && Number.isFinite(changes[key]) ? (changes[key] > 0 ? "+" : "") + metric(changes[key], 2) + "%" : "Not available";
   };
   return '<div class="table-scroll" tabindex="0" role="region" aria-label="Pair measurements"><table><thead><tr><th>Measurement</th>' + keys.map((arm, index) => '<th class="' + (index === 0 ? "a" : "b") + '">' + esc(labels[arm]) + "</th>").join("") + "</tr></thead><tbody>"
     + rows.map(([label, value, key, html]) => "<tr><th>" + esc(label) + "</th>" + keys.map((arm, index) => '<td class="metric ' + (index === 0 ? 'a' : 'b') + '">' + (html ? value(arm) : esc(value(arm))) + (key && index ? '<span class="metric-change">' + esc(change(arm, key)) + "</span>" : "") + "</td>").join("") + "</tr>").join("") + '</tbody></table></div><p class="hint">' + (keys.length === 2 ? 'Change compares ' + esc(labels[keys[1]]) + ' with ' : 'Changes compare each setup with ') + esc(labels[keys[0]]) + ". Positive percentages mean more time, cost, or tokens, not better quality.</p>";
+}
+function recoveryNotice(report, state, labels) {
+  const recovered = Object.keys(labels).flatMap(arm => {
+    const result = obj(obj(obj(report.arms)[arm]).result ?? obj(state.results)[arm]);
+    return result.recovery ? [[arm, result.recovery]] : [];
+  });
+  if (!recovered.length) return "";
+  return '<div class="notice"><strong>Recovered evidence</strong><ul>' + recovered.map(([arm, item]) => '<li><strong>' + esc(labels[arm])
+    + '</strong>: recovered from run ' + esc(item.source_run_id) + ', arm ' + esc(item.source_arm) + '; collected ' + esc(item.collected_at)
+    + '. Timing: Docker container duration (docker-inspect). Native controller elapsed time unavailable.<ul>'
+    + (item.caveats || []).map(caveat => '<li>' + esc(caveat) + '</li>').join('') + '</ul></li>').join('')
+    + '</ul><p>Cross-source duration rankings and percentages are unavailable.</p></div>';
 }
 function statusChip(status, text = words(status)) {
   return '<span class="status-chip ' + esc(status) + '">' + esc(text) + "</span>";
@@ -501,6 +515,15 @@ function judgedPasses(report) {
     return { pass: pass.pass, winner: arm(pass.winner), scores };
   });
 }
+function scoreRubricId(score, scoring) {
+  return score.rubric || obj(scoring).legacy_rubric || "legacy";
+}
+function scoreRubricLabel(score, scoring) {
+  return obj(obj(obj(scoring).rubrics)[scoreRubricId(score, scoring)]).label || (score.rubric ? words(score.rubric) : "Legacy recorded rubric");
+}
+function scoreAxisLabel(key, scoring) {
+  return obj(obj(scoring).labels)[key] || words(key).replace(/^./, char => char.toUpperCase());
+}
 function verdictSummary(report, state, labels, complete) {
   const name = (arm) => arm === "tie" ? "tie" : arm === "none" || !arm ? "neither" : labels[arm] || "Unmapped setup";
   const winner = report.winner;
@@ -513,10 +536,11 @@ function verdictSummary(report, state, labels, complete) {
     const semantic = armGrade(report, state, arm).semantic;
     const lines = passKeys(semantic).map((key) => {
       const number = Number(key.slice(5));
-      const total = obj(passes.find((pass) => pass.pass === number)?.scores[arm]).weighted_total;
+      const score = obj(passes.find((pass) => pass.pass === number)?.scores[arm]);
+      const total = score.weighted_total;
       const existing = obj((obj(semantic)[key + "-existing"] || [])[0]).status;
       return "<li><strong>Pass " + number + "</strong> " + esc(criteriaCount(Array.isArray(semantic[key]) ? semantic[key] : []))
-        + (typeof total === "number" ? " · score " + esc(metric(total, 1)) + "/100" : "")
+        + (typeof total === "number" ? " · score " + esc(metric(total, 1)) + "/100 (" + esc(scoreRubricLabel(score, report.scoring)) + ")" : "")
         + (existing && existing !== "pass" ? " · existing tests " + esc(words(existing)) : "") + "</li>";
     });
     return '<article class="verdict-card ' + side + '"><h4>' + esc(labels[arm]) + "</h4>" + gradeChip({ grade: armGrade(report, state, arm) }, report.criteria ?? state.criteria)
@@ -529,17 +553,31 @@ function verdictSummary(report, state, labels, complete) {
 function scoreTable(report, labels) {
   const passes = judgedPasses(report);
   if (!passes.length) return "";
-  const rows = [["correctness", "Correctness (50%)"], ["completeness", "Completeness (20%)"], ["maintainability", "Maintainability (20%)"], ["test_quality", "Test quality (10%)"], ["weighted_total", "Weighted total (of 100)"]];
   const keys = Object.keys(labels);
+  const scoring = obj(report.scoring);
+  const scores = passes.flatMap(pass => Object.values(pass.scores));
+  const rubrics = [...new Set(scores.map(score => scoreRubricId(score, scoring)))];
+  const axes = Object.keys(obj(scoring.labels));
+  if (!axes.length) axes.push(...new Set([...scores.flatMap(score => Object.keys(score).filter(key => key !== "weighted_total" && key !== "rubric")), ...QUALITY_ASPECT_KEYS]));
+  const weights = rubrics.length === 1 ? obj(obj(obj(scoring.rubrics)[rubrics[0]]).weights) : {};
+  const rows = axes.map(key => [key, scoreAxisLabel(key, scoring) + (typeof weights[key] === "number" ? " (" + weights[key] + "%)" : "")]);
+  rows.push(["weighted_total", "Recorded weighted total (of 100)"]);
   const cell = (pass, arm, key, side) => {
     const value = obj(pass.scores[arm])[key];
-    const lead = typeof value === "number" && keys.every(other => other === arm || typeof obj(pass.scores[other])[key] === "number" && value > obj(pass.scores[other])[key]);
-    return '<td class="metric ' + side + (lead ? " lead" : "") + '">' + esc(metric(value, 2)) + "</td>";
+    const lead = rubrics.length === 1 && typeof value === "number" && keys.every(other => other === arm || typeof obj(pass.scores[other])[key] === "number" && value > obj(pass.scores[other])[key]);
+    const text = value === null || value === undefined && QUALITY_ASPECT_KEYS.includes(key) ? "Unassessed" : metric(value, 2);
+    return '<td class="metric ' + side + (lead ? " lead" : "") + '">' + esc(text) + "</td>";
   };
   return '<h3>Judge scores</h3><div class="table-scroll" tabindex="0" role="region" aria-label="Judge scores"><table><thead><tr><th rowspan="2">Score</th>' + keys.map(arm => '<th colspan="' + passes.length + '">' + esc(labels[arm]) + "</th>").join("") + "</tr><tr>"
     + keys.map(() => passes.map(pass => "<th>Pass " + esc(pass.pass) + "</th>").join("")).join("") + "</tr></thead><tbody>"
+    + '<tr><th>Scoring rubric</th>' + keys.map(arm => passes.map(pass => '<td>' + esc(scoreRubricLabel(obj(pass.scores[arm]), scoring)) + '</td>').join("")).join("") + '</tr>'
     + rows.map(([key, label]) => "<tr><th>" + esc(label) + "</th>" + keys.map((arm, index) => passes.map((pass, passIndex) => cell(pass, arm, key, passIndex === 0 ? index === 0 ? "a" : "b" : "")).join("")).join("") + "</tr>").join("")
-    + '</tbody></table></div><p class="hint">Component scores range from 0 to 5; the weighted total ranges from 0 to 100. Bold marks the highest score within a pass. These are the recorded scores.</p>';
+    + '</tbody></table></div><p class="hint">Component scores range from 0 to 5; recorded weighted totals range from 0 to 100. Missing aspect scores and incomplete totals remain unassessed. Bold compares scores only within one rubric.</p>'
+    + rubrics.map(id => {
+      const rubric = obj(obj(scoring.rubrics)[id]);
+      return Object.keys(obj(rubric.weights)).length ? '<p class="hint">' + esc(rubric.label) + ': ' + Object.entries(rubric.weights).map(([key, weight]) => esc(scoreAxisLabel(key, scoring)) + ' ' + esc(weight) + '%').join(', ') + '.</p>' : '';
+    }).join("")
+    + (report.score_comparison_issue ? '<p class="notice">' + esc(report.score_comparison_issue) + '</p>' : '');
 }
 function criterionTable(report, labels) {
   const contract = obj(obj(report.criteria).contract);
@@ -574,10 +612,9 @@ function resourceSummary(report) {
       : '<p class="hint">The recorded workflow does not establish why extra requests occurred. Request counts alone cannot identify the responsible instruction, retries, or cache-miss cause.</p>')
     + '<p class="hint">Accounting locates the difference; observed workflow contributors do not establish a general causal effect from one run.</p>';
 }
-function qualityAspectsTable(pass, names) {
+function qualityAspectsTable(pass, names, scoring) {
   const order = Array.isArray(pass.presentation) ? pass.presentation : [];
   if (!order.length) return "";
-  const aspects = [["simplicity", "Simplicity"], ["performance", "Implementation performance"], ["approach", "Approach"]];
   const cell = (index, key) => {
     const id = "candidate-" + (index + 1);
     const aspect = obj(obj(obj(pass.quality_aspects)[id])[key]);
@@ -585,11 +622,11 @@ function qualityAspectsTable(pass, names) {
       + '<details class="criterion-reasoning" data-key="' + esc("aspect:" + pass.pass + ":" + order[index] + ":" + key) + '"><summary>Reasoning</summary><p class="hint">Evidence: '
       + esc(aspect.basis || "none") + "</p><p>" + esc(displayName(aspect.reasoning || "No qualitative assessment was recorded for this historical candidate.", names)) + "</p></details>";
   };
-  return '<h4>Qualitative aspects</h4><p class="hint">Evidence-based assessments, without additional scoring weights or task gates. Implementation performance is separate from agent command time.</p><div class="table-scroll" tabindex="0" role="region" aria-label="Qualitative aspects, pass ' + esc(pass.pass) + '"><table><thead><tr><th>Aspect</th>'
+  return '<h4>Qualitative aspects</h4><p class="hint">Aspect evidence supports the expanded numeric scores. Missing numeric evidence stays unassessed; functional gates are unchanged. Implementation performance is separate from agent command time.</p><div class="table-scroll" tabindex="0" role="region" aria-label="Qualitative aspects, pass ' + esc(pass.pass) + '"><table><thead><tr><th>Aspect</th>'
     + order.map((_, index) => "<th>" + esc(displayName("candidate-" + (index + 1), names)) + "</th>").join("") + "</tr></thead><tbody>"
-    + aspects.map(([key, label]) => "<tr><th>" + esc(label) + "</th>" + order.map((_, index) => '<td class="criterion-finding">' + cell(index, key) + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
+    + QUALITY_ASPECT_KEYS.map(key => "<tr><th>" + esc(scoreAxisLabel(key, scoring)) + "</th>" + order.map((_, index) => '<td class="criterion-finding">' + cell(index, key) + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
 }
-function judgeSummary(judge, labels) {
+function judgeSummary(judge, labels, scoring) {
   const result = obj(obj(judge).result);
   if (!Array.isArray(result.passes) || !result.passes.length) return "";
   return '<h3>Source assessment: why quality differs</h3><p class="hint">Implementation causes and observed consequences. Full supporting evidence remains available below each explanation.</p>' + result.passes.map((pass) => {
@@ -597,7 +634,7 @@ function judgeSummary(judge, labels) {
     const issues = Array.isArray(pass.issues) ? pass.issues : [];
     const causes = [...new Set(issues.map((issue) => issue.candidate))].map((candidate) => issues.find((issue) => issue.candidate === candidate && issue.severity === 'critical') || issues.find((issue) => issue.candidate === candidate && issue.severity !== 'minor')).filter(Boolean);
     return '<section class="assessment-pass"><h4>Pass ' + esc(pass.pass) + " winner: " + esc(displayName(pass.winner, names)) + "</h4><p>" + esc(displayName(pass.rationale || "No reasoning recorded for this pass.", names)) + "</p>"
-      + qualityAspectsTable(pass, names)
+      + qualityAspectsTable(pass, names, scoring)
       + (causes.length ? '<ul class="assessment-issues">' + causes.map((issue) => '<li><strong>' + esc(displayName(issue.candidate, names)) + '</strong>: ' + esc(displayName(issue.detail, names)) + '</li>').join('') + '</ul>' : '')
       + '<details class="assessment-details" data-key="assessment-' + esc(pass.pass) + '"><summary>Full evidence and issues</summary>'
       + (Array.isArray(pass.evidence) ? "<ul>" + pass.evidence.map((item) => "<li>" + esc(displayName(item, names)) + "</li>").join("") + "</ul>" : "")
@@ -618,19 +655,19 @@ function resultContent(data) {
       + (stopped ? "The operation ended before candidate results were collected. See the operation status and phase log."
         : "Preparing isolated workspaces and recording runtime metadata. Setup identities and measurements appear after preparation publishes the run state. Follow the phase log for progress.") + "</p>";
   }
-  if (!Object.keys(report).length) return "<h2>Partial results</h2>" + invalidationNotice + "<p class='hint'>The report appears when the CLI generates it. Collected grades remain visible while work continues.</p>" + (data.entry.kind === "pair" ? metricTable({}, state, labels) : "");
+  if (!Object.keys(report).length) return "<h2>Partial results</h2>" + invalidationNotice + recoveryNotice({}, state, labels) + "<p class='hint'>The report appears when the CLI generates it. Collected grades remain visible while work continues.</p>" + (data.entry.kind === "pair" ? metricTable({}, state, labels) : "");
   if (data.entry.kind === "pair") {
     const warnings = [...new Set([...currentInvalidity, ...(report.invalidity_reasons || []), ...Object.values(obj(report.arms)).flatMap((arm) => obj(arm.usage).warnings || [])])];
     const complete = report.measurement_complete === true && !invalidated;
     const evaluation = obj(report.evaluation ?? state.evaluation);
-    const evaluationNote = evaluation.mode === "reuse" ? '<p class="notice">Historical evaluation reused. Imported grades and scores are unchanged; fresh candidates use adapted historical tests. Rankings combine historical and new scores, not a fresh joint blind verdict.</p>'
+    const evaluationNote = evaluation.mode === "reuse" ? '<p class="notice">Historical evaluation reused. Imported grades and scores are unchanged; fresh candidates use adapted historical tests. Scores retain their recorded rubrics; different rubrics cannot produce an overall quality winner.</p>'
       + '<ul>' + Object.entries(obj(evaluation.baselines)).map(([arm, baseline]) => '<li>' + esc(labels[arm]) + ': tests and assessment baseline from ' + esc(labels[baseline]) + '</li>').join("") + '</ul>' : "";
-    return "<h2>Comparison results</h2><p class='hint'>" + esc(report.design || "Descriptive paired evidence") + "</p>" + evaluationNote
+    return "<h2>Comparison results</h2>" + recoveryNotice(report, state, labels) + "<p class='hint'>" + esc(report.design || "Descriptive paired evidence") + "</p>" + evaluationNote
       + (invalidated ? invalidationNotice : verdictSummary(report, state, labels, complete))
       + scoreTable(report, labels)
       + "<h3>Measurements</h3>" + metricTable(report, state, labels)
       + (warnings.length ? '<ul class="warning-list">' + warnings.map((warning) => "<li>" + esc(warning) + "</li>").join("") + "</ul>" : "")
-      + (invalidated || report.validity === "invalid" ? "" : judgeSummary(report.judge, labels))
+      + (invalidated || report.validity === "invalid" ? "" : judgeSummary(report.judge, labels, report.scoring))
       + resourceSummary(report) + criterionTable(report, labels)
       + disclosure(invalidated ? "Technical report, regenerate after invalidation" : "Technical report", report, labels);
   }

@@ -1,4 +1,5 @@
-import { armNames, candidateIds, qualityAspectKeys, type CandidateId, type QualityAspects } from "./types";
+import { armNames, candidateIds, qualityAspectKeys, CURRENT_SCORE_RUBRIC, LEGACY_SCORE_KEYS, LEGACY_SCORE_RUBRIC,
+  SCORE_KEYS, SCORE_RUBRICS, scoreRubric, type CandidateId, type JudgeScore, type QualityAspects, type ScoreAxis, type ScoreRubric } from "./types";
 import { access, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { JUDGE_MODEL, runSemanticJudge } from "./semantic-judge";
@@ -6,8 +7,6 @@ import { armExecutionSucceeded, readState, withRunLock, writeState } from "./sta
 import { embeddedFallbackPricing, fetchPricing, type PricingSnapshot } from "./usage";
 import type { ArmName, CommandEvidence, JudgePass, JudgeReport, RunState } from "./types";
 
-const SCORE_KEYS = ["correctness", "completeness", "maintainability", "test_quality"] as const;
-type ScoreKey = (typeof SCORE_KEYS)[number];
 type Candidate = CandidateId;
 
 export function judgeOutputSchema(candidates: CandidateId[]) { return {
@@ -38,7 +37,9 @@ export function judgeOutputSchema(candidates: CandidateId[]) { return {
       properties: Object.fromEntries(candidates.map(id => [id, {
         type: "object", additionalProperties: false,
         required: [...SCORE_KEYS],
-        properties: Object.fromEntries(SCORE_KEYS.map(key => [key, { type: "number", minimum: 0, maximum: 5 }])),
+        properties: Object.fromEntries(SCORE_KEYS.map(key => [key, qualityAspectKeys.includes(key as typeof qualityAspectKeys[number])
+          ? { anyOf: [{ type: "number", minimum: 0, maximum: 5 }, { type: "null" }] }
+          : { type: "number", minimum: 0, maximum: 5 }])),
       }])),
     },
     evidence: { type: "array", items: { type: "string", minLength: 1 } },
@@ -101,10 +102,33 @@ export function unassessedQualityAspects(): QualityAspects {
   }])) as QualityAspects;
 }
 
-export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: ArmName[], passing: Record<Candidate, boolean>, options: { requireQualityAspects?: boolean } = {}): JudgePass {
+function weightedTotal(score: Omit<JudgeScore, "weighted_total" | "rubric">, rubric: ScoreRubric): number | null {
+  const weights: Partial<Record<ScoreAxis, number>> = SCORE_RUBRICS[rubric].weights;
+  let total = 0;
+  for (const key of SCORE_KEYS) {
+    const weight = weights[key];
+    if (weight === undefined) continue;
+    const value = score[key];
+    if (value === null || value === undefined) return null;
+    total += value * weight;
+  }
+  return Number((total / 5).toFixed(2));
+}
+
+/** Rubrics must agree across candidates and passes before any winner can be carried forward. */
+export function scoreComparisonIssue(passes: Array<Pick<JudgePass, "scores" | "winner">>): string | undefined {
+  const scores = passes.flatMap(pass => Object.values(pass.scores));
+  if (new Set(scores.map(scoreRubric)).size > 1) return "Candidates use different scoring rubrics; no mixed-rubric quality winner is available.";
+  for (const pass of passes) {
+    const winners = pass.winner === "tie" ? Object.values(pass.scores) : pass.winner === "none" ? [] : [pass.scores[pass.winner]];
+    if (winners.some(score => score?.weighted_total == null)) return "The selected winner has an unassessed weighted total.";
+  }
+}
+
+export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: ArmName[], passing: Record<Candidate, boolean>, options: { requireQualityAspects?: boolean; requireCurrentRubric?: boolean } = {}): JudgePass {
   const candidates = candidateIds(presentation.length);
   const hasAspects = isRecord(value) && Object.hasOwn(value, "quality_aspects");
-  const root = exactObject(value, ["scores", "evidence", "issues", "winner", "rationale", ...(hasAspects || options.requireQualityAspects ? ["quality_aspects"] : [])], `judge pass ${pass}`);
+  const root = exactObject(value, ["scores", "evidence", "issues", "winner", "rationale", ...(hasAspects || options.requireQualityAspects || options.requireCurrentRubric ? ["quality_aspects"] : [])], `judge pass ${pass}`);
   let quality_aspects: JudgePass["quality_aspects"];
   if (hasAspects) {
     const rawAspects = exactObject(root.quality_aspects, candidates, `judge pass ${pass}.quality_aspects`);
@@ -129,14 +153,28 @@ export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: Arm
   const rawScores = exactObject(root.scores, candidates, `judge pass ${pass}.scores`);
   const scores = {} as JudgePass["scores"];
   for (const id of candidates) {
-    const source = exactObject(rawScores[id], SCORE_KEYS, `judge pass ${pass}.scores.${id}`);
-    const validated = {} as Record<ScoreKey, number>;
-    for (const key of SCORE_KEYS) {
+    const rawScore = rawScores[id];
+    const expanded = options.requireCurrentRubric || isRecord(rawScore) && qualityAspectKeys.some(key => Object.hasOwn(rawScore, key));
+    const source = exactObject(rawScore, expanded ? SCORE_KEYS : LEGACY_SCORE_KEYS, `judge pass ${pass}.scores.${id}`);
+    const validated = {} as Record<typeof LEGACY_SCORE_KEYS[number], number>;
+    for (const key of LEGACY_SCORE_KEYS) {
       const score = source[key];
       if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 5) throw new Error(`judge pass ${pass}.scores.${id}.${key} must be a finite number from 0 to 5`);
       validated[key] = score;
     }
-    scores[id] = { ...validated, weighted_total: Number(((validated.correctness * 50 + validated.completeness * 20 + validated.maintainability * 20 + validated.test_quality * 10) / 5).toFixed(2)) };
+    if (!expanded) {
+      scores[id] = { ...validated, rubric: LEGACY_SCORE_RUBRIC, weighted_total: weightedTotal(validated, LEGACY_SCORE_RUBRIC) };
+      continue;
+    }
+    const aspects = {} as Record<typeof qualityAspectKeys[number], number | null>;
+    for (const key of qualityAspectKeys) {
+      const score = source[key], assessment = quality_aspects?.[id][key];
+      if (!assessment) throw new Error(`judge pass ${pass}.quality_aspects.${id}.${key} is required for expanded scoring`);
+      if (score !== null && (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 5)) throw new Error(`judge pass ${pass}.scores.${id}.${key} must be null or a finite number from 0 to 5`);
+      if ((score === null) !== (assessment.status === "unassessed")) throw new Error(`judge pass ${pass}.scores.${id}.${key} must be null exactly when its aspect is unassessed`);
+      aspects[key] = score;
+    }
+    scores[id] = { ...validated, ...aspects, rubric: CURRENT_SCORE_RUBRIC, weighted_total: weightedTotal({ ...validated, ...aspects }, CURRENT_SCORE_RUBRIC) };
   }
 
   if (!Array.isArray(root.evidence)) throw new Error(`judge pass ${pass}.evidence must be an array`);
@@ -154,6 +192,8 @@ export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: Arm
   if ((winner !== "tie" && winner !== "none") && !passing[winner]) throw new Error(`judge pass ${pass} selected a candidate whose required benchmark gates failed or were not run`);
   if ((winner !== "tie" && winner !== "none") && critical.has(winner)) throw new Error(`judge pass ${pass} selected a candidate with a critical issue`);
   if (winner === "tie" && candidates.some(id => !passing[id] || critical.has(id))) throw new Error(`judge pass ${pass} selected a tie containing an ineligible candidate`);
+  const scoringIssue = scoreComparisonIssue([{ scores, winner }]);
+  if (winner !== "none" && scoringIssue) throw new Error(`judge pass ${pass}: ${scoringIssue}`);
   return { pass, presentation, scores, evidence, issues, winner, rationale: nonemptyString(root.rationale, `judge pass ${pass}.rationale`), ...(quality_aspects ? { quality_aspects } : {}) };
 }
 

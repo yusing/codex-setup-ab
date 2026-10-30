@@ -56,11 +56,15 @@ function artifactPath(root: string, path: string): string {
 }
 
 /** Validate every selection before copying evidence or launching any new candidate. */
-export async function importArms(runDir: string, state: RunState, selections: ArmImport[]): Promise<Partial<Record<string, ArmResult>>> {
+export async function importArms(runDir: string, state: RunState, selections: ArmImport[], purpose: "execution" | "reevaluation" = "execution"): Promise<Partial<Record<string, ArmResult>>> {
   const imports = parseArmImports(selections);
   const keys = armNames(state);
   if (imports.some(item => !keys.includes(item.target_arm))) throw new Error("Unknown import target arm");
-  if (imports.length >= keys.length) throw new Error("Imports must leave at least one fresh arm");
+  if (purpose === "reevaluation") {
+    if (state.evaluation?.mode !== "fresh" || imports.length !== keys.length
+      || new Set(imports.map(item => item.run_dir)).size !== 1
+      || imports.some(item => item.arm !== item.target_arm)) throw new Error("Reevaluation requires fresh evaluation of exactly all source arms");
+  } else if (imports.length >= keys.length) throw new Error("Imports must leave at least one fresh arm");
   const plans = [];
   const publications = new Map<string, { bundle: string; hash: string; source: RunState;
     published: { validity?: string }; rollouts: Record<string, RolloutFile[]> }>();
@@ -80,6 +84,7 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
       publications.set(sourceRun, publication);
     }
     const { bundle, hash, source, published, rollouts } = publication;
+    if (purpose === "reevaluation" && JSON.stringify(armNames(source)) !== JSON.stringify(keys)) throw new Error("Reevaluation must retain every configured source arm");
     if (item.bundle_sha256 && item.bundle_sha256 !== hash) throw new Error("Conflicting source bundle SHA-256");
     const result = source.results?.[item.arm];
     if (source.status !== "complete" || source.finishing?.status !== "complete" || source.invalidity_reasons?.length
@@ -95,9 +100,14 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
     // Flatten an already-imported arm to its retained original measurement evidence.
     const prior = source.imported_arms?.[item.arm];
     const evidenceRoot = prior ? artifactPath(sourceRun, prior.directory) : sourceRun;
-    const evidenceState = prior ? await readState(evidenceRoot) : source;
+    const evidenceState = prior ? await readState(artifactPath(bundle, prior.directory)) : source;
     const evidenceArm = prior?.evidence_arm ?? item.arm;
     const original = evidenceState.results![evidenceArm]!;
+    const recoveryCopies = await Promise.all((original.recovery?.files ?? []).map(async file => {
+      const from = artifactPath(bundle, prior ? join(prior.directory, file.path) : file.path);
+      if (!(await lstat(from)).isFile() || await sha256(from) !== file.sha256) throw new Error("Imported recovery evidence differs from its recorded hash");
+      return { from, ...file };
+    }));
     const home = evidenceState.arm_attempts?.[evidenceArm]?.codex_home ?? join(dirname(evidenceState.arms[evidenceArm].repository), "home/ubuntu/.codex");
     const expected = rollouts[item.arm] ?? [];
     // Missing usage stays unknown; available rollout bytes must still match publication.
@@ -124,11 +134,11 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
         } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }
     }
-    plans.push({ item, sourceRun, source, bundle, hash, result: result!, evidenceRoot, evidenceState, evidenceArm, original, home, expected, exportCopies });
+    plans.push({ item, sourceRun, source, bundle, hash, result: result!, evidenceRoot, evidenceState, evidenceArm, original, home, expected, exportCopies, recoveryCopies });
   }
   const results: Partial<Record<string, ArmResult>> = {};
   for (const plan of plans) {
-    const { item, sourceRun, source, bundle, hash, evidenceRoot, evidenceState, evidenceArm, original, home, expected, exportCopies } = plan;
+    const { item, sourceRun, source, bundle, hash, evidenceRoot, evidenceState, evidenceArm, original, home, expected, exportCopies, recoveryCopies } = plan;
     const directory = `evaluator/imported-arms/${item.target_arm}`;
     const root = join(runDir, directory);
     const captured: Array<{ path: string; sha256: string }> = [];
@@ -142,11 +152,21 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
     await copy(join(bundle, "MANIFEST.sha256"), "MANIFEST.sha256");
     await copy(join(bundle, "report.json"), "report.json");
     await copy(join(sourceRun, "run.json"), "source-run.json");
-    await copy(join(evidenceRoot, "run.json"), "run.json");
+    const prior = source.imported_arms?.[item.arm];
+    await copy(join(prior ? artifactPath(bundle, prior.directory) : evidenceRoot, "run.json"), "run.json");
+    if (purpose === "reevaluation" && state.protected_runtime && item.target_arm === keys[0]) {
+      // Isolation was checked during original implementation execution. Retain
+      // the sealed evidence once, with the existing imported-file provenance.
+      const path = "artifacts/preflight-isolation.json";
+      await mkdir(dirname(join(runDir, path)), { recursive: true });
+      await copyFile(join(bundle, "isolation/preflight.json"), join(runDir, path));
+      captured.push({ path, sha256: await sha256(join(runDir, path)) });
+    }
     await copy(artifactPath(evidenceRoot, original.stdout_path), original.stdout_path);
     await copy(artifactPath(evidenceRoot, original.stderr_path), original.stderr_path);
     // Sanitized runtime evidence comes from the sealed publication, not mutable run exports.
     for (const file of exportCopies) await copy(file.from, file.path);
+    for (const file of recoveryCopies) await copy(file.from, file.path);
     const paths = new Set<string>();
     const setup = evidenceState.setup_revisions?.[evidenceArm]?.manifest ?? evidenceState.snapshot_manifest;
     paths.add(setup);
@@ -171,6 +191,7 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
     state.imported_arms[item.target_arm] = { source_run_id: source.id, source_arm: item.arm, bundle_sha256: hash,
       label: armLabels(source)[item.arm], directory, evidence_arm: evidenceArm, files: captured };
     const result: ArmResult = { ...plan.result, arm: item.target_arm, anonymous_id: `candidate-${armNames(state).indexOf(item.target_arm) + 1}`,
+      recovery: original.recovery ? { ...original.recovery, files: original.recovery.files.map(file => ({ ...file, path: join(directory, file.path) })) } : undefined,
       grade: state.evaluation?.mode === "reuse" ? structuredClone(plan.result!.grade) : undefined,
       patch_path: patchPath, stdout_path: join(directory, original.stdout_path), stderr_path: join(directory, original.stderr_path) };
     results[item.target_arm] = result;
@@ -242,6 +263,11 @@ export async function importControl(runDir: string, state: RunState, sourceDirec
     throw new Error("published control is not a complete, valid original stock attempt");
   }
   if (digest(controlIdentity(source)) !== digest(controlIdentity(state))) throw new Error("published control does not match task, setup, model, tool, or resource controls");
+  const recoveryFiles = await Promise.all((source.results.stock.recovery?.files ?? []).map(async file => {
+    const from = artifactPath(bundle, file.path);
+    if (!(await lstat(from)).isFile() || await sha256(from) !== file.sha256) throw new Error("Imported recovery evidence differs from its recorded hash");
+    return { from, path: join("evaluator/imported-control", file.path), sha256: file.sha256 };
+  }));
   const provenance = join(runDir, "evaluator/imported-control");
   await mkdir(provenance, { recursive: true, mode: 0o700 });
   await copyFile(join(bundle, "MANIFEST.sha256"), join(provenance, "MANIFEST.sha256"));
@@ -270,10 +296,16 @@ export async function importControl(runDir: string, state: RunState, sourceDirec
   if (!metered.complete || USAGE_KEYS.some(key => metered.totals[key] !== published.arms?.stock?.usage?.totals?.[key])) {
     throw new Error("copied control usage differs from its published measurement");
   }
+  for (const file of recoveryFiles) {
+    const to = artifactPath(runDir, file.path);
+    await mkdir(dirname(to), { recursive: true, mode: 0o700 });
+    await copyFile(file.from, to);
+  }
   state.pricing = source.pricing;
   state.imported_control = { source_run_id: source.id, bundle_sha256: expectedBundleSha256,
     controls_sha256: digest(controlIdentity(source)), stdout_sha256: await sha256(stdout), stderr_sha256: await sha256(stderr) };
   const original = source.results.stock;
   return { ...original, grade: undefined, patch_path: "artifacts/stock/changes.patch",
+    recovery: original.recovery ? { ...original.recovery, files: recoveryFiles.map(({ path, sha256 }) => ({ path, sha256 })) } : undefined,
     stdout_path: "artifacts/stock/codex.jsonl", stderr_path: "artifacts/stock/codex.stderr" };
 }

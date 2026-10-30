@@ -12,6 +12,7 @@ export const COMMAND_OPTIONS: Record<string, string[]> = {
     preflight: ["run-dir", "docker-bin"],
     run: ["evaluation-mode", "evaluation-baselines", "import-arms", "run-dir", "auth-file", "grok-auth-file", "docker-bin", "arm", "control-run", "control-bundle-sha256", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference", "recover-judge"],
+    reevaluate: ["run-dir", "output-parent", "auth-file", "docker-bin", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     remeter: ["run-dir", "exclusions"],
     report: ["run-dir", "output-dir", "source-assessments"],

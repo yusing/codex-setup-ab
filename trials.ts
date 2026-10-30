@@ -245,7 +245,8 @@ function finite(value: unknown): value is number { return typeof value === "numb
 function measurement(report: PairReport, arm: ArmName, metric: Metric): number | null {
   const item = report.arms[arm];
   if (!item) return null;
-  if (metric === "agent_seconds") return item.result ? item.result.agent_elapsed_ms / 1000 : null;
+  // This aggregate measures native controller time, not recovered container duration.
+  if (metric === "agent_seconds") return item.result && !item.result.recovery ? item.result.agent_elapsed_ms / 1000 : null;
   if (metric === "grader_seconds") return item.result?.grade ? item.result.grade.elapsed_ms / 1000 : null;
   return item.usage?.totals[metric] ?? null;
 }

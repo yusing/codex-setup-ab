@@ -353,20 +353,43 @@ assessments, adapts the tests to the fresh implementation, and checks the same
 behavior. Only fresh candidates run tests and receive new scores. Original and
 adapted checks and their rationales remain in the evidence bundle.
 
-Fresh assessments also cover simplicity, implementation performance, and approach
-with explicit evidence. These aspects keep the existing score weights and gates.
-Historical assessments lacking them display unassessed rather than inheriting the
-fresh candidate's conclusions.
+Fresh assessments include simplicity, implementation performance, and approach in
+the weighted score, with explicit evidence. See the [scoring rubric](contract.md#blind-judge).
+Historical assessments lacking them display unassessed and retain their original
+rubric rather than inheriting the fresh candidate's conclusions or new weights.
 
 Choose **Fresh evaluation of all candidates** to regrade and rejudge every patch.
 CLI equivalents are `--evaluation-mode reuse|fresh` and optionally
 `--evaluation-baselines '{"arm-4":"arm-3"}'`, mapping fresh slots to imported
 slots. Without a mapping, fresh arms use the last imported slot. Reuse rankings
-combine frozen and new weighted scores rather than claiming a fresh joint blind
-verdict. Missing historical assessment evidence requires fresh evaluation.
+compare frozen and new weighted scores only under the same complete rubric, rather
+than claiming a fresh joint blind verdict. Mixed-rubric comparisons have no quality
+ranking. Missing historical assessment evidence requires fresh evaluation.
 Original usage evidence is copied and repriced using the new run's list prices;
 missing measurements remain unknown. Original runs are unchanged. Historical
 imports use repeat count 1 and cannot combine with `--arm` or `--control-run`.
+
+## Reevaluate retained implementations
+
+To compare every captured implementation under the current rubric without running
+the implementation agents again:
+
+```sh
+codex-ab reevaluate --run-dir /path/to/completed-run \
+  --output-parent ./results --confirm-paid-inference
+```
+
+The source must be a complete, infrastructure-valid comparison with a verified
+published bundle. The command creates a new evidence directory and freshly runs
+the evaluator checks and two blind judging passes for all source arms. Judging
+uses paid inference; implementation execution does not repeat. New checks can
+change functional assessments as well as scores.
+
+The original comparison remains unchanged. The new comparison retains its source
+provenance and implementation measurements, records new evaluator and judge costs,
+and can be attached to the workbench like any other result. Keep the pinned images
+and immutable preparation inputs available. This operation does not restart an
+incomplete implementation run.
 
 ## Reuse a completed stock control
 

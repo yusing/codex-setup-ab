@@ -176,11 +176,23 @@ test("runner accepts either single-arm selection and honors cancellation before 
 
 test.each([false, true])("importControl carries a verified stock result into a matching treatment (paired source: %s)", async paired => {
   const fixture = await publishedControl(paired);
+  const path = "recovery-timing.json";
+  await writeFile(join(fixture.bundle, path), JSON.stringify({ ExitCode: 0 }));
+  fixture.source.results!.stock!.recovery = { source_run_id: "canceled-controller", source_arm: "stock", collected_at: "2026-10-30T08:00:00.000Z",
+    container_id: "completed-container", timing_source: "docker-inspect", controller_elapsed_available: false,
+    caveats: ["The original controller was canceled by the user."], files: [{ path, sha256: await sha256(join(fixture.bundle, path)) }] };
+  await writeState(fixture.sourceRun, fixture.source);
+  await writeFile(join(fixture.bundle, "run.json"), await readFile(join(fixture.sourceRun, "run.json")));
+  await writeBundleManifest(fixture.bundle);
+  fixture.bundleSha256 = await sha256(join(fixture.bundle, "MANIFEST.sha256"));
   expect(controlIdentity(fixture.source)).toEqual(controlIdentity(fixture.treatment));
 
   const imported = await importControl(fixture.targetRun, fixture.treatment, fixture.sourceRun, fixture.bundleSha256);
 
   expect(imported.grade).toBeUndefined();
+  expect(imported.recovery).toMatchObject({ source_run_id: "canceled-controller", controller_elapsed_available: false,
+    files: [{ path: `evaluator/imported-control/${path}`, sha256: fixture.source.results!.stock!.recovery.files[0]!.sha256 }] });
+  expect(await sha256(join(fixture.targetRun, imported.recovery!.files[0]!.path))).toBe(imported.recovery!.files[0]!.sha256);
   expect(imported.patch_path).toBe("artifacts/stock/changes.patch");
   expect(fixture.treatment.imported_control).toMatchObject({
     source_run_id: fixture.source.id, bundle_sha256: fixture.bundleSha256,
@@ -260,6 +272,9 @@ test("general arm import can select a retained imported arm without its original
   for (const [from, to] of [["run.json", "run.json"], ["artifacts/current/changes.patch", "current-changes.patch"]]) {
     await writeFile(join(bundle, to), await readFile(join(f.targetRun, from)));
   }
+  const retainedState = join(f.treatment.imported_arms!.current!.directory, "run.json");
+  await mkdir(dirname(join(bundle, retainedState)), { recursive: true });
+  await writeFile(join(bundle, retainedState), await readFile(join(f.targetRun, retainedState)));
   await writeFile(join(bundle, "report.json"), JSON.stringify({ validity: "valid" }));
   await writeFile(join(bundle, "rollout-files.json"), JSON.stringify({ current: [{ path: "rollout.jsonl", sha256: await sha256(f.rolloutPath) }] }));
   await writeBundleManifest(bundle);

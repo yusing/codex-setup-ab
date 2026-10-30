@@ -147,6 +147,18 @@ Milestones go to stderr. Timeout or cancellation stops session-created container
 
 Semantic assessment requires every configured arm. Historical singleton reports remain descriptive records, not paired comparisons.
 
+`reevaluate --run-dir SOURCE` creates a new comparison containing every arm of a
+completed, infrastructure-valid published source. It verifies the source bundle,
+preserves the original evidence, imports the captured implementations and their
+measurements, and uses the pinned preparation inputs and images for fresh evaluator
+checks and both blind judging passes. It performs no implementation-agent calls.
+Any source isolation preflight evidence remains historical; reevaluation does not
+repeat implementation preflight.
+New judging has its own usage and costs, and may change functional assessments as
+well as scores. `--output-parent` selects the parent of the new evidence directory;
+`--confirm-paid-inference` is required. Incomplete or invalid sources are rejected
+before paid inference. This is a new evaluation, not a restart of the source run.
+
 `launch` and `run` accept `--import-arms`, a JSON array of mappings with
 `target_arm`, `run_dir`, and `arm`. Each mapping fills an existing comparison slot
 from a completed, infrastructure-valid published run. An optional `bundle_sha256`
@@ -178,18 +190,28 @@ conditions. Adaptation rationales, original checks, adapted checks, and executio
 evidence are retained. No imported candidate is regraded or rescored. The new
 assessment checks coverage against the historical intent; broken harnesses remain
 unassessed. Historical scores do not establish outcomes for a fresh candidate.
-Reuse rankings compare eligible frozen and new weighted scores within each pass;
-an overall winner requires agreement across passes. These are historical score
+Reuse rankings compare eligible frozen and new weighted scores within each pass
+only when every candidate uses the same rubric and each eligible candidate has a
+complete numeric total;
+an overall winner requires agreement across passes. Mixed rubrics or incomplete
+scores retain the individual results without a quality ranking. These are historical score
 rankings, not fresh joint blind judgments; prior comparative verdicts remain in
 their source evidence rather than being transferred to the enlarged comparison.
 
-New source assessments also record each candidate's simplicity, implementation
-performance, and approach. These qualitative aspects do not add scoring weights
-or task gates. Each records `satisfactory`, `concern`, or `unassessed`, an evidence
+The results-only `reevaluate` command is the exception to imports requiring a fresh
+implementation: it imports exactly all configured arms and always uses fresh
+evaluation. Ordinary launch/run imports retain their fresh-arm requirement.
+
+New source assessments score correctness, simplicity, completeness, implementation
+performance, maintainability, approach, and test quality. Their weights are defined
+under [Blind judge](#blind-judge). Simplicity, performance, and approach also record
+`satisfactory`, `concern`, or `unassessed`, an evidence
 basis (`source`, `executed`, or `none`), and a concise explanation with concrete
 evidence or the missing coverage. A substantive conclusion needs source or
-executed evidence; absent evidence remains unassessed. Existing correctness,
-completeness, maintainability, and test-quality scores retain their weights.
+executed evidence; absent evidence remains unassessed. An unassessed aspect has a
+null numeric score and leaves the weighted total unavailable. Missing evidence is
+neither zero nor a reason to redistribute its weight. Functional criteria remain
+separate from these scoring dimensions.
 
 Simplicity considers necessary scope, abstraction and state cost, duplication,
 and disproportionate implementation or test weight without treating line count
@@ -202,9 +224,11 @@ adding unrelated features or requiring speculative optimizations.
 
 Reuse preserves any recorded aspect assessments along with historical scores.
 Historical candidates without them are explicitly unassessed for these aspects;
-neither fresh findings nor missing historical evidence become historical passes.
-Only fresh candidates receive new aspect assessments in reuse mode. Reports show
-these alongside the existing scores, separately from functional acceptance.
+their original four-component scores and totals retain the original rubric.
+Neither fresh findings nor missing historical evidence become historical passes.
+Only fresh candidates receive new scores and aspect assessments in reuse mode.
+Reports identify each candidate's rubric alongside its scores and evidence,
+separately from functional acceptance.
 
 Runtime dependency images embed Mekugi binaries. Their IDs may differ when both
 recorded build keys match the current recipe and differ only in launcher-binary
@@ -303,7 +327,7 @@ Prewritten hidden tests are no longer supported. Supply behavioral criteria, not
 Harness authoring, an optional repair, and final assessment each have their own recorded model
 attempts, with the existing capacity-only retry policy. Model usage and timing remain separate
 from offline check time. No semantic model request occurs during `prepare` or `preflight`;
-`run`, `judge` and `finish` still require `--confirm-paid-inference`.
+`run`, `judge`, `finish`, and `reevaluate` require `--confirm-paid-inference`.
 
 ## Blind judge
 
@@ -313,7 +337,7 @@ The `run` command performs blind semantic assessment automatically after all can
 ./dist/codex-ab judge --run-dir "$run_dir" --confirm-paid-inference
 ```
 
-The gpt-6.1-sol judge uses high reasoning and the fast service tier. It receives the task, anonymous patches, changed-file lists, bounded output summaries, and complete read-only evaluator evidence under `/evidence`, plus anonymous evaluator source directories for inspecting affected contracts and callers. It does not receive arm labels, costs, agent logs, or either agent's writable filesystem. Task packs with a pinned upstream reference also mount its frozen commit patches and combined diff read-only under `/reference`. Both stages use them to establish task-scoped behavior while accepting equivalent designs and safe improvements; source comparison does not replace executed criterion evidence. The judge assesses final candidate trees, not commit-by-commit correspondence. Two independent homes containing only the minimal Codex configuration judge opposite presentation orders; they do not copy the task agents' mise runtime. Each pass uses two stages when its first harness succeeds or three when one repair stage is needed, with up to three capacity attempts per stage. Each assessment returns validated JSON scores for correctness (50%), completeness (20%), maintainability (20%), and test quality (10%), plus evidence, issues, and a winner. Critical findings override totals; a candidate that failed any required gate cannot win. Disagreement is reported rather than forced into consensus. Large logs stay retained and inspectable without being duplicated into the prompt. Oversized patches or summary packs still fail explicitly. Historical reports retain their recorded judge metadata. When judging an older run whose saved prices lack gpt-6.1-sol, the judge records a separate fallback rate for its own usage without changing the run's original pricing snapshot or trial controls.
+The gpt-6.1-sol judge uses high reasoning and the fast service tier. It receives the task, anonymous patches, changed-file lists, bounded output summaries, and complete read-only evaluator evidence under `/evidence`, plus anonymous evaluator source directories for inspecting affected contracts and callers. It does not receive arm labels, costs, agent logs, or either agent's writable filesystem. Task packs with a pinned upstream reference also mount its frozen commit patches and combined diff read-only under `/reference`. Both stages use them to establish task-scoped behavior while accepting equivalent designs and safe improvements; source comparison does not replace executed criterion evidence. The judge assesses final candidate trees, not commit-by-commit correspondence. Two independent homes containing only the minimal Codex configuration judge opposite presentation orders; they do not copy the task agents' mise runtime. Each pass uses two stages when its first harness succeeds or three when one repair stage is needed, with up to three capacity attempts per stage. Each assessment returns validated JSON scores from 0 to 5 for correctness (25%), simplicity (25%), completeness (20%), implementation performance (12%), maintainability (10%), approach (4%), and test quality (4%), plus evidence, issues, and a winner. A complete weighted total ranges from 0 to 100. Historical four-component assessments retain their correctness/completeness/maintainability/test-quality weights of 50/20/20/10 and are not ranked against the expanded rubric. Critical findings override totals; a candidate that failed any required gate cannot win. Disagreement is reported rather than forced into consensus. Large logs stay retained and inspectable without being duplicated into the prompt. Oversized patches or summary packs still fail explicitly. Historical reports retain their recorded judge metadata. When judging an older run whose saved prices lack gpt-6.1-sol, the judge records a separate fallback rate for its own usage without changing the run's original pricing snapshot or trial controls.
 
 Judging verifies retained inputs and uses the pinned images. It does not require
 unused host tool installations to remain unchanged after candidate execution.
@@ -378,6 +402,15 @@ the task and setup, behavioral explanation with inline event evidence, measureme
 source judgments, and limitations. JSON files and the checksummed bundle retain machine-readable
 evidence; no second explanation or source-review Markdown is needed. Refreshing a finishing bundle
 removes the former generated `SOURCE-REVIEW.md` and `COMPARISON.md` duplicates.
+
+Recovered execution evidence carries its source run and arm, collection time,
+container identity, timing source, caveats, and hashes of explicitly listed
+sanitized evidence. Imports and bundles preserve this provenance. Reports label
+Docker container duration separately when native controller elapsed time is
+unavailable. Mixed timing sources suppress elapsed-time percentages and faster-arm
+rankings; trial controller-time statistics exclude recovered durations. Recovery
+does not repair missing accounting or establish measurement completeness. Raw
+sessions and full container inspection records remain private.
 
 To leave a historical run and its original reports unchanged, export elsewhere using its recorded pricing:
 

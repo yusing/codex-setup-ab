@@ -8,6 +8,7 @@ import { serveWorkbench } from "./web-server";
 import { explainResources } from "./assessment-explanation";
 import { loadTaskPack } from "./task-pack";
 import { launchConfiguration } from "./launch";
+import { SCORING_CATALOG } from "./types";
 
 test("HEAD draft imports a custom composition and preserves shared controls without starting a job", async () => {
   const directory = join(root, "historical");
@@ -365,7 +366,7 @@ test("qualitative aspects display per-pass candidate mappings, legacy gaps and e
     { status: "concern", basis: "source", reasoning: `${id} ${key} <script>source</script>` }]));
   const missing = Object.fromEntries(["simplicity", "performance", "approach"].map(key => [key,
     { status: "unassessed", basis: "none", reasoning: "No qualitative assessment was recorded for this historical candidate." }]));
-  const report = { evaluation: { mode: "reuse" }, arm_labels: { stock: "Historical setup", current: "Fresh setup" },
+  const report = { evaluation: { mode: "reuse" }, scoring: SCORING_CATALOG, arm_labels: { stock: "Historical setup", current: "Fresh setup" },
     judge: { result: { passes: [
       { pass: 1, presentation: ["stock", "current"], scores: {}, winner: "none", quality_aspects: { "candidate-1": missing, "candidate-2": recorded("candidate-2") } },
       { pass: 2, presentation: ["current", "stock"], scores: {}, winner: "none", quality_aspects: { "candidate-1": recorded("candidate-1"), "candidate-2": missing } },
@@ -377,7 +378,7 @@ test("qualitative aspects display per-pass candidate mappings, legacy gaps and e
   const rendered = runInNewContext(source + "\nresultContent(input)", { input });
   expect(rendered).toContain("Qualitative aspects");
   expect(rendered).toContain("Implementation performance");
-  expect(rendered).toContain("without additional scoring weights or task gates");
+  expect(rendered).toContain("functional gates are unchanged");
   for (const key of ["simplicity", "performance", "approach"]) {
     expect(rendered.match(new RegExp(`Fresh setup ${key} &lt;script&gt;source&lt;/script&gt;`, "g"))?.length).toBeGreaterThanOrEqual(2);
     expect(rendered).not.toContain(`Historical setup ${key}`);

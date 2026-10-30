@@ -34,6 +34,18 @@ export interface ArmResult {
   started_at: string;
   finished_at: string;
   agent_elapsed_ms: number;
+  /** Recovered container duration is not the unavailable native controller duration. */
+  recovery?: {
+    source_run_id: string;
+    source_arm: ArmName;
+    collected_at: string;
+    container_id: string;
+    timing_source: "docker-inspect";
+    controller_elapsed_available: false;
+    caveats: string[];
+    /** Explicit sanitized evidence only; raw sessions and full inspect remain private. */
+    files: Array<{ path: string; sha256: string }>;
+  };
   exit_code: number;
   timed_out: boolean;
   canceled: boolean;
@@ -166,10 +178,38 @@ export interface QualityAspectAssessment {
 }
 export type QualityAspects = Record<(typeof qualityAspectKeys)[number], QualityAspectAssessment>;
 
+export const LEGACY_SCORE_RUBRIC = "legacy-four-axis-v1";
+export const CURRENT_SCORE_RUBRIC = "expanded-seven-axis-v2";
+export const SCORE_WEIGHTS = { correctness: 25, simplicity: 25, completeness: 20, performance: 12, maintainability: 10, approach: 4, test_quality: 4 } as const;
+export const LEGACY_SCORE_WEIGHTS = { correctness: 50, completeness: 20, maintainability: 20, test_quality: 10 } as const;
+export const SCORE_LABELS = { correctness: "Correctness", simplicity: "Simplicity", completeness: "Completeness", performance: "Implementation performance", maintainability: "Maintainability", approach: "Approach", test_quality: "Test quality" } as const;
+export const SCORE_RUBRICS = {
+  [LEGACY_SCORE_RUBRIC]: { label: "Legacy four-axis rubric", weights: LEGACY_SCORE_WEIGHTS },
+  [CURRENT_SCORE_RUBRIC]: { label: "Expanded seven-axis rubric", weights: SCORE_WEIGHTS },
+} as const;
+export const SCORING_CATALOG = { current_rubric: CURRENT_SCORE_RUBRIC, legacy_rubric: LEGACY_SCORE_RUBRIC, labels: SCORE_LABELS, rubrics: SCORE_RUBRICS } as const;
+export type ScoreAxis = keyof typeof SCORE_WEIGHTS;
+export type ScoreRubric = keyof typeof SCORE_RUBRICS;
+export const SCORE_KEYS = Object.keys(SCORE_WEIGHTS) as ScoreAxis[];
+export const LEGACY_SCORE_KEYS = Object.keys(LEGACY_SCORE_WEIGHTS) as Array<keyof typeof LEGACY_SCORE_WEIGHTS>;
+export interface JudgeScore {
+  correctness: number;
+  completeness: number;
+  maintainability: number;
+  test_quality: number;
+  simplicity?: number | null;
+  performance?: number | null;
+  approach?: number | null;
+  weighted_total: number | null;
+  /** Missing provenance denotes the original four-axis rubric in retained records. */
+  rubric?: ScoreRubric;
+}
+export const scoreRubric = (score: JudgeScore): ScoreRubric => score.rubric ?? LEGACY_SCORE_RUBRIC;
+
 export interface JudgePass {
   pass: 1 | 2;
   presentation: ArmName[];
-  scores: Record<CandidateId, { correctness: number; completeness: number; maintainability: number; test_quality: number; weighted_total: number }>;
+  scores: Record<CandidateId, JudgeScore>;
   evidence: string[];
   issues: Array<{ candidate: CandidateId; severity: "critical" | "major" | "minor"; detail: string }>;
   winner: CandidateId | "tie" | "none";

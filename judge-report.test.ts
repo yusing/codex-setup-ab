@@ -6,7 +6,7 @@ import { judgeOutputSchema, judgeRun, mappedWinner, validateJudgePass } from "./
 import { buildReport, invalidateRun } from "./report";
 import { MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import { readState, sha256, writeState } from "./state";
-import { qualityAspectKeys, type ArmName, type ArmResult, type CommandEvidence, type JudgeReport, type RunState } from "./types";
+import { CURRENT_SCORE_RUBRIC, LEGACY_SCORE_RUBRIC, SCORING_CATALOG, qualityAspectKeys, type ArmName, type ArmResult, type CommandEvidence, type JudgeReport, type RunState } from "./types";
 import type { PricingSnapshot } from "./usage";
 
 let root: string;
@@ -123,6 +123,59 @@ test("separate report operations remeasure changed evidence and recorded prices"
     expect(refreshed.arms.current.usage.totals.estimated_api_usd).toBeGreaterThan(first.arms.current.usage.totals.estimated_api_usd);
     expect(refreshed.pricing).toEqual(prices);
   }
+});
+
+test("missing selected result leaves faster-arm timing unavailable without implying incompatible timing sources", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.selected_arms = ["stock", "current"];
+  delete state.results!.current;
+  await writeState(run, state);
+  const paths = await buildReport(run);
+  const report = await Bun.file(paths.jsonPath).json();
+  expect(report.agent_timing.sources).toEqual({ stock: "native-controller", current: null });
+  expect(report.efficiency.faster).toBeNull();
+  const markdown = await readFile(paths.markdownPath, "utf8");
+  expect(markdown).toContain("Faster arm: **not available**");
+  expect(markdown).not.toContain("incompatible timing sources");
+});
+
+test("recovered results disclose cancellation and keep incompatible duration comparisons unavailable", async () => {
+  const { run } = await fixtureRun();
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const state = await readState(run);
+  state.results!.current!.agent_elapsed_ms = 944292;
+  state.results!.current!.recovery = { source_run_id: "stopped-source", source_arm: "current", collected_at: "2026-10-30T08:00:00.000Z",
+    container_id: "completed-container", timing_source: "docker-inspect", controller_elapsed_available: false,
+    caveats: ["The user canceled the original controller; subsequent successful container completion does not erase the cancellation. <private>"], files: [] };
+  await writeState(run, state);
+  const paths = await buildReport(run);
+  const report = await Bun.file(paths.jsonPath).json();
+  expect(report.measurement_complete).toBe(true);
+  expect(report.recovery.current).toEqual(state.results!.current!.recovery);
+  expect(report.agent_timing).toMatchObject({ sources: { stock: "native-controller", current: "docker-inspect" }, comparison_available: false });
+  expect(report.efficiency.faster).toBeNull();
+  expect(report.efficiency.lower_estimated_cost).toBe("stock");
+  expect(report.current_minus_stock_percent.agent_elapsed_ms).toBeNull();
+  expect(report.current_minus_stock_percent.total_tokens).not.toBeNull();
+  const markdown = await readFile(paths.markdownPath, "utf8");
+  expect(markdown).toContain("**Recovered evidence**");
+  expect(markdown).toContain("944.292 (Docker container duration)");
+  expect(markdown).toContain("user canceled the original controller");
+  expect(markdown).toContain("Faster arm: **not available**");
+  const source = (await readFile(join(import.meta.dir, "web/app.js"), "utf8")).replace(/\ninit\(\);\s*$/, "");
+  const { runInNewContext } = await import("node:vm");
+  // A stale report's numeric percentage must not override recovered timing provenance.
+  report.baseline_differences_percent.current.agent_elapsed_ms = 123;
+  const html = runInNewContext(source + "\nresultContent(input)", { input: { state, report, entry: { kind: "pair" } } });
+  expect(html).toContain("Recovered evidence");
+  expect(html).toContain("recovered Docker container duration");
+  expect(html).toContain("user canceled the original controller");
+  expect(html).toContain("&lt;private&gt;");
+  expect(html).not.toContain("123%");
+  delete state.results!.current!.grade;
+  await writeState(run, state);
+  expect((await Bun.file((await buildReport(run)).jsonPath).json()).measurement_complete).toBe(false);
 });
 
 test("report regeneration explains resource differences without another judge request", async () => {
@@ -337,7 +390,7 @@ test.each([
   }
 });
 
-test("qualitative concerns and unassessed evidence leave score weights and winner gates unchanged", () => {
+test("legacy qualitative records retain their original score weights and winner gates", () => {
   const response = aspectVerdict();
   response.quality_aspects["candidate-2"]!.performance = { status: "unassessed", basis: "none", reasoning: "No relevant evidence." };
   response.quality_aspects["candidate-1"]!.performance!.basis = "executed";
@@ -345,11 +398,68 @@ test("qualitative concerns and unassessed evidence leave score weights and winne
   const judged = validateJudgePass(response, 1, ["stock", "current"], passing, { requireQualityAspects: true });
   expect(judged.scores).toEqual(validateJudgePass(verdict("candidate-1", "legacy"), 1, ["stock", "current"], passing).scores);
   expect(judged.scores["candidate-1"].weighted_total).toBe(90);
+  expect(judged.scores["candidate-1"].rubric).toBe(LEGACY_SCORE_RUBRIC);
   expect(judged.winner).toBe("candidate-1");
   expect(judged.quality_aspects).toEqual(response.quality_aspects);
   expect(() => validateJudgePass(response, 1, ["stock", "current"], { ...passing, "candidate-1": false }, { requireQualityAspects: true })).toThrow("required benchmark gates");
   response.issues = [{ candidate: "candidate-1", severity: "critical", detail: "Material defect." }];
   expect(() => validateJudgePass(response, 1, ["stock", "current"], passing, { requireQualityAspects: true })).toThrow("critical issue");
+});
+
+function expandedVerdict() {
+  return { ...aspectVerdict(), scores: {
+    "candidate-1": { correctness: 5, simplicity: 4, completeness: 3, performance: 2, maintainability: 1, approach: 5, test_quality: 0 },
+    "candidate-2": { correctness: 5, simplicity: 5, completeness: 5, performance: 5, maintainability: 5, approach: 5, test_quality: 5 },
+  } };
+}
+
+test("expanded scoring applies all seven weights while retaining fresh judge selection semantics", () => {
+  const judged = validateJudgePass(expandedVerdict(), 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true }, { requireCurrentRubric: true });
+  expect(judged.scores["candidate-1"]).toMatchObject({ rubric: CURRENT_SCORE_RUBRIC, weighted_total: 67.8 });
+  expect(judged.scores["candidate-2"].weighted_total).toBe(100);
+  expect(judged.winner).toBe("candidate-1");
+  const tied = expandedVerdict(); Object.assign(tied, { winner: "tie" });
+  expect(validateJudgePass(tied, 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true }, { requireCurrentRubric: true }).winner).toBe("tie");
+  expect(() => validateJudgePass(expandedVerdict(), 1, ["stock", "current"], { "candidate-1": false, "candidate-2": true }, { requireCurrentRubric: true })).toThrow("required benchmark gates");
+  expect(() => validateJudgePass(aspectVerdict(), 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true }, { requireCurrentRubric: true })).toThrow("simplicity");
+  expect(judgeOutputSchema(["candidate-1"]).properties.scores.properties["candidate-1"].required).toEqual(["correctness", "simplicity", "completeness", "performance", "maintainability", "approach", "test_quality"]);
+});
+
+test("unassessed numeric aspects keep expanded totals unavailable without renormalizing", () => {
+  const response = expandedVerdict();
+  Object.assign(response.scores["candidate-1"], { performance: null });
+  response.quality_aspects["candidate-1"]!.performance = { status: "unassessed", basis: "none", reasoning: "No relevant performance evidence." };
+  for (const winner of ["candidate-1", "tie"]) {
+    Object.assign(response, { winner });
+    expect(() => validateJudgePass(response, 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true }, { requireCurrentRubric: true })).toThrow("unassessed weighted total");
+  }
+  Object.assign(response, { winner: "none" });
+  const judged = validateJudgePass(response, 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true }, { requireCurrentRubric: true });
+  expect(judged.scores["candidate-1"].performance).toBeNull();
+  expect(judged.scores["candidate-1"].weighted_total).toBeNull();
+  expect(judged.scores["candidate-2"].weighted_total).toBe(100);
+  Object.assign(response, { winner: "candidate-2" });
+  expect(validateJudgePass(response, 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true }, { requireCurrentRubric: true }).winner).toBe("candidate-2");
+});
+
+test.each([
+  ["partial score map", (value: ReturnType<typeof expandedVerdict>) => { Reflect.deleteProperty(value.scores["candidate-1"], "approach"); }],
+  ["out-of-range score", (value: ReturnType<typeof expandedVerdict>) => { value.scores["candidate-1"].simplicity = 6; }],
+  ["non-finite score", (value: ReturnType<typeof expandedVerdict>) => { value.scores["candidate-1"].performance = NaN; }],
+  ["null substantive score", (value: ReturnType<typeof expandedVerdict>) => { Object.assign(value.scores["candidate-1"], { approach: null }); }],
+  ["numeric unassessed score", (value: ReturnType<typeof expandedVerdict>) => { value.quality_aspects["candidate-1"]!.approach.status = "unassessed"; }],
+])("expanded validation rejects %s", (_name, mutate) => {
+  const value = expandedVerdict(); mutate(value);
+  expect(() => validateJudgePass(value, 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true }, { requireCurrentRubric: true })).toThrow();
+});
+
+test("mixed-rubric source responses cannot select a quality winner", () => {
+  const response = expandedVerdict();
+  for (const key of qualityAspectKeys) Reflect.deleteProperty(response.scores["candidate-2"], key);
+  expect(() => validateJudgePass(response, 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true })).toThrow("different scoring rubrics");
+  Object.assign(response, { winner: "none" });
+  const judged = validateJudgePass(response, 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true });
+  expect(judged.scores["candidate-2"].rubric).toBe(LEGACY_SCORE_RUBRIC);
 });
 
 test("JSON and Markdown project legacy aspects as unassessed while preserving recorded assessments", async () => {
@@ -373,6 +483,80 @@ test("JSON and Markdown project legacy aspects as unassessed while preserving re
   expect(markdown).toContain("| candidate-1 | simplicity | concern | source | candidate-1 scope \\| state focused |");
   expect(report.gates_complete).toBe(true);
   expect(report.winner).toBe("stock");
+});
+
+test.each([false, true])("reports expose expanded scores and retain identifiable legacy totals (mixed: %s)", async mixed => {
+  const { run } = await fixtureRun();
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const state = await readState(run);
+  for (const [index, pass] of state.judge!.passes.entries()) {
+    const response = expandedVerdict();
+    Object.assign(response, { winner: index === 0 ? "candidate-1" : "candidate-2" });
+    const current = validateJudgePass(response, pass.pass, pass.presentation, { "candidate-1": true, "candidate-2": true }, { requireCurrentRubric: true });
+    pass.quality_aspects = current.quality_aspects;
+    pass.scores["candidate-1"] = current.scores["candidate-1"];
+    if (!mixed) pass.scores["candidate-2"] = current.scores["candidate-2"];
+  }
+  await writeState(run, state);
+  const paths = await buildReport(run);
+  const report = await Bun.file(paths.jsonPath).json();
+  expect(report.scoring).toEqual(SCORING_CATALOG);
+  expect(report.measurement_complete).toBe(true);
+  expect(report.gates_complete).toBe(true);
+  expect(report.judge.result.passes[0].scores["candidate-1"].weighted_total).toBe(67.8);
+  const markdown = await readFile(paths.markdownPath, "utf8");
+  expect(markdown).toContain("Correctness 25%, Simplicity 25%, Completeness 20%, Implementation performance 12%, Maintainability 10%, Approach 4%, Test quality 4%");
+  const source = (await readFile(join(import.meta.dir, "web/app.js"), "utf8")).replace(/\ninit\(\);\s*$/, "");
+  const { runInNewContext } = await import("node:vm");
+  const html = runInNewContext(source + "\nscoreTable(report, report.arm_labels)", { report });
+  expect(html).toContain("Expanded seven-axis rubric");
+  expect(html).toContain("Implementation performance");
+  expect(html).toContain("Approach");
+  expect(html).toContain("67.8");
+  if (mixed) {
+    expect(report.winner).toBe("none");
+    expect(report.winner_reason).toContain("different scoring rubrics");
+    expect(report.score_comparison_issue).toContain("different scoring rubrics");
+    expect(report.judge.result.passes[0].scores["candidate-2"]).toMatchObject({ rubric: LEGACY_SCORE_RUBRIC, weighted_total: 60, simplicity: null, performance: null, approach: null });
+    expect(html).toContain("Legacy four-axis rubric");
+    expect(html).toContain("Unassessed");
+    expect(html).not.toContain(" lead");
+    expect(markdown).toContain("Legacy four-axis rubric");
+    expect(markdown).toContain("unassessed");
+    expect((await readState(run)).judge!.passes[0]!.scores["candidate-2"].simplicity).toBeUndefined();
+  } else {
+    expect(report.winner).toBe("stock");
+    expect(report.score_comparison_issue).toBeNull();
+    for (const label of ["Correctness (25%)", "Simplicity (25%)", "Completeness (20%)", "Implementation performance (12%)", "Maintainability (10%)", "Approach (4%)", "Test quality (4%)"]) expect(html).toContain(label);
+  }
+});
+
+test("incomplete expanded totals render as unassessed without altering functional acceptance", async () => {
+  const { run } = await fixtureRun();
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const state = await readState(run);
+  for (const pass of state.judge!.passes) {
+    const response = expandedVerdict();
+    Object.assign(response, { winner: "none" });
+    Object.assign(response.scores["candidate-1"], { simplicity: null });
+    response.quality_aspects["candidate-1"]!.simplicity = { status: "unassessed", basis: "none", reasoning: "Scope was not assessed." };
+    Object.assign(pass, validateJudgePass(response, pass.pass, pass.presentation, { "candidate-1": true, "candidate-2": true }, { requireCurrentRubric: true }));
+  }
+  state.judge!.winner = "none";
+  await writeState(run, state);
+  const paths = await buildReport(run);
+  const report = await Bun.file(paths.jsonPath).json();
+  expect(report.winner).toBe("none");
+  expect(report.measurement_complete).toBe(true);
+  expect(report.arms.stock.result.grade.passed).toBe(true);
+  expect(report.judge.result.passes[0].scores["candidate-1"].weighted_total).toBeNull();
+  expect(await readFile(paths.markdownPath, "utf8")).toContain("unassessed");
+  const source = (await readFile(join(import.meta.dir, "web/app.js"), "utf8")).replace(/\ninit\(\);\s*$/, "");
+  const { runInNewContext } = await import("node:vm");
+  const html = runInNewContext(source + "\nscoreTable(report, report.arm_labels)", { report });
+  const totals = html.split("Recorded weighted total (of 100)</th>")[1].split("</tr>")[0];
+  expect(totals.match(/Unassessed/g)?.length).toBe(2);
+  expect(totals).not.toContain(">0<");
 });
 
 describe("report completion and winner eligibility", () => {

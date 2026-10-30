@@ -1,14 +1,16 @@
 import { armNames } from "./types";
 import { cp, mkdtemp } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-import { runPairUnlocked, type RunOptions } from "./runner";
+import { gradeArm, runPairUnlocked, type RunOptions } from "./runner";
+import { importArms } from "./control";
+import { prepareReevaluation } from "./reevaluate";
 import { assertRecoverableJudge, judgeRunUnlocked } from "./judge";
 import { prepareReportUnlocked } from "./report";
 import { collectBundle, finalizeBundle } from "./bundle";
 import { armExecutionSucceeded, readState, withRunLock, writeState } from "./state";
 
 /** The lock covers execution and finishing, including paid source assessment. */
-async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: boolean }, mode: "run" | "finish"): Promise<void> {
+async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: boolean }, mode: "run" | "finish" | "reevaluate"): Promise<void> {
   const runDir = resolve(options.runDir);
   const controller = new AbortController();
   const cancel = () => controller.abort();
@@ -18,7 +20,7 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
   process.on("SIGTERM", cancel);
   try {
     const initial = await readState(runDir);
-    if (mode === "run" && (initial.status !== "prepared" || initial.finishing)) throw new Error("prepare a new run instead of resuming or restarting it");
+    if (mode !== "finish" && (initial.status !== "prepared" || initial.finishing)) throw new Error("prepare a new run instead of resuming or restarting it");
     if (mode === "finish") {
       if (initial.status !== "complete" || initial.finishing?.status !== "failed"
         || !(initial.selected_arms ?? armNames(initial)).every(arm => armExecutionSucceeded(initial.results?.[arm]))) throw new Error("finish requires complete execution with failed finishing");
@@ -38,6 +40,29 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
     let failure: unknown;
     try {
       if (mode === "run") await runPairUnlocked({ ...options, signal: controller.signal });
+      if (mode === "reevaluate") {
+        try {
+          initial.results = await importArms(runDir, initial, initial.planned_imports ?? [], "reevaluation");
+          initial.selected_arms = armNames(initial);
+          initial.status = "running";
+          await writeState(runDir, initial);
+          const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
+          for (const arm of initial.selected_arms) {
+            if (controller.signal.aborted) throw new Error("reevaluation canceled; available evidence preserved");
+            const result = initial.results[arm]!;
+            process.stderr.write(`[reevaluate] materializing retained candidate ${arm} for fresh evaluator tests and source assessment\n`);
+            result.grade = await gradeArm(docker, runDir, initial, arm, join(runDir, result.patch_path), controller.signal);
+            await writeState(runDir, initial);
+          }
+          initial.status = "complete";
+          await writeState(runDir, initial);
+        } catch (error) {
+          initial.status = "partial";
+          initial.error = String(error);
+          await writeState(runDir, initial);
+          throw error;
+        }
+      }
     } catch (error) {
       failure = error;
     }
@@ -114,4 +139,15 @@ export function runBenchmark(options: RunOptions): Promise<void> {
 
 export function finishBenchmark(options: RunOptions & { recoverJudge?: boolean }): Promise<void> {
   return withRunLock(resolve(options.runDir), () => executeBenchmarkUnlocked(options, "finish"));
+}
+
+export async function reevaluateBenchmark(options: { runDir: string; outputParent?: string; authFile: string; dockerBin?: string; signal?: AbortSignal }): Promise<string> {
+  const directory = await prepareReevaluation(options.runDir, options.outputParent);
+  process.stderr.write(`[reevaluate] independent comparison ${directory}; implementation execution skipped\n`);
+  try {
+    await withRunLock(directory, () => executeBenchmarkUnlocked({ ...options, runDir: directory }, "reevaluate"));
+  } catch (error) {
+    throw new Error(`reevaluation failed; retained ${directory}: ${String(error)}`);
+  }
+  return directory;
 }
