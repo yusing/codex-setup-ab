@@ -348,6 +348,7 @@ test("source assessments replace numbered identities using each pass's presentat
   expect(overview).toContain("Direct Codex inspected &lt;main&gt;");
   expect(overview).toContain("Direct Codex added checks");
   expect(overview).toContain("constructor");
+  expect(overview).toContain("No qualitative assessment was recorded for this historical candidate.");
   expect(overview).toContain("Direct Codex met the criterion");
   expect(overview).toContain("+8.33%");
   expect(overview).toContain("-12.5%");
@@ -355,6 +356,37 @@ test("source assessments replace numbered identities using each pass's presentat
   expect(overview).toContain("Change compares Codex + Mekugi with Direct Codex");
   expect(rendered).toContain("<summary>Technical report</summary>");
   expect(rendered).not.toMatch(/<summary>(Criterion evidence and grading|Source assessments and judge reasoning|Time, token and cost differences|Usage details and pricing provenance|Diagnostics and workflow evidence)/);
+  expect(input.report).toEqual(report);
+});
+
+test("qualitative aspects display per-pass candidate mappings, legacy gaps and escaped evidence", async () => {
+  const directory = await pair();
+  const recorded = (id: string) => Object.fromEntries(["simplicity", "performance", "approach"].map(key => [key,
+    { status: "concern", basis: "source", reasoning: `${id} ${key} <script>source</script>` }]));
+  const missing = Object.fromEntries(["simplicity", "performance", "approach"].map(key => [key,
+    { status: "unassessed", basis: "none", reasoning: "No qualitative assessment was recorded for this historical candidate." }]));
+  const report = { evaluation: { mode: "reuse" }, arm_labels: { stock: "Historical setup", current: "Fresh setup" },
+    judge: { result: { passes: [
+      { pass: 1, presentation: ["stock", "current"], scores: {}, winner: "none", quality_aspects: { "candidate-1": missing, "candidate-2": recorded("candidate-2") } },
+      { pass: 2, presentation: ["current", "stock"], scores: {}, winner: "none", quality_aspects: { "candidate-1": recorded("candidate-1"), "candidate-2": missing } },
+    ] } } };
+  await file(join(directory, "reports/report.json"), JSON.stringify(report));
+  const entry = await attach(directory);
+  const input = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const rendered = runInNewContext(source + "\nresultContent(input)", { input });
+  expect(rendered).toContain("Qualitative aspects");
+  expect(rendered).toContain("Implementation performance");
+  expect(rendered).toContain("without additional scoring weights or task gates");
+  for (const key of ["simplicity", "performance", "approach"]) {
+    expect(rendered.match(new RegExp(`Fresh setup ${key} &lt;script&gt;source&lt;/script&gt;`, "g"))?.length).toBeGreaterThanOrEqual(2);
+    expect(rendered).not.toContain(`Historical setup ${key}`);
+  }
+  expect(rendered).toContain('status-chip unassessed');
+  expect(rendered).toContain("Evidence: none");
+  expect(rendered).toContain("No qualitative assessment was recorded for this historical candidate.");
+  expect(rendered).not.toContain("<script>source</script>");
+  expect(rendered).not.toMatch(/candidate[-_ ]([12])/i);
   expect(input.report).toEqual(report);
 });
 

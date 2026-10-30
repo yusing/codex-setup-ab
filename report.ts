@@ -1,4 +1,4 @@
-import { armNames, candidateIds } from "./types";
+import { armNames, candidateIds, qualityAspectKeys } from "./types";
 import { armLabels } from "./arm-labels";
 import { mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -9,7 +9,7 @@ import { performanceComparison, performanceMarkdown } from "./diagnostics";
 import { explainResources, resourceExplanationMarkdown } from "./assessment-explanation";
 import { explainMechanisms, mechanismsMarkdown, reviewPolicy } from "./mechanisms";
 import { compactionComparisonExclusion, journalEvidence, journalEvidenceMarkdown } from "./journal";
-import { readJudgeResponse, summarizeCheck, validateJudgePass } from "./judge";
+import { readJudgeResponse, summarizeCheck, unassessedQualityAspects, validateJudgePass } from "./judge";
 import { collectBundle, finalizeBundle } from "./bundle";
 import { readState, writeState, withRunLock } from "./state";
 import type { ArmName, ArmResult, JudgePass, RunState } from "./types";
@@ -71,7 +71,7 @@ async function suppliedAssessments(path: string, results: Partial<Record<ArmName
       throw new Error("each supplied assessment must map candidate-1 and candidate-2 to stock/current");
     }
     const order = item.presentation as ArmName[];
-    return validateJudgePass(item.response, (index + 1) as 1 | 2, order, Object.fromEntries(order.map((arm, index) => [`candidate-${index + 1}`, results[arm]?.grade?.passed === true])));
+    return reportedPass(validateJudgePass(item.response, (index + 1) as 1 | 2, order, Object.fromEntries(order.map((arm, index) => [`candidate-${index + 1}`, results[arm]?.grade?.passed === true]))));
   });
   if (JSON.stringify([...passes[0]!.presentation].reverse()) !== JSON.stringify(passes[1]!.presentation)) throw new Error("supplied source assessments must reverse presentation order");
   const winner = (pass: JudgePass): string => pass.winner.startsWith("candidate-") ? pass.presentation[Number(pass.winner.slice("candidate-".length)) - 1] : pass.winner;
@@ -144,7 +144,19 @@ function passMarkdown(pass: JudgePass, labels: Record<ArmName, string>): string 
   });
   const evidence = pass.evidence.length > 0 ? pass.evidence.map(item => `- ${item}`).join("\n") : "- None reported.";
   const issues = pass.issues.length > 0 ? pass.issues.map(issue => `- ${issue.candidate} / ${issue.severity}: ${issue.detail}`).join("\n") : "- None reported.";
-  return `### Pass ${pass.pass}\n\nPresentation: ${pass.presentation.map((arm, index) => `candidate-${index + 1} = ${labels[arm]}`).join(", ")}. Raw winner: **${pass.winner}**.\n\n| Candidate | correctness | completeness | maintainability | test quality | weighted total |\n| --- | ---: | ---: | ---: | ---: | ---: |\n${scoreRows.join("\n")}\n\nRationale: ${pass.rationale}\n\nEvidence:\n\n${evidence}\n\nIssues:\n\n${issues}`;
+  const aspectRows = candidateIds(pass.presentation.length).flatMap(id => {
+    const aspects = pass.quality_aspects?.[id] ?? unassessedQualityAspects();
+    return qualityAspectKeys.map(key => {
+      const aspect = aspects[key];
+      return `| ${id} | ${key} | ${aspect.status} | ${aspect.basis} | ${aspect.reasoning.replaceAll("|", "\\|").replaceAll("\n", " ")} |`;
+    });
+  });
+  return `### Pass ${pass.pass}\n\nPresentation: ${pass.presentation.map((arm, index) => `candidate-${index + 1} = ${labels[arm]}`).join(", ")}. Raw winner: **${pass.winner}**.\n\n| Candidate | correctness | completeness | maintainability | test quality | weighted total |\n| --- | ---: | ---: | ---: | ---: | ---: |\n${scoreRows.join("\n")}\n\nRationale: ${pass.rationale}\n\n#### Qualitative aspects\n\nThese evidence-based assessments carry no additional scoring weight or task gate.\n\n| Candidate | Aspect | Result | Evidence | Reasoning |\n| --- | --- | --- | --- | --- |\n${aspectRows.join("\n")}\n\nEvidence:\n\n${evidence}\n\nIssues:\n\n${issues}`;
+}
+
+function reportedPass(pass: JudgePass): JudgePass {
+  if (pass.quality_aspects) return pass;
+  return { ...pass, quality_aspects: Object.fromEntries(candidateIds(pass.presentation.length).map(id => [id, unassessedQualityAspects()])) };
 }
 
 async function invalidateRunUnlocked(runDirectory: string, reasons: string[]): Promise<void> {
@@ -345,7 +357,7 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       baseline_arm: ARMS[0],
       baseline_differences_percent: baselineDifferences,
       rejected_source_assessment: rejectedSourceAssessment,
-      judge: state.judge ? { result: state.judge, attempts: judgeAttempts, usage: judgeUsage } : null,
+      judge: state.judge ? { result: { ...state.judge, passes: state.judge.passes.map(reportedPass) }, attempts: judgeAttempts, usage: judgeUsage } : null,
       pricing,
     };
 

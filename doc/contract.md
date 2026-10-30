@@ -183,6 +183,29 @@ an overall winner requires agreement across passes. These are historical score
 rankings, not fresh joint blind judgments; prior comparative verdicts remain in
 their source evidence rather than being transferred to the enlarged comparison.
 
+New source assessments also record each candidate's simplicity, implementation
+performance, and approach. These qualitative aspects do not add scoring weights
+or task gates. Each records `satisfactory`, `concern`, or `unassessed`, an evidence
+basis (`source`, `executed`, or `none`), and a concise explanation with concrete
+evidence or the missing coverage. A substantive conclusion needs source or
+executed evidence; absent evidence remains unassessed. Existing correctness,
+completeness, maintainability, and test-quality scores retain their weights.
+
+Simplicity considers necessary scope, abstraction and state cost, duplication,
+and disproportionate implementation or test weight without treating line count
+as a verdict. Performance considers work, allocation, I/O, and scaling on the
+changed paths; source-based risks are distinct from measured behavior and from
+the agent's benchmark command time. Approach considers the established cause,
+consumer and ownership fit, supported mechanisms, and material tradeoffs against
+simpler viable alternatives. These checks assess the requested outcome without
+adding unrelated features or requiring speculative optimizations.
+
+Reuse preserves any recorded aspect assessments along with historical scores.
+Historical candidates without them are explicitly unassessed for these aspects;
+neither fresh findings nor missing historical evidence become historical passes.
+Only fresh candidates receive new aspect assessments in reuse mode. Reports show
+these alongside the existing scores, separately from functional acceptance.
+
 Runtime dependency images embed Mekugi binaries. Their IDs may differ when both
 recorded build keys match the current recipe and differ only in launcher-binary
 inputs; base image, task dependency preparation, source, submodules, and execution

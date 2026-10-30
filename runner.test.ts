@@ -251,6 +251,9 @@ test.each(["reuse", "fresh"])("historical multi-arm imports execute one new cand
   const first = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, 3);
   await runBenchmark({ runDir: sourceRun, authFile: auth, dockerBin: first.path });
   const completed = await readState(sourceRun);
+  // One retained pass predates qualitative evidence; the other records it.
+  delete completed.judge!.passes[0]!.quality_aspects;
+  await writeState(sourceRun, completed);
   for (const arm of ["current", "arm-3"]) await file(join(sourceRun, completed.arm_attempts![arm]!.codex_home, "sessions/usage.jsonl"), [
     { type: "session_meta", payload: { id: arm } },
     { type: "turn_context", payload: { model: "gpt-6-astra" } },
@@ -282,6 +285,17 @@ test.each(["reuse", "fresh"])("historical multi-arm imports execute one new cand
     expect(log).not.toContain("/evaluator/stock:/candidates/");
     expect(finished.judge!.passes[0]!.scores["candidate-1"]).toEqual(completed.judge!.passes[0]!.scores["candidate-2"]);
     expect(finished.judge!.passes[1]!.scores["candidate-3"]).toEqual(completed.judge!.passes[1]!.scores["candidate-2"]);
+    for (const id of ["candidate-1", "candidate-2"] as const) {
+      expect(finished.judge!.passes[0]!.quality_aspects![id].simplicity).toMatchObject({ status: "unassessed", basis: "none" });
+    }
+    expect(finished.judge!.passes[0]!.quality_aspects!["candidate-3"].simplicity).toEqual({
+      status: "satisfactory", basis: "source", reasoning: "candidate-3 / candidate-3 / candidate-3 uses a focused implementation for simplicity.",
+    });
+    expect(finished.judge!.passes[1]!.quality_aspects!["candidate-3"].simplicity).toEqual({
+      status: "satisfactory", basis: "source", reasoning: "candidate-3 / candidate-3 / candidate-3 uses a focused implementation for simplicity.",
+    });
+    expect(finished.judge!.passes[1]!.quality_aspects!["candidate-2"].simplicity.reasoning).toBe("candidate-2 / candidate-2 / candidate-2 uses a focused implementation for simplicity.");
+    expect(finished.judge!.passes[1]!.quality_aspects!["candidate-1"].simplicity.reasoning).toBe("candidate-1 / candidate-1 / candidate-1 uses a focused implementation for simplicity.");
     const seed = await Bun.file(join(run, "evaluator/semantic/pass-1/historical.json")).json();
     expect(seed["candidate-1"].criteria[0].check.files[0].source).toContain("process.exit");
     expect(seed["candidate-1"].criteria[0].check.files[0].source).toContain("1 !== 1");
@@ -297,6 +311,10 @@ test.each(["reuse", "fresh"])("historical multi-arm imports execute one new cand
   expect(report.arms.stock.usage.totals.input_tokens).toBe(10);
   expect(report.arms.current.usage.totals.input_tokens).toBe(10);
   expect(report.setup.imported_arms.stock.source_arm).toBe("current");
+  if (mode === "reuse") {
+    expect(report.judge.result.passes[0].quality_aspects["candidate-1"].approach.status).toBe("unassessed");
+    expect(await readFile(join(run, "reports/report.md"), "utf8")).toContain("| candidate-1 | approach | unassessed | none |");
+  }
   expect(await sha256(join(sourceRun, "reports/bundle/MANIFEST.sha256"))).toBe(bundleHash);
   await rename(sourceRun, sourceRun + "-moved");
   await buildReport(run);
@@ -1132,13 +1150,28 @@ test("parallel semantic passes preserve the initiating failure", async () => {
   state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
   await writeState(run, state);
   const auth = join(root, "parallel-failure-auth.json"); await file(auth, "{}\n", 0o600);
-  const fake = await fakeOwnedDocker(0, false, false, "", false, false, 2);
+  const fake = await fakeOwnedDocker(0, false, false, "", false, false, { pass: 2, omit: "criteria" });
   await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("missing per-criterion assessment");
   const failed = await readState(run);
   expect(failed.judge?.status).toBe("failed");
   expect(failed.judge?.failed_pass).toBe(2);
   expect(failed.judge?.error).toContain("missing per-criterion assessment");
   expect(failed.judge?.attempts?.find(attempt => attempt.pass === 2 && attempt.stage === "assessment")?.status).toBe("complete");
+});
+
+test("live semantic source assessments reject missing qualitative aspects", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  state.pricing = { fetched_at: "fixture", source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const auth = join(root, "missing-aspects-auth.json"); await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0, false, false, "", false, false, { pass: 2, omit: "quality_aspects" });
+  await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("quality_aspects");
+  const failed = await readState(run);
+  expect(failed.judge?.status).toBe("failed");
+  expect(failed.judge?.failed_pass).toBe(2);
+  expect(failed.judge?.winner).toBe("none");
+  expect(failed.judge?.passes.some(pass => pass.pass === 2)).toBe(false);
 });
 test("judge executable-check failures use operator-facing stage names", async () => {
   const run = await prepared();
@@ -1352,19 +1385,21 @@ async function fakeDocker(sleepSeconds: number): Promise<{ path: string; log: st
 }
 
 async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHost = false, candidatePatch = "", wrongProtectedBinary = false, networkFailure = false,
-  invalidAssessmentPass?: 1 | 2, failHarnessPass?: 1 | 2, candidateCount = 2): Promise<{ path: string; log: string; stateDir: string }> {
+  invalidAssessment?: { pass: 1 | 2; omit: "criteria" | "quality_aspects" }, failHarnessPass?: 1 | 2, candidateCount = 2): Promise<{ path: string; log: string; stateDir: string }> {
   const path = join(root, `fake-owned-docker-${crypto.randomUUID()}.sh`);
   const log = `${path}.log`;
   const stateDir = `${path}.state`;
   await file(`${path}.patch`, candidatePatch);
   const candidates = Array.from({ length: candidateCount }, (_, index) => `candidate-${index + 1}`);
-  const judgeAssessment = (includeCriteria: boolean) => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({
+  const judgeAssessment = (omit?: "criteria" | "quality_aspects") => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({
     scores: Object.fromEntries(candidates.map(id => [id, { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 }])),
+    ...(omit === "quality_aspects" ? {} : { quality_aspects: Object.fromEntries(candidates.map(id => [id, Object.fromEntries(["simplicity", "performance", "approach"].map(key => [key,
+      { status: "satisfactory", basis: "source", reasoning: `${id.replace("candidate", "Candidate")} / ${id.replace("-", " ")} / ${id.replace("-", "_")} uses a focused implementation for ${key}.` }]))])) }),
     evidence: ["fixture semantic assessment"], issues: [], winner: "tie", rationale: "Both fixtures meet the criterion.",
-    ...(includeCriteria ? { criteria: Object.fromEntries(candidates.map(id => [id, [{ criterion: "fixture", status: "pass", basis: "executed", reasoning: "Executed fixture assertion." }]])) } : {}),
+    ...(omit === "criteria" ? {} : { criteria: Object.fromEntries(candidates.map(id => [id, [{ criterion: "fixture", status: "pass", basis: "executed", reasoning: "Executed fixture assertion." }]])) }),
   }) } });
-  const validAssessment = judgeAssessment(true);
-  const invalidAssessment = judgeAssessment(false);
+  const validAssessment = judgeAssessment();
+  const invalidResponse = judgeAssessment(invalidAssessment?.omit);
   const harnessPlan = JSON.stringify(Object.fromEntries(candidates.map(id => [id,
     [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked." }]])));
   await file(path, `#!/bin/sh
@@ -1465,8 +1500,8 @@ case "$operation" in
         ;;
       *-judge-*-assessment-*)
         cat >'${stateDir}/'$name.prompt
-        ${invalidAssessmentPass ? `case "$name" in
-          *-judge-${invalidAssessmentPass}-assessment-*) printf '%s\\n' '${invalidAssessment}' ;;
+        ${invalidAssessment ? `case "$name" in
+          *-judge-${invalidAssessment.pass}-assessment-*) printf '%s\\n' '${invalidResponse}' ;;
           *) sleep 0.2; printf '%s\\n' '${validAssessment}' ;;
         esac` : `printf '%s\\n' '${validAssessment}'`}
         ;;
@@ -2328,7 +2363,7 @@ test.each(["timeout", "configuration"])("finish recovers %s harness startup with
 }, 30_000);
 
 for (const judgeModel of ["gpt-6.1-sol", "gpt-6-sol"] as const) {
-for (const failure of ["validation", "timeout", ...(judgeModel === "gpt-6.1-sol" ? ["executed-failure" as const] : [])] as const) {
+for (const failure of ["validation", "timeout", ...(judgeModel === "gpt-6.1-sol" ? ["executed-failure", "missing-new-aspects"] as const : [])] as const) {
 test(`${judgeModel} ${failure} judge recovery reuses saved pass 1 and runs only incomplete pass 2`, async () => {
   const run = await prepared();
   const auth = join(root, "recover-judge-auth.json");
@@ -2350,6 +2385,7 @@ test(`${judgeModel} ${failure} judge recovery reuses saved pass 1 and runs only 
   }
   const event = JSON.parse((await readFile(join(run, saved.stdout_path), "utf8")).trim());
   const response = JSON.parse(event.item.text);
+  if (failure === "timeout" || failure === "missing-new-aspects") delete response.quality_aspects;
   response.criteria["candidate-2"][0] = { criterion: "fixture", status: "fail", basis: failure === "executed-failure" ? "executed" : "source-only", reasoning: "Unverified failure observation." };
   response.winner = "candidate-1";
   event.item.text = JSON.stringify(response);
@@ -2375,6 +2411,15 @@ test(`${judgeModel} ${failure} judge recovery reuses saved pass 1 and runs only 
   await writeState(run, state);
   await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("--recover-judge");
   const priorLog = await readFile(fake.log, "utf8");
+  if (failure === "missing-new-aspects") {
+    const missing = await fakeOwnedDocker(0, false, false, "", false, false, { pass: 2, omit: "quality_aspects" });
+    await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: missing.path, recoverJudge: true })).rejects.toThrow("quality_aspects");
+    const rejected = await readState(run);
+    expect(rejected.judge?.failed_pass).toBe(2);
+    expect(rejected.judge?.winner).toBe("none");
+    expect(rejected.judge?.passes[0]?.quality_aspects?.["candidate-1"].simplicity).toMatchObject({ status: "unassessed", basis: "none" });
+    return;
+  }
   await finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path, recoverJudge: true });
   const finished = await readState(run);
   expect(finished.finishing?.status).toBe("complete");
@@ -2383,6 +2428,14 @@ test(`${judgeModel} ${failure} judge recovery reuses saved pass 1 and runs only 
   expect((finished.pricing as PricingSnapshot).models[judgeModel]).toBeUndefined();
   expect(finished.judge?.status).toBe("complete");
   expect(finished.judge?.recovery?.reused_passes).toEqual([1]);
+  if (failure === "timeout") {
+    for (const id of ["candidate-1", "candidate-2"] as const) for (const key of ["simplicity", "performance", "approach"] as const) {
+      expect(finished.judge?.passes[0]?.quality_aspects?.[id][key]).toMatchObject({ status: "unassessed", basis: "none" });
+      expect(finished.judge?.passes[1]?.quality_aspects?.[id][key]).toMatchObject({ status: "satisfactory", basis: "source" });
+    }
+    const published = await Bun.file(join(run, "reports/report.json")).json();
+    expect(published.judge.result.passes[0].quality_aspects["candidate-1"].approach.status).toBe("unassessed");
+  }
   expect(finished.judge?.passes[0]?.criteria?.["candidate-2"][0]?.status).toBe("unassessed");
   expect(finished.judge?.passes[0]?.criteria?.["candidate-1"][0]?.execution?.stdout).toBe("repaired pass-1 evidence");
   expect(finished.judge?.attempts?.find(item => item.pass === 2 && item.stage === "harness-1" && item.attempt === 2)?.status).toBe("complete");

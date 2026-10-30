@@ -353,6 +353,11 @@ assessments, adapts the tests to the fresh implementation, and checks the same
 behavior. Only fresh candidates run tests and receive new scores. Original and
 adapted checks and their rationales remain in the evidence bundle.
 
+Fresh assessments also cover simplicity, implementation performance, and approach
+with explicit evidence. These aspects keep the existing score weights and gates.
+Historical assessments lacking them display unassessed rather than inheriting the
+fresh candidate's conclusions.
+
 Choose **Fresh evaluation of all candidates** to regrade and rejudge every patch.
 CLI equivalents are `--evaluation-mode reuse|fresh` and optionally
 `--evaluation-baselines '{"arm-4":"arm-3"}'`, mapping fresh slots to imported

@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { judgeRun, mappedWinner, validateJudgePass } from "./judge";
+import { judgeOutputSchema, judgeRun, mappedWinner, validateJudgePass } from "./judge";
 import { buildReport, invalidateRun } from "./report";
 import { MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import { readState, sha256, writeState } from "./state";
-import type { ArmName, ArmResult, CommandEvidence, JudgeReport, RunState } from "./types";
+import { qualityAspectKeys, type ArmName, type ArmResult, type CommandEvidence, type JudgeReport, type RunState } from "./types";
 import type { PricingSnapshot } from "./usage";
 
 let root: string;
@@ -300,6 +300,79 @@ test("judge validation rejects schema errors and ineligible winners", () => {
     { "candidate-1": true, "candidate-2": true })).toThrow("must contain exactly");
   expect(() => validateJudgePass(verdict("candidate-1", "ineligible"), 1, order,
     { "candidate-1": false, "candidate-2": false })).toThrow("required benchmark gates");
+});
+
+test("live aspects are required while legacy passes stay readable without invented evidence", () => {
+  const response = verdict("candidate-1", "Legacy assessment");
+  const order = ["stock", "current"], passing = { "candidate-1": true, "candidate-2": true };
+  expect(validateJudgePass(response, 1, order, passing).quality_aspects).toBeUndefined();
+  expect(() => validateJudgePass(response, 1, order, passing, { requireQualityAspects: true })).toThrow("quality_aspects");
+  const schema = judgeOutputSchema(["candidate-1", "candidate-2"]);
+  expect(schema.required).toContain("quality_aspects");
+  expect(schema.properties.quality_aspects.required).toEqual(["candidate-1", "candidate-2"]);
+  expect(schema.properties.quality_aspects.properties["candidate-1"].required).toEqual([...qualityAspectKeys]);
+});
+
+function aspectVerdict() {
+  return { ...verdict("candidate-1", "Explicit assessments"), quality_aspects: Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id,
+    Object.fromEntries(qualityAspectKeys.map(key => [key, { status: "concern", basis: "source", reasoning: `${id} concrete ${key} observation.` }]))])) };
+}
+
+test.each([
+  ["null map", (value: ReturnType<typeof aspectVerdict>) => { Object.assign(value, { quality_aspects: null }); }],
+  ["missing candidate", (value: ReturnType<typeof aspectVerdict>) => { delete value.quality_aspects["candidate-2"]; }],
+  ["unknown candidate", (value: ReturnType<typeof aspectVerdict>) => { value.quality_aspects["candidate-3"] = value.quality_aspects["candidate-1"]!; }],
+  ["missing aspect", (value: ReturnType<typeof aspectVerdict>) => { delete value.quality_aspects["candidate-1"]!.approach; }],
+  ["unknown aspect", (value: ReturnType<typeof aspectVerdict>) => { value.quality_aspects["candidate-1"]!.style = value.quality_aspects["candidate-1"]!.simplicity!; }],
+  ["unknown status", (value: ReturnType<typeof aspectVerdict>) => { value.quality_aspects["candidate-1"]!.simplicity!.status = "pass"; }],
+  ["unknown basis", (value: ReturnType<typeof aspectVerdict>) => { value.quality_aspects["candidate-1"]!.simplicity!.basis = "assumed"; }],
+  ["unsupported conclusion", (value: ReturnType<typeof aspectVerdict>) => { value.quality_aspects["candidate-1"]!.simplicity!.basis = "none"; }],
+  ["empty reasoning", (value: ReturnType<typeof aspectVerdict>) => { value.quality_aspects["candidate-1"]!.simplicity!.reasoning = " \n"; }],
+  ["extra field", (value: ReturnType<typeof aspectVerdict>) => { Object.assign(value.quality_aspects["candidate-1"]!.simplicity!, { score: 5 }); }],
+])("supplied aspect validation rejects %s in both live and historical input", (_name, mutate) => {
+  const response = aspectVerdict();
+  mutate(response);
+  for (const requireQualityAspects of [false, true]) {
+    expect(() => validateJudgePass(response, 1, ["stock", "current"], { "candidate-1": true, "candidate-2": true }, { requireQualityAspects })).toThrow("quality_aspects");
+  }
+});
+
+test("qualitative concerns and unassessed evidence leave score weights and winner gates unchanged", () => {
+  const response = aspectVerdict();
+  response.quality_aspects["candidate-2"]!.performance = { status: "unassessed", basis: "none", reasoning: "No relevant evidence." };
+  response.quality_aspects["candidate-1"]!.performance!.basis = "executed";
+  const passing = { "candidate-1": true, "candidate-2": true };
+  const judged = validateJudgePass(response, 1, ["stock", "current"], passing, { requireQualityAspects: true });
+  expect(judged.scores).toEqual(validateJudgePass(verdict("candidate-1", "legacy"), 1, ["stock", "current"], passing).scores);
+  expect(judged.scores["candidate-1"].weighted_total).toBe(90);
+  expect(judged.winner).toBe("candidate-1");
+  expect(judged.quality_aspects).toEqual(response.quality_aspects);
+  expect(() => validateJudgePass(response, 1, ["stock", "current"], { ...passing, "candidate-1": false }, { requireQualityAspects: true })).toThrow("required benchmark gates");
+  response.issues = [{ candidate: "candidate-1", severity: "critical", detail: "Material defect." }];
+  expect(() => validateJudgePass(response, 1, ["stock", "current"], passing, { requireQualityAspects: true })).toThrow("critical issue");
+});
+
+test("JSON and Markdown project legacy aspects as unassessed while preserving recorded assessments", async () => {
+  const { run } = await fixtureRun();
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const state = await readState(run);
+  const response = aspectVerdict();
+  response.quality_aspects["candidate-1"]!.simplicity!.reasoning = "candidate-1 scope | state\nfocused";
+  Object.assign(response, { winner: "candidate-2" });
+  state.judge!.passes[1] = validateJudgePass(response, 2, ["current", "stock"], { "candidate-1": true, "candidate-2": true }, { requireQualityAspects: true });
+  await writeState(run, state);
+  const paths = await buildReport(run);
+  const report = await Bun.file(paths.jsonPath).json();
+  for (const id of ["candidate-1", "candidate-2"]) for (const key of qualityAspectKeys) {
+    expect(report.judge.result.passes[0].quality_aspects[id][key]).toMatchObject({ status: "unassessed", basis: "none" });
+  }
+  expect(report.judge.result.passes[1].quality_aspects).toEqual(response.quality_aspects);
+  expect((await readState(run)).judge!.passes[0]!.quality_aspects).toBeUndefined();
+  const markdown = await readFile(paths.markdownPath, "utf8");
+  expect(markdown).toContain("| candidate-1 | simplicity | unassessed | none |");
+  expect(markdown).toContain("| candidate-1 | simplicity | concern | source | candidate-1 scope \\| state focused |");
+  expect(report.gates_complete).toBe(true);
+  expect(report.winner).toBe("stock");
 });
 
 describe("report completion and winner eligibility", () => {

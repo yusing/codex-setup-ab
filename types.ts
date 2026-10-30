@@ -158,6 +158,14 @@ export interface RunState {
   judge?: JudgeReport;
 }
 
+export const qualityAspectKeys = ["simplicity", "performance", "approach"] as const;
+export interface QualityAspectAssessment {
+  status: "satisfactory" | "concern" | "unassessed";
+  basis: "source" | "executed" | "none";
+  reasoning: string;
+}
+export type QualityAspects = Record<(typeof qualityAspectKeys)[number], QualityAspectAssessment>;
+
 export interface JudgePass {
   pass: 1 | 2;
   presentation: ArmName[];
@@ -166,6 +174,7 @@ export interface JudgePass {
   issues: Array<{ candidate: CandidateId; severity: "critical" | "major" | "minor"; detail: string }>;
   winner: CandidateId | "tie" | "none";
   criteria?: Record<CandidateId, CriterionEvidence[]>;
+  quality_aspects?: Record<CandidateId, QualityAspects>;
   rationale: string;
   reused?: Record<CandidateId, { source_run_id: string; source_arm: ArmName; pass: 1 | 2 }>;
 }

@@ -574,6 +574,21 @@ function resourceSummary(report) {
       : '<p class="hint">The recorded workflow does not establish why extra requests occurred. Request counts alone cannot identify the responsible instruction, retries, or cache-miss cause.</p>')
     + '<p class="hint">Accounting locates the difference; observed workflow contributors do not establish a general causal effect from one run.</p>';
 }
+function qualityAspectsTable(pass, names) {
+  const order = Array.isArray(pass.presentation) ? pass.presentation : [];
+  if (!order.length) return "";
+  const aspects = [["simplicity", "Simplicity"], ["performance", "Implementation performance"], ["approach", "Approach"]];
+  const cell = (index, key) => {
+    const id = "candidate-" + (index + 1);
+    const aspect = obj(obj(obj(pass.quality_aspects)[id])[key]);
+    return statusChip(aspect.status || "unassessed")
+      + '<details class="criterion-reasoning" data-key="' + esc("aspect:" + pass.pass + ":" + order[index] + ":" + key) + '"><summary>Reasoning</summary><p class="hint">Evidence: '
+      + esc(aspect.basis || "none") + "</p><p>" + esc(displayName(aspect.reasoning || "No qualitative assessment was recorded for this historical candidate.", names)) + "</p></details>";
+  };
+  return '<h4>Qualitative aspects</h4><p class="hint">Evidence-based assessments, without additional scoring weights or task gates. Implementation performance is separate from agent command time.</p><div class="table-scroll" tabindex="0" role="region" aria-label="Qualitative aspects, pass ' + esc(pass.pass) + '"><table><thead><tr><th>Aspect</th>'
+    + order.map((_, index) => "<th>" + esc(displayName("candidate-" + (index + 1), names)) + "</th>").join("") + "</tr></thead><tbody>"
+    + aspects.map(([key, label]) => "<tr><th>" + esc(label) + "</th>" + order.map((_, index) => '<td class="criterion-finding">' + cell(index, key) + "</td>").join("") + "</tr>").join("") + "</tbody></table></div>";
+}
 function judgeSummary(judge, labels) {
   const result = obj(obj(judge).result);
   if (!Array.isArray(result.passes) || !result.passes.length) return "";
@@ -582,6 +597,7 @@ function judgeSummary(judge, labels) {
     const issues = Array.isArray(pass.issues) ? pass.issues : [];
     const causes = [...new Set(issues.map((issue) => issue.candidate))].map((candidate) => issues.find((issue) => issue.candidate === candidate && issue.severity === 'critical') || issues.find((issue) => issue.candidate === candidate && issue.severity !== 'minor')).filter(Boolean);
     return '<section class="assessment-pass"><h4>Pass ' + esc(pass.pass) + " winner: " + esc(displayName(pass.winner, names)) + "</h4><p>" + esc(displayName(pass.rationale || "No reasoning recorded for this pass.", names)) + "</p>"
+      + qualityAspectsTable(pass, names)
       + (causes.length ? '<ul class="assessment-issues">' + causes.map((issue) => '<li><strong>' + esc(displayName(issue.candidate, names)) + '</strong>: ' + esc(displayName(issue.detail, names)) + '</li>').join('') + '</ul>' : '')
       + '<details class="assessment-details" data-key="assessment-' + esc(pass.pass) + '"><summary>Full evidence and issues</summary>'
       + (Array.isArray(pass.evidence) ? "<ul>" + pass.evidence.map((item) => "<li>" + esc(displayName(item, names)) + "</li>").join("") + "</ul>" : "")

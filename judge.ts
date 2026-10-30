@@ -1,4 +1,4 @@
-import { armNames, candidateIds, type CandidateId } from "./types";
+import { armNames, candidateIds, qualityAspectKeys, type CandidateId, type QualityAspects } from "./types";
 import { access, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { JUDGE_MODEL, runSemanticJudge } from "./semantic-judge";
@@ -13,8 +13,26 @@ type Candidate = CandidateId;
 export function judgeOutputSchema(candidates: CandidateId[]) { return {
   $schema: "http://json-schema.org/draft-07/schema#",
   type: "object", additionalProperties: false,
-  required: ["scores", "evidence", "issues", "winner", "rationale"],
+  required: ["scores", "quality_aspects", "evidence", "issues", "winner", "rationale"],
   properties: {
+    quality_aspects: {
+      type: "object", additionalProperties: false, required: [...candidates],
+      properties: Object.fromEntries(candidates.map(id => [id, {
+        type: "object", additionalProperties: false, required: [...qualityAspectKeys],
+        properties: Object.fromEntries(qualityAspectKeys.map(key => [key, {
+          anyOf: [
+            { status: ["satisfactory", "concern"], basis: ["source", "executed"] },
+            { status: ["unassessed"], basis: ["source", "executed", "none"] },
+          ].map(({ status, basis }) => ({
+            type: "object", additionalProperties: false, required: ["status", "basis", "reasoning"],
+            properties: {
+              status: { type: "string", enum: status }, basis: { type: "string", enum: basis },
+              reasoning: { type: "string", minLength: 1, pattern: "\\S" },
+            },
+          })),
+        }])),
+      }])),
+    },
     scores: {
       type: "object", additionalProperties: false, required: [...candidates],
       properties: Object.fromEntries(candidates.map(id => [id, {
@@ -76,9 +94,38 @@ function nonemptyString(value: unknown, context: string): string {
   return value;
 }
 
-export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: ArmName[], passing: Record<Candidate, boolean>): JudgePass {
+/** Old retained passes have no aspect evidence; never infer it from scores or a fresh peer. */
+export function unassessedQualityAspects(): QualityAspects {
+  return Object.fromEntries(qualityAspectKeys.map(key => [key, {
+    status: "unassessed", basis: "none", reasoning: "No qualitative assessment was recorded for this historical candidate.",
+  }])) as QualityAspects;
+}
+
+export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: ArmName[], passing: Record<Candidate, boolean>, options: { requireQualityAspects?: boolean } = {}): JudgePass {
   const candidates = candidateIds(presentation.length);
-  const root = exactObject(value, ["scores", "evidence", "issues", "winner", "rationale"], `judge pass ${pass}`);
+  const hasAspects = isRecord(value) && Object.hasOwn(value, "quality_aspects");
+  const root = exactObject(value, ["scores", "evidence", "issues", "winner", "rationale", ...(hasAspects || options.requireQualityAspects ? ["quality_aspects"] : [])], `judge pass ${pass}`);
+  let quality_aspects: JudgePass["quality_aspects"];
+  if (hasAspects) {
+    const rawAspects = exactObject(root.quality_aspects, candidates, `judge pass ${pass}.quality_aspects`);
+    quality_aspects = {};
+    for (const id of candidates) {
+      const aspects = exactObject(rawAspects[id], qualityAspectKeys, `judge pass ${pass}.quality_aspects.${id}`);
+      const validated = {} as QualityAspects;
+      for (const key of qualityAspectKeys) {
+        const context = `judge pass ${pass}.quality_aspects.${id}.${key}`;
+        const aspect = exactObject(aspects[key], ["status", "basis", "reasoning"], context);
+        const { status, basis } = aspect;
+        if (status !== "satisfactory" && status !== "concern" && status !== "unassessed") throw new Error(`${context}.status is invalid`);
+        if (basis !== "source" && basis !== "executed" && basis !== "none") throw new Error(`${context}.basis is invalid`);
+        if (status !== "unassessed" && basis === "none") throw new Error(`${context} requires source or executed evidence`);
+        const reasoning = nonemptyString(aspect.reasoning, `${context}.reasoning`);
+        if (!reasoning.trim()) throw new Error(`${context}.reasoning must be a nonempty string`);
+        validated[key] = { status, basis, reasoning };
+      }
+      quality_aspects[id] = validated;
+    }
+  }
   const rawScores = exactObject(root.scores, candidates, `judge pass ${pass}.scores`);
   const scores = {} as JudgePass["scores"];
   for (const id of candidates) {
@@ -107,7 +154,7 @@ export function validateJudgePass(value: unknown, pass: 1 | 2, presentation: Arm
   if ((winner !== "tie" && winner !== "none") && !passing[winner]) throw new Error(`judge pass ${pass} selected a candidate whose required benchmark gates failed or were not run`);
   if ((winner !== "tie" && winner !== "none") && critical.has(winner)) throw new Error(`judge pass ${pass} selected a candidate with a critical issue`);
   if (winner === "tie" && candidates.some(id => !passing[id] || critical.has(id))) throw new Error(`judge pass ${pass} selected a tie containing an ineligible candidate`);
-  return { pass, presentation, scores, evidence, issues, winner, rationale: nonemptyString(root.rationale, `judge pass ${pass}.rationale`) };
+  return { pass, presentation, scores, evidence, issues, winner, rationale: nonemptyString(root.rationale, `judge pass ${pass}.rationale`), ...(quality_aspects ? { quality_aspects } : {}) };
 }
 
 export function mappedWinner(pass: JudgePass): ArmName | "tie" | "none" {

@@ -58,6 +58,9 @@ Pair results show the outcome, key measurements and percentage differences,
 concise source-assessment explanations, and criterion decisions directly.
 Quality explanations connect concrete implementation decisions to their observed
 behavioral consequences instead of repeating scores or eligibility rules.
+Each fresh assessment explicitly considers simplicity, implementation performance,
+and approach, with evidence and uncertainty kept visible. These aspects supplement
+the existing scores; historical assessments that lack them remain unassessed.
 Resource explanations separate request count, repeated input context, output,
 and delegated work. Supported workflow observations retain evidence references;
 unproven causes remain unknown. Full judge evidence and issues stay expandable.

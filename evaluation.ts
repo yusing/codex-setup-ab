@@ -29,6 +29,7 @@ export interface HistoricalPass {
   existing: CriterionEvidence;
   issues: JudgePass["issues"];
   rationale: string;
+  quality_aspects?: NonNullable<JudgePass["quality_aspects"]>[CandidateId];
 }
 export interface HistoricalEvaluation {
   grade: NonNullable<ArmResult["grade"]>;
@@ -49,7 +50,8 @@ export function historicalEvaluation(source: RunState, arm: ArmName): Historical
     const existing = grade.semantic?.[`pass-${number}-existing`]?.[0];
     if (index < 0 || !score || !criteria || !existing
       || !source.criteria?.contract.criteria.every(item => criteria.some(result => result.criterion === item.id))) throw unavailable();
-    passes[number] = { presentation: pass!.presentation, score, criteria, existing, issues: pass!.issues.filter(issue => issue.candidate === id), rationale: pass!.rationale };
+    passes[number] = { presentation: pass!.presentation, score, criteria, existing, issues: pass!.issues.filter(issue => issue.candidate === id), rationale: pass!.rationale,
+      ...(pass!.quality_aspects ? { quality_aspects: pass!.quality_aspects[id] } : {}) };
   }
   return { grade, passes };
 }
