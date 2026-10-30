@@ -19,6 +19,7 @@ import { prepareEvaluatorCache } from "./semantic";
 import { buildReport } from "./report";
 import { embeddedFallbackPricing, type PricingSnapshot } from "./usage";
 import { readToolStoreManifest } from "./snapshot";
+import { miseToolMounts } from "./isolation";
 
 let root: string;
 let source: string;
@@ -1563,6 +1564,13 @@ test("Rust tools outside the mise store are recorded, mounted read-only, and ver
   const state = await readState(run);
   const manifest = await readToolStoreManifest(join(run, state.runtime_tools.current_setup_files));
   expect(manifest.rust!.cargo_files.every(file => file.sha256 === undefined)).toBe(true);
+  await verifyPreparedInputs(run, state);
+  const parse = spyOn(JSON, "parse");
+  try {
+    const mounts = await miseToolMounts(run, state);
+    for (let call = 0; call < 5; call++) expect(await miseToolMounts(run, state)).toEqual(mounts);
+    expect(parse).not.toHaveBeenCalled();
+  } finally { parse.mockRestore(); }
   const auth = join(root, "rust-auth.json"); await file(auth, "{}", 0o600);
   const fake = await fakeOwnedDocker(0);
   expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
@@ -1577,6 +1585,8 @@ test("Rust tools outside the mise store are recorded, mounted read-only, and ver
   }
   await file(join(rustup, "toolchains/fixture/bin/rustc"), "changed toolchain");
   await expect(verifyPreparedInputs(run, await readState(run))).rejects.toThrow("Rust runtime changed");
+  await writeFile(join(run, state.runtime_tools.current_setup_files), "changed inventory");
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("snapshotted current setup file manifest changed");
 });
 test("Linuxbrew drift and missing offline environment tools stop before inference", async () => {
   const run = await prepared();

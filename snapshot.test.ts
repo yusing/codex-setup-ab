@@ -1,9 +1,9 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { chmod, cp, lstat, mkdir, mkdtemp, readlink, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { readToolStoreManifest, recordToolStore, verifySnapshotIdentities } from "./snapshot";
+import { readToolStoreManifest, readToolStoreMountRoots, recordToolStore, verifySnapshotIdentities } from "./snapshot";
 
 async function createStore(root: string): Promise<string> {
   const store = join(root, "store");
@@ -64,6 +64,49 @@ test("compressed and legacy tool manifests preserve all identity records", async
       expect(decoded).toEqual(manifest);
       expect(await verifySnapshotIdentities(store, decoded.files)).toBe(true);
     }
+  });
+});
+
+test.each([".json", ".json.gz"])("mount roots reuse only the compact projection from full reads (%s)", async suffix => {
+  await withTemporaryRoot("codex-ab-mount-roots-", async root => {
+    const path = join(root, "metadata" + suffix);
+    for (const rust of [undefined, { cargo_bin: "/cargo/bin", rustup: "/rustup", cargo_files: [], rustup_files: [] }]) {
+      for (const linuxbrew of [undefined, { prefix: "/brew", files: [] }]) {
+        const manifest = { files: [{ path: "tool", type: "file" }], rust, linuxbrew };
+        const json = JSON.stringify(manifest);
+        await writeFile(path, suffix.endsWith(".gz") ? gzipSync(json) : json);
+        await readToolStoreManifest(path);
+        const parse = spyOn(JSON, "parse");
+        try {
+          for (let call = 0; call < 5; call++) {
+            expect(await readToolStoreMountRoots(path)).toEqual({
+              ...(rust ? { rust: { cargo_bin: rust.cargo_bin, rustup: rust.rustup } } : {}),
+              ...(linuxbrew ? { linuxbrew: { prefix: linuxbrew.prefix } } : {}),
+            });
+          }
+          expect(parse).not.toHaveBeenCalled();
+        } finally { parse.mockRestore(); }
+      }
+    }
+  });
+});
+
+test("cold mount reads refresh after same-size manifest changes and reject missing inputs", async () => {
+  await withTemporaryRoot("codex-ab-mount-refresh-", async root => {
+    const path = join(root, "metadata.json"), alias = join(root, "alias.json");
+    const mtime = new Date("2000-01-01T00:00:00Z");
+    await writeFile(path, JSON.stringify({ files: [], linuxbrew: { prefix: "/brew/a", files: [] } }));
+    await utimes(path, mtime, mtime);
+    await symlink(path, alias);
+    expect(await readToolStoreMountRoots(alias)).toEqual({ linuxbrew: { prefix: "/brew/a" } });
+    await Bun.sleep(20);
+    await writeFile(path, JSON.stringify({ files: [], linuxbrew: { prefix: "/brew/b", files: [] } }));
+    await utimes(path, mtime, mtime);
+    expect(await readToolStoreMountRoots(alias)).toEqual({ linuxbrew: { prefix: "/brew/b" } });
+    await rm(path);
+    await expect(readToolStoreMountRoots(alias)).rejects.toThrow();
+    await writeFile(path, "invalid manifest");
+    await expect(readToolStoreMountRoots(alias)).rejects.toThrow();
   });
 });
 

@@ -5,7 +5,7 @@ import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { MEKUGI_METRICS_WRAPPER, usesMekugi } from "./mekugi";
 import { runOwnedContainer } from "./container";
 import type { ArmName, RunState } from "./types";
-import { readToolStoreManifest } from "./snapshot";
+import { readToolStoreMountRoots } from "./snapshot";
 
 export const ISOLATION_SCRIPTS = ["isolated-codex.sh", "agent-mounts.sh", "agent-check.py"] as const;
 
@@ -19,7 +19,7 @@ export function launcherMounts(runDir: string, state: RunState, arm: ArmName): s
 
 export async function miseToolMounts(runDir: string, state: RunState): Promise<string[]> {
   const installs = resolve(runDir, state.runtime_tools.current_setup_installs);
-  const { rust, linuxbrew } = await readToolStoreManifest(join(runDir, state.runtime_tools.current_setup_files));
+  const { rust, linuxbrew } = await readToolStoreMountRoots(join(runDir, state.runtime_tools.current_setup_files));
   return ["-v", `${installs}:${installs}:ro`, "-e", `MISE_INSTALLS_DIR=${installs}`, "-e", "MISE_AUTO_INSTALL=0",
     "-e", `PATH=${TASK_PATH}${linuxbrew ? `:${linuxbrew.prefix}/bin:${linuxbrew.prefix}/sbin` : ""}`,
     ...(linuxbrew ? ["-v", `${linuxbrew.prefix}:${linuxbrew.prefix}:ro`, "-e", `HOMEBREW_PREFIX=${linuxbrew.prefix}`, "-e", "HOMEBREW_NO_AUTO_UPDATE=1"] : []),

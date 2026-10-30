@@ -1,4 +1,4 @@
-import { lstat, readdir, readFile, readlink } from "node:fs/promises";
+import { lstat, readdir, readFile, readlink, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { sha256 } from "./state";
@@ -66,9 +66,38 @@ export interface ToolStoreManifest {
   rust?: { cargo_bin: string; rustup: string; cargo_files: SnapshotFile[]; rustup_files: SnapshotFile[] };
 }
 
+export interface ToolStoreMountRoots {
+  readonly linuxbrew?: { readonly prefix: string };
+  readonly rust?: { readonly cargo_bin: string; readonly rustup: string };
+}
+
+// Retain only mount roots, never the parsed file inventory. Full verification
+// reads still decode every record and refresh this projection for their consumers.
+const toolStoreMounts = new Map<string, { version: string; roots: ToolStoreMountRoots }>();
+
+async function toolStoreManifestVersion(path: string): Promise<string> {
+  const value = await stat(path, { bigint: true });
+  return [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs].join(":");
+}
+
 export async function readToolStoreManifest(path: string): Promise<ToolStoreManifest> {
+  const version = await toolStoreManifestVersion(path);
   const bytes = await readFile(path);
-  return JSON.parse((path.endsWith(".gz") ? gunzipSync(bytes) : bytes).toString("utf8")) as ToolStoreManifest;
+  const manifest = JSON.parse((path.endsWith(".gz") ? gunzipSync(bytes) : bytes).toString("utf8")) as ToolStoreManifest;
+  toolStoreMounts.set(path, { version, roots: {
+    ...(manifest.linuxbrew ? { linuxbrew: { prefix: manifest.linuxbrew.prefix } } : {}),
+    ...(manifest.rust ? { rust: { cargo_bin: manifest.rust.cargo_bin, rustup: manifest.rust.rustup } } : {}),
+  } });
+  return manifest;
+}
+
+export async function readToolStoreMountRoots(path: string): Promise<ToolStoreMountRoots> {
+  const cached = toolStoreMounts.get(path);
+  if (cached?.version === await toolStoreManifestVersion(path)) return cached.roots;
+  // Legacy retained runs need no new metadata. Decode their manifest once on a
+  // cold mount-only path; subsequent calls use the same compact projection.
+  await readToolStoreManifest(path);
+  return toolStoreMounts.get(path)!.roots;
 }
 
 /** Record metadata for a read-only host mount without reading tool payloads. */
