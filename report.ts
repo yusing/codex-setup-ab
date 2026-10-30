@@ -436,6 +436,7 @@ export async function buildReport(runDirectory: string, options: ReportOptions =
     if ((await readState(resolve(runDirectory))).finishing) {
       try {
         await collectBundle(runDirectory);
+        await finalizeBundle(runDirectory);
       } catch (error) {
         const state = await readState(resolve(runDirectory));
         if (state.finishing) {
@@ -447,8 +448,6 @@ export async function buildReport(runDirectory: string, options: ReportOptions =
         await finalizeBundle(runDirectory);
         throw error;
       }
-      await finalizeBundle(runDirectory);
-
     }
     return paths;
   });

@@ -2070,6 +2070,30 @@ for (const fault of ["integrity", "cancel", "collection", "finalization"] as con
   }, 30_000);
 }
 
+test("standalone report sealing failure refreshes failed state and bundle", async () => {
+  const run = await prepared();
+  const auth = join(root, "refresh-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const finalize = bundles.finalizeBundle;
+  let finalizations = 0;
+  const seal = spyOn(bundles, "finalizeBundle").mockImplementation(async directory => {
+    if (finalizations++ === 0) throw new Error("report sealing failed");
+    return finalize(directory);
+  });
+  try {
+    await expect(buildReport(run)).rejects.toThrow("report sealing failed");
+  } finally { seal.mockRestore(); }
+  expect(finalizations).toBe(2);
+  expect((await readState(run)).finishing).toMatchObject({ status: "failed", error: "Error: report sealing failed" });
+  for (const path of ["reports/report.json", "reports/bundle/run.json", "reports/bundle/report.json"]) {
+    expect((await Bun.file(join(run, path)).json()).finishing.status).toBe("failed");
+  }
+  expect((await Bun.file(join(run, "reports/report.json")).json()).winner).toBe("none");
+  await bundles.verifyBundleManifest(join(run, "reports/bundle"), await sha256(join(run, "reports/bundle/MANIFEST.sha256")));
+}, 30_000);
+
 test("review treatment overlays only the isolated current home and is hash verified", async () => {
   const treatment = join(root, "review-treatment");
   await file(join(treatment, "parent-agents.md"), "review before implementation\n");
