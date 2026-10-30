@@ -12,10 +12,11 @@ import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { armExecutionSucceeded, readState, writeState, withRunLock } from "./state";
 import { isPairedMekugiComparison, usesMekugi, mekugiArmFlags, MEKUGI_METRICS_WRAPPER, validateMekugiFlags } from "./mekugi";
 import { importArms, importControl } from "./control";
+import { evaluationPlan } from "./evaluation";
 import { armLabels, presentationLabel } from "./arm-labels";
 import type { ArmImport, ArmName, ArmResult, CommandEvidence, RunState } from "./types";
 
-export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; importArms?: ArmImport[]; signal?: AbortSignal }
+export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; importArms?: ArmImport[]; evaluationMode?: string; evaluationBaselines?: unknown; signal?: AbortSignal }
 
 
 function progress(message: string): void { process.stderr.write(`[run] ${message}\n`); }
@@ -407,6 +408,8 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   if (state.status !== "prepared") throw new Error(`run is ${state.status}; prepare a new run instead of resuming or restarting it`);
   if (!state.criteria) throw new Error("run has no evaluator contract; prepare with --criteria");
   options = { ...options, importArms: options.importArms ?? state.planned_imports };
+  state.evaluation = evaluationPlan(options.evaluationMode ?? state.evaluation?.mode,
+    options.evaluationBaselines ?? (options.evaluationMode === "fresh" ? undefined : state.evaluation?.baselines), options.importArms, armNames(state));
   if (options.importArms && (options.arm || options.controlRun || options.controlBundleSha256)) throw new Error("--import-arms cannot be combined with --arm or --control-run");
   if (options.controlRun && options.arm) throw new Error("--control-run selects the current treatment arm; do not pass --arm");
   if (Boolean(options.controlRun) !== Boolean(options.controlBundleSha256)) throw new Error("--control-run requires --control-bundle-sha256 and vice versa");
@@ -512,6 +515,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     if (!controller.signal.aborted && selectedArms.every(arm => armExecutionSucceeded(state.results?.[arm]))) {
       progress("all selected candidates captured; starting evaluator-only grading");
       const graded = await Promise.allSettled(selectedArms.map(async arm => {
+        if (state.evaluation?.mode === "reuse" && state.imported_arms?.[arm]) return;
         const result = state.results![arm]!;
         result.grade = await gradeArm(docker, runDir, state, arm, join(runDir, result.patch_path), controller.signal);
         progress(`${displayArm(arm)}: prepared for independent semantic assessment`);

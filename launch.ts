@@ -1,4 +1,5 @@
 import { parseArmImports } from "./control";
+import { evaluationPlan } from "./evaluation";
 import { readState, writeState } from "./state";
 import { compositionKeys, parseArmConfigurations } from "./arms";
 import { REASONING_EFFORTS } from "./types";
@@ -54,7 +55,7 @@ function positive(value: string, label: string): number {
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) throw new Error(`${label} must be a positive integer`);
   return Number(value);
 }
-export function launchConfiguration(input: CliOptions): { prepare: PrepareOptions; count: number; order: "concurrent" | "alternating"; docker: string; auth: string; grokAuth: string; prepareOnly: boolean; importArms?: import("./types").ArmImport[] } {
+export function launchConfiguration(input: CliOptions): { prepare: PrepareOptions; count: number; order: "concurrent" | "alternating"; docker: string; auth: string; grokAuth: string; prepareOnly: boolean; importArms?: import("./types").ArmImport[]; evaluation: import("./types").EvaluationPlan } {
   const defaults = taskCatalog().find(task => task.id === input.task);
   const taskDefaults: CliOptions = defaults?.preset && !input.preset && !input.comparison
     ? { preset: defaults.preset } : {};
@@ -82,6 +83,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   const customArms = comparison === "custom" ? parseArmConfigurations(JSON.parse(stringOption(o, "arms", "[]"))) : undefined;
   if (comparison !== "custom" && o.arms !== undefined) throw new Error("--arms requires the custom comparison");
   const importArms = o["import-arms"] ? parseArmImports(JSON.parse(stringOption(o, "import-arms"))) : undefined;
+  const evaluation = evaluationPlan(o["evaluation-mode"], o["evaluation-baselines"] ? JSON.parse(stringOption(o, "evaluation-baselines")) : undefined, importArms, compositionKeys(customArms?.length ?? 2));
   if (importArms) {
     const keys = compositionKeys(customArms?.length ?? 2);
     if (count !== 1) throw new Error("Historical arm imports require count 1");
@@ -131,7 +133,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
       protectMekugi: o["protect-mekugi"] === true, reviewTreatment: stringOption(o, "review-treatment") || undefined,
       outputParent: stringOption(o, "output-parent") || undefined,
     },
-    count, order, importArms, docker: stringOption(o, "docker-bin"), auth: stringOption(o, "auth-file"), grokAuth: stringOption(o, "grok-auth-file"), prepareOnly: o["prepare-only"] === true,
+    count, order, importArms, evaluation, docker: stringOption(o, "docker-bin"), auth: stringOption(o, "auth-file"), grokAuth: stringOption(o, "grok-auth-file"), prepareOnly: o["prepare-only"] === true,
   };
 }
 
@@ -196,6 +198,7 @@ export async function runLaunch(o: CliOptions): Promise<string> {
     if (config.importArms) {
       const state = await readState(directory);
       state.planned_imports = config.importArms;
+      state.evaluation = config.evaluation;
       await writeState(directory, state);
     }
     process.stdout.write(`${directory}\n`);

@@ -130,13 +130,33 @@ Targets must be distinct and leave at least one fresh arm. Imported results reta
 their source setup labels, execution times, logs, rollouts, and available provider
 accounting. Task, baseline, criteria, model, reasoning, service tier, base images, Codex
 binaries, resource limits, and timeout must match; setup and launcher treatments
-may differ. Evidence is verified and copied before candidate inference. All patches
-are graded and blindly assessed together with the new evaluator, without reusing
-old grades or judge decisions. Missing usage stays unknown. Costs are recomputed
+may differ. Evidence is verified and copied before candidate inference. Evaluation
+mode `reuse` preserves imported grades and per-pass scores and assessments;
+`fresh` grades and blindly assesses all patches together. Missing usage stays unknown. Costs are recomputed
 with the new run's pricing snapshot. Sources remain unchanged and the new run
 retains provenance and measurement evidence independently of their directories.
 Imports cannot be combined with `--arm`, legacy `--control-run`, or repeated-trial
 launches. Use one comparison per launch for historical imports.
+
+`--evaluation-mode reuse|fresh` selects evaluation behavior. Imports default to
+`reuse`; runs without imports use `fresh`. `--evaluation-baselines` is a JSON object
+mapping each fresh arm key to an imported target slot. Omitted mappings default to
+the last imported slot. Reuse requires completed two-pass historical assessments
+and retained per-criterion and existing-test evidence, verified before inference.
+Historical evaluation inputs are copied into the new bundle and remain usable
+after source directories move.
+
+For each fresh arm and pass, the judge starts from its baseline's final tests and
+assessment. It may change interface calls, fixtures, and implementation-specific
+wiring while retaining the same behavioral requirements, assertions, and failure
+conditions. Adaptation rationales, original checks, adapted checks, and execution
+evidence are retained. No imported candidate is regraded or rescored. The new
+assessment checks coverage against the historical intent; broken harnesses remain
+unassessed. Historical scores do not establish outcomes for a fresh candidate.
+Reuse rankings compare eligible frozen and new weighted scores within each pass;
+an overall winner requires agreement across passes. These are historical score
+rankings, not fresh joint blind judgments; prior comparative verdicts remain in
+their source evidence rather than being transferred to the enlarged comparison.
 
 Runtime dependency images embed Mekugi binaries. Their IDs may differ when both
 recorded build keys match the current recipe and differ only in launcher-binary

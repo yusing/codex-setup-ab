@@ -98,6 +98,7 @@ function addCustomArm(launcher = "mekugi", revision = "HEAD") {
   row.innerHTML = '<p class="imported-setup" hidden></p>' + select("Launcher " + index, "arm-launcher-" + index, [["codex", "Codex"], ["mekugi", "Mekugi"]], launcher)
     + select("Setup " + index, "arm-setup-" + index, [["stock", "Stock"], ["revision", "Committed SHA"]], revision === "stock" ? "stock" : "revision")
     + field("Setup revision " + index, "arm-revision-" + index, revision === "stock" ? "HEAD" : revision)
+    + '<div class="evaluation-baseline" hidden>' + select("Historical evaluation baseline", "arm-evaluation-" + index, []) + '</div>'
     + '<button type="button">Remove setup</button>';
   const setup = row.querySelectorAll("select")[1];
   const updateSetup = () => { row.querySelector("input").disabled = setup.value === "stock"; row.querySelector("input").parentElement.hidden = setup.value === "stock"; };
@@ -107,6 +108,11 @@ function addCustomArm(launcher = "mekugi", revision = "HEAD") {
   for (const input of row.querySelectorAll("input,select")) { input.removeAttribute("name"); input.addEventListener("input", updateCombination); input.addEventListener("change", updateCombination); }
   row.querySelector("button").addEventListener("click", () => {
     const removed = [...$("custom-arms").children].indexOf(row);
+    for (const input of $("custom-arms").querySelectorAll(".evaluation-baseline select")) {
+      const slot = input.value === "stock" ? 0 : input.value === "current" ? 1 : Number(input.value.slice(4)) - 1;
+      if (slot === removed) input.value = "";
+      else if (slot > removed) input.value = slot === 1 ? "stock" : slot === 2 ? "current" : "arm-" + slot;
+    }
     for (const imported of [...$("imported-arms").children]) {
       const target = imported.querySelector("select");
       const slot = target.selectedIndex;
@@ -161,11 +167,13 @@ async function compareAgainstHead(directory, statusId, button) {
       if (input?.type === "checkbox") input.checked = value !== "false";
       else if (input) input.value = value;
     }
-    for (const imported of JSON.parse(options["import-arms"])) addImportedArm(imported, draft.labels[imported.arm]);
+    const imports = JSON.parse(options["import-arms"]);
+    for (const imported of imports) addImportedArm(imported, draft.labels[imported.arm]);
+    for (const input of $("custom-arms").querySelectorAll(".evaluation-baseline select")) input.value = imports.at(-1).target_arm;
     updateCombination();
     selected = undefined; $("launch-view").hidden = false; $("watch-view").hidden = true;
     history.replaceState(null, "", "/"); connectEvents();
-    showNotice("input-status", "Previous arms loaded. Only the final HEAD setup executes; all patches receive fresh assessments. HEAD is the setup configuration repository revision. Review settings and confirm inference to start.");
+    showNotice("input-status", "Previous arms loaded. Only the final HEAD setup executes. Historical grades and scores are reused by default; fresh candidates adapt historical tests to their implementation. HEAD is the setup configuration repository revision. Review evaluation settings and confirm inference to start.");
     $("f-preset").focus();
   } catch (error) { showNotice(statusId, error.message, true); }
   finally { button.disabled = false; }
@@ -214,7 +222,9 @@ function drawLaunch() {
       + field("Grok executable", "grok-bin", defaults["grok-bin"])
       + field("Reviewer treatment (optional)", "review-treatment", "", "text", "Use an existing reviewer overlay path.")
       + '</div>' + check("Use protected Mekugi runtime", "protect-mekugi") + '</details>'
-      + '<section class="form-section"><h2>Compare with previous runs</h2><p class="hint">Import a previous arm into a comparison slot instead of executing it again. Leave at least one fresh setup. The same task and execution controls must match. Imported patches receive fresh blind assessments. Use repeat count 1.</p><div id="imported-arms"></div><button id="add-imported-arm" type="button">Import previous arm</button></section>'
+      + '<section class="form-section"><h2>Compare with previous runs</h2><p class="hint">Import completed arms without executing them again. Leave at least one fresh setup with matching task and execution controls. Use repeat count 1.</p><div id="imported-arms"></div><button id="add-imported-arm" type="button">Import previous arm</button>'
+      + '<div id="evaluation-settings" hidden>' + select("Evaluation", "evaluation-mode", [["reuse", "Reuse historical evaluation"], ["fresh", "Fresh evaluation of all candidates"]], "reuse", "Reuse keeps imported grades, scores and assessments unchanged. The judge adapts historical tests to each fresh implementation while testing the same behaviors. Fresh evaluation regrades and rescores every patch.")
+      + '<div id="paired-evaluation-baselines"></div></div></section>'
       + '<details class="advanced" id="custom-task-fields"><summary>Custom task contract</summary><p class="hint">A portable pack owns its prompt, criteria, profile and commits. Otherwise supply all four standalone controls.</p><div class="grid">'
       + field("Portable task-pack manifest", "task-pack")
       + field("Task prompt file", "task-file")
@@ -257,7 +267,7 @@ function drawLaunch() {
     $("add-imported-arm").addEventListener("click", () => addImportedArm());
     $("reuse-run").addEventListener("click", (event) => compareAgainstHead($("f-reuse-directory").value, "reuse-status", event.currentTarget));
     $("f-reuse-directory").removeAttribute("name");
-    for (const id of ["f-preset", "f-current-launcher", "f-mekugi-build", "f-task-pack"]) {
+    for (const id of ["f-preset", "f-current-launcher", "f-mekugi-build", "f-task-pack", "f-evaluation-mode"]) {
       $(id).addEventListener("input", updateCombination);
       $(id).addEventListener("change", updateCombination);
     }
@@ -280,15 +290,36 @@ function updateCombination() {
     select.value = keys.includes(selected) ? selected : "stock";
   }
   for (const button of $("custom-arms").querySelectorAll("button")) button.disabled = configuredArms.length <= 2;
+  const imports = importedArmRows();
+  $("evaluation-settings").hidden = !imports.length;
+  $("f-evaluation-mode").disabled = !imports.length;
+  const reuse = imports.length && $("f-evaluation-mode").value === "reuse";
+  const baselineOptions = imports.map((item, index) => [item.target_arm,
+    ($("imported-arms").children[index].dataset.sourceLabel || "Imported " + item.arm) + " · " + item.run_dir.split("/").at(-1)]);
+  const updateBaseline = (input) => {
+    const previous = input.value;
+    input.innerHTML = baselineOptions.map(([key, label]) => '<option value="' + esc(key) + '">' + esc(label) + '</option>').join("");
+    input.value = imports.some(item => item.target_arm === previous) ? previous : imports.at(-1)?.target_arm || "";
+    input.disabled = !reuse;
+  };
   for (const [index, row] of [...$("custom-arms").children].entries()) {
-    for (const [i, label] of [...row.querySelectorAll(".field label")].entries()) label.textContent = ["Launcher ", "Setup ", "Setup revision "][i] + (index + 1);
+    for (const [i, label] of [...row.querySelectorAll(":scope > .field label")].entries()) label.textContent = ["Launcher ", "Setup ", "Setup revision "][i] + (index + 1);
     const imported = [...$("imported-arms").children].find(source => source.querySelector("select").selectedIndex === index);
     const label = row.querySelector(".imported-setup");
     label.hidden = !imported;
     label.textContent = imported ? "Imported: " + (imported.dataset.sourceLabel || imported.querySelectorAll("input")[1].value) : "";
     for (const field of row.querySelectorAll(".field")) field.hidden = Boolean(imported);
     if (!imported) row.querySelector("input").parentElement.hidden = row.querySelectorAll("select")[1].value === "stock";
+    const baseline = row.querySelector(".evaluation-baseline");
+    baseline.hidden = Boolean(imported) || !reuse;
+    baseline.querySelector(".field").hidden = false;
+    updateBaseline(baseline.querySelector("select"));
   }
+  const paired = $("paired-evaluation-baselines");
+  paired.hidden = composition || !reuse;
+  const previousBaselines = Object.fromEntries([...paired.querySelectorAll("select")].map(input => [input.dataset.arm, input.value]));
+  paired.innerHTML = composition || !reuse ? "" : ["stock", "current"].filter(arm => !imports.some(item => item.target_arm === arm)).map(arm => select("Evaluation baseline for " + arm, "baseline-" + arm, baselineOptions, previousBaselines[arm] || imports.at(-1).target_arm)).join("");
+  for (const input of paired.querySelectorAll("select")) { input.dataset.arm = input.name.slice("baseline-".length); input.removeAttribute("name"); }
   $("custom-composition").hidden = !composition;
   const mekugi = composition ? configuredArms.some(arm => arm.launcher === "mekugi") : !["stock-current", "setup-commits"].includes(comparison.id) || $("f-current-launcher").value === "mekugi";
   const titleB = comparison.id === "stock-current" && mekugi ? "Mekugi · current setup" : comparison.b;
@@ -339,6 +370,13 @@ function launchRequest() {
     if (options.preset === "custom") options.arms = JSON.stringify(customArmRows());
     const imports = importedArmRows();
     if (imports.length) options["import-arms"] = JSON.stringify(imports);
+    if (imports.length && options["evaluation-mode"] === "reuse") {
+      const mappings = options.preset === "custom" ? [...$("custom-arms").children].flatMap((row, i) => {
+        const arm = i === 0 ? "stock" : i === 1 ? "current" : "arm-" + (i + 1);
+        return imports.some(item => item.target_arm === arm) ? [] : [[arm, row.querySelector(".evaluation-baseline select").value]];
+      }) : [...$("paired-evaluation-baselines").querySelectorAll("select")].map(input => [input.dataset.arm, input.value]);
+      options["evaluation-baselines"] = JSON.stringify(Object.fromEntries(mappings));
+    }
     const flags = [];
     for (const name of [...MEKUGI_TOGGLES.map(([name]) => name), ...MEKUGI_VALUES]) {
       const key = "mekugi-" + name;
@@ -568,7 +606,10 @@ function resultContent(data) {
   if (data.entry.kind === "pair") {
     const warnings = [...new Set([...currentInvalidity, ...(report.invalidity_reasons || []), ...Object.values(obj(report.arms)).flatMap((arm) => obj(arm.usage).warnings || [])])];
     const complete = report.measurement_complete === true && !invalidated;
-    return "<h2>Comparison results</h2><p class='hint'>" + esc(report.design || "Descriptive paired evidence") + "</p>"
+    const evaluation = obj(report.evaluation ?? state.evaluation);
+    const evaluationNote = evaluation.mode === "reuse" ? '<p class="notice">Historical evaluation reused. Imported grades and scores are unchanged; fresh candidates use adapted historical tests. Rankings combine historical and new scores, not a fresh joint blind verdict.</p>'
+      + '<ul>' + Object.entries(obj(evaluation.baselines)).map(([arm, baseline]) => '<li>' + esc(labels[arm]) + ': tests and assessment baseline from ' + esc(labels[baseline]) + '</li>').join("") + '</ul>' : "";
+    return "<h2>Comparison results</h2><p class='hint'>" + esc(report.design || "Descriptive paired evidence") + "</p>" + evaluationNote
       + (invalidated ? invalidationNotice : verdictSummary(report, state, labels, complete))
       + scoreTable(report, labels)
       + "<h3>Measurements</h3>" + metricTable(report, state, labels)

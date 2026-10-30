@@ -53,6 +53,8 @@ Usage:
 Import options (launch or run):
   --import-arms JSON   [{"target_arm":"stock","run_dir":"/previous/run","arm":"current"}]
                        import selected published arms; execute only the remaining slots
+  --evaluation-mode MODE  reuse (default with imports) or fresh
+  --evaluation-baselines JSON  Fresh arm to imported slot, e.g. {"current":"stock"}
 
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
@@ -268,6 +270,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
 
       await runBenchmark({ runDir, authFile: auth, grokAuthFile: o["grok-auth-file"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined, arm,
         importArms: o["import-arms"] ? parseArmImports(JSON.parse(String(o["import-arms"]))) : undefined,
+        evaluationMode: o["evaluation-mode"] as string | undefined,
+        evaluationBaselines: o["evaluation-baselines"] ? JSON.parse(String(o["evaluation-baselines"])) : undefined,
         controlRun: o["control-run"] as string | undefined, controlBundleSha256: o["control-bundle-sha256"] as string | undefined });
     }
     else if (command === "finish") await finishBenchmark({ runDir, authFile: auth, dockerBin: o["docker-bin"] as string | undefined, recoverJudge: o["recover-judge"] === true });

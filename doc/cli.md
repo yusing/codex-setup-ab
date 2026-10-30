@@ -345,7 +345,19 @@ Runtime images may differ only for launcher-binary changes under matching task
 dependency preparation inputs; see the [import contract](contract.md).
 Each mapping optionally accepts
 `bundle_sha256`; without it the current manifest is pinned automatically.
-Captured patches are regraded and judged together, not given their previous scores.
+Choose **Reuse historical evaluation** (the default with imports) to preserve old
+grades, scores, and assessments. Each fresh setup selects an imported setup as its
+evaluation baseline. The judge starts from that arm's historical tests and
+assessments, adapts the tests to the fresh implementation, and checks the same
+behavior. Only fresh candidates run tests and receive new scores. Original and
+adapted checks and their rationales remain in the evidence bundle.
+
+Choose **Fresh evaluation of all candidates** to regrade and rejudge every patch.
+CLI equivalents are `--evaluation-mode reuse|fresh` and optionally
+`--evaluation-baselines '{"arm-4":"arm-3"}'`, mapping fresh slots to imported
+slots. Without a mapping, fresh arms use the last imported slot. Reuse rankings
+combine frozen and new weighted scores rather than claiming a fresh joint blind
+verdict. Missing historical assessment evidence requires fresh evaluation.
 Original usage evidence is copied and repriced using the new run's list prices;
 missing measurements remain unknown. Original runs are unchanged. Historical
 imports use repeat count 1 and cannot combine with `--arm` or `--control-run`.

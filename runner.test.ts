@@ -219,7 +219,7 @@ test("custom composition executes and blindly assesses every isolated arm, then 
   await expect(verifyPreparedInputs(run, finished)).rejects.toThrow("arm-3 setup revision snapshot changed");
 }, 30_000);
 
-test("historical multi-arm imports execute one new candidate and rejudge every retained patch", async () => {
+test.each(["reuse", "fresh"])("historical multi-arm imports execute one new candidate with %s evaluation", async mode => {
   const revision = (await checked(["git", "-C", home, "rev-parse", "HEAD"])).stdout.trim();
   const options = { source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
@@ -248,8 +248,9 @@ test("historical multi-arm imports execute one new candidate and rejudge every r
     { target_arm: "current", run_dir: sourceRun, arm: "arm-3" }];
   ready.pricing = sourceState.pricing;
   await writeState(run, ready);
-  const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, 3);
-  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+  const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, mode === "reuse" ? 1 : 3);
+  if (mode === "reuse") await writeFile(fake.path, (await readFile(fake.path, "utf8")).replaceAll("if (1 !== 1)", "if (2 !== 2)"));
+  await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path, evaluationMode: mode });
   const finished = await readState(run);
   expect(finished.status).toBe("complete");
   expect(finished.finishing?.status).toBe("complete");
@@ -257,7 +258,24 @@ test("historical multi-arm imports execute one new candidate and rejudge every r
   const log = await readFile(fake.log, "utf8");
   for (const arm of ["stock", "current"]) expect(log).not.toContain(`--name codex-ab-${finished.id}-${arm} `);
   expect(log).toContain(`--name codex-ab-${finished.id}-arm-3 `);
+  if (mode === "reuse") {
+    expect(finished.results!.stock!.grade).toEqual(completed.results!.current!.grade);
+    expect(finished.results!.current!.grade).toEqual(completed.results!["arm-3"]!.grade);
+    expect(log).not.toContain(`${finished.id}-stock-grade-verify`);
+    expect(log).not.toContain("round-1-candidate-2-fixture");
+    expect(log).not.toContain("/evaluator/stock:/candidates/");
+    expect(finished.judge!.passes[0]!.scores["candidate-1"]).toEqual(completed.judge!.passes[0]!.scores["candidate-2"]);
+    expect(finished.judge!.passes[1]!.scores["candidate-3"]).toEqual(completed.judge!.passes[1]!.scores["candidate-2"]);
+    const seed = await Bun.file(join(run, "evaluator/semantic/pass-1/historical.json")).json();
+    expect(seed["candidate-1"].criteria[0].check.files[0].source).toContain("process.exit");
+    expect(seed["candidate-1"].criteria[0].check.files[0].source).toContain("1 !== 1");
+    expect(finished.results!["arm-3"]!.grade!.semantic!["pass-1"]![0]!.check!.files[0]!.source).toContain("2 !== 2");
+    const prompt = await readFile(join(fake.stateDir, `codex-ab-${finished.id}-judge-1-harness-1-1.prompt`), "utf8");
+    expect(prompt).toContain("Start from those tests and assessments, not a new test design");
+    expect(prompt).toContain("Preserve the same behavioral outcomes, assertions, edge cases, and failure conditions");
+  }
   const report = await Bun.file(join(run, "reports/report.json")).json();
+  expect(report.evaluation.mode).toBe(mode);
   expect(report.arm_labels.stock).toContain("Codex + Mekugi");
   expect(report.arm_labels.current).toContain(revision.slice(0, 12));
   expect(report.arms.stock.usage.totals.input_tokens).toBe(10);

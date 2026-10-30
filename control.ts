@@ -7,6 +7,7 @@ import { armNames, type ArmImport, type ArmResult, type RunState } from "./types
 import { isPairedMekugiComparison } from "./mekugi";
 import { armLabels } from "./arm-labels";
 import { dependencyKey } from "./dependencies";
+import { historicalEvaluation } from "./evaluation";
 
 function digest(value: unknown): string { return new Bun.CryptoHasher("sha256").update(JSON.stringify(value)).digest("hex"); }
 
@@ -90,6 +91,7 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
     const mismatches: string[] = differences;
     if (!compatibleDependencyImages(source, state)) mismatches.push("dependency image");
     if (mismatches.length) throw new Error(`Imported arm does not match controls: ${mismatches.join(", ")}`);
+    if (state.evaluation?.mode === "reuse") historicalEvaluation(source, item.arm);
     // Flatten an already-imported arm to its retained original measurement evidence.
     const prior = source.imported_arms?.[item.arm];
     const evidenceRoot = prior ? artifactPath(sourceRun, prior.directory) : sourceRun;
@@ -148,7 +150,8 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
     state.imported_arms[item.target_arm] = { source_run_id: source.id, source_arm: item.arm, bundle_sha256: hash,
       label: armLabels(source)[item.arm], directory, evidence_arm: evidenceArm, files: captured };
     const result: ArmResult = { ...plan.result, arm: item.target_arm, anonymous_id: `candidate-${armNames(state).indexOf(item.target_arm) + 1}`,
-      grade: undefined, patch_path: patchPath, stdout_path: join(directory, original.stdout_path), stderr_path: join(directory, original.stderr_path) };
+      grade: state.evaluation?.mode === "reuse" ? structuredClone(plan.result!.grade) : undefined,
+      patch_path: patchPath, stdout_path: join(directory, original.stdout_path), stderr_path: join(directory, original.stderr_path) };
     results[item.target_arm] = result;
     state.arm_attempts ??= {};
     state.arm_attempts[item.target_arm] = { codex_home: join(directory, home), grok_home: grokHome ? join(directory, grokHome) : undefined,

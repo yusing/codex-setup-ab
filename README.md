@@ -65,8 +65,12 @@ A repeat count of two or more prepares fresh trial pairs.
 To compare one fresh candidate with earlier results, use **Compare with previous
 runs**, choose the slot to replace, and enter the retained run directory and arm
 key. Add more imports for a custom multi-arm comparison, leaving at least one fresh
-slot and repeat count 1. Imported slots keep their original setup labels, skip
-candidate execution, and receive new blind assessments with the fresh candidate.
+slot and repeat count 1. Imported slots keep their original setup labels and skip
+candidate execution. **Reuse historical evaluation**, the default, also preserves
+their grades, scores, and assessments. Select an imported evaluation baseline for
+each fresh setup; judges adapt its historical tests to the new implementation
+while testing the same behaviors. Choose **Fresh evaluation of all candidates**
+to regrade and rescore every patch instead.
 The [import guide](doc/cli.md#import-previous-arms) covers matching controls and CLI use.
 The suite workflow accepts a suite manifest and source-mapping file.
 

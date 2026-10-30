@@ -172,7 +172,8 @@ raise SystemExit(result.returncode)
 
 /** Warm only pinned baseline code; candidate checks receive this cache read-only. */
 export async function prepareEvaluatorCache(runDir: string, state: RunState, docker: string, signal?: AbortSignal): Promise<void> {
-  if (!await access(join(runDir, "evaluator/stock/go.mod")).then(() => true, () => false)) return;
+  const arm = Object.keys(state.arms).find(arm => state.evaluation?.mode !== "reuse" || !state.imported_arms?.[arm]);
+  if (!arm || !await access(join(runDir, "evaluator", arm, "go.mod")).then(() => true, () => false)) return;
   const root = join(runDir, "evaluator/compiler-cache");
   if (await access(join(root, "ready")).then(() => true, () => false)) return;
   await mkdir(join(root, "go-build"), { recursive: true, mode: 0o700 });

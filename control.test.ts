@@ -228,10 +228,11 @@ for (const comparisonName of ["journal-compaction", "duplicate-output"] as const
 }
 
 test("general arm import rejects mismatched, invalid, missing, or altered published evidence before mutation", async () => {
-  for (const fault of ["task", "model", "invalid", "missing-arm", "bundle", "rollout"] as const) {
+  for (const fault of ["task", "model", "invalid", "missing-arm", "bundle", "rollout", "evaluation"] as const) {
     const f = await publishedControl();
     if (fault === "task") f.treatment.task.sha256 = "9".repeat(64);
     if (fault === "model") f.treatment.execution.model = "gpt-6.1-sol";
+    if (fault === "evaluation") f.treatment.evaluation = { mode: "reuse", baselines: { current: "stock" } };
     if (fault === "invalid") {
       f.source.invalidity_reasons = ["Withdrawn"];
       await writeState(f.sourceRun, f.source);

@@ -13,6 +13,7 @@ export type ArmName = string;
 export type CandidateId = `candidate-${number}`;
 export interface ArmConfiguration { launcher: "codex" | "mekugi"; setup_commit: string }
 export interface ArmImport { target_arm: ArmName; run_dir: string; arm: ArmName; bundle_sha256?: string }
+export interface EvaluationPlan { mode: "reuse" | "fresh"; baselines?: Record<ArmName, ArmName> }
 export const armNames = (state: Pick<RunState, "arms">): ArmName[] => Object.keys(state.arms);
 export const candidateIds = (count: number): CandidateId[] => Array.from({ length: count }, (_, index) => `candidate-${index + 1}` as const);
 
@@ -82,6 +83,7 @@ export interface RunState {
   mekugi_flags?: string[];
   imported_control?: { source_run_id: string; bundle_sha256: string; controls_sha256: string; stdout_sha256: string; stderr_sha256: string };
   planned_imports?: ArmImport[];
+  evaluation?: EvaluationPlan;
   imported_arms?: Record<ArmName, {
     source_run_id: string; source_arm: ArmName; bundle_sha256: string; label: string;
     directory: string; evidence_arm: ArmName; files: Array<{ path: string; sha256: string }>;
@@ -159,6 +161,7 @@ export interface JudgePass {
   winner: CandidateId | "tie" | "none";
   criteria?: Record<CandidateId, CriterionEvidence[]>;
   rationale: string;
+  reused?: Record<CandidateId, { source_run_id: string; source_arm: ArmName; pass: 1 | 2 }>;
 }
 
 export interface JudgeAttempt {

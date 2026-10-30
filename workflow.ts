@@ -51,6 +51,7 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
       if (!failure && !controller.signal.aborted && state.status === "complete" && (state.selected_arms?.length ?? 0) >= 2 && (!state.judge || options.recoverJudge)) {
         process.stderr.write(options.recoverJudge
           ? "[finish] revalidating completed judge stages and continuing incomplete ones\n"
+          : state.evaluation?.mode === "reuse" ? "[finish] retaining imported evaluations; adapting historical tests and assessing fresh candidates\n"
           : "[finish] starting independent reversed-order source assessment passes in parallel\n");
         await judgeRunUnlocked(runDir, options.authFile, options.dockerBin, controller.signal, options.recoverJudge);
       }
