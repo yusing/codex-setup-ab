@@ -174,7 +174,8 @@ build_dir="$(./dist/codex-ab build-mekugi \
 ```
 
 This model-free command uses the comparison runner's bundled Mekugi source-exclusion rules. It
-excludes generated binaries, dependency `node_modules` trees, nested Claude worktrees,
+excludes generated binaries, dependency `node_modules` trees, nested linked Git worktrees
+(including `.worktrees` and `.claude/worktrees`),
 and Backpass state while retaining dirty source and compiled embedded assets. The
 compiled `mekugi` and `mekugi-exec` executables omit debug symbols.
 It retains a source archive, the archiver, build command/logs, immutable builder-image identity,

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { checked } from "./process";
@@ -21,13 +21,11 @@ export async function buildMekugi(options: { source: string; image: string; outp
   const parent = await realpath(options.outputParent ?? tmpdir());
   if (parent === source || relative(source, parent).split("/")[0] !== "..") throw new Error("build output must be outside the source tree");
   const directory = await mkdtemp(join(parent, "codex-ab-build-"));
-  await mkdir(join(directory, "source"));
   await writeFile(join(directory, "build_inputs.py"), MEKUGI_BUILD_INPUTS);
   process.stderr.write(`[build-directory] ${JSON.stringify(directory)}\n`);
   const archiverHash = await sha256(join(directory, "build_inputs.py"));
   process.stderr.write(`[build] freezing Mekugi source, including dirty files and compiled guidance: ${directory}\n`);
-  await checked(["python3", join(directory, "build_inputs.py"), source, join(directory, "source.tar"), join(directory, "source")], { signal: options.signal });
-  await rm(join(directory, "source"), { recursive: true });
+  await checked(["python3", join(directory, "build_inputs.py"), source, join(directory, "source.tar")], { signal: options.signal });
   const sourceHash = await sha256(join(directory, "source.tar"));
   const imageId = (await checked([docker, "image", "inspect", "--format", "{{.Id}}", options.image], { signal: options.signal })).stdout.trim();
   if (!/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new Error("build requires an immutable container image");
