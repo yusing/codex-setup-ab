@@ -59,11 +59,12 @@ test("incomplete usage cannot produce apparently complete differences or cost co
     },
   };
   const arms = [{ arm: "stock", usage }, { arm: "current", usage }];
-  const delta = performanceComparison(arms)!.current_minus_stock;
+  const comparison = performanceComparison(arms)!;
+  const delta = comparison.current_minus_stock;
   expect(delta.total_tokens).toBeNull();
   expect(delta.estimated_api_usd).toBeNull();
   expect(delta.by_role.root.total_tokens).toBeNull();
   expect(delta.by_role.children.estimated_api_usd).toBeNull();
   expect(Object.values(delta.cost_components)).toEqual([null, null, null, null]);
-  expect(performanceMarkdown(arms)).toContain("| stock | unknown | unknown | unknown | unknown |");
+  expect(performanceMarkdown(arms, comparison)).toContain("| stock | unknown | unknown | unknown | unknown |");
 });

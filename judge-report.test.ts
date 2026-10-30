@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { judgeRun, mappedWinner, validateJudgePass } from "./judge";
 import { buildReport, invalidateRun } from "./report";
+import { MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import { readState, sha256, writeState } from "./state";
 import type { ArmName, ArmResult, CommandEvidence, JudgeReport, RunState } from "./types";
 import type { PricingSnapshot } from "./usage";
@@ -108,6 +109,22 @@ test("Mekugi native cost is retained separately from captured list-price compari
   expect(direct.stock.usage.totals.estimated_api_usd).not.toBeNull();
 });
 
+test("separate report operations remeasure changed evidence and recorded prices", async () => {
+  const { run } = await fixtureRun();
+  const first = await Bun.file((await buildReport(run)).jsonPath).json();
+  await usageSession(join(run, "arms/current/home/ubuntu/.codex"), "current-agent", "gpt-6-astra", 60);
+  const state = await readState(run);
+  const prices = state.pricing as PricingSnapshot;
+  prices.models["gpt-6-astra"]!.prompt *= 2;
+  await writeState(run, state);
+  for (const options of [{ outputDirectory: join(root, "export") }, {}]) {
+    const refreshed = await Bun.file((await buildReport(run, options)).jsonPath).json();
+    expect(refreshed.arms.current.usage.totals.input_tokens).toBe(60);
+    expect(refreshed.arms.current.usage.totals.estimated_api_usd).toBeGreaterThan(first.arms.current.usage.totals.estimated_api_usd);
+    expect(refreshed.pricing).toEqual(prices);
+  }
+});
+
 test("report regeneration explains resource differences without another judge request", async () => {
   const { run } = await fixtureRun();
   const { jsonPath, markdownPath } = await buildReport(run);
@@ -135,7 +152,7 @@ test("validated journal evidence survives rollout accounting fallback for a capt
     "    assert path.read_text() == metrics['capture_marker']",
     "",
   ].join("\n"));
-  await file(join(run, reader), "# fixture reader\n");
+  await file(join(run, reader), MEKUGI_EXPORT_SCRIPTS["benchmark_jsonl.py"]);
   await file(join(run, capture), "matching raw capture\n");
   await file(join(run, metricsPath), JSON.stringify({
     schema: "fixture-validated", capture_marker: "matching raw capture\n",
@@ -710,13 +727,13 @@ for (const comparison of ["journal-compaction", "duplicate-output"] as const) {
       const state = await readState(run);
       state.comparison = comparison;
       state.auto_compact_limit = comparison === "journal-compaction" ? 4096 : undefined;
-      const validator = "artifacts/validator.py", reader = "artifacts/reader.py";
+      const validator = "artifacts/validator.py", reader = "artifacts/benchmark_jsonl.py";
       await file(join(run, validator), [
         "import json", "def load_json(path): return json.loads(path.read_text())",
         "def validate_snapshot(metrics, *_): assert metrics['schema'] == 'fixture-validated'",
         "def validate_raw_capture(path, metrics): assert path.read_text() == metrics['capture_marker']", "",
       ].join("\n"));
-      await file(join(run, reader), "# fixture reader\n");
+      await file(join(run, reader), MEKUGI_EXPORT_SCRIPTS["benchmark_jsonl.py"]);
       state.mekugi_exports_by_arm = {};
       for (const arm of ["stock", "current"] as const) {
         const capture = `artifacts/${arm}/mekugi/capture.jsonl`, metrics = `artifacts/${arm}/mekugi/metrics.json`;

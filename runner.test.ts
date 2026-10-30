@@ -14,6 +14,8 @@ import { gradeArm, preflightRun, runPair } from "./runner";
 import { prepareSemanticAssessment } from "./semantic-assessment";
 import { assertRecoverableJudge, judgeRun } from "./judge";
 import * as bundles from "./bundle";
+import * as usage from "./usage";
+import * as mekugi from "./mekugi";
 import * as containers from "./container";
 import { prepareEvaluatorCache } from "./semantic";
 import { buildReport } from "./report";
@@ -194,8 +196,20 @@ test("custom composition executes and blindly assesses every isolated arm, then 
     operatorLog += String(args[0]);
     return originalWrite.apply(process.stderr, args);
   } as typeof originalWrite;
-  try { await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path }); }
-  finally { process.stderr.write = originalWrite; }
+  const meter = spyOn(usage, "meterRollouts");
+  const validate = spyOn(mekugi, "validateMekugiExports");
+  try {
+    await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+    expect(validate.mock.calls.map(call => call[2]).sort()).toEqual(["arm-3", "current"]);
+    // Native accounting can fall back to rollout accounting, but neither is repeated.
+    const requests = meter.mock.calls.map(call => JSON.stringify([call[0], call[3] ?? "rollout"]));
+    expect(new Set(requests).size).toBe(requests.length);
+    expect(requests.length).toBeGreaterThanOrEqual(keys.length + (await readState(run)).judge!.usage_homes.length);
+  } finally {
+    process.stderr.write = originalWrite;
+    meter.mockRestore();
+    validate.mockRestore();
+  }
   expect(operatorLog).toContain("agent execution order: Setup 3 / Codex + Mekugi (setup " + revision.slice(0, 12) + ") first");
   const finished = await readState(run);
   expect(finished.selected_arms).toEqual(keys);
@@ -1877,10 +1891,14 @@ test("benchmark owns semantic judging, audit and checksummed bundle", async () =
     operatorLog += String(args[0]);
     return originalWrite.apply(process.stderr, args);
   } as typeof originalWrite;
+  const meter = spyOn(usage, "meterRollouts");
   try {
     await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path });
+    const completed = await readState(run);
+    expect(meter.mock.calls).toHaveLength(completed.selected_arms!.length + completed.judge!.usage_homes.length);
   } finally {
     process.stderr.write = originalWrite;
+    meter.mockRestore();
   }
   expect(operatorLog).toContain("A / Codex (minimal setup): agent started");
   expect(operatorLog).toContain("B / Codex (current-home setup): agent started");
@@ -1949,7 +1967,7 @@ test("failed agent execution preserves evidence and skips graders, judges and fi
   expect(await readFile(fake.log, "utf8")).toBe(log);
 });
 
-for (const fault of ["integrity", "cancel"] as const) {
+for (const fault of ["integrity", "cancel", "collection", "finalization"] as const) {
   test(`finishing ${fault} cannot leave a successful bundled outcome`, async () => {
     const run = await prepared();
     const state = await readState(run);
@@ -1964,14 +1982,32 @@ for (const fault of ["integrity", "cancel"] as const) {
       if (!injected && String(args[0]).includes("[finish] metering")) {
         injected = true;
         if (fault === "integrity") writeFileSync(join(run, "control/task.md"), "changed after execution");
-        else process.emit("SIGTERM");
+        else if (fault === "cancel") process.emit("SIGTERM");
       }
       return original.apply(process.stderr, args);
     } as typeof original;
+    const meter = spyOn(usage, "meterRollouts");
+    const collect = bundles.collectBundle;
+    const finalize = bundles.finalizeBundle;
+    const collectSpy = spyOn(bundles, "collectBundle").mockImplementation(async directory => {
+      if (fault !== "collection") return collect(directory);
+      await mkdir(join(directory, "reports/bundle"), { recursive: true });
+      throw new Error("partial collection failure");
+    });
+    let finalizations = 0;
+    const finalizeSpy = spyOn(bundles, "finalizeBundle").mockImplementation(async directory => {
+      if (fault === "finalization" && finalizations++ === 0) throw new Error("finalization failure");
+      return finalize(directory);
+    });
     try {
       await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow();
+      const completed = await readState(run);
+      expect(meter.mock.calls).toHaveLength(completed.selected_arms!.length + completed.judge!.usage_homes.length);
     } finally {
       process.stderr.write = original;
+      meter.mockRestore();
+      collectSpy.mockRestore();
+      finalizeSpy.mockRestore();
     }
     expect(injected).toBe(true);
     expect((await readState(run)).finishing?.status).toBe("failed");
@@ -1979,6 +2015,7 @@ for (const fault of ["integrity", "cancel"] as const) {
     const report = JSON.parse(await readFile(join(run, "reports/bundle/report.json"), "utf8"));
     expect(bundled.finishing.status).toBe("failed");
     expect(report.finishing.status).toBe("failed");
+    await bundles.verifyBundleManifest(join(run, "reports/bundle"), await sha256(join(run, "reports/bundle/MANIFEST.sha256")));
     expect(report.winner).toBe("none");
     if (fault === "integrity") expect(report.validity).toBe("invalid");
     expect(await Bun.file(join(run, ".operation-lock")).exists()).toBe(false);

@@ -3,7 +3,7 @@ import { cp, mkdtemp } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { runPairUnlocked, type RunOptions } from "./runner";
 import { assertRecoverableJudge, judgeRunUnlocked } from "./judge";
-import { buildReportUnlocked } from "./report";
+import { prepareReportUnlocked } from "./report";
 import { collectBundle, finalizeBundle } from "./bundle";
 import { armExecutionSucceeded, readState, withRunLock, writeState } from "./state";
 
@@ -58,9 +58,14 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
     } catch (error) {
       failure ??= error;
     }
+    let renderReport: Awaited<ReturnType<typeof prepareReportUnlocked>> | undefined;
+    const refreshReport = async () => {
+      renderReport ??= await prepareReportUnlocked(runDir);
+      await renderReport();
+    };
     try {
       process.stderr.write("[finish] metering root and child usage; generating report and interaction audit\n");
-      await buildReportUnlocked(runDir);
+      await refreshReport();
       await collectBundle(runDir);
     } catch (error) {
       failure ??= error;
@@ -73,7 +78,7 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
     };
     await writeState(runDir, current);
     try {
-      await buildReportUnlocked(runDir);
+      await refreshReport();
       await finalizeBundle(runDir);
       if (controller.signal.aborted && !failure) throw new Error("benchmark canceled during finalization");
     } catch (error) {
@@ -84,7 +89,7 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
       // A storage failure can make even the failure bundle unavailable.
       // Keep the authoritative state failed; never restart model execution.
       try {
-        await buildReportUnlocked(runDir);
+        await refreshReport();
         await finalizeBundle(runDir);
       } catch (finalError) {
         process.stderr.write(`[finish] unable to finalize failure bundle: ${String(finalError)}\n`);

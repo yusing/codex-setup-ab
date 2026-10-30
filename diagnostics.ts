@@ -175,7 +175,7 @@ export function performanceComparison(arms: Array<{ arm: string; usage: MeteredR
   };
 }
 
-export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRollouts }>, labels: Record<string, string> = {}): string {
+export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRollouts }>, comparison: PerformanceComparison | null, labels: Record<string, string> = {}): string {
   const number = (value: number | null | undefined, digits = 0) => value == null ? "unknown" : value.toFixed(digits);
   const roles = new Map(arms.map(({ arm, usage }) => [arm, logicalSessionRoles(usage)]));
   const roleLabel = (arm: string, session?: SessionDiagnostics) => {
@@ -196,7 +196,6 @@ export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRol
     return `| ${labels[arm] ?? arm} | ${number(sum("uncached_input_usd"), 6)} | ${number(sum("cached_input_usd"), 6)} | ${number(sum("cache_write_input_usd"), 6)} | ${number(sum("output_usd"), 6)} |`;
   });
   const providerArms = arms.filter(({ usage }) => usage.codex_visible_requests).map(({ arm }) => labels[arm] ?? arm).join(" and ");
-  const comparison = performanceComparison(arms);
   const delta = comparison?.current_minus_stock;
   const cacheRows = arms.flatMap(({ arm, usage }) => {
     const phases = cachePhases(usage);
