@@ -5,6 +5,20 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Preserve runtime namespaces while reading validated family and historical snapshots. */
+export function mekugiMetricRuntimes(metrics: unknown): Array<{ capture?: string; metrics: Record<string, unknown>; exchanges: unknown[] }> | null {
+  if (!isObject(metrics)) return null;
+  if (metrics.schema !== "mekugi.capture.family.v1") return Array.isArray(metrics.exchanges) ? [{ metrics, exchanges: metrics.exchanges }] : null;
+  if (!Array.isArray(metrics.runtimes) || !metrics.runtimes.length) return null;
+  const runtimes = [];
+  for (const runtime of metrics.runtimes) {
+    if (!isObject(runtime) || typeof runtime.capture !== "string" || !isObject(runtime.metrics)
+      || !Array.isArray(runtime.metrics.exchanges)) return null;
+    runtimes.push({ capture: runtime.capture, metrics: runtime.metrics, exchanges: runtime.metrics.exchanges });
+  }
+  return runtimes;
+}
+
 /**
  * Read one provider attempt's usage counts. A failed attempt without usage recorded
  * no tokens ("none"); any other attempt must record every count, or null is returned.

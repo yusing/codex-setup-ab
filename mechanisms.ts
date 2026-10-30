@@ -187,6 +187,27 @@ export interface MechanismArm {
   policy?: ReviewPolicy;
 }
 
+/** Separate runtime roots do not establish logical ancestry. Require one connected rollout tree. */
+export function logicalSessionRoles(usage: Pick<MeteredRollouts, "sessions">): Map<string, "root" | "child"> | null {
+  const sessions = new Map(usage.sessions.map(session => [session.thread_id, session]));
+  const roots = [...sessions.values()].filter(session => !session.parent_thread_id);
+  if (roots.length !== 1) return null;
+  const children = new Map<string, string[]>();
+  for (const session of sessions.values()) if (session.parent_thread_id) {
+    const siblings = children.get(session.parent_thread_id) ?? [];
+    siblings.push(session.thread_id);
+    children.set(session.parent_thread_id, siblings);
+  }
+  const roles = new Map<string, "root" | "child">([[roots[0]!.thread_id, "root"]]);
+  const pending = [roots[0]!.thread_id];
+  for (const thread of pending) for (const child of children.get(thread) ?? []) {
+    if (roles.has(child)) return null;
+    roles.set(child, "child");
+    pending.push(child);
+  }
+  return roles.size === sessions.size ? roles : null;
+}
+
 function reference(trace: WorkflowTrace, event: WorkflowEvent): string {
   return `${trace.source}:${event.line} (${event.timestamp}; ${event.kind})`;
 }
@@ -195,7 +216,9 @@ export function explainMechanisms(arms: MechanismArm[], labels: Record<string, s
   const findings: MechanismFinding[] = [];
   const unknowns = new Set<string>();
   for (const { arm, usage, policy } of arms) {
-    for (const root of usage.sessions.filter(session => !session.parent_thread_id)) {
+    const roles = logicalSessionRoles(usage);
+    if (!roles) unknowns.add(`${labels[arm] ?? arm}: logical root/child lineage is unavailable; role-specific workflow and request comparisons remain unknown.`);
+    for (const root of usage.sessions.filter(session => roles?.get(session.thread_id) === "root")) {
       const trace = root.workflow;
       if (!trace) continue;
       const children = usage.sessions.filter(session => session.parent_thread_id === root.thread_id && session.agent_role?.startsWith("review"));
@@ -259,7 +282,11 @@ export function explainMechanisms(arms: MechanismArm[], labels: Record<string, s
   const stock = arms.find(arm => arm.arm === "stock")?.usage;
   const current = arms.find(arm => arm.arm === "current")?.usage;
   if (stock?.complete && current?.complete) {
-    const roots = (usage: MeteredRollouts) => usage.agents.filter(agent => usage.sessions.some(session => session.thread_id === agent.thread_id && !session.parent_thread_id));
+    const roots = (usage: MeteredRollouts) => {
+      const roles = logicalSessionRoles(usage);
+      if (!roles || usage.agents.some(agent => !roles.has(agent.thread_id))) return [];
+      return usage.agents.filter(agent => roles?.get(agent.thread_id) === "root");
+    };
     const a = roots(stock), b = roots(current);
     if (a.length && b.length && [...a, ...b].every(agent => agent.request_count !== null)) {
       const requestsA = a.reduce((sum, agent) => sum + agent.request_count!, 0), requestsB = b.reduce((sum, agent) => sum + agent.request_count!, 0);

@@ -2,6 +2,7 @@ import { cp, copyFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "no
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { readState, sha256, writeState } from "./state";
 import type { ArmName } from "./types";
+import { mekugiRuntimeCaptures } from "./mekugi";
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue {
@@ -96,6 +97,13 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     if (!(await lstat(path)).isFile()) throw new Error(`artifact is not a regular file: ${source}`);
     await copyFile(path, join(destination, target));
   };
+  const copyRuntimeCaptures = async (capture: string, target: string) => {
+    for (const path of await mekugiRuntimeCaptures(runDir, capture)) {
+      const childTarget = target + path.slice(capture.length);
+      await mkdir(dirname(join(destination, childTarget)), { recursive: true, mode: 0o700 });
+      await copy(path, childTarget);
+    }
+  };
   await copy("run.json", "run.json");
   await copy("reports/report.json", "report.json");
   await copy("reports/report.md", "report.md");
@@ -104,6 +112,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   await copy(state.runtime_tools.current_setup_files, state.runtime_tools.current_setup_files.endsWith(".gz") ? "mise-files.json.gz" : "mise-files.json");
   await copy(state.task.path, "task.md");
   if (state.mekugi_exports) {
+    await copyRuntimeCaptures(state.mekugi_exports.capture, "mekugi-capture.jsonl");
     for (const [source, target] of [[state.mekugi_exports.capture, "mekugi-capture.jsonl"],
       [state.mekugi_exports.metrics, "mekugi-metrics.json"],
       [join(dirname(state.mekugi_exports.metrics), "token-metrics.md"), "mekugi-token-metrics.md"],
@@ -118,6 +127,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   }
   for (const [arm, files] of Object.entries(state.mekugi_exports_by_arm ?? {})) {
     if (!files) continue;
+    await copyRuntimeCaptures(files.capture, `${arm}-mekugi-capture.jsonl`);
     for (const [source, target] of [[files.capture, `${arm}-mekugi-capture.jsonl`],
       [files.metrics, `${arm}-mekugi-metrics.json`],
       [join(dirname(files.metrics), "token-metrics.md"), `${arm}-mekugi-token-metrics.md`]]) {

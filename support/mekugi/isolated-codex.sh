@@ -4,7 +4,11 @@ set -euo pipefail
 : "${MEKUGI_RUNTIME_DIR:?}"
 : "${MEKUGI_EXPORT_DIR:?}"
 export TMPDIR=/tmp
-port=${MEKUGI_BASE_URL#http://127.0.0.1:}
+case "$MEKUGI_BASE_URL" in
+ http://127.0.0.1:*) firewall=iptables; listener=127.0.0.1; port=${MEKUGI_BASE_URL#http://127.0.0.1:} ;;
+ http://\[::1\]:*) firewall=ip6tables; listener=::1; port=${MEKUGI_BASE_URL#http://\[::1\]:} ;;
+ *) echo 'executor: invalid private listener' >&2; exit 1 ;;
+esac
 port=${port%/v1}
 [[ $port =~ ^[0-9]+$ ]] || { echo 'executor: invalid private listener' >&2; exit 1; }
 executor_gid=$(stat -c %g .)
@@ -15,7 +19,9 @@ executor_gid=$(stat -c %g .)
 export MEKUGI_EXECUTOR_GID=$executor_gid
 # Socket ownership is the executor's immutable workspace group. The router keeps
 # group 0; Codex and all tool descendants use this non-root group with no capabilities.
-iptables -w -A OUTPUT -m owner --gid-owner "$executor_gid" -p tcp -d 127.0.0.1 --dport "$port" -j ACCEPT
+# Children have independent listeners but share the executor group. Insert their
+# allow rules ahead of the group's existing terminal rejects.
+"$firewall" -w -I OUTPUT 1 -m owner --gid-owner "$executor_gid" -p tcp -d "$listener" --dport "$port" -j ACCEPT
 iptables -w -A OUTPUT -m owner --gid-owner "$executor_gid" -j REJECT
 ip6tables -w -A OUTPUT -m owner --gid-owner "$executor_gid" -j REJECT
 # A private PID namespace hides the egress-capable parent. Private read-only

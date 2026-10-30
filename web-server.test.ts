@@ -379,6 +379,9 @@ test("setup output renders Markdown and activity without exposing event payloads
     { type: "item.updated", item: { id: "answer", type: "agent_message", text: "Partial answer" } },
     { type: "item.completed", item: { id: "answer", type: "agent_message", text: '# Result\n\n**All 26 tests passed.**\n\n- Concurrent writers\n- Rollback checks\n\n```sh\npython3 -m unittest discover -s tests -v\n```\n\n[Documentation](https://example.org/docs)\n\n| Check | Result |\n| --- | --- |\n| CLI | Passed |' } },
     { type: "item.completed", item: { type: "command_execution", exit_code: 2 } },
+    { method: "item/completed", params: { threadId: "hidden-headless-thread", item: {
+      id: "headless-answer", type: "agentMessage", text: "## Headless result\n\n**App-server output.**\n\n<script>alert(1)</script>",
+    } } },
     { type: "turn.failed", error: { message: "Process <failed>" } },
     { type: "unknown", private_payload: "hidden-payload" },
   ];
@@ -395,10 +398,43 @@ test("setup output renders Markdown and activity without exposing event payloads
   expect(rendered).toContain("<th>Check</th>");
   expect(rendered).toContain("Command completed (exit 0)");
   expect(rendered).toContain("Command failed (exit 2)");
+  expect(rendered).toContain("<h2>Headless result</h2>");
+  expect(rendered).toContain("<strong>App-server output.</strong>");
+  expect(rendered).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   expect(rendered).toContain("Process &lt;failed&gt;");
-  expect(rendered).not.toMatch(/hidden-|aggregated_output|item.completed|Partial answer|in progress/);
+  expect(rendered).not.toMatch(/hidden-|aggregated_output|item.completed|Partial answer|in progress|<script>/);
   expect(snapshot.live.current).toBe(raw);
   expect(await (await fetch(`${origin}/api/entries/${entry.id}/artifacts?path=artifacts/current/codex.jsonl`)).text()).toBe(raw);
+});
+
+test("headless setup output retains activity progress, outcomes, and escaped provider errors", async () => {
+  const directory = await pair();
+  const event = (method: string, item: object) => ({ method, params: { threadId: "hidden-thread", turnId: "hidden-turn", item } });
+  const events = [
+    event("item/started", { id: "cmd", type: "commandExecution", status: "inProgress", command: "hidden-command" }),
+    event("item/started", { id: "tool", type: "mcpToolCall", status: "inProgress", arguments: { value: "hidden-arguments" } }),
+    event("item/completed", { id: "files", type: "fileChange", changes: [{ path: "hidden-path" }] }),
+    event("item/completed", { id: "search", type: "webSearch", query: "hidden-query" }),
+    { method: "error", params: { error: { message: "provider <failed>", data: "hidden-error-data" } } },
+  ];
+  const path = join(directory, "artifacts/current/codex.jsonl");
+  await file(path, events.map(event => JSON.stringify(event)).join("\n") + "\n");
+  const entry = await attach(directory);
+  const snapshot = async () => (await (await fetch(`${origin}/api/entries/${entry.id}`)).json()).live_html.current as string;
+  const started = await snapshot();
+  expect(started).toContain("Command in progress");
+  expect(started).toContain("Tool call in progress");
+  expect(started).toContain("File changes completed");
+  expect(started).toContain("Web search completed");
+  expect(started).toContain("provider &lt;failed&gt;");
+  expect(started).not.toMatch(/hidden-|<failed>|commandExecution|mcpToolCall/);
+  events.push(event("item/completed", { id: "cmd", type: "commandExecution", status: "failed", exitCode: 2, aggregatedOutput: "hidden-output" }),
+    event("item/completed", { id: "tool", type: "mcpToolCall", status: "failed" }));
+  await file(path, events.map(event => JSON.stringify(event)).join("\n") + "\n");
+  const completed = await snapshot();
+  expect(completed).toContain("Command failed (exit 2)");
+  expect(completed).toContain("Tool call failed");
+  expect(completed).not.toMatch(/in progress|hidden-/);
 });
 
 test("Markdown output escapes active content and handles bounded and partial event records", async () => {

@@ -202,7 +202,8 @@ selector remains `duplicate-output` for retained evidence continuity.
 Add `--comparison same-setup --mekugi-source /path/to/matching/mekugi` to `prepare`. A (stored as `stock` for compatibility)
 and B (`current`) receive separate writable copies of the **same immutable current-home
 snapshot**, the same read-only installed tools, prompt, source, model, reasoning, service tier,
-and resource limits. A launches direct Codex through mise; B launches Mekugi through mise.
+and resource limits. A launches direct Codex through mise; B launches Mekugi's
+admitted headless adapter through mise, including server-owned Thread Control.
 A reviewer overlay, if selected, therefore applies to both arms. There is no treatment-only
 general workflow guidance. The default `stock-current` comparison is unchanged.
 
@@ -224,9 +225,18 @@ overridden through this option. The selected arguments and comparison identity a
 machine state and consolidated report. Preparation and preflight make no model requests.
 
 Supply `--mekugi-source DIR` (required for `same-setup`) to enable sanitized `--capture-output`
-and capturer-owned metrics exports. Mekugi now writes the metrics snapshot through `--debug`; the runner keeps its other, potentially private debug files inside the disposable agent container and copies only `metrics.json` and, when an older executable produced one, the root session's native usage report, `token-metrics.md`, into the run artifacts. The checkout is not read for validation scripts or binary provenance; use `--mekugi-build` for recorded source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and its hash.
+and capturer-owned metrics exports. Mekugi writes a metrics snapshot through
+`--debug` for each runtime. The runner retains these snapshots in a family
+envelope with their corresponding sanitized root and child captures, keeping
+other private debug files inside the disposable container. Older single-runtime
+exports and optional native usage reports remain readable. The checkout is not
+read for validation scripts or binary provenance; use `--mekugi-build` for recorded
+source-to-binary provenance. Preparation snapshots the runner-bundled analyzer and
+its hash.
 The report validates the capturer's schema, treatment identity and raw-record consistency with that analyzer, retaining missing or
-invalid telemetry explicitly. Capture calculations remain owned by Mekugi. When validation
+invalid telemetry explicitly. Each runtime is validated separately before family
+accounting; runtime-local sequence numbers do not establish a global request order.
+Capture calculations remain owned by Mekugi. When validation
 succeeds, a Mekugi arm's tokens and requests come from its provider attempts, excluding prewarm,
 because router-local tool re-sends and retries never reach the Codex rollout while Mekugi's native
 cost includes them. Direct Codex rollouts omit prewarm too. Without a valid capture, the report

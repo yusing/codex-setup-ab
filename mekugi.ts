@@ -1,6 +1,8 @@
+import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { exec } from "./process";
 import { sha256 } from "./state";
+import { MEKUGI_EXPORT_FAMILY, MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import type { ArmName, RunState } from "./types";
 
 const FLAGS = new Set(["ansi-faint", "shell-guard", "child-reply-summary", "deduplicate-output", "timeout", "stream-idle-timeout", "debug"]);
@@ -15,12 +17,31 @@ export const MEKUGI_METRICS_WRAPPER = 'temp_dir=$(mktemp -d "${MEKUGI_DEBUG_TMPD
   + 'while :; do wait "$child"; status=$?; kill -0 "$child" 2>/dev/null || break; done; '
   + 'set -- "$temp_dir"/mekugi-token-metrics-*.md; '
   + 'if [ "$#" -eq 1 ] && [ -f "$1" ]; then cp "$1" /mekugi-exports/token-metrics.md || exit 1; fi; '
-  + 'selected=; for metrics in "$temp_dir"/mekugi-debug-*/metrics.json "${XDG_STATE_HOME:-$HOME/.local/state}"/mekugi/debug/mekugi-debug-*/metrics.json; do '
-  + '[ -f "$metrics" ] || continue; '
-  + 'case "$metrics" in "$temp_dir"/*) ;; *) [ "$(readlink -f "${metrics%/metrics.json}/capture.jsonl")" = /mekugi-exports/capture.jsonl ] || continue ;; esac; '
-  + '[ -z "$selected" ] || { echo "Mekugi wrote ambiguous metrics" >&2; exit 1; }; selected=$metrics; '
-  + 'done; if [ -n "$selected" ]; then cp "$selected" /mekugi-exports/metrics.json || exit 1; '
-  + 'elif [ "$status" -eq 0 ]; then echo "Mekugi did not write metrics" >&2; exit 1; fi; exit "$status"';
+  + `python3 -c 'exec(${JSON.stringify(MEKUGI_EXPORT_FAMILY).replaceAll("'", "'\\''")})' "$temp_dir" "\${XDG_STATE_HOME:-$HOME/.local/state}" /mekugi-exports/capture.jsonl; `
+  + 'export_status=$?; if [ "$status" -eq 0 ] && [ "$export_status" -ne 0 ]; then exit "$export_status"; fi; exit "$status"';
+
+/** Enumerate only sanitized child captures, never the adjacent private AX/debug files. */
+export async function mekugiRuntimeCaptures(runDir: string, capture: string): Promise<string[]> {
+  const directory = `${capture}.runtimes`;
+  let entries;
+  try {
+    if (!(await lstat(join(runDir, directory))).isDirectory()) throw new Error("Mekugi runtime captures must be a directory");
+    entries = await readdir(join(runDir, directory), { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const paths: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) throw new Error("Mekugi runtime capture entry must be a directory");
+    const path = join(directory, entry.name, "capture.jsonl");
+    try {
+      if (!(await lstat(join(runDir, path))).isFile()) throw new Error("Mekugi runtime capture must be a regular file");
+      paths.push(path);
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  return paths.sort();
+}
 
 export function validateMekugiFlags(value: unknown): string[] {
   if (!Array.isArray(value) || value.some(flag => typeof flag !== "string")) throw new Error("Mekugi flags must be a string array");
@@ -80,8 +101,16 @@ export async function validateMekugiExports(runDir: string, state: RunState, arm
     "identity = json.loads(sys.argv[4])",
     "arm = 'control' if identity['mode'] == 'passthrough' else 'mekugi'",
     "config = {'benchmark_mode': 'paired'}",
-    "owner['validate_snapshot'](metrics, arm, config)",
-    "owner['validate_raw_capture'](Path(sys.argv[3]), metrics)",
+    "if 'validate_family' in owner:",
+    "    owner['validate_family'](metrics, Path(sys.argv[3]), arm, config)",
+    "else:",
+    // Historical analyzers still own their snapshot/raw schemas. Apply current
+    // inventory policy from the same analyzer source used by its standalone CLI.
+    "    inventory = {'__name__': 'capture_inventory'}",
+    `    exec(${JSON.stringify(MEKUGI_EXPORT_SCRIPTS["analyze_capture.py"])}, inventory)`,
+    "    inventory['family_runtimes'](metrics, Path(sys.argv[3]))",
+    "    owner['validate_snapshot'](metrics, arm, config)",
+    "    owner['validate_raw_capture'](Path(sys.argv[3]), metrics)",
     "print(json.dumps(metrics))",
   ].join("\n");
   const checked = await exec(["python3", "-c", program, join(runDir, paths.validator.path),

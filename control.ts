@@ -4,7 +4,7 @@ import { verifyBundleManifest } from "./bundle";
 import { armExecutionSucceeded, readState, sha256 } from "./state";
 import { meterRollouts, type PricingSnapshot, USAGE_KEYS } from "./usage";
 import { armNames, type ArmImport, type ArmResult, type RunState } from "./types";
-import { isPairedMekugiComparison } from "./mekugi";
+import { isPairedMekugiComparison, mekugiRuntimeCaptures } from "./mekugi";
 import { armLabels } from "./arm-labels";
 import { dependencyKey } from "./dependencies";
 import { historicalEvaluation } from "./evaluation";
@@ -102,11 +102,33 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
     const expected = rollouts[item.arm] ?? [];
     // Missing usage stays unknown; available rollout bytes must still match publication.
     if (expected.length) await verifyRollouts(artifactPath(evidenceRoot, join(home, "sessions")), expected);
-    plans.push({ item, sourceRun, source, bundle, hash, result: result!, evidenceRoot, evidenceState, evidenceArm, original, home, expected });
+    const exports = evidenceState.mekugi_exports_by_arm?.[evidenceArm] ?? evidenceState.mekugi_exports;
+    const exportCopies: Array<{ from: string; path: string }> = [];
+    if (exports) {
+      const prefix = source.mekugi_exports_by_arm?.[item.arm] ? `${item.arm}-` : "";
+      const published = (path: string, name: string) => prior ? join(prior.directory, path) : name;
+      const capture = published(exports.capture, `${prefix}mekugi-capture.jsonl`);
+      const retained = [
+        [capture, exports.capture],
+        [published(exports.metrics, `${prefix}mekugi-metrics.json`), exports.metrics],
+        [published(exports.validator.path, "analyze_capture.py"), exports.validator.path],
+        [published(exports.reader.path, "benchmark_jsonl.py"), exports.reader.path],
+        [published(join(dirname(exports.metrics), "token-metrics.md"), `${prefix}mekugi-token-metrics.md`), join(dirname(exports.metrics), "token-metrics.md")],
+        ...(await mekugiRuntimeCaptures(bundle, capture)).map(path => [path, exports.capture + path.slice(capture.length)]),
+      ];
+      for (const [retainedPath, path] of retained) {
+        const from = artifactPath(bundle, retainedPath!);
+        try {
+          if (!(await lstat(from)).isFile()) throw new Error("Imported export must be a regular file");
+          exportCopies.push({ from, path: path! });
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      }
+    }
+    plans.push({ item, sourceRun, source, bundle, hash, result: result!, evidenceRoot, evidenceState, evidenceArm, original, home, expected, exportCopies });
   }
   const results: Partial<Record<string, ArmResult>> = {};
   for (const plan of plans) {
-    const { item, sourceRun, source, bundle, hash, evidenceRoot, evidenceState, evidenceArm, original, home, expected } = plan;
+    const { item, sourceRun, source, bundle, hash, evidenceRoot, evidenceState, evidenceArm, original, home, expected, exportCopies } = plan;
     const directory = `evaluator/imported-arms/${item.target_arm}`;
     const root = join(runDir, directory);
     const captured: Array<{ path: string; sha256: string }> = [];
@@ -123,14 +145,13 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
     await copy(join(evidenceRoot, "run.json"), "run.json");
     await copy(artifactPath(evidenceRoot, original.stdout_path), original.stdout_path);
     await copy(artifactPath(evidenceRoot, original.stderr_path), original.stderr_path);
+    // Sanitized runtime evidence comes from the sealed publication, not mutable run exports.
+    for (const file of exportCopies) await copy(file.from, file.path);
     const paths = new Set<string>();
-    const exports = evidenceState.mekugi_exports_by_arm?.[evidenceArm] ?? evidenceState.mekugi_exports;
-    if (exports) for (const path of [exports.capture, exports.metrics, exports.validator.path, exports.reader.path]) paths.add(path);
     const setup = evidenceState.setup_revisions?.[evidenceArm]?.manifest ?? evidenceState.snapshot_manifest;
     paths.add(setup);
     paths.add(join(evidenceState.arms[evidenceArm].home_template, ".codex/AGENTS.md"));
     paths.add(join(evidenceState.arms[evidenceArm].home_template, ".codex/config.toml"));
-    if (exports) paths.add(join(dirname(exports.metrics), "token-metrics.md"));
     for (const path of paths) {
       try { await copy(artifactPath(evidenceRoot, path), path); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }

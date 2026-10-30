@@ -342,15 +342,21 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const debugStorage = mekugiArm && !protectedArm
     ? ["--tmpfs", `/home/ubuntu/.local/state/mekugi/debug:size=4g,mode=0700,uid=${state.operator.uid},gid=${state.operator.gid}`] : [];
   if (debugStorage.length) await mkdir(join(home, ".local/state/mekugi/debug"), { recursive: true, mode: 0o700 });
+  const executionArgs = grokArm ? [] : [
+    ...(mekugiArm ? ["headless", "--yolo", "-c", "bypass_hook_trust=true"] : ["exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace"]),
+    "--model", state.execution.model,
+    "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`,
+    "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`,
+    "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"',
+    ...(state.auto_compact_limit !== undefined ? ["-c", `model_auto_compact_token_limit=${state.auto_compact_limit}`] : []),
+    ...(mekugiArm ? [] : ["-"]),
+  ];
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
-    result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, ...(grokArm ? [] : ["-i"]), ...grokPath,
+    result = await runOwnedContainer({ docker, name, signal, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
       "-v", `${repository}:/workspace`, "-v", `${home}:/home/ubuntu`, ...await currentSetupMounts(runDir, state, arm, home), ...exportMount, ...grokTask, ...debugStorage,
       ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
-      imageRef(state), ...launcher, ...(grokArm ? [] : ["exec", "--json", "--color", "never", "--dangerously-bypass-hook-trust", "-C", "/workspace", "--model", state.execution.model,
-      "-c", `model_reasoning_effort=${JSON.stringify(state.execution.reasoning_effort)}`, "-c", `service_tier=${JSON.stringify(state.execution.service_tier)}`, "-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"',
-      ...(state.auto_compact_limit !== undefined ? ["-c", `model_auto_compact_token_limit=${state.auto_compact_limit}`] : []),
-      "-"])] });
+      imageRef(state), ...launcher, ...executionArgs] });
   } catch (error) {
     lifecycleError = error instanceof Error ? error.message : String(error);
     if (error instanceof OwnedContainerError && error.result) result = error.result;

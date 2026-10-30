@@ -487,6 +487,42 @@ describe("applyMekugiProviderUsage", () => {
     expect(metered.warnings.at(-1)).toContain("3 validated provider attempts, excluding prewarm; the Codex rollout recorded 2 requests and 300 input tokens");
   });
 
+  test("meters every runtime atomically while retaining local journal identities and unknown global ordering", () => {
+    const family = { schema: "mekugi.capture.family.v1", runtimes: ["root", "child"].map((thread, index) => ({
+      capture: index ? "capture.jsonl.runtimes/child/capture.jsonl" : "capture.jsonl",
+      metrics: { exchanges: [
+        { sequence: 1, request_kind: "compaction", thread_id: thread, compaction_answer: "router", provider_attempts: [] },
+        { sequence: 2, request_kind: "prewarm", thread_id: thread, provider_attempts: [attempt(5, 0, 0)] },
+        { sequence: 3, request_kind: "turn", thread_id: thread, provider_attempts: [attempt(100 + index, 20, 10)] },
+      ] },
+    })) };
+    const measured = () => {
+      const metered = rollout();
+      metered.sessions.push(sessionDiagnostics("child", [{ type: "session_meta", payload: { id: "child" } }], "child.jsonl"));
+      metered.agents.push({ ...metered.agents[0]!, thread_id: "child" });
+      return metered;
+    };
+    const metered = measured();
+    expect(applyMekugiProviderUsage(metered, family)).toBeNull();
+    expect(metered.agents.map(agent => [agent.thread_id, agent.request_count])).toEqual([["child", 1], ["root", 1]]);
+    expect(metered.totals).toMatchObject({ input_tokens: 201, output_tokens: 20, total_tokens: 221 });
+    expect(metered.cache_usage).toMatchObject({ requests: null, prewarm: { request_count: 2, usage: { input_tokens: 10 } } });
+    expect(metered.journal?.post_compaction).toBeNull();
+    expect(metered.journal?.compactions.map(event => [event.sequence, event.runtime_capture])).toEqual([
+      [1, "capture.jsonl"], [1, "capture.jsonl.runtimes/child/capture.jsonl"],
+    ]);
+    for (const fault of ["missing", "unknown", "incomplete"]) {
+      const changed = structuredClone(family);
+      if (fault === "missing") changed.runtimes.pop();
+      else if (fault === "unknown") changed.runtimes[1]!.metrics.exchanges[2]!.thread_id = "unknown";
+      else delete (changed.runtimes[1]!.metrics.exchanges[2]!.provider_attempts[0] as { usage?: unknown }).usage;
+      const fallback = measured();
+      const before = structuredClone(fallback);
+      expect(applyMekugiProviderUsage(fallback, changed)).toBeString();
+      expect(fallback).toEqual(before);
+    }
+  });
+
   test("uses only explicitly complete v7 provider usage and preserves rollout fallback", () => {
     for (const complete of [true, false]) {
       const metered = rollout();

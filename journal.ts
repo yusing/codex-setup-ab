@@ -1,4 +1,4 @@
-import { providerAttemptUsage } from "./provider-usage";
+import { mekugiMetricRuntimes, providerAttemptUsage } from "./provider-usage";
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue {
@@ -9,6 +9,7 @@ function count(value: unknown): number | null {
 }
 
 export interface CompactionEvidence {
+  runtime_capture?: string;
   sequence: number | null;
   thread_id: string | null;
   answer: "router" | "provider" | "unknown";
@@ -55,6 +56,25 @@ function providerCost(exchange: RecordValue): { provider_requests: number | null
 
 /** Read validated exports without inventing provenance for historical snapshots. */
 export function journalEvidence(metrics: unknown): JournalEvidence | null {
+  if (record(metrics).schema === "mekugi.capture.family.v1") {
+    const runtimes = mekugiMetricRuntimes(metrics);
+    if (!runtimes) return null;
+    const evidence = runtimes.map(runtime => ({ capture: runtime.capture!, journal: journalEvidence(runtime.metrics)! }));
+    const threads: Record<string, JournalThreadCounters> = Object.create(null);
+    const duplicated = new Set<string>();
+    for (const { journal } of evidence) for (const [thread, counters] of Object.entries(journal.threads)) {
+      if (Object.hasOwn(threads, thread)) duplicated.add(thread);
+      threads[thread] = counters;
+    }
+    for (const thread of duplicated) delete threads[thread];
+    return {
+      compactions_known: evidence.every(({ journal }) => journal.compactions_known),
+      compactions: evidence.flatMap(({ capture, journal }) => journal.compactions.map(event => ({ ...event, runtime_capture: capture }))),
+      // Runtime-local sequences do not establish a family-wide first compaction.
+      post_compaction: evidence.length === 1 ? evidence[0]!.journal.post_compaction : null,
+      threads,
+    };
+  }
   const exchanges = record(metrics).exchanges;
   if (!Array.isArray(exchanges)) return null;
   const entries = exchanges.map(record);

@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
 import { journalEvidence } from "./journal";
-import { providerAttemptUsage } from "./provider-usage";
+import { mekugiMetricRuntimes, providerAttemptUsage } from "./provider-usage";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_TIMEOUT_MS = 8_000;
@@ -441,16 +441,19 @@ export async function readMekugiNativeCost(stdoutPath: string, tokenMetricsPath?
  * kept, or null after replacement.
  */
 export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unknown, pricing?: PricingSnapshot): string | null {
-  const exchanges = isObject(metrics) && Array.isArray(metrics.exchanges) ? metrics.exchanges : null;
-  if (!exchanges) return "validated metrics have no provider exchanges";
+  const runtimes = mekugiMetricRuntimes(metrics);
+  if (!runtimes) return "validated metrics have no provider exchanges";
+  const exchanges = runtimes.flatMap(runtime => runtime.exchanges);
   const groups = new Map<string, { threadId: string; model: string; requests: Usage[] }>();
   const cacheRequests: NonNullable<MeteredRollouts["cache_usage"]>["requests"] = [];
   const prewarm = { usage: emptyUsage(), request_count: 0, estimated_api_usd: pricing ? 0 as number | null : null };
   let kindsKnown = true;
   // Snapshots retain completion order, which can differ from request order.
-  const orderKnown = exchanges.every(exchange => isObject(exchange) && Number.isSafeInteger(exchange.sequence) && Number(exchange.sequence) >= 0)
-    && new Set(exchanges.map(exchange => exchange.sequence)).size === exchanges.length;
-  const ordered = orderKnown ? [...exchanges].sort((a, b) => a.sequence - b.sequence) : exchanges;
+  const orderKnown = runtimes.length === 1
+    && exchanges.every(exchange => isObject(exchange) && Number.isSafeInteger(exchange.sequence) && Number(exchange.sequence) >= 0)
+    && new Set(exchanges.map(exchange => isObject(exchange) ? exchange.sequence : undefined)).size === exchanges.length;
+  const ordered = orderKnown ? [...exchanges].sort((a, b) =>
+    Number(isObject(a) ? a.sequence : 0) - Number(isObject(b) ? b.sequence : 0)) : exchanges;
   for (const exchange of ordered) {
     if (!isObject(exchange)) return "a provider exchange is not an object";
     const warming = exchange.request_kind === "prewarm";

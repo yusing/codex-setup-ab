@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { controlIdentity, importArms, importControl } from "./control";
-import { writeBundleManifest } from "./bundle";
+import { collectBundle, writeBundleManifest } from "./bundle";
 import { runPair } from "./runner";
 import type { CriteriaContract } from "./semantic";
 import { meterRollouts, type PricingSnapshot } from "./usage";
@@ -269,6 +269,68 @@ test("general arm import can select a retained imported arm without its original
   const again = await importArms(target, state2, [{ target_arm: "stock", run_dir: f.targetRun, arm: "current" }]);
   expect(again.stock?.grade).toBeUndefined();
   expect(await readFile(join(target, state2.arm_attempts!.stock!.codex_home, "sessions/rollout.jsonl"), "utf8")).toBe(rollout);
+});
+
+test("bundle and repeated arm import retain sanitized runtime families without adjacent private files", async () => {
+  const f = await publishedControl();
+  const exports = { capture: "arms/stock/exports/capture.jsonl", metrics: "arms/stock/exports/metrics.json",
+    validator: { path: "runtime/analyze_capture.py", sha256: "" }, reader: { path: "runtime/benchmark_jsonl.py", sha256: "" } };
+  f.source.mekugi_exports_by_arm = { stock: exports };
+  const child = `${exports.capture}.runtimes/child/capture.jsonl`;
+  const family = JSON.stringify({ schema: "mekugi.capture.family.v1", runtimes: [
+    { capture: "capture.jsonl", metrics: { exchanges: [{ sequence: 1 }] } },
+    { capture: "capture.jsonl.runtimes/child/capture.jsonl", metrics: { exchanges: [{ sequence: 1 }] } },
+  ] });
+  for (const [path, value] of [
+    [f.source.snapshot_manifest, "{}"], [f.source.runtime_tools.current_setup_files, "{}"], [f.source.task.path, "task"],
+    ["reports/report.md", "report"], ["reports/report.json", JSON.stringify({ validity: "valid" })],
+    [exports.capture, "sanitized root\n"], [child, "sanitized child\n"],
+    [exports.metrics, family], [exports.validator.path, "# validator"], [exports.reader.path, "# reader"],
+    ["arms/stock/exports/capture.jsonl.runtimes/child/reads.jsonl", "private AX evidence"],
+  ]) {
+    await mkdir(dirname(join(f.sourceRun, path!)), { recursive: true });
+    await writeFile(join(f.sourceRun, path!), value!);
+  }
+  f.source.current_snapshot.manifest_sha256 = await sha256(join(f.sourceRun, f.source.snapshot_manifest));
+  f.source.runtime_tools.current_setup_files_sha256 = await sha256(join(f.sourceRun, f.source.runtime_tools.current_setup_files));
+  f.source.task.sha256 = await sha256(join(f.sourceRun, f.source.task.path));
+  f.treatment.task.sha256 = f.source.task.sha256;
+  exports.validator.sha256 = await sha256(join(f.sourceRun, exports.validator.path));
+  exports.reader.sha256 = await sha256(join(f.sourceRun, exports.reader.path));
+  await writeState(f.sourceRun, f.source);
+  await collectBundle(f.sourceRun);
+  await writeBundleManifest(f.bundle);
+  expect(await readFile(join(f.bundle, "stock-mekugi-capture.jsonl.runtimes/child/capture.jsonl"), "utf8")).toBe("sanitized child\n");
+  expect(await Bun.file(join(f.bundle, "stock-mekugi-capture.jsonl.runtimes/child/reads.jsonl")).exists()).toBe(false);
+  await writeFile(join(f.sourceRun, child), "modified after publication");
+  await writeFile(join(f.sourceRun, exports.metrics), "modified after publication");
+  const imported = await importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]);
+  const retained = f.treatment.imported_arms!.current!;
+  expect(await readFile(join(f.targetRun, retained.directory, child), "utf8")).toBe("sanitized child\n");
+  expect(retained.files.map(file => file.path).filter(path => path.endsWith("reads.jsonl"))).toEqual([]);
+  f.treatment.results = imported;
+  f.treatment.selected_arms = ["current"];
+  // Publish the imported evidence using the ordinary bundle collector.
+  for (const path of [f.treatment.snapshot_manifest, f.treatment.runtime_tools.current_setup_files, f.treatment.task.path]) {
+    await mkdir(dirname(join(f.targetRun, path)), { recursive: true });
+    await writeFile(join(f.targetRun, path), await readFile(join(f.sourceRun, path)));
+  }
+  f.treatment.current_snapshot.manifest_sha256 = f.source.current_snapshot.manifest_sha256;
+  f.treatment.runtime_tools.current_setup_files_sha256 = f.source.runtime_tools.current_setup_files_sha256;
+  await mkdir(join(f.targetRun, "reports"), { recursive: true });
+  await writeFile(join(f.targetRun, "reports/report.json"), JSON.stringify({ validity: "valid" }));
+  await writeFile(join(f.targetRun, "reports/report.md"), "report");
+  await writeState(f.targetRun, f.treatment);
+  const targetBundle = await collectBundle(f.targetRun);
+  await writeBundleManifest(targetBundle);
+  expect(await readFile(join(targetBundle, retained.directory, child), "utf8")).toBe("sanitized child\n");
+  await rm(f.sourceRun, { recursive: true });
+  const next = state("family-reimport");
+  next.task.sha256 = f.treatment.task.sha256;
+  const nextRoot = join(f.directory, "reimport");
+  await importArms(nextRoot, next, [{ target_arm: "stock", run_dir: f.targetRun, arm: "current" }]);
+  expect(await readFile(join(nextRoot, next.imported_arms!.stock!.directory, child), "utf8")).toBe("sanitized child\n");
+  expect(await readFile(join(nextRoot, next.imported_arms!.stock!.directory, exports.metrics), "utf8")).toBe(family);
 });
 
 test("imports allow launcher-only image rebuilds and reject changed dependency controls", async () => {

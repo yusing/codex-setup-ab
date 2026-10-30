@@ -408,6 +408,56 @@ def validate_raw_capture(path: Path, metrics: dict[str, Any]) -> set[int]:
     return result_usage_excluded
 
 
+def validate_family(family: dict[str, Any], capture: Path, arm: str, config: dict[str, Any]) -> None:
+    for path, metrics in family_runtimes(family, capture):
+        validate_snapshot(metrics, arm, config)
+        validate_raw_capture(path, metrics)
+
+
+def family_runtimes(family: dict[str, Any], capture: Path) -> list[tuple[Path, dict[str, Any]]]:
+    directory = capture.with_name(capture.name + ".runtimes")
+    if family.get("schema") != "mekugi.capture.family.v1":
+        if directory.is_symlink() or (directory.exists() and (not directory.is_dir() or any(directory.iterdir()))):
+            raise ValueError("runtime captures require a family snapshot")
+        return [(capture, family)]
+    runtimes = family.get("runtimes")
+    if not isinstance(runtimes, list) or not runtimes:
+        raise ValueError("family is missing runtimes")
+    # The root comes first. Resolve its namespace against the supplied capture,
+    # including the arm-prefixed filenames used by portable evidence bundles.
+    root_name = runtimes[0].get("capture") if isinstance(runtimes[0], dict) else None
+    if not isinstance(root_name, str) or Path(root_name).name != root_name:
+        raise ValueError("family is missing its root capture")
+    expected = {root_name}
+    if directory.is_symlink() or directory.exists():
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("invalid runtime capture directory")
+        for runtime in directory.iterdir():
+            path = runtime / "capture.jsonl"
+            if runtime.is_symlink() or not runtime.is_dir() or path.is_symlink() or not path.is_file():
+                raise ValueError("runtime is missing its capture")
+            expected.add(str(Path(root_name + ".runtimes") / runtime.name / "capture.jsonl"))
+    seen: set[str] = set()
+    selected = []
+    for runtime in runtimes:
+        if not isinstance(runtime, dict):
+            raise ValueError("invalid runtime snapshot")
+        name = runtime.get("capture")
+        if not isinstance(name, str) or name not in expected or name in seen:
+            raise ValueError("runtime capture is unmatched or duplicated")
+        seen.add(name)
+        metrics = runtime.get("metrics")
+        if not isinstance(metrics, dict):
+            raise ValueError("runtime is missing its metrics")
+        path = capture if name == root_name else directory / Path(name).parent.name / "capture.jsonl"
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("runtime capture is not a regular file")
+        selected.append((path, metrics))
+    if seen != expected:
+        raise ValueError("family is missing a runtime snapshot")
+    return selected
+
+
 def validate_snapshot(metrics: dict[str, Any], arm: str, config: dict[str, Any]) -> None:
     if metrics.get("schema") not in {"mekugi.capture.metrics.v6", "mekugi.capture.metrics.v7"}:
         raise ValueError("metrics have an unsupported schema")
@@ -670,7 +720,8 @@ def validate_results(
 
     observed = {thread: empty_usage() for thread in expected}
     seen: set[str] = set()
-    for exchange in sorted(metrics["exchanges"], key=lambda item: item["sequence"]):
+    # Result reconciliation only sums usage by thread; it needs no request ordering.
+    for exchange in metrics["exchanges"]:
         thread = exchange.get("thread_id")
         if thread not in allowed_models:
             raise ValueError(f"capture contains an unproved thread {thread}")
@@ -704,9 +755,19 @@ def main() -> int:
         config_path = args.results.parent / "benchmark-config.json"
         config = load_json(config_path) if config_path.exists() else {}
         metrics = load_json(args.metrics)
-        validate_snapshot(metrics, args.arm, config)
-        result_usage_excluded = validate_raw_capture(args.capture, metrics)
-        runs = validate_results(metrics, args.results, args.arm, result_usage_excluded)
+        runtimes = family_runtimes(metrics, args.capture)
+        exchanges = []
+        records = logical_requests = provider_attempts = 0
+        for path, snapshot in runtimes:
+            validate_snapshot(snapshot, args.arm, config)
+            excluded = validate_raw_capture(path, snapshot)
+            # Apply exclusions in each runtime's namespace before combining thread usage.
+            exchanges.extend(dict(exchange, usage=None) if exchange["sequence"] in excluded else exchange
+                             for exchange in snapshot["exchanges"])
+            records += snapshot["capture"]["records"]
+            logical_requests += snapshot["requests"]["logical"]
+            provider_attempts += snapshot["requests"]["provider_attempts"]
+        runs = validate_results({"exchanges": exchanges}, args.results, args.arm)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         parser.error(str(error))
     json.dump(
@@ -714,9 +775,9 @@ def main() -> int:
             "schema": "mekugi.benchmark.capture-validation.v1",
             "arm": args.arm,
             "runs": runs,
-            "records": metrics["capture"]["records"],
-            "logical_requests": metrics["requests"]["logical"],
-            "provider_attempts": metrics["requests"]["provider_attempts"],
+            "records": records,
+            "logical_requests": logical_requests,
+            "provider_attempts": provider_attempts,
             "valid": True,
         },
         sys.stdout,

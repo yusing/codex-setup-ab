@@ -84,7 +84,7 @@ liveTest("metrics wrapper forwards Docker termination and exports the final snap
   const root = await mkdtemp(join(tmpdir(), "codex-ab-mekugi-signal-"));
   const name = `codex-ab-export-signal-${crypto.randomUUID()}`;
   try {
-    const child = `trap 'mkdir -p "$TMPDIR/mekugi-debug-signal"; echo shutdown > "$TMPDIR/mekugi-debug-signal/metrics.json"; exit 143' TERM; echo READY; while :; do sleep 1; done`;
+    const child = `trap 'mkdir -p "$TMPDIR/mekugi-debug-signal"; echo shutdown > "$TMPDIR/mekugi-debug-signal/metrics.json"; ln -s /mekugi-exports/capture.jsonl "$TMPDIR/mekugi-debug-signal/capture.jsonl"; exit 143' TERM; echo READY; while :; do sleep 1; done`;
     const started = await exec(["docker", "run", "-d", "--name", name, "--network", "none", "-v", `${root}:/mekugi-exports`,
       process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "sh", "-c", child]);
     expect(started.exitCode, started.stderr).toBe(0);
@@ -107,6 +107,7 @@ liveTest("metrics wrapper preserves the task on Codex stdin", async () => {
   const root = await mkdtemp(join(tmpdir(), "task-stdin-"));
   try {
     const child = 'IFS= read -r task; mkdir -p "$TMPDIR/mekugi-debug-stdin"; echo "{}" > "$TMPDIR/mekugi-debug-stdin/metrics.json"; '
+      + 'ln -s /mekugi-exports/capture.jsonl "$TMPDIR/mekugi-debug-stdin/capture.jsonl"; '
       + 'echo "Router session usage" > "$TMPDIR/mekugi-token-metrics-root.md"; printf "%s\\n" "$TMPDIR" >&2; printf "%s" "$task"';
     const result = await runOwnedContainer({
       docker: "docker", name: `codex-ab-export-stdin-${process.pid}`, timeoutMs: 30000, stdin: "benchmark task\n",

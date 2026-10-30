@@ -2,13 +2,16 @@
 """Offline reconciliation checks for sanitized capturer v6 and v7 exports."""
 import copy
 import json
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 
 sys.dont_write_bytecode = True
-from analyze_capture import validate_raw_capture, validate_snapshot
+from analyze_capture import validate_family, validate_raw_capture, validate_snapshot
+from export_family import export_family
 
 
 TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "uncached_input_tokens",
@@ -106,6 +109,89 @@ def fixture(states=("complete",), throughput=False, local=False, version=7):
 
 
 class CaptureV7Tests(unittest.TestCase):
+    def test_runtime_family_keeps_local_sequences_and_rejects_partial_evidence(self):
+        with tempfile.TemporaryDirectory(prefix="capture-family-") as directory:
+            root = Path(directory)
+            capture = root / "capture.jsonl"
+            state = root / "state"
+            snapshots = []
+            for name, path in [("root", capture), ("child", root / "capture.jsonl.runtimes/child/capture.jsonl")]:
+                metrics, records = fixture()
+                metrics["exchanges"][0]["thread_id"] = name
+                for record in records:
+                    record["thread_id"] = name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("".join(json.dumps(record) + "\n" for record in records))
+                debug = state / f"mekugi/debug/mekugi-debug-{name}"
+                debug.mkdir(parents=True)
+                (debug / "capture.jsonl").symlink_to(path)
+                (debug / "metrics.json").write_text(json.dumps(metrics))
+                snapshots.append(metrics)
+            # Debug artifacts outside this exact family must never enter the export.
+            unrelated = root / "mekugi-debug-unrelated"
+            unrelated.mkdir()
+            (unrelated / "metrics.json").write_text("private unrelated data")
+            (unrelated / "capture.jsonl").symlink_to(root / "other.jsonl")
+            export_family(root, state, capture)
+            family = json.loads((root / "metrics.json").read_text())
+            self.assertEqual([item["metrics"] for item in family["runtimes"]], snapshots)
+            validate_family(family, capture, "mekugi", {})
+            alias = root / "stock-mekugi-capture.jsonl"
+            shutil.copyfile(capture, alias)
+            shutil.copytree(root / "capture.jsonl.runtimes", root / "stock-mekugi-capture.jsonl.runtimes")
+            validate_family(family, alias, "mekugi", {})
+            results = root / "results.jsonl"
+            results.write_text("".join(json.dumps({"arm": "mekugi", "model": "gpt-6-luna", "agent": {
+                "thread_id": name, "usage": {"input_tokens": 100, "cached_input_tokens": 20,
+                                              "output_tokens": 10, "reasoning_output_tokens": 2}}}) + "\n"
+                                       for name in ("root", "child")))
+            checked = subprocess.run([sys.executable, "-B", str(Path(__file__).with_name("analyze_capture.py")),
+                                      str(root / "metrics.json"), str(alias), str(results), "mekugi"],
+                                     capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertEqual(json.loads(checked.stdout), {
+                "schema": "mekugi.benchmark.capture-validation.v1", "arm": "mekugi", "runs": 2,
+                "records": 4, "logical_requests": 2, "provider_attempts": 2, "valid": True})
+            historical = root / "historical.json"
+            historical.write_text(json.dumps(snapshots[0]))
+            checked = subprocess.run([sys.executable, "-B", str(Path(__file__).with_name("analyze_capture.py")),
+                                      str(historical), str(capture), str(results), "mekugi"], capture_output=True, text=True)
+            self.assertNotEqual(checked.returncode, 0)
+            self.assertIn("runtime captures require a family snapshot", checked.stderr)
+            with self.assertRaisesRegex(ValueError, "runtime captures require a family snapshot"):
+                validate_family(snapshots[0], capture, "mekugi", {})
+            for fault in ("missing", "duplicate", "unmatched", "damaged", "health"):
+                changed = copy.deepcopy(family)
+                if fault == "missing":
+                    changed["runtimes"].pop()
+                elif fault == "duplicate":
+                    changed["runtimes"].append(changed["runtimes"][1])
+                elif fault == "unmatched":
+                    changed["runtimes"][1]["capture"] = "../outside/capture.jsonl"
+                elif fault == "damaged":
+                    changed["runtimes"][1]["metrics"]["usage"]["input_tokens"] += 1
+                else:
+                    changed["runtimes"][1]["metrics"]["capture"]["write_errors"] = 1
+                with self.subTest(fault=fault), self.assertRaises(ValueError):
+                    validate_family(changed, capture, "mekugi", {})
+            child_debug = state / "mekugi/debug/mekugi-debug-child"
+            duplicate = state / "mekugi/debug/mekugi-debug-duplicate"
+            shutil.copytree(child_debug, duplicate, symlinks=True)
+            with self.assertRaisesRegex(ValueError, "ambiguous metrics"):
+                export_family(root, state, capture)
+            shutil.rmtree(duplicate)
+            (child_debug / "metrics.json").unlink()
+            with self.assertRaisesRegex(ValueError, "missing its metrics"):
+                export_family(root, state, capture)
+            child_capture = root / "capture.jsonl.runtimes/child/capture.jsonl"
+            child_capture.unlink()
+            with self.assertRaisesRegex(ValueError, "missing its capture"):
+                validate_family(family, capture, "mekugi", {})
+            child_capture.parent.rmdir()
+            (child_debug / "metrics.json").write_text(json.dumps(snapshots[1]))
+            with self.assertRaisesRegex(ValueError, "missing its capture"):
+                export_family(root, state, capture)
+
     def validate(self, metrics, records):
         validate_snapshot(metrics, "mekugi", {})
         return self.validate_raw(metrics, records)

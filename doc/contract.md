@@ -118,6 +118,17 @@ After reviewing `run.json`, start the model runs explicitly:
 
 The command first checks that the base image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. Preflight builds or reuses a `codex-ab-deps:<key>` Docker image keyed by the base image ID, source commit/tree, submodules, preparation command, pinned Mekugi hash when selected, and operator identity. Dependency caches and the frozen Mekugi executable enter the final image, not source, homes, credentials, or evaluator controls. Mekugi startup checks and execution use that immutable image without a host Mekugi bind mount. Fresh containers share immutable image layers and get private copy-on-write storage; dependency changes made by an agent never reach another arm, another run, or grading. Each arm materializes its generated workspace assets offline using those cached dependencies. Grading uses the original dependency image offline with a read-only root and a shared immutable build-cache seed; cache writes and execution workspaces stay temporary. Evaluator cache reuse is described in the blind-judge section. Protected execution uses temporary Go build output because its root filesystem is read-only. Ignored `node_modules` directories created during preparation are removed after successful patch capture, unless an agent has tracked them or redirected their path; removed paths are recorded per arm. They can be regenerated from the shared image. The first image build may download dependencies; later matching runs reuse it. Build logs are saved under `artifacts/dependencies.stdout` and `artifacts/dependencies.stderr`, and the immutable dependency image ID is recorded in `run.json`. Keep that image available for later grading or trial runs. Docker images and build cache occupy shared disk space outside the corpus; this does not impose a 1 GB cap on source, tool snapshots, or captured logs. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both arms with the selected model and reasoning effort (defaults: gpt-6-astra and medium) concurrently with identical two-CPU and 4 GiB limits. Preflight and the final launch check verify copied controls, both setup templates, the host installed-tool file manifest, the selected Bun executable, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
 
+Mekugi arms use `mekugi codex headless --yolo` (without `codex` for third-party
+routing), admitting Main and its children through Mekugi's server-owned runtime.
+Stock arms retain `codex exec --json`. Both receive the task on stdin and run in
+the isolated workspace with the same model, reasoning, service tier, and resource
+controls. Both explicitly bypass hook trust for the captured setup; Mekugi carries
+that override through admitted thread startup, independently of `--yolo`.
+Mekugi stdout retains host JSONL and its final logical-completion event;
+intermediate host turns for coordination do not finish the arm. Select a build
+with admitted headless support; older retained measurements keep their original
+execution path and are historical evidence, not reruns of this path.
+
 Milestones go to stderr. Timeout or cancellation stops session-created containers and preserves available patches and results. A nonzero agent exit, timeout, cancellation, lifecycle failure, or collection failure leaves execution partial and skips grading and judge inference. The run command exits nonzero after metering and retaining its report bundle. Direct judging and finishing also require successful agent execution, including for older runs marked complete. Runs never restart or resume: prepare a new directory for another attempt. Completed historical reports remain readable.
 
 Semantic assessment requires every configured arm. Historical singleton reports remain descriptive records, not paired comparisons.
@@ -181,7 +192,7 @@ For Mekugi's original router task, use the `mekugi` profile and explicitly selec
 
 Add `--protect-mekugi` to preparation with `--mekugi-source` or `--mekugi-build`, and use an image
 rebuilt from the current Dockerfile. Preflight uses the runner-bundled isolation scripts snapshotted into the run:
-a real router starts, its executor can reach only that listener, capture/runtime mounts are
+a real router starts, its executor can reach only assigned family listeners, capture/runtime mounts are
 read-only, and private Go compilation and Code Mode execution must work without inference.
 The check copies the captured B home and workspace, mounts its exact mise tool store, and uses
 the same `mise exec -- mekugi` launch path. The wrapper's underlying Codex executable must also
@@ -363,6 +374,9 @@ not call a model, assume every extra action is waste, or estimate counterfactual
 The programmatic performance section separates root and child usage, model-request counts,
 mean and peak input context, uncached/cached/output cost components, and matched outer-tool
 blocking spans. JSON includes these diagnostics and current-minus-stock role/cost differences.
+Independent Mekugi runtimes retain host metadata without logical role ancestry.
+When that lineage is unavailable, family totals remain measured and role-specific
+comparisons remain unknown rather than charging every runtime to Main.
 Request IDs are deduplicated before accounting; cumulative-only usage leaves request counts
 unknown. Cache diagnostics split the first metered request per thread from later requests,
 including captured retries, and show their contributions to the uncached-input gap. Model

@@ -1,12 +1,15 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { validateMekugiExports, validateMekugiFlags } from "./mekugi";
+import { MEKUGI_METRICS_WRAPPER, validateMekugiExports, validateMekugiFlags } from "./mekugi";
 import { exec } from "./process";
 import { sha256 } from "./state";
 import { MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import type { RunState } from "./types";
+import { applyMekugiProviderUsage, meterRollouts, type PricingSnapshot } from "./usage";
+import { performanceComparison, performanceMarkdown } from "./diagnostics";
+import { explainMechanisms } from "./mechanisms";
 
 for (const flag of [
   "--timeout=30s", "--stream-idle-timeout=2m", "--debug", "--debug=true",
@@ -63,6 +66,119 @@ test("Mekugi rejects inputs other than string arrays", () => {
 test("capture analyzer retains v6 and reconciles sanitized v7 evidence offline", async () => {
   const result = await exec(["python3", "support/mekugi/capture_v7_test.py"]);
   expect(result.exitCode, result.stderr).toBe(0);
+});
+
+test("wrapper exports the root and child without conflating sequence 1, and preserves stdin and exit status", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mekugi-family-wrapper-"));
+  try {
+    await mkdir(join(root, "private"));
+    const prepared = await exec(["python3", "-c", `
+import json, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+sys.path.insert(0, 'support/mekugi')
+from capture_v7_test import fixture
+root = Path(sys.argv[1])
+for name, path in [('root', root / 'capture.jsonl'), ('child', root / 'capture.jsonl.runtimes/child/capture.jsonl')]:
+    metrics, records = fixture()
+    metrics['exchanges'][0]['thread_id'] = name
+    for record in records: record['thread_id'] = name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(''.join(json.dumps(record) + '\\n' for record in records))
+    debug = root / ('state/mekugi/debug/mekugi-debug-' + name)
+    debug.mkdir(parents=True)
+    (debug / 'capture.jsonl').symlink_to(path)
+    (debug / 'metrics.json').write_text(json.dumps(metrics))
+`, root]);
+    expect(prepared.exitCode, prepared.stderr).toBe(0);
+    const wrapper = MEKUGI_METRICS_WRAPPER.replaceAll("/mekugi-exports", root);
+    const environment = { MEKUGI_DEBUG_TMPDIR: join(root, "private"), XDG_STATE_HOME: join(root, "state") };
+    const result = await exec(["sh", "-c", wrapper, "fixture", "sh", "-c", 'IFS= read -r task; printf "%s" "$task"'],
+      { env: environment, stdin: "benchmark task\n" });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe("benchmark task");
+    const metrics = JSON.parse(await readFile(join(root, "metrics.json"), "utf8"));
+    expect(metrics.schema).toBe("mekugi.capture.family.v1");
+    expect(metrics.runtimes.map((runtime: { metrics: { exchanges: Array<{ sequence: number }> } }) => runtime.metrics.exchanges[0]!.sequence)).toEqual([1, 1]);
+    for (const name of ["analyze_capture.py", "benchmark_jsonl.py"] as const) await writeFile(join(root, name), MEKUGI_EXPORT_SCRIPTS[name]);
+    const state = { mekugi_exports: { metrics: "metrics.json", capture: "capture.jsonl",
+      validator: { path: "analyze_capture.py", sha256: await sha256(join(root, "analyze_capture.py")) },
+      reader: { path: "benchmark_jsonl.py", sha256: await sha256(join(root, "benchmark_jsonl.py")) },
+    } } as RunState;
+    expect(await validateMekugiExports(root, state)).toMatchObject({ status: "valid", metrics });
+    const pricing: PricingSnapshot = { source: "fallback", fetched_at: "2026-01-01", catalog_url: "fixture", assumptions: [], warnings: [],
+      models: { "gpt-6-luna": { model_id: "gpt-6-luna", source: "fixture", prompt: 1, completion: 1, input_cache_read: 0, input_cache_write: 0, overrides: [] } } };
+    for (const [home, thread, input, output] of [["hosted", "root", 100, 10], ["hosted", "child", 100, 10], ["direct", "root", 10, 1]] as const) {
+      await mkdir(join(root, home, "sessions"), { recursive: true });
+      await writeFile(join(root, home, "sessions", `${thread}.jsonl`), [
+        { type: "session_meta", payload: { id: thread, source: "exec" } },
+        { type: "turn_context", payload: { model: "gpt-6-luna" } },
+        { type: "token_usage_record", payload: { response_id: thread, usage: {
+          input_tokens: input, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: output, reasoning_output_tokens: 0, total_tokens: input + output,
+        } } },
+      ].map(event => JSON.stringify(event)).join("\n") + "\n");
+    }
+    const hosted = await meterRollouts(join(root, "hosted"), pricing);
+    const direct = await meterRollouts(join(root, "direct"), pricing);
+    expect(applyMekugiProviderUsage(hosted, metrics, pricing)).toBeNull();
+    expect(hosted.complete).toBe(true);
+    expect(hosted.totals.total_tokens).toBe(220);
+    const arms = [{ arm: "stock", usage: direct }, { arm: "current", usage: hosted }];
+    const delta = performanceComparison(arms)!.current_minus_stock;
+    expect(delta.total_tokens).toBe(209);
+    expect(delta.estimated_api_usd).toBe(169);
+    expect(delta.by_role).toEqual({ root: { total_tokens: null, estimated_api_usd: null }, children: { total_tokens: null, estimated_api_usd: null } });
+    expect(performanceMarkdown(arms)).toContain("current / unknown role");
+    expect(performanceMarkdown(arms)).not.toContain("current / root");
+    const mechanisms = explainMechanisms(arms);
+    expect(mechanisms.findings.some(finding => finding.mechanism === "Extra workflow turns repeatedly process accumulated context")).toBe(false);
+    expect(mechanisms.unknowns.some(unknown => unknown.includes("logical root/child lineage is unavailable"))).toBe(true);
+    const childPath = join(root, "hosted/sessions/child.jsonl");
+    const childEvents = (await readFile(childPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    childEvents[0].payload.source = { subagent: { thread_spawn: { parent_thread_id: "root" } } };
+    childEvents[0].payload.agent_role = "review-correctness";
+    await writeFile(childPath, childEvents.map(event => JSON.stringify(event)).join("\n") + "\n");
+    const linked = await meterRollouts(join(root, "hosted"), pricing);
+    expect(applyMekugiProviderUsage(linked, metrics, pricing)).toBeNull();
+    const knownArms = [{ arm: "stock", usage: direct }, { arm: "current", usage: linked }];
+    const byRole = performanceComparison(knownArms)!.current_minus_stock.by_role;
+    expect([byRole.root.total_tokens, byRole.children.total_tokens]).toEqual([99, 110]);
+    expect(performanceMarkdown(knownArms)).toContain("current / review-correctness");
+    await writeFile(join(root, "metrics.json"), JSON.stringify(metrics.runtimes[0].metrics));
+    expect(await validateMekugiExports(root, state)).toMatchObject({ status: "unavailable", reason: expect.stringContaining("runtime captures require a family snapshot") });
+    await writeFile(join(root, "metrics.json"), JSON.stringify(metrics));
+    const failed = await exec(["sh", "-c", wrapper, "fixture", "sh", "-c", "exit 7"], { env: environment });
+    expect(failed.exitCode).toBe(7);
+    await rm(join(root, "state/mekugi/debug/mekugi-debug-child/metrics.json"));
+    const unavailable = await exec(["sh", "-c", wrapper, "fixture", "sh", "-c", "exit 9"], { env: environment });
+    expect(unavailable.exitCode).toBe(9);
+    expect(unavailable.stderr).toContain("missing its metrics");
+    expect(await Bun.file(join(root, "metrics.json")).exists()).toBe(false);
+    expect((await validateMekugiExports(root, state)).status).toBe("unavailable");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("wrapper forwards termination and waits for the final runtime snapshot", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mekugi-wrapper-signal-"));
+  try {
+    const debug = join(root, "state/mekugi/debug/mekugi-debug-root");
+    await mkdir(debug, { recursive: true });
+    await mkdir(join(root, "private"));
+    await writeFile(join(root, "capture.jsonl"), "");
+    await symlink(join(root, "capture.jsonl"), join(debug, "capture.jsonl"));
+    const child = 'trap \'printf "{}" > "$XDG_STATE_HOME/mekugi/debug/mekugi-debug-root/metrics.json"; exit 143\' TERM; '
+      + 'printf READY; while :; do sleep 0.05; done';
+    const process = Bun.spawn(["sh", "-c", MEKUGI_METRICS_WRAPPER.replaceAll("/mekugi-exports", root), "fixture", "sh", "-c", child], {
+      env: { ...globalThis.process.env, XDG_STATE_HOME: join(root, "state"), MEKUGI_DEBUG_TMPDIR: join(root, "private") },
+      stdout: "pipe", stderr: "pipe",
+    });
+    const output = process.stdout.getReader();
+    expect(new TextDecoder().decode((await output.read()).value)).toBe("READY");
+    process.kill("SIGTERM");
+    expect(await process.exited).toBe(143);
+    expect(await readFile(join(root, "metrics.json"), "utf8")).toBe("{}");
+    output.releaseLock();
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("bundled analyzer reconciles only configured measured threads and provider usage", async () => {
@@ -139,7 +255,7 @@ for (const modified of ["validator", "reader"] as const) {
       const validator = join(root, "analyze_capture.py");
       const reader = join(root, "benchmark_jsonl.py");
       await writeFile(validator, "import json\ndef load_json(path): return json.loads(path.read_text())\ndef validate_snapshot(*args): pass\ndef validate_raw_capture(*args): pass\n");
-      await writeFile(reader, "");
+      await writeFile(reader, MEKUGI_EXPORT_SCRIPTS["benchmark_jsonl.py"]);
       await writeFile(join(root, "metrics.json"), JSON.stringify({ exchanges: [] }));
       await writeFile(join(root, "capture.jsonl"), "");
       const state = {
@@ -151,6 +267,12 @@ for (const modified of ["validator", "reader"] as const) {
         } },
       } as RunState;
       expect((await validateMekugiExports(root, state, "current")).status).toBe("valid");
+      const children = join(root, "capture.jsonl.runtimes");
+      await mkdir(join(children, "unmatched"), { recursive: true });
+      expect(await validateMekugiExports(root, state, "current")).toMatchObject({
+        status: "unavailable", reason: expect.stringContaining("runtime captures require a family snapshot"),
+      });
+      await rm(children, { recursive: true });
       await writeFile(modified === "validator" ? validator : reader, "# changed identity\n");
       expect(await validateMekugiExports(root, state, "current")).toEqual({
         status: "unavailable", reason: "Mekugi validator identity changed.",

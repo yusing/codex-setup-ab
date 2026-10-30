@@ -1,5 +1,5 @@
 import type { CostComponents, MeteredRollouts } from "./usage";
-import { workflowTrace, type WorkflowTrace } from "./mechanisms";
+import { logicalSessionRoles, workflowTrace, type WorkflowTrace } from "./mechanisms";
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue {
@@ -118,8 +118,9 @@ export function performanceComparison(arms: Array<{ arm: string; usage: MeteredR
   const sumCost = (usage: MeteredRollouts, key: typeof costs[number]): number | null =>
     !usage.complete ? null : usage.agents.reduce<number | null>((total, agent) =>
       total === null || agent.cost_components[key] === null ? null : total + agent.cost_components[key]!, 0);
-  const roles = (usage: MeteredRollouts, child: boolean) => usage.agents.filter(agent =>
-    Boolean(usage.sessions.find(session => session.thread_id === agent.thread_id)?.parent_thread_id) === child);
+  const stockRoles = logicalSessionRoles(stock), currentRoles = logicalSessionRoles(current);
+  const rolesKnown = stockRoles !== null && currentRoles !== null
+    && stock.agents.every(agent => stockRoles.has(agent.thread_id)) && current.agents.every(agent => currentRoles.has(agent.thread_id));
   const delta = (a: number | null, b: number | null) => a === null || b === null ? null : b - a;
   const componentDelta = (key: keyof CostComponents): number | null => delta(sumCost(stock, key), sumCost(current, key));
   const stockCache = cachePhases(stock);
@@ -140,14 +141,15 @@ export function performanceComparison(arms: Array<{ arm: string; usage: MeteredR
         later_requests: delta(stockCache?.later_requests.uncached ?? null, currentCache?.later_requests.uncached ?? null),
       },
       by_role: Object.fromEntries([false, true].map(child => {
-        const a = roles(stock, child);
-        const b = roles(current, child);
+        const role = child ? "child" : "root";
+        const a = stock.agents.filter(agent => stockRoles?.get(agent.thread_id) === role);
+        const b = current.agents.filter(agent => currentRoles?.get(agent.thread_id) === role);
         const cost = (agents: typeof a) => agents.reduce<number | null>((total, agent) =>
           total === null || agent.estimated_api_usd === null ? null : total + agent.estimated_api_usd, 0);
         const tokens = (agents: typeof a) => agents.reduce((total, agent) => total + agent.usage.total_tokens, 0);
         return [child ? "children" : "root", {
-          total_tokens: stock.complete && current.complete ? tokens(b) - tokens(a) : null,
-          estimated_api_usd: stock.complete && current.complete ? delta(cost(a), cost(b)) : null,
+          total_tokens: stock.complete && current.complete && rolesKnown ? tokens(b) - tokens(a) : null,
+          estimated_api_usd: stock.complete && current.complete && rolesKnown ? delta(cost(a), cost(b)) : null,
         }];
       })) as Record<"root" | "children", UsageDifference>,
     },
@@ -156,13 +158,18 @@ export function performanceComparison(arms: Array<{ arm: string; usage: MeteredR
 
 export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRollouts }>, labels: Record<string, string> = {}): string {
   const number = (value: number | null | undefined, digits = 0) => value == null ? "unknown" : value.toFixed(digits);
+  const roles = new Map(arms.map(({ arm, usage }) => [arm, logicalSessionRoles(usage)]));
+  const roleLabel = (arm: string, session?: SessionDiagnostics) => {
+    const role = session && roles.get(arm)?.get(session.thread_id);
+    return role === "root" ? "root" : role === "child" ? session?.agent_role ?? "child" : "unknown role";
+  };
   const rows = arms.flatMap(({ arm, usage }) => usage.agents.map(agent => {
     const session = usage.sessions.find(item => item.thread_id === agent.thread_id);
-    const role = session?.parent_thread_id ? session.agent_role ?? "child" : "root";
+    const role = roleLabel(arm, session);
     return `| ${labels[arm] ?? arm} / ${role} | ${number(agent.request_count)} | ${number(agent.mean_input_tokens)} | ${number(agent.max_input_tokens)} | ${agent.usage.input_tokens - agent.usage.cached_input_tokens} | ${agent.usage.cached_input_tokens} | ${agent.usage.output_tokens} | ${number(agent.estimated_api_usd, 6)} |`;
   }));
   const timing = arms.flatMap(({ arm, usage }) => usage.sessions.map(session =>
-    `- ${labels[arm] ?? arm} / ${session.parent_thread_id ? session.agent_role ?? "child" : "root"}: ${session.tool_calls} outer tool calls; ${number(session.observed_tool_blocked_seconds, 3)} observed blocked seconds; timing ${session.tool_timing_complete ? "complete" : "partial"}. By tool: ${Object.entries(session.observed_tool_seconds_by_name).map(([name, seconds]) => `${name}=${number(seconds, 3)}s`).join(", ") || "none"}.`));
+    `- ${labels[arm] ?? arm} / ${roleLabel(arm, session)}: ${session.tool_calls} outer tool calls; ${number(session.observed_tool_blocked_seconds, 3)} observed blocked seconds; timing ${session.tool_timing_complete ? "complete" : "partial"}. By tool: ${Object.entries(session.observed_tool_seconds_by_name).map(([name, seconds]) => `${name}=${number(seconds, 3)}s`).join(", ") || "none"}.`));
   const componentRows = arms.map(({ arm, usage }) => {
     const sum = (key: keyof NonNullable<typeof usage.agents[number]["cost_components"]>): number | null =>
       !usage.complete || usage.agents.length === 0 || usage.agents.some(agent => agent.cost_components[key] == null) ? null

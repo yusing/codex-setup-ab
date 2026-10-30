@@ -75,8 +75,8 @@ finally:
 for path in (os.environ["MEKUGI_RUNTIME_DIR"], os.environ["XDG_STATE_HOME"], os.environ["MEKUGI_EXPORT_DIR"], "/agent-issue-reports", "/root/.config"):
     if not os.statvfs(path).f_flag & os.ST_RDONLY:
         fail("trusted artifacts are writable")
-# The configured listener must work. Everything else, including other loopback
-# ports, IPv6, DNS and other containers, is blocked by the OUTPUT policy.
+# Assigned family listeners must work. Other destinations, including unassigned
+# loopback ports, external IPv4/IPv6, DNS and other containers, remain blocked.
 with urlopen(os.environ["MEKUGI_BASE_URL"].removesuffix("/v1") + "/api/metrics", timeout=5) as response:
     if response.status != 200:
         fail("assigned router is unavailable")
