@@ -134,6 +134,8 @@ independent work, keep coupled work together, coordinate edits, and integrate
 and validate the result. It is unchecked by default, leaving existing delegation
 behavior unchanged. It does not change trial arm scheduling or host guidance.
 
+Codex comparisons support `gpt-6-astra`, `gpt-6.1-sol`, and `gpt-6.1-terra`, selectable through the Web UI or `--model`. Terra cost estimates use its [published token rates](https://developers.openai.com/api/docs/models/gpt-6.1-terra), including cached input, cache writes, and long-context pricing.
+
 `stock-mekugi` accepts an optional shared `--auto-compact-limit N`, applied
 to both arms; other comparisons reject it. Compaction remains Codex-owned.
 

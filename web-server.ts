@@ -1,5 +1,5 @@
 import { parseArmImports } from "./control";
-import { REASONING_EFFORTS } from "./types";
+import { CODEX_MODELS, REASONING_EFFORTS } from "./types";
 import { constants, watch, type FSWatcher } from "node:fs";
 import { Duplex } from "node:stream";
 import { ReadableStream as NodeReadableStream } from "node:stream/web";
@@ -612,7 +612,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         if (req.method === "GET" && url.pathname === "/app.js") return new Response(javascript, { headers: { "Content-Type": "text/javascript", "Cache-Control": "no-cache" } });
         if (req.method === "GET" && url.pathname === "/fonts/ibm-plex-sans-latin.woff2") return new Response(Bun.file(interfaceFont), { headers: { "Content-Type": "font/woff2" } });
         if (req.method === "GET" && url.pathname === "/fonts/OFL.txt") return new Response(fontLicense, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
-        if (req.method === "GET" && url.pathname === "/api/config") return json({ token, defaults, reasoningEfforts: REASONING_EFFORTS, comparisons: COMPARISONS, tasks: taskCatalog(), commands: COMMAND_OPTIONS, actions: ACTIONS, paidCommands: [...PAID] });
+        if (req.method === "GET" && url.pathname === "/api/config") return json({ token, defaults, models: CODEX_MODELS, reasoningEfforts: REASONING_EFFORTS, comparisons: COMPARISONS, tasks: taskCatalog(), commands: COMMAND_OPTIONS, actions: ACTIONS, paidCommands: [...PAID] });
         if (req.method === "GET" && url.pathname === "/api/entries") return json(entryList());
         if (req.method === "GET" && url.pathname === "/api/events") {
           const id = url.searchParams.get("entry");

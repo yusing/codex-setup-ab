@@ -87,6 +87,14 @@ esac
   }
 }
 
+test("Terra launch preserves model and reasoning selection", () => {
+  for (const effort of ["none", "high", "max"]) {
+    const config = launchConfiguration({ preset: "stock-mekugi", model: "gpt-6.1-terra", "reasoning-effort": effort });
+    expect(config.prepare.model).toBe("gpt-6.1-terra");
+    expect(config.prepare.reasoningEffort).toBe(effort);
+  }
+});
+
 test("agent launch selects current task, model, launcher, reasoning and Mekugi flags", () => {
   const skill = launchConfiguration({ preset: "stock-mekugi", task: "skills-mgr-agent-cli", model: "gpt-6.1-sol", "reasoning-effort": "low", "mekugi-flags": '["--deduplicate-output=false"]' });
   expect(skill.prepare.taskPackPath).toEndWith("tasks/skills-mgr-agent-cli/manifest.json");

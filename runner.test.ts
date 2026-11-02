@@ -612,18 +612,18 @@ test("stock-mekugi shares configured tools while isolating current-home guidance
     reviewTreatment: join(root, "unused-treatment"), mekugiSource: captureSource })).rejects.toThrow("does not accept");
 });
 
-test("stock-mekugi accepts an explicit Sol/high pair with the selected model", async () => {
-  const captureSource = join(root, "sol-stock-mekugi-capture-source");
+test.each(["gpt-6.1-sol", "gpt-6.1-terra"] as const)("stock-mekugi accepts an explicit %s/high pair with the selected model", async (model) => {
+  const captureSource = join(root, `${model}-stock-mekugi-capture-source`);
   await mkdir(captureSource, { recursive: true });
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
-    model: "gpt-6.1-sol", reasoningEffort: "high", mekugiSource: captureSource });
+    model, reasoningEffort: "high", mekugiSource: captureSource });
   const state = await readState(run);
-  expect(state.execution).toMatchObject({ model: "gpt-6.1-sol", reasoning_effort: "high", current_launcher: "mekugi" });
+  expect(state.execution).toMatchObject({ model, reasoning_effort: "high", current_launcher: "mekugi" });
   for (const template of [state.arms.stock.home_template, state.arms.current.home_template]) {
     const config = await readFile(join(run, template, ".codex/config.toml"), "utf8");
-    expect(config).toContain('model = "gpt-6.1-sol"');
+    expect(config).toContain(`model = "${model}"`);
     expect(config).toContain('model_reasoning_effort = "high"');
   }
   await verifyPreparedInputs(run, state);

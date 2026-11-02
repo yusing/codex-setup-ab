@@ -2,7 +2,7 @@ import { parseArmImports } from "./control";
 import { evaluationPlan } from "./evaluation";
 import { readState, writeState } from "./state";
 import { compositionKeys, parseArmConfigurations } from "./arms";
-import { REASONING_EFFORTS } from "./types";
+import { CODEX_MODELS, REASONING_EFFORTS } from "./types";
 import { access, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -73,7 +73,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   const order = stringOption(o, "order", "concurrent");
   if (order !== "concurrent" && order !== "alternating") throw new Error("Order must be concurrent or alternating");
   const model = comparison === "codex-mekugi-grok" ? "grok:grok-4.7" : stringOption(o, "model", "gpt-6-astra");
-  if (comparison !== "codex-mekugi-grok" && !["gpt-6-astra", "gpt-6.1-sol"].includes(model)) throw new Error("Model must be gpt-6-astra or gpt-6.1-sol");
+  if (comparison !== "codex-mekugi-grok" && !CODEX_MODELS.some(item => item.id === model)) throw new Error(`Model must be ${CODEX_MODELS.map(item => item.id).join(", ")}`);
   const effort = stringOption(o, "reasoning-effort", comparison === "codex-mekugi-grok" ? "high" : task.effort);
   if (!REASONING_EFFORTS.some(value => value === effort)) throw new Error(`Choose reasoning effort: ${REASONING_EFFORTS.join(", ")}`);
   // Apply the same Codex context limit to both minimal launcher arms.

@@ -5,7 +5,12 @@ export type CodexLauncher = "codex" | "mekugi" | "grok";
 export type Comparison = "custom" | "stock-current" | "setup-commits" | "same-setup" | "stock-mekugi" | "codex-mekugi-grok" | "journal-compaction" | "duplicate-output";
 export const REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
-export type BenchmarkModel = "gpt-6-astra" | "gpt-6.1-sol" | "grok:grok-4.7";
+export const CODEX_MODELS = [
+  { id: "gpt-6-astra", title: "GPT-6 Astra" },
+  { id: "gpt-6.1-sol", title: "GPT-6.1 Sol" },
+  { id: "gpt-6.1-terra", title: "GPT-6.1 Terra" },
+] as const;
+export type BenchmarkModel = typeof CODEX_MODELS[number]["id"] | "grok:grok-4.7";
 
 export type ArmOrder = "concurrent" | "stock-first" | "current-first";
 

@@ -62,7 +62,7 @@ Import options (launch or run):
 
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
-  --model NAME          gpt-6-astra (default) or gpt-6.1-sol for Codex comparisons
+  --model NAME          gpt-6-astra (default), gpt-6.1-sol, or gpt-6.1-terra for Codex comparisons
   --parallel-work       ask both agents to delegate independent work in parallel
   --reasoning-effort N   ${REASONING_EFFORTS.join(", ")}
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)

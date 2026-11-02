@@ -1,5 +1,5 @@
 import { compositionKeys, parseArmConfigurations } from "./arms";
-import { REASONING_EFFORTS, armNames } from "./types";
+import { CODEX_MODELS, REASONING_EFFORTS, armNames } from "./types";
 import { appendFile, chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
@@ -678,7 +678,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const grokSha256 = grokBinary ? await sha256(grokBinary) : undefined;
   const grokVersion = grokBinary ? (await checked([grokBinary, "--version"])).stdout.trim() : undefined;
   if (grokBinary && !/^grok \d+\.\d+\.\d+/.test(grokVersion ?? "")) throw new Error(`unexpected Grok version: ${grokVersion}`);
-  if (options.model && !["gpt-6-astra", "gpt-6.1-sol"].includes(options.model) && !(grokComparison && options.model === "grok:grok-4.7")) throw new Error("unsupported benchmark model");
+  if (options.model && !CODEX_MODELS.some(item => item.id === options.model) && !(grokComparison && options.model === "grok:grok-4.7")) throw new Error("unsupported benchmark model");
   const model: BenchmarkModel = grokComparison ? "grok:grok-4.7" : options.model ?? "gpt-6-astra";
   if (options.model && grokComparison && options.model !== model) throw new Error(`${comparison} uses ${model}`);
   const codeModeHostSha256 = await sha256(codeModeHost);

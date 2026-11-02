@@ -342,19 +342,20 @@ describe("meterRollouts", () => {
   });
 });
 
-test("meters GPT-6.1 Sol cache discounts and long-context rates per request", async () => {
+test.each(["gpt-6.1-sol", "gpt-6.1-terra"])("meters %s cache discounts and long-context rates per request", async (modelId) => {
   const home = await homeWith({
     "sol.jsonl": [
-      meta("sol"), model("gpt-6.1-sol"),
+      meta("sol"), model(modelId),
       record("sol", "short", usage({ input_tokens: 272_000, cached_input_tokens: 200_000,
         output_tokens: 100, total_tokens: 272_100 })),
       record("sol", "long", usage({ input_tokens: 300_000, cached_input_tokens: 200_000,
         output_tokens: 100, total_tokens: 300_100 })),
     ],
   });
-  const result = await meterRollouts(home, pricing({ "gpt-6.1-sol": embeddedFallbackPricing("gpt-6.1-sol") }));
+  const result = await meterRollouts(home, pricing({ [modelId]: embeddedFallbackPricing(modelId) }));
   expect(result.complete).toBe(true);
-  expect(result.totals.estimated_api_usd).toBeCloseTo(0.144 + 0.02 + 0.001 + 0.4 + 0.04 + 0.0015, 10);
+  const solCost = 0.144 + 0.02 + 0.001 + 0.4 + 0.04 + 0.0015;
+  expect(result.totals.estimated_api_usd).toBeCloseTo(modelId === "gpt-6.1-terra" ? solCost / 2 : solCost, 10);
 });
 
 test("fetchPricing falls back with exact stock rates and serializable provenance", async () => {
@@ -372,6 +373,15 @@ test("fetchPricing falls back with exact stock rates and serializable provenance
       min_prompt_tokens: 272_000, min_prompt_tokens_exclusive: true,
       prompt: 4 / 1_000_000, completion: 15 / 1_000_000,
       input_cache_read: 0.2 / 1_000_000, input_cache_write: 5 / 1_000_000,
+    });
+    expect(snapshot.models["gpt-6.1-terra"]).toMatchObject({
+      prompt: 1 / 1_000_000, completion: 5 / 1_000_000,
+      input_cache_read: 0.05 / 1_000_000, input_cache_write: 1.25 / 1_000_000,
+    });
+    expect(snapshot.models["gpt-6.1-terra"].overrides[0]).toMatchObject({
+      min_prompt_tokens: 272_000, min_prompt_tokens_exclusive: true,
+      prompt: 2 / 1_000_000, completion: 7.5 / 1_000_000,
+      input_cache_read: 0.1 / 1_000_000, input_cache_write: 2.5 / 1_000_000,
     });
     expect(snapshot.models["gpt-6-sol"].completion).toBe(10 / 1_000_000);
     expect(snapshot.models["gpt-6-sol"].overrides[0].completion).toBe(15 / 1_000_000);

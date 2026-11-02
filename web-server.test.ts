@@ -949,6 +949,13 @@ test("web Mekugi settings serialize unchecked and checked toggles and omit disab
   } });
 });
 
+test("the workbench model catalog offers Terra through launch configuration", async () => {
+  const config = await (await fetch(origin + "/api/config")).json();
+  const terra = config.models.find((model: { id: string }) => model.id === "gpt-6.1-terra");
+  expect(terra).toMatchObject({ title: "GPT-6.1 Terra" });
+  expect(launchConfiguration({ ...config.defaults, model: terra.id }).prepare.model).toBe(terra.id);
+});
+
 test("a pinned-repository task check announces the clone without starting work", async () => {
   const codex = join(root, "codex");
   for (const path of [codex, join(root, "codex-code-mode-host")]) {
