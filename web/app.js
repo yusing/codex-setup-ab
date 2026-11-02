@@ -674,7 +674,7 @@ function resultContent(data) {
   if (data.entry.kind === "build") return "<h2>Captured build</h2><p class='hint'>Build identity is available when capture succeeds. Failed builds retain their available logs.</p>" + disclosure("Build identity and retained outcome", state);
   if (!data.state && !data.report || state.status === "prepared" && !Object.keys(obj(state.results)).length) {
     const status = obj(data.entry.job).status;
-    const stopped = ["failed", "canceled", "complete"].includes(status) || obj(state.finishing).status === "failed";
+    const stopped = ["failed", "canceled", "complete"].includes(status) || obj(state.preflight).status === "failed" || obj(state.finishing).status === "failed";
     return "<h2>" + (stopped ? "No results collected" : "Preparing comparison") + "</h2><p class='hint'>"
       + (stopped ? "The operation ended before candidate results were collected. See the operation status and phase log."
         : "Preparing isolated workspaces and recording runtime metadata. Setup identities and measurements appear after preparation publishes the run state. Follow the phase log for progress.") + "</p>";
@@ -786,8 +786,9 @@ function renderSnapshot(data) {
   $("stop-operation").disabled = job.status === "stopping";
   $("stop-operation").textContent = job.status === "stopping" ? "Stopping and retaining evidence…" : "Stop operation";
   const statuses = obj(state.arm_attempts);
-  const errors = [job.error, state.error, obj(state.finishing).error, obj(state.judge).error].filter(Boolean);
+  const errors = [job.error, state.error, obj(state.preflight).error, obj(state.finishing).error, obj(state.judge).error].filter(Boolean);
   const phaseItems = entry.kind === "pair" && !data.state ? [["Preparation", job.status || "Preparing"]] : entry.kind === "pair" ? [
+    ["Preflight", obj(state.preflight).status || "Not started", TONES[obj(state.preflight).status]],
     ...Object.keys(labels).map(arm => [labels[arm] + " execution", ...executionStatus(statuses[arm], obj(state.results)[arm])]),
     ["Source assessment", obj(state.judge).status || "Not started", TONES[obj(state.judge).status]],
     ["Report finishing", obj(state.finishing).status || (data.report ? "Report available" : "Not started"), TONES[obj(state.finishing).status]],
@@ -821,7 +822,7 @@ function renderSnapshot(data) {
     $("children").innerHTML = data.children.map((child) => '<button data-entry="' + child.id + '"><strong>' + esc(child.title) + "</strong> · " + esc(child.status || "preparing") + (child.error ? '<span class="error"> ' + esc(child.error) + "</span>" : "") + "</button>").join("");
     childSignature = JSON.stringify(data.children);
   }
-  const signature = JSON.stringify([data.report, data.arm_labels, Boolean(data.state), job.status, entry.kind === "build" ? state : state.results, state.invalidity_reasons]);
+  const signature = JSON.stringify([data.report, data.arm_labels, Boolean(data.state), job.status, entry.kind === "build" ? state : state.results, state.preflight?.status, state.invalidity_reasons]);
   if (reportSignature !== signature) {
     const key = (detail) => detail.dataset.key || detail.querySelector("summary").textContent;
     const opened = [...$("results").querySelectorAll("details[open]")].map(key);

@@ -353,6 +353,7 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       profile: state.profile ?? "hpatch",
       source: state.source,
       setup: { setup_revisions: state.setup_revisions, ...state.execution, auto_compact_limit: state.auto_compact_limit ?? null, dependency_image: state.dependency_image, comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], imported_control: state.imported_control ?? null, imported_arms: state.imported_arms ?? null, arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null, resource_limits: state.resource_limits, snapshot_manifest: state.snapshot_manifest },
+      preflight: state.preflight ?? null,
       finishing: state.finishing ?? null,
       status: state.status,
       validity: valid ? "valid" : "invalid",
@@ -430,6 +431,7 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       return `| ${identity ? `${identity.pass}.${identity.attempt}` : index + 1} | ${attempt.usage.complete ? "complete" : "incomplete"} | ${totals.input_tokens} | ${totals.cached_input_tokens} | ${totals.cache_write_input_tokens} | ${totals.output_tokens} | ${totals.reasoning_output_tokens} | ${totals.total_tokens} | ${number(totals.command_seconds, 3)} | ${number(totals.estimated_api_usd, 6)} |`;
     });
     const warnings = [
+      ...(state.preflight?.status === "failed" ? [`preflight: ${state.preflight.error ?? "failed"}`] : []),
       ...(!state.criteria ? ["No task-derived criteria were recorded. Historical measurements are descriptive only; grading completion and winner eligibility are unavailable."] : []),
       ...(state.finishing?.status === "failed" ? [`finishing: ${state.finishing.error ?? "failed"}`] : []),
       ...pricing.warnings.map(warning => `pricing: ${warning}`),

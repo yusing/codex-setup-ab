@@ -72,6 +72,7 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
     }
     state.finishing = { status: "running", started_at: new Date().toISOString(), bundle_path: "reports/bundle" };
     await writeState(runDir, state);
+    let finishingFailure: unknown;
     try {
       if (!failure && !controller.signal.aborted && state.status === "complete" && (state.selected_arms?.length ?? 0) >= 2 && (!state.judge || options.recoverJudge)) {
         process.stderr.write(options.recoverJudge
@@ -82,6 +83,7 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
       }
     } catch (error) {
       failure ??= error;
+      finishingFailure ??= error;
     }
     let renderReport: Awaited<ReturnType<typeof prepareReportUnlocked>> | undefined;
     const refreshReport = async () => {
@@ -94,12 +96,16 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
       await collectBundle(runDir);
     } catch (error) {
       failure ??= error;
+      finishingFailure ??= error;
     }
-    if (controller.signal.aborted) failure ??= new Error("benchmark canceled; available evidence preserved");
+    if (controller.signal.aborted) {
+      finishingFailure ??= new Error("benchmark canceled; available evidence preserved");
+      failure ??= finishingFailure;
+    }
     const current = await readState(runDir);
     current.finishing = {
-      ...state.finishing, status: failure ? "failed" : "complete",
-      finished_at: new Date().toISOString(), ...(failure ? { error: String(failure) } : {}),
+      ...state.finishing, status: finishingFailure ? "failed" : "complete",
+      finished_at: new Date().toISOString(), ...(finishingFailure ? { error: String(finishingFailure) } : {}),
     };
     await writeState(runDir, current);
     try {
@@ -109,7 +115,7 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
     } catch (error) {
       failure ??= error;
       current.finishing.status = "failed";
-      current.finishing.error = String(failure);
+      current.finishing.error = String(error);
       await writeState(runDir, current);
       // A storage failure can make even the failure bundle unavailable.
       // Keep the authoritative state failed; never restart model execution.

@@ -28,7 +28,7 @@ export async function prepareReevaluation(sourceDirectory: string, outputParent 
     || published.validity !== "valid") throw new Error("Reevaluation requires a complete, infrastructure-valid sealed comparison containing all configured arms");
   const directory = await mkdtemp(join(outputRoot, "task-reevaluation-"));
   process.stderr.write(`[reevaluate] copying immutable preparation inputs into ${directory}\n`);
-  const fresh: RunState = { ...source, id: basename(directory), created_at: new Date().toISOString(), status: "prepared", evaluation: { mode: "fresh" },
+  const fresh: RunState = { ...source, preflight: undefined, id: basename(directory), created_at: new Date().toISOString(), status: "prepared", evaluation: { mode: "fresh" },
     planned_imports: arms.map(arm => ({ target_arm: arm, arm, run_dir: sourceDir, bundle_sha256: bundleHash })) };
   delete fresh.results;
   delete fresh.arm_attempts;

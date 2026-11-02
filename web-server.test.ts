@@ -71,6 +71,9 @@ test("preparation has progress rather than fabricated pair measurements", async 
   const failureHtml = runInNewContext(source + "\nresultContent(input)", { input: failed });
   expect(failureHtml).toContain("No results collected");
   expect(failureHtml).not.toContain("<table>");
+  const preflightFailed = { ...failed, entry: { kind: "pair" },
+    state: { status: "prepared", results: {}, preflight: { status: "failed" }, finishing: { status: "complete" } } };
+  expect(runInNewContext(source + "\nresultContent(input)", { input: preflightFailed })).toContain("No results collected");
 });
 
 async function file(path: string, contents: string): Promise<void> {

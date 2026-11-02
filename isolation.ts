@@ -59,9 +59,8 @@ export async function protectedPreflight(docker: string, runDir: string, state: 
   const workspace = join(directory, "workspace"), home = join(directory, "home"), runtime = join(directory, "runtime"), exports = join(directory, "exports");
   await cp(join(runDir, state.arms.current.home_template), home, { recursive: true, verbatimSymlinks: true });
   await cp(join(runDir, state.arms.current.repository), workspace, { recursive: true, verbatimSymlinks: true });
-  for (const path of [join(home, ".codex"), runtime, exports, join(directory, "modules")]) await mkdir(path, { recursive: true });
+  for (const path of [join(home, ".codex"), runtime, exports]) await mkdir(path, { recursive: true });
   await writeFile(join(home, ".codex/auth.json"), "{}\n", { mode: 0o600 });
-  await writeFile(join(directory, "probe.go"), "package main\nfunc main() {}\n");
   // This replaces only the final CLI in the smoke container. The real router, owner
   // launcher, mount protection and executor qualification all execute first.
   await writeFile(join(directory, "toolhost.js"), TOOLHOST_SMOKE_SCRIPT);
@@ -77,8 +76,6 @@ for directory in [os.environ['MEKUGI_RUNTIME_DIR'], os.environ['MEKUGI_EXPORT_DI
         raise SystemExit('executor wrote protected state')
 with urllib.request.urlopen(os.environ['MEKUGI_BASE_URL'].removesuffix('/v1') + '/api/metrics') as response:
     assert response.status == 200
-subprocess.run(['go', 'build', '-o', '/tmp/probe', '/probe.go'], cwd='/tmp', check=True)
-subprocess.run(['/tmp/probe'], check=True)
 subprocess.run(['node', '/probe-toolhost.js'], check=True)
 print('CODEX_AB_PROTECTED_RUNTIME_OK')
 `, { mode: 0o755 });
@@ -87,12 +84,12 @@ print('CODEX_AB_PROTECTED_RUNTIME_OK')
     await executorOwnership(docker, state, `${state.id}-isolation-own`, paths, false);
     const common = [...protectedArgs(runDir, state, runtime), "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
         "-v", `${workspace}:/workspace`, "-v", `${home}:/home/ubuntu`,
-        "-v", `${exports}:/mekugi-exports`, "-v", `${join(directory, "modules")}:/go/pkg/mod:ro`,
+        "-v", `${exports}:/mekugi-exports`,
         ...await miseToolMounts(runDir, state), ...launcherMounts(runDir, state, "current")];
     const command = [dependencyImage(state), "mise", "exec", "--", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...(state.mekugi_flags ?? []),
       ...(state.mekugi_flags?.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]), "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"];
     const result = await runOwnedContainer({ docker, name: `${state.id}-isolation-probe`, signal, timeoutMs: 180000,
-      createArgs: [...common, "-v", `${join(directory, "toolhost.js")}:/probe-toolhost.js:ro`, "-v", `${join(directory, "probe.go")}:/probe.go:ro`,
+      createArgs: [...common, "-v", `${join(directory, "toolhost.js")}:/probe-toolhost.js:ro`,
         "-v", `${probe}:/usr/local/libexec/codex-real:ro`, ...command] });
     await writeFile(join(runDir, "artifacts/preflight-isolation.json"), JSON.stringify(result, null, 2));
     if (result.exitCode !== 0 || !result.stdout.includes("CODEX_AB_PROTECTED_RUNTIME_OK")) throw new Error(`protected runtime preflight failed: ${result.stderr}`);

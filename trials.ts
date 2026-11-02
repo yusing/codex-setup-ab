@@ -141,7 +141,7 @@ export async function prepareTrials(options: {
           await cp(join(prototype, path), destination, { recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false });
         }
         await mkdir(join(target, "artifacts"), { recursive: true });
-        const fresh: RunState = { ...state, id: trial.run_id, created_at: new Date().toISOString(),
+        const fresh: RunState = { ...state, preflight: undefined, id: trial.run_id, created_at: new Date().toISOString(),
           arm_order: trial.order, trial: { set_id: set.id, index: trial.index, controls_sha256: set.controls_sha256, plan_sha256: set.plan_sha256 } };
         await writeState(target, fresh);
         await verifyPreparedInputs(target, fresh);

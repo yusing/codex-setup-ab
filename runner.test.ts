@@ -436,14 +436,16 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
     expect(set.controls.setup_revisions).toEqual(state.setup_revisions);
     for (const trial of set.trials) {
       const directory = join(trials, trial.run_dir);
-      await verifyPreparedInputs(directory, await readState(directory));
+      const trialState = await readState(directory);
+      expect(trialState.preflight).toBeUndefined();
+      await verifyPreparedInputs(directory, trialState);
     }
     await writeFile(fake.log, "");
   }
   expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
   const calls = (await readFile(fake.log, "utf8")).split("\n");
   const stagedHomes = calls.filter(line => line.startsWith("PREFLIGHT_HOME ")).map(line => line.split(" ")[1]!);
-  expect(stagedHomes.length).toBeGreaterThanOrEqual(4);
+  expect(stagedHomes).toHaveLength(launcher === "mekugi" ? 4 : 2);
   expect(new Set(stagedHomes).size).toBe(stagedHomes.length);
   for (const staged of stagedHomes) expect(await Bun.file(join(staged, ".codex/config.toml")).exists()).toBe(false);
   for (const snapshot of [a, b]) expect(await readFile(join(snapshot, ".local/bin/check_project"), "utf8")).toBe("#!/bin/sh\necho setup-utility\n");
@@ -1577,34 +1579,34 @@ esac
   return { path, log, stateDir };
 }
 
-test.each(["absent", "unregistered", "registered", "linked"])("non-paid preflight respects Go hook registration (%s) and leaves the run unstarted", async registration => {
-  const configuredHome = join(root, `hook-home-${registration}`);
+test.each(["absent", "disabled", "enabled"])("preflight checks the environment without executing optional guidance (%s skill)", async availability => {
+  const configuredHome = join(root, `guidance-home-${availability}`);
   await cp(home, configuredHome, { recursive: true, verbatimSymlinks: true });
-  if (registration === "absent") await rm(join(configuredHome, ".codex/hooks.json"));
-  else await file(join(configuredHome, ".codex/hooks.json"), JSON.stringify({ hooks: { PostToolUse: [
-    { hooks: [{ type: "command", command: registration !== "unregistered" ? "/home/ubuntu/.codex/hooks/bin/go_guidelines" : "/home/ubuntu/.codex/hooks/bin/session_start_context" }] },
+  await file(join(configuredHome, ".skills-mgr/.skills-mgr.json"), JSON.stringify({ schema_revision: 3,
+    skills: availability === "absent" ? {} : { "use-modern-go": { enabled: availability === "enabled" ? "lang go" : false, remote: { name: "use-modern-go" } } } }));
+  await file(join(configuredHome, ".codex/hooks.json"), JSON.stringify({ hooks: { PostToolUse: [
+    { hooks: [{ type: "command", command: "/home/ubuntu/.codex/hooks/bin/go_guidelines" }] },
   ] } }));
-  if (registration === "linked") {
-    await rename(join(configuredHome, ".codex/hooks.json"), join(configuredHome, "registered-hooks.json"));
-    await symlink(join(configuredHome, "registered-hooks.json"), join(configuredHome, ".codex/hooks.json"));
-    await checked(["git", "-C", configuredHome, "add", "registered-hooks.json"]);
-  }
-  const run = await prepared(30, "codex", registration === "linked" ? `${configuredHome}/` : configuredHome);
-  if (registration === "linked") await file(join(configuredHome, "registered-hooks.json"), "{}");
+  const run = await prepared(30, "codex", configuredHome);
   const fake = await fakeOwnedDocker(0);
+  const script = await readFile(fake.path, "utf8");
+  await file(fake.path, script.replace("    status=0", `    status=0
+    case "$(cat '${fake.stateDir}/'$name)" in
+      *'skills-mgr get '*|*'skills-mgr list'*|*'rtk --version'*|*'/hooks/bin/'*) echo unexpected-guidance-check >&2; status=31 ;;
+    esac`));
   await preflightRun(run, fake.path);
   const state = await readState(run);
   expect(state.status).toBe("prepared");
+  expect(state.preflight?.status).toBe("complete");
+  expect(state.arm_attempts).toBeUndefined();
   expect(await Bun.file(join(fake.stateDir, `network-codex-ab-${state.id}-preflight-provider`)).exists()).toBe(false);
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain("mise ls --current --missing --no-header");
-  expect(log.includes("| /home/ubuntu/.codex/hooks/bin/go_guidelines")).toBe(registration !== "absent" && registration !== "unregistered");
-  expect(log).toContain("skills-mgr get use-modern-go/scripts/VERSION");
   expect(log).toContain("-preflight-environment-stock");
   expect(log).toContain("-preflight-environment-current");
   expect(log).toContain("for interpreter in python python3");
   expect(log).not.toContain("go generate");
-  expect(log).toContain("cd /tmp/preflight && true && git diff --quiet HEAD --");
+  expect(log).not.toContain("-preflight-compile");
   expect(log).toContain(" bun -e ");
   expect(log).not.toContain(`${state.runtime_tools.bun}:/usr/local/bin/bun`);
 });
@@ -1624,6 +1626,29 @@ test("preflight rejects unavailable provider networking before inference", async
   expect(evidence).toMatchObject([{ provider: "chatgpt", endpoint: "https://chatgpt.com/", result: { exitCode: 7 } }]);
 });
 
+test("benchmark attributes a preflight failure to preflight while retaining its report", async () => {
+  const run = await prepared();
+  const state = await readState(run);
+  state.pricing = { fetched_at: new Date().toISOString(), source: "fallback", catalog_url: "fixture://pricing", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
+  const fake = await fakeOwnedDocker(0, false, false, "", false, true);
+  await expect(runBenchmark({ runDir: run, authFile: "/unused-auth", dockerBin: fake.path })).rejects.toThrow("cannot reach the chatgpt provider");
+  const failed = await readState(run);
+  expect(failed.preflight?.status).toBe("failed");
+  expect(failed.preflight?.error).toContain("cannot reach the chatgpt provider");
+  expect(failed.finishing).toMatchObject({ status: "complete" });
+  expect(failed.finishing?.error).toBeUndefined();
+  expect(failed.arm_attempts).toBeUndefined();
+  expect(failed.judge).toBeUndefined();
+  const report = await Bun.file(join(run, "reports/bundle/report.json")).json();
+  expect(report.preflight).toEqual(failed.preflight);
+  expect(report.measurement_complete).toBe(false);
+  expect(await Bun.file(join(run, "reports/report.md")).text()).toContain(`preflight: ${failed.preflight!.error}`);
+  const log = await readFile(fake.log, "utf8");
+  expect(log).not.toContain("-warm ");
+  expect(log).not.toContain("-judge-");
+});
+
 test("preflight reports the missing image and Docker cause", async () => {
   const run = await prepared();
   const docker = join(root, "missing-image-docker");
@@ -1639,15 +1664,16 @@ test("an externally canceled pair stops before Docker preflight", async () => {
   expect(await Bun.file(fake.log).exists()).toBe(false);
 });
 
-test("preflight pins shared dependencies and compiles offline without cache mounts", async () => {
+test("preflight pins shared dependencies without repeating task preparation or tests", async () => {
   const run = await prepared();
   const fake = await fakeOwnedDocker(0);
   await preflightRun(run, fake.path);
   const state = await readState(run);
   expect(state.dependency_image?.image_id).toBe(`sha256:${"a".repeat(64)}`);
-  const compile = (await readFile(fake.log, "utf8")).split("\n").find(line => line.includes("-preflight-compile "))!;
-  expect(compile).toContain("--network none");
-  expect(compile).not.toContain("preflight-cache");
+  const log = await readFile(fake.log, "utf8");
+  expect(log).not.toContain("-preflight-compile");
+  expect(log).not.toContain("-semantic-");
+  expect(log).not.toContain("preflight-cache");
 });
 
 test("preflight qualifies the immutable image in one credential-free owned lifecycle", async () => {
@@ -2088,7 +2114,7 @@ test("benchmark preserves a partial report and bundle after non-inference prepar
   await file(auth, "{}\n", 0o600);
   const fake = await fakeOwnedDocker(0, true);
   await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("cache prewarm failed");
-  expect((await readState(run)).finishing?.status).toBe("failed");
+  expect((await readState(run)).finishing?.status).toBe("complete");
   expect(await Bun.file(join(run, "reports/bundle/report.json")).exists()).toBe(true);
   expect(await readFile(fake.log, "utf8")).not.toContain("-judge-1");
 }, 30_000);
@@ -2111,7 +2137,7 @@ test("failed agent execution preserves evidence and skips graders, judges and fi
   expect(failed.results?.stock?.exit_code).toBe(9);
   expect(failed.results?.stock?.grade).toBeUndefined();
   expect(failed.results?.current?.grade).toBeUndefined();
-  expect(failed.finishing?.status).toBe("failed");
+  expect(failed.finishing?.status).toBe("complete");
   expect(await readFile(join(run, failed.results!.stock!.stderr_path), "utf8")).toContain("launcher-failed");
   expect(await Bun.file(join(run, failed.results!.stock!.patch_path)).exists()).toBe(true);
   expect(await Bun.file(join(run, "reports/bundle/report.json")).exists()).toBe(true);
@@ -2543,7 +2569,7 @@ test("preflight rejects mise migration warnings even when mise exits successfull
   const script = await readFile(fake.path, "utf8");
   await writeFile(fake.path, script.replace('    status=0\n    case "$name" in', `    status=0
     case "$name" in
-      *-preflight-setup) printf '%s\\n' '[WARN] migrate: failed to remove symlink: readonly tool store' >&2 ;;`));
+      *-preflight-environment-current) printf '%s\\n' '[WARN] migrate: failed to remove symlink: readonly tool store' >&2 ;;`));
   await expect(preflightRun(run, fake.path)).rejects.toThrow("mise migration failed");
   const staged = (await readFile(fake.log, "utf8")).split("\n").find(line => line.startsWith("PREFLIGHT_HOME "))!.split(" ")[1]!;
   expect(await Bun.file(join(staged, ".codex/config.toml")).exists()).toBe(false);
@@ -2784,8 +2810,8 @@ test("reevaluation independently rejudges every retained arm without implementat
   const failedName = (await readdir(root)).find(name => name.startsWith("task-reevaluation-") && !beforeFailure.has(name));
   expect(failedName).toBeDefined();
   const failedDirectory = join(root, failedName!);
-  expect((await readState(failedDirectory)).finishing?.status).toBe("failed");
-  expect((await Bun.file(join(failedDirectory, "reports/bundle/report.json")).json()).finishing.status).toBe("failed");
+  expect((await readState(failedDirectory)).finishing?.status).toBe("complete");
+  expect((await Bun.file(join(failedDirectory, "reports/bundle/report.json")).json()).finishing.status).toBe("complete");
   expect(await readFile(fake.log, "utf8")).toBe(logBeforeFailure);
   expect(await retainedBytes(sourceRun)).toEqual(originalBytes);
 

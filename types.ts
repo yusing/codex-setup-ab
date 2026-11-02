@@ -164,6 +164,7 @@ export interface RunState {
     error?: string;
     home_image_id?: string;
   }>>;
+  preflight?: { status: "running" | "complete" | "failed"; started_at: string; finished_at?: string; error?: string };
   finishing_history?: NonNullable<RunState["finishing"]>[];
   finishing?: {
     status: "running" | "complete" | "failed";

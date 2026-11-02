@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedContainerOptions, type OwnedNetwork } from "./container";
-import { initializeSubmodules, readSnapshotConfig, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
+import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
 import { executorOwnership, launcherMounts, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
@@ -34,11 +34,14 @@ function containerArgs(state: RunState): string[] {
   return ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory];
 }
 
+function usesMise(state: RunState, arm: ArmName): boolean {
+  return state.comparison !== "codex-mekugi-grok" && (arm === "current" || state.comparison === "setup-commits"
+    || state.comparison === "custom" || state.comparison === "same-setup" || state.comparison === "stock-mekugi" || isPairedMekugiComparison(state.comparison));
+}
+
 async function currentSetupMounts(runDir: string, state: RunState, arm: ArmName = "current", home?: string): Promise<string[]> {
-  const usesCurrentSetup = (state.comparison === "setup-commits" || state.comparison === "custom") || state.comparison === "same-setup" || state.comparison === "stock-mekugi" || isPairedMekugiComparison(state.comparison)
-    || (arm === "current" && state.comparison !== "codex-mekugi-grok");
   const mounts = launcherMounts(runDir, state, arm);
-  if (!usesCurrentSetup) return mounts;
+  if (!usesMise(state, arm)) return mounts;
   if (state.comparison === "duplicate-output" || (state.comparison === "setup-commits" || state.comparison === "custom")) {
     const snapshot = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8")) as { source_home?: string };
     const sourceHome = snapshot.source_home;
@@ -181,7 +184,6 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   await writeFile(join(runDir, "artifacts/preflight-network.json"), JSON.stringify(networkChecks, null, 2));
   await ensureDependencyImage(docker, runDir, state, signal);
   const setupImage = dependencyImage(state);
-  const workspace = resolve(runDir, state.arms.current.repository);
   async function checkSetup(arm: ArmName, options: Omit<OwnedContainerOptions, "docker" | "signal">) {
     const home = await mkdtemp(join(tmpdir(), "codex-ab-preflight-"));
     try {
@@ -189,52 +191,37 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
       await chmod(home, 0o700);
       // Stage writable mount parents before Docker inserts read-only runtime files.
       for (const path of [".local/bin", ".grok/bin", ".cargo/bin"]) await mkdir(join(home, path), { recursive: true });
-      return await runOwnedContainer({ ...options, docker, signal, createArgs: ["--network", "none",
+      return await runOwnedContainer({ timeoutMs: 30_000, ...options, docker, signal, createArgs: ["--network", "none",
         "-v", `${home}:/home/ubuntu`, ...await currentSetupMounts(runDir, state, arm, home), ...options.createArgs] });
     } finally {
       await rm(home, { recursive: true, force: true });
     }
   }
-  if (state.comparison === "stock-mekugi" || state.comparison === "codex-mekugi-grok") {
-    progress(state.comparison === "codex-mekugi-grok" ? "checking the isolated Codex+Mekugi and Grok setups offline" : "checking the minimal stock-plus-Mekugi setup offline");
-    const dependencies = await checkSetup(state.comparison === "codex-mekugi-grok" ? "stock" : "current", { name: `${prefix}-setup`, createArgs: [setupImage, "sh", "-lc",
-      "export PATH=/home/ubuntu/.local/bin:$PATH && test -r /home/ubuntu/.codex/config.toml && command -v mekugi >/dev/null"
-        + (state.comparison === "stock-mekugi" ? " && cd /home/ubuntu && missing_tools=\"$(mise ls --current --missing --no-header)\" && if test -n \"$missing_tools\"; then printf 'missing configured tools: %s\\n' \"$missing_tools\" >&2; exit 1; fi && mise exec -- sh -c 'command -v codex >/dev/null'" : "")] });
-    if (dependencies.exitCode !== 0) throw new Error(`stock-plus-Mekugi setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
-    if (state.comparison === "codex-mekugi-grok") {
-      const grokCheck = await checkSetup("current", { name: `${prefix}-grok`, createArgs: [setupImage, "sh", "-lc",
-        "test -x /home/ubuntu/.grok/bin/grok && /home/ubuntu/.grok/bin/grok --version"] });
-      await writeFile(join(runDir, "artifacts/preflight-grok.json"), JSON.stringify(grokCheck, null, 2));
-      if (grokCheck.exitCode !== 0) throw new Error(`isolated Grok executable cannot run offline: ${[grokCheck.stdout.trim(), grokCheck.stderr.trim()].filter(Boolean).join("; ")}`);
-      if (state.runtime_tools.grok_version && !grokCheck.stdout.includes(state.runtime_tools.grok_version.split(" ")[1] ?? "")) {
-        throw new Error(`unexpected container Grok version: ${grokCheck.stdout.trim()}`);
-      }
-    }
-  } else {
-    for (const setupArm of (state.comparison === "setup-commits" || state.comparison === "custom") ? armNames(state) : ["current"] as const) {
-      progress(`checking ${armLabels(state)[setupArm]} tools and configured Go hook offline`);
-      const snapshot = JSON.parse(await readFile(resolve(runDir, (state.comparison === "setup-commits" || state.comparison === "custom")
-        ? state.setup_revisions![setupArm].manifest : state.snapshot_manifest), "utf8")) as { source_home: string };
-      const hooks: {
-        hooks?: Record<string, { hooks: { command?: string }[] }[]>;
-      } = JSON.parse(await readSnapshotConfig(resolve(runDir, state.arms[setupArm].home_template), snapshot.source_home, ".codex/hooks.json")
-        .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return "{}"; throw error; }));
-      const goHookRegistered = Object.values(hooks.hooks ?? {}).some(groups => groups.some(group =>
-        group.hooks.some(hook => hook.command?.includes("/hooks/bin/go_guidelines"))));
-      const hookEvent = JSON.stringify({ hook_event_name: "PostToolUse", cwd: "/workspace", tool_input: { cmd: "skills-mgr get golang-best-practices" }, tool_response: { exit_code: 0 } });
-      const goHookCheck = goHookRegistered ? ' && printf "%s\\n" "$CODEX_AB_HOOK_EVENT" | /home/ubuntu/.codex/hooks/bin/go_guidelines | grep -q "Modern Go Guidelines v0.1.1: /workspace/go.mod.*END_GO_GUIDELINES sha256="' : "";
-      const mekugiCheck = state.execution.current_launcher === "mekugi"
-        ? " && command -v mekugi >/dev/null"
-        : "";
-      const stockSetup = state.comparison === "custom" && state.setup_revisions?.[setupArm]?.commit === "stock";
-      const guidanceCheck = stockSetup ? "true" : `skills-mgr list >/dev/null && rtk --version >/dev/null && test -x /home/ubuntu/.codex/hooks/bin/session_start_context && if test -f /workspace/go.mod; then test "$(skills-mgr get use-modern-go/scripts/VERSION)" = v0.1.1 && skills-mgr get use-modern-go >/tmp/use-modern-go && test "$(wc -c </tmp/use-modern-go)" -gt 224 && grep -q "Modern Go Guidelines CLI" /tmp/use-modern-go${goHookCheck}; fi`;
-      const dependencies = await checkSetup(setupArm, { name: `${prefix}-setup`, createArgs: ["-e", `CODEX_AB_HOOK_EVENT=${hookEvent}`,
-        "-v", `${workspace}:/workspace:ro`, setupImage, "sh", "-lc",
-        `export PATH=/home/ubuntu/.local/bin:$PATH && test -r /home/ubuntu/.codex/config.toml && : >/home/ubuntu/.codex/.write-check && rm /home/ubuntu/.codex/.write-check && cd /home/ubuntu && missing_tools="$(mise ls --current --missing --no-header)" && if test -n "$missing_tools"; then printf "missing current setup tools: %s\n" "$missing_tools" >&2; exit 1; fi && cd /workspace && mise exec -- sh -lc '${guidanceCheck}'${mekugiCheck}`] });
-      if (/\[WARN\] migrate:/.test(`${dependencies.stdout}\n${dependencies.stderr}`)) {
-        throw new Error("current setup mise migration failed against the read-only tool snapshot; prepare again from a home with completed mise migrations");
-      }
-      if (dependencies.exitCode !== 0) throw new Error(`current setup cannot run offline unchanged in the container: ${[dependencies.stdout.trim(), dependencies.stderr.trim()].filter(Boolean).join("; ")}`);
+  progress("checking each setup and benchmark environment offline");
+  for (const arm of armNames(state)) {
+    const grokArm = state.comparison === "codex-mekugi-grok" && arm === "current";
+    const configuration = grokArm ? ".grok" : ".codex";
+    const setupCheck = `test -r /home/ubuntu/${configuration}/config.toml && : >/home/ubuntu/${configuration}/.write-check && rm /home/ubuntu/${configuration}/.write-check`;
+    const toolCheck = usesMise(state, arm)
+      ? 'cd /home/ubuntu && missing_tools="$(mise ls --current --missing --no-header)" && if test -n "$missing_tools"; then printf "missing configured tools: %s\\n" "$missing_tools" >&2; exit 1; fi && cd /workspace && exec mise exec -- bash -lc "$@"'
+      : 'exec bash -lc "$@"';
+    const environment = await checkSetup(arm, { name: `${prefix}-environment-${arm}`, timeoutMs: 30000,
+      createArgs: ["-e", `PATH=${TASK_PATH}`,
+        "-v", `${resolve(runDir, state.arms[arm].repository)}:/workspace:ro`,
+        setupImage, "sh", "-c",
+        `set -eu; ${setupCheck} && ${toolCheck}`, 'environment-launch',
+        ((state.comparison === "setup-commits" || state.comparison === "custom") ? 'export PATH="/opt/task-deps/python/bin:/usr/local/bin:$PATH"; test "$(command -v codex)" = /usr/local/bin/codex || exit 1; ' + (usesMekugi(state, arm) ? 'test "$(command -v mekugi)" = /usr/local/bin/mekugi || exit 1; ' : '') : '') + 'set -eu; git -c user.useConfigOnly=true var GIT_AUTHOR_IDENT; if test -x /opt/task-deps/python/bin/python; then for interpreter in python python3; do test "$(command -v "$interpreter")" = "/opt/task-deps/python/bin/$interpreter"; "$interpreter" -c "import sys; assert sys.prefix == \'/opt/task-deps/python\'"; done; fi; if test -n "${HOMEBREW_PREFIX:-}"; then command -v brew; brew --version; fi', 'environment-check'] });
+    await writeFile(join(runDir, `artifacts/preflight-environment-${arm}.json`), JSON.stringify(environment, null, 2));
+    if (/\[WARN\] migrate:/.test(`${environment.stdout}\n${environment.stderr}`)) throw new Error(`setup mise migration failed (${arm}) against the read-only tool snapshot; prepare again from a home with completed mise migrations`);
+    if (environment.exitCode !== 0 || environment.timedOut || environment.canceled) throw new Error(`candidate environment preflight failed (${arm}, ${armLabels(state)[arm]}): ${[environment.stdout.trim(), environment.stderr.trim()].filter(Boolean).join("; ")}`);
+  }
+  if (state.comparison === "codex-mekugi-grok") {
+    const grokCheck = await checkSetup("current", { name: `${prefix}-grok`, createArgs: [setupImage, "sh", "-lc",
+      "test -x /home/ubuntu/.grok/bin/grok && /home/ubuntu/.grok/bin/grok --version"] });
+    await writeFile(join(runDir, "artifacts/preflight-grok.json"), JSON.stringify(grokCheck, null, 2));
+    if (grokCheck.exitCode !== 0) throw new Error(`isolated Grok executable cannot run offline: ${[grokCheck.stdout.trim(), grokCheck.stderr.trim()].filter(Boolean).join("; ")}`);
+    if (state.runtime_tools.grok_version && !grokCheck.stdout.includes(state.runtime_tools.grok_version.split(" ")[1] ?? "")) {
+      throw new Error(`unexpected container Grok version: ${grokCheck.stdout.trim()}`);
     }
   }
   if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
@@ -254,33 +241,6 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
       if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
     }
   }
-  const dependencyBase = dependencyImage(state);
-  progress("checking candidate Git identity and Python PATH offline");
-  for (const arm of armNames(state)) {
-    const environment = await checkSetup(arm, { name: `${prefix}-environment-${arm}`, timeoutMs: 30000,
-      createArgs: ["-e", `PATH=${TASK_PATH}`,
-        "-v", `${resolve(runDir, state.arms[arm].repository)}:/workspace:ro`,
-        dependencyBase, "sh", "-c",
-        'if test -n "${MISE_INSTALLS_DIR:-}"; then exec mise exec -- bash -lc "$@"; fi; exec bash -lc "$@"', 'environment-launch',
-        ((state.comparison === "setup-commits" || state.comparison === "custom") ? 'export PATH="/opt/task-deps/python/bin:/usr/local/bin:$PATH"; test "$(command -v codex)" = /usr/local/bin/codex || exit 1; ' + (usesMekugi(state, arm) ? 'test "$(command -v mekugi)" = /usr/local/bin/mekugi || exit 1; ' : '') : '') + 'set -eu; git -c user.useConfigOnly=true var GIT_AUTHOR_IDENT; if test -x /opt/task-deps/python/bin/python; then for interpreter in python python3; do test "$(command -v "$interpreter")" = "/opt/task-deps/python/bin/$interpreter"; "$interpreter" -c "import sys; assert sys.prefix == \'/opt/task-deps/python\'"; done; fi; if test -n "${HOMEBREW_PREFIX:-}"; then command -v brew; brew --version; fi', 'environment-check'] });
-    await writeFile(join(runDir, `artifacts/preflight-environment-${arm}.json`), JSON.stringify(environment, null, 2));
-    if (environment.exitCode !== 0 || environment.timedOut || environment.canceled) throw new Error(`candidate environment preflight failed (${arm}): ${environment.stderr.trim()}`);
-  }
-  if (state.profile !== "godoxy-icons") {
-    progress("compiling the exact base and task dependencies in an ephemeral container");
-    const cacheArgs = ["--network", "none"];
-    const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000, createArgs: ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, ...cacheArgs,
-      "-v", `${resolve(runDir, "seed.git")}:/seed:ro`, dependencyBase, "sh", "-lc",
-      `git clone --no-hardlinks /seed /tmp/preflight >/dev/null && git -C /tmp/preflight checkout ${state.source.base_commit} >/dev/null && cd /tmp/preflight && ${prepareAssets(state)} && git diff --quiet HEAD --`] });
-    if (compile.exitCode !== 0) throw new Error(`base dependency/compile preflight failed: ${compile.stderr.trim()}`);
-  } else {
-    const repository = resolve(runDir, state.arms.stock.repository);
-    const compile = await runOwnedContainer({ docker, name: `${prefix}-compile`, signal, timeoutMs: 10 * 60 * 1000,
-      createArgs: [...containerArgs(state), "--network", "none", "-v", `${repository}:/baseline:ro`, dependencyBase, "sh", "-lc",
-        `cp -a /baseline /tmp/preflight && cd /tmp/preflight && ${prepareAssets(state)} && ${state.criteria!.contract.existing_tests} && git diff --exit-code HEAD -- && test "$(git rev-parse HEAD)" = ${state.source.base_commit} && test -z "$(git remote)" && ! git config --get submodule.webui.url && test "$(git submodule status -- webui | cut -c1)" = - && test -z "$(ls -A webui)" && ${state.submodules!.map(sub => `test -z "$(git -C ${sub.path} remote)" && test "$(git submodule status -- ${sub.path} | cut -c1)" = ' ' && test -z "$(git -C ${sub.path} status --porcelain --untracked-files=all)" && test "$(git -C ${sub.path} rev-parse HEAD)" = ${sub.sha}`).join(" && ")}`] });
-    await writeFile(join(runDir, "artifacts/preflight-icons.json"), JSON.stringify(compile, null, 2));
-    if (compile.exitCode !== 0) throw new Error(`icons preflight failed: ${compile.stdout.trim()} ${compile.stderr.trim()}`);
-  }
   if (state.protected_runtime) await protectedPreflight(docker, runDir, state, signal);
   progress("preflight passed without model inference");
   return image;
@@ -294,15 +254,24 @@ async function preflight(docker: string, state: RunState, runDir: string, extern
   externalSignal?.addEventListener("abort", cancel, { once: true });
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
+  state.preflight = { status: "running", started_at: new Date().toISOString() };
   try {
+    await writeState(runDir, state);
     if (controller.signal.aborted) throw new Error("preflight canceled; no model was launched");
     const imageId = await preflightChecks(docker, state, runDir, controller.signal);
     if (controller.signal.aborted) throw new Error("preflight canceled; no model was launched");
+    state.preflight.status = "complete";
     return imageId;
+  } catch (error) {
+    state.preflight.status = "failed";
+    state.preflight.error = error instanceof Error ? error.message : String(error);
+    throw error;
   } finally {
     externalSignal?.removeEventListener("abort", cancel);
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
+    state.preflight.finished_at = new Date().toISOString();
+    await writeState(runDir, state);
   }
 }
 
@@ -376,7 +345,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     : undefined;
   const codexLauncher = mekugiArm ? [(state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/mekugi" : "mekugi", ...mekugiArmFlags(state, arm), ...exportArgs, ...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"])] : [(state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/codex" : "codex"];
   const mekugiLauncher = exportArgs.length ? ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", ...codexLauncher] : codexLauncher;
-  const launcher = grokCommand ?? (mekugiArm && state.comparison === "codex-mekugi-grok" ? mekugiLauncher : arm === "current" || (state.comparison === "setup-commits" || state.comparison === "custom") || state.comparison === "stock-mekugi" || state.comparison === "same-setup" || isPairedMekugiComparison(state.comparison) ? ["mise", "exec", "--", ...((state.comparison === "setup-commits" || state.comparison === "custom") ? ["sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []), ...mekugiLauncher] : ["codex"]);
+  const launcher = grokCommand ?? (usesMise(state, arm) ? ["mise", "exec", "--", ...((state.comparison === "setup-commits" || state.comparison === "custom") ? ["sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []), ...mekugiLauncher] : mekugiLauncher);
   const grokPath = grokArm ? ["-e", `PATH=/home/ubuntu/.grok/bin:${TASK_PATH}`, "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", `PATH=${TASK_PATH}`];
   const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
   const debugStorage = mekugiArm && !protectedArm
