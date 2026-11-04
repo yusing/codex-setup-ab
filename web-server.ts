@@ -1,3 +1,4 @@
+import { setupSkills } from "./setup-skills";
 import { parseArmImports } from "./control";
 import { CODEX_MODELS, REASONING_EFFORTS } from "./types";
 import { constants, watch, type FSWatcher } from "node:fs";
@@ -240,6 +241,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     // Imported slots do not execute; stock placeholders avoid rebuilding obsolete revisions.
     options.arms = JSON.stringify([...arms.map(() => ({ launcher: "codex", setup_commit: "stock" })), { launcher, setup_commit: "HEAD" }]);
     const targets = compositionKeys(arms.length + 1);
+    if (state.arm_settings) options["arm-settings"] = JSON.stringify(Object.fromEntries([...arms.map((arm, i) => [targets[i], Object.fromEntries(Object.entries(state.arm_settings?.[arm] ?? {}).filter(([key]) => !["skills", "mekugi_flags"].includes(key)))]), [targets.at(-1), state.arm_settings[arms.at(-1)!] ?? {}]]));
     options["import-arms"] = JSON.stringify(arms.map((arm, i) => ({ target_arm: targets[i], run_dir: root, arm })));
     launchConfiguration(options);
     return { options, labels: armLabels(state) };
@@ -636,6 +638,10 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
           if (url.pathname === "/api/attach") {
             if (typeof body.directory !== "string" || !body.directory.trim()) throw new Error("Enter an evidence directory");
             return json(await attach(body.directory));
+          }
+          if (url.pathname === "/api/setup-skills") {
+            if (typeof body.directory !== "string" || !body.directory.trim() || (body.revision !== undefined && typeof body.revision !== "string")) throw new Error("Choose a setup home and optional revision");
+            return json({ skills: await setupSkills(body.directory, body.revision as string | undefined) });
           }
           if (url.pathname === "/api/check") return json(await validate(body, false));
           if (url.pathname === "/api/comparison-draft") {

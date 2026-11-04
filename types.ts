@@ -17,6 +17,17 @@ export type ArmOrder = "concurrent" | "stock-first" | "current-first";
 export type ArmName = string;
 export type CandidateId = `candidate-${number}`;
 export interface ArmConfiguration { launcher: "codex" | "mekugi"; setup_commit: string }
+export interface ArmSettings {
+  model?: BenchmarkModel;
+  reasoning_effort?: ReasoningEffort;
+  cpus?: string;
+  memory?: string;
+  timeout_seconds?: number;
+  auto_compact_limit?: number;
+  parallel_work?: boolean;
+  mekugi_flags?: string[];
+  skills?: Record<string, boolean>;
+}
 export interface ArmImport { target_arm: ArmName; run_dir: string; arm: ArmName; bundle_sha256?: string }
 export interface EvaluationPlan { mode: "reuse" | "fresh"; baselines?: Record<ArmName, ArmName> }
 export const armNames = (state: Pick<RunState, "arms">): ArmName[] => Object.keys(state.arms);
@@ -114,6 +125,7 @@ export interface RunState {
   resource_limits: { cpus: string; memory: string };
   timeout_seconds: number;
   arm_configurations?: ArmConfiguration[];
+  arm_settings?: Record<ArmName, ArmSettings>;
   setup_revisions?: Record<ArmName, { commit: string; tree: string; manifest: string; manifest_sha256: string }>;
   snapshot_manifest: string;
   current_snapshot: { captured_at: string; manifest_sha256: string };

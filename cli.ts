@@ -76,6 +76,7 @@ Prepare options:
   --setup-a-commit REF  baseline setup commit in --current-home (setup-commits)
   --setup-b-commit REF  treatment setup commit in --current-home (setup-commits)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
+  --arm-settings JSON  per-arm model, reasoning, resources, Mekugi flags and setup skills
   --arms JSON          ordered custom launcher/setup configurations
   --comparison NAME    stock-current (default), custom, setup-commits, same-setup, stock-mekugi, codex-mekugi-grok, or duplicate-output
   --auto-compact-limit N shared positive token limit for both stock-mekugi arms
@@ -193,6 +194,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       taskPackPath: o["task-pack"] as string | undefined,
       criteriaPath: o.criteria as string | undefined,
       outputParent: o["output-parent"] as string | undefined,
+      armSettings: o["arm-settings"] ? JSON.parse(string(o, "arm-settings")) : undefined,
       arms: o.arms ? parseArmConfigurations(JSON.parse(String(o.arms))) : undefined,
       setupACommit: o["setup-a-commit"] as string | undefined, setupBCommit: o["setup-b-commit"] as string | undefined,
       reviewTreatment: o["review-treatment"] as string | undefined,

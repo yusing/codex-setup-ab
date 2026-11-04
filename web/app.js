@@ -5,7 +5,7 @@ const obj = (value) => value && typeof value === "object" && !Array.isArray(valu
 const words = (value) => String(value).replaceAll("_", " ").replaceAll("-", " ");
 const metric = (value, digits = 0) => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: digits }) : "Unknown";
 const duration = (ms) => typeof ms === "number" && Number.isFinite(ms) ? metric(ms / 1000, 1) + " s" : "Unknown";
-let config, workflow = "pair", selected, snapshot, activeId, busy = false, actionEntry, reportSignature, stateSignature;
+let config, selected, snapshot, activeId, busy = false, actionEntry, reportSignature, stateSignature;
 let artifactItems = [];
 let listSignature, artifactSignature, childSignature, liveKeys;
 let eventStream, latestSnapshot;
@@ -14,7 +14,7 @@ const MEKUGI_TOGGLES = [
   ["deduplicate-output", "Deduplicate output and attachments"],
   ["child-reply-summary", "Show child-authored reply summaries"],
 ];
-const MEKUGI_VALUES = ["ansi-faint", "timeout", "stream-idle-timeout"];
+const MEKUGI_VALUES = ["timeout", "stream-idle-timeout"];
 const ATTEMPT_STATUS = { started: "Running", stopped: "Finished", failed: "Failed" };
 const TONES = { stopped: "positive", complete: "positive", failed: "negative", canceled: "negative" };
 const QUALITY_ASPECT_KEYS = ["simplicity", "performance", "approach"];
@@ -77,331 +77,304 @@ function showNotice(id, text, error = false) {
   element.classList.toggle("error", error);
 }
 function sharedFields() {
-  const defaults = config.defaults;
-  return field("Current setup home", "current-home", defaults["current-home"], "text", "Guidance and tool setup to snapshot.")
-    + field("Container image", "image", defaults.image)
-    + field("Codex executable", "codex-bin", defaults["codex-bin"])
+  const d = config.defaults;
+  return field("Setup repository / home", "current-home", d["current-home"])
+    + field("Container image", "image", d.image)
+    + field("Codex executable", "codex-bin", d["codex-bin"])
+    + field("Codex authentication file", "auth-file", d["auth-file"])
+    + field("Mekugi source", "mekugi-source", d["mekugi-source"])
+    + field("Mekugi executable", "mekugi-bin", d["mekugi-bin"])
+    + field("Captured Mekugi build", "mekugi-build")
+    + field("Grok executable", "grok-bin", d["grok-bin"])
+    + field("Grok authentication file", "grok-auth-file", d["grok-auth-file"])
     + field("Bun executable (optional)", "bun-bin")
-    + field("Docker executable", "docker-bin", defaults["docker-bin"])
-    + field("Output parent (optional)", "output-parent", "", "text", "Use a directory outside the source checkout.")
-    + field("CPU limit per arm", "cpus", "2", "number")
-    + field("Memory limit per arm", "memory", "4g")
-    + field("Timeout in seconds (optional)", "timeout", "", "number", "Uses the selected task default.");
+    + field("Docker executable", "docker-bin", d["docker-bin"])
+    + field("Output parent (optional)", "output-parent");
 }
-let customArmIndex = 0;
+let customArmIndex = 0, activeArm;
+const armKey = index => index === 0 ? "stock" : index === 1 ? "current" : "arm-" + (index + 1);
+const armElements = () => [...$("custom-arms").children];
+const armInput = (row, name) => row.querySelector('[data-setting="' + name + '"]');
+const armValue = (row, name) => armInput(row, name).value;
 function customArmRows() {
-  return [...$("custom-arms").querySelectorAll(".custom-arm")].map(row => ({ launcher: row.querySelector("select").value, setup_commit: row.querySelectorAll("select")[1].value === "stock" ? "stock" : row.querySelector("input").value }));
-}
-function addCustomArm(launcher = "mekugi", revision = "HEAD") {
-  const index = ++customArmIndex;
-  const row = document.createElement("div");
-  row.className = "custom-arm grid";
-  row.innerHTML = '<p class="imported-setup" hidden></p>' + select("Launcher " + index, "arm-launcher-" + index, [["codex", "Codex"], ["mekugi", "Mekugi"]], launcher)
-    + select("Setup " + index, "arm-setup-" + index, [["stock", "Stock"], ["revision", "Committed SHA"]], revision === "stock" ? "stock" : "revision")
-    + field("Setup revision " + index, "arm-revision-" + index, revision === "stock" ? "HEAD" : revision)
-    + '<div class="evaluation-baseline" hidden>' + select("Historical evaluation baseline", "arm-evaluation-" + index, []) + '</div>'
-    + '<button type="button">Remove setup</button>';
-  const setup = row.querySelectorAll("select")[1];
-  const updateSetup = () => { row.querySelector("input").disabled = setup.value === "stock"; row.querySelector("input").parentElement.hidden = setup.value === "stock"; };
-  setup.addEventListener("input", updateSetup);
-  setup.addEventListener("change", updateSetup);
-  updateSetup();
-  for (const input of row.querySelectorAll("input,select")) { input.removeAttribute("name"); input.addEventListener("input", updateCombination); input.addEventListener("change", updateCombination); }
-  row.querySelector("button").addEventListener("click", () => {
-    const removed = [...$("custom-arms").children].indexOf(row);
-    for (const input of $("custom-arms").querySelectorAll(".evaluation-baseline select")) {
-      const slot = input.value === "stock" ? 0 : input.value === "current" ? 1 : Number(input.value.slice(4)) - 1;
-      if (slot === removed) input.value = "";
-      else if (slot > removed) input.value = slot === 1 ? "stock" : slot === 2 ? "current" : "arm-" + slot;
-    }
-    for (const imported of [...$("imported-arms").children]) {
-      const target = imported.querySelector("select");
-      const slot = target.selectedIndex;
-      if (slot === removed) imported.remove();
-      else if (slot > removed) target.selectedIndex = slot - 1;
-    }
-    row.remove(); updateCombination();
-  });
-  $("custom-arms").append(row);
+  return armElements().map(row => ({ launcher: armValue(row, "launcher"), setup_commit: armValue(row, "setup") === "stock" ? "stock" : armValue(row, "revision") }));
 }
 function importedArmRows() {
-  return [...$("imported-arms").children].map(row => ({ target_arm: row.querySelector("select").value,
-    run_dir: row.querySelectorAll("input")[0].value.trim(), arm: row.querySelectorAll("input")[1].value.trim() }));
+  return armElements().flatMap((row, i) => armValue(row, "source") === "import" ? [{ target_arm: armKey(i), run_dir: armValue(row, "import-directory").trim(), arm: armValue(row, "import-arm").trim() }] : []);
 }
-function addImportedArm(value = {}, label = "") {
-  const index = ++customArmIndex;
-  const row = document.createElement("div");
-  row.className = "custom-arm grid";
-  row.dataset.sourceLabel = label;
-  row.innerHTML = select("Comparison slot", "import-target-" + index, [["stock", "First setup"], ["current", "Second setup"]])
-    + field("Previous run directory", "import-directory-" + index, "", "text", "Absolute retained run directory, not its bundle directory.")
-    + field("Previous arm key", "import-arm-" + index, "current", "text", "Use stock, current, arm-3, etc. from the previous run.")
-    + '<button type="button">Remove import</button>';
-  for (const input of row.querySelectorAll("input,select")) { input.removeAttribute("name"); input.addEventListener("input", updateCombination); }
-  for (const input of row.querySelectorAll("input")) input.addEventListener("input", () => {
-    row.dataset.sourceLabel = "";
-    row.querySelectorAll("input")[1].closest(".field").querySelector(".hint").textContent = "Use stock, current, arm-3, etc. from the previous run.";
-    updateCombination();
-  });
-  row.querySelector("button").addEventListener("click", () => { row.remove(); updateCombination(); });
-  $("imported-arms").append(row);
-  updateCombination();
-  row.querySelector("select").value = value.target_arm || "stock";
-  row.querySelectorAll("input")[0].value = value.run_dir || "";
-  row.querySelectorAll("input")[1].value = value.arm || "current";
-  if (label) row.querySelectorAll("input")[1].closest(".field").querySelector(".hint").textContent = label;
-  updateCombination();
-}
-async function compareAgainstHead(directory, statusId, button) {
-  button.disabled = true;
-  showNotice(statusId, "Loading previous arms and matching run controls…");
-  try {
-    const draft = await api("comparison-draft", { directory });
-    workflow = "pair"; drawLaunch();
-    const options = draft.options;
-    for (const [name, value] of Object.entries(options)) if ($("f-" + name)) $("f-" + name).value = value;
-    $("custom-arms").replaceChildren();
-    for (const arm of JSON.parse(options.arms)) addCustomArm(arm.launcher, arm.setup_commit);
-    for (const flag of JSON.parse(options["mekugi-flags"])) {
-      const [name, value] = flag.slice(2).split("=");
-      const input = $("f-mekugi-" + name);
-      if (input?.type === "checkbox") input.checked = value !== "false";
-      else if (input) input.value = value;
-    }
-    const imports = JSON.parse(options["import-arms"]);
-    for (const imported of imports) addImportedArm(imported, draft.labels[imported.arm]);
-    for (const input of $("custom-arms").querySelectorAll(".evaluation-baseline select")) input.value = imports.at(-1).target_arm;
-    updateCombination();
-    selected = undefined; $("launch-view").hidden = false; $("watch-view").hidden = true;
-    history.replaceState(null, "", "/"); connectEvents();
-    showNotice("input-status", "Previous arms loaded. Only the final HEAD setup executes. Historical grades and scores are reused by default; fresh candidates adapt historical tests to their implementation. HEAD is the setup configuration repository revision. Review evaluation settings and confirm inference to start.");
-    $("f-preset").focus();
-  } catch (error) { showNotice(statusId, error.message, true); }
-  finally { button.disabled = false; }
-}
-function drawLaunch() {
-  const defaults = config.defaults;
-  customArmIndex = 0;
-  $("input-status").hidden = true;
-  $("prepare-only").checked = false;
-  $("paid-consent").checked = false;
-  for (const button of document.querySelectorAll("[data-workflow]")) button.setAttribute("aria-pressed", String(button.dataset.workflow === workflow));
-  let fields;
-  if (workflow === "pair") {
-    const task = config.tasks.find((item) => item.id === defaults.task);
-    fields = '<section class="form-section"><h2>Reuse a completed run</h2>'
-      + field("Previous run directory", "reuse-directory", "", "text", "Load its arms and matching controls, then execute one fresh setup at HEAD.")
-      + '<button id="reuse-run" type="button">Compare against HEAD</button><p id="reuse-status" role="status" hidden></p></section><div class="grid">'
-      + select("Comparison", "preset", config.comparisons.map((item) => [item.id, item.title]), defaults.preset)
-      + select("Task", "task", config.tasks.map((item) => [item.id, item.title]), defaults.task)
-      + '</div><div id="setup-commit-fields" class="grid" hidden>'
-      + field("Setup commit A", "setup-a-commit", "", "text", "Baseline revision in the setup configuration repository.")
-      + field("Setup commit B", "setup-b-commit", "", "text", "Treatment revision; live tracked edits are excluded.")
-      + '</div><section id="custom-composition" hidden><h2>Compared setups</h2><p class="hint">Choose at least two setups. For each, choose Codex or Mekugi with Stock guidance or a committed setup revision. Shared controls apply to every setup.</p><div id="custom-arms"></div><button id="add-custom-arm" type="button">Add setup</button></section><div id="comparison-preview" class="comparison-preview"></div><p id="comparison-description" class="description"></p><section class="form-section" aria-labelledby="run-settings-title"><h2 id="run-settings-title">Run configuration</h2><div class="grid">'
-      + '<div class="source-field">' + field("Source checkout", "source", task.source, "text", sourceHint(task)) + '</div>'
-      + select("Model", "model", config.models.map(item => [item.id, item.title]), defaults.model)
-      + select("Reasoning effort", "reasoning-effort", [["", "Task default"], ...config.reasoningEfforts.map((value) => [value, words(value)])], "", "NVM and portable packs: medium. Long-horizon tasks: xhigh. Grok: high.")
-      + '<div>' + check("Parallel work", "parallel-work") + '<p class="hint">Ask both agents to delegate independent work. Unchecked keeps existing behavior.</p></div>'
-      + field("Fresh pair count", "count", "1", "number", "One is a single pair. Two or more create a trial set.")
-      + select("Trial arm order", "order", [["concurrent", "Concurrent"], ["alternating", "Alternating first arm"]], "concurrent")
-      + '<div id="compaction-limit-field">' + field("Shared compaction token limit", "auto-compact-limit", task.compactLimit ?? "", "number", "Both arms compact at this context size. Optional for minimal Codex versus Mekugi; a blank field uses the task default.") + "</div></div></section>"
-      + '<details class="advanced"><summary>Runtime and resource settings</summary><div class="grid">' + sharedFields()
-      + field("Codex authentication file", "auth-file", defaults["auth-file"], "text", "Local path only. Never paste credential contents.")
-      + field("Grok authentication file", "grok-auth-file", defaults["grok-auth-file"])
-      + '</div></details><details class="advanced"><summary>Mekugi and comparison settings</summary><div class="grid">'
-      + select("Current-setup launcher", "current-launcher", [["codex", "Direct Codex"], ["mekugi", "Mekugi"]], "codex", "For setup-commit comparisons this launcher applies to both arms.")
-      + field("Mekugi source", "mekugi-source", defaults["mekugi-source"])
-      + field("Mekugi executable", "mekugi-bin", defaults["mekugi-bin"])
-      + field("Captured Mekugi build (optional)", "mekugi-build", "", "text", "Owns its executable and source when supplied.")
-      + '<fieldset class="mekugi-settings"><legend>Mekugi behavior</legend><p class="hint">Applies to this run only. Export diagnostics are enabled automatically.</p><div class="grid"><div>'
-      + MEKUGI_TOGGLES.map(([name, label]) => check(label, "mekugi-" + name, "f", true)).join("")
-      + '<p id="deduplication-owned" class="hint" hidden>The comparison sets deduplication off for A and on for B.</p></div>'
-      + select("Faint text", "mekugi-ansi-faint", [["auto", "Auto"], ["on", "On"], ["off", "Off"]], "auto")
-      + field("Response-start timeout", "mekugi-timeout", "", "text", "Mekugi default: 10m. Use a duration such as 30s or 2m.")
-      + field("Stream idle timeout", "mekugi-stream-idle-timeout", "", "text", "Mekugi default: 4m. Use a duration such as 30s or 2m.")
-      + '</div></fieldset>'
-      + field("Grok executable", "grok-bin", defaults["grok-bin"])
-      + field("Reviewer treatment (optional)", "review-treatment", "", "text", "Use an existing reviewer overlay path.")
-      + '</div>' + check("Use protected Mekugi runtime", "protect-mekugi") + '</details>'
-      + '<section class="form-section"><h2>Compare with previous runs</h2><p class="hint">Import completed arms without executing them again. Leave at least one fresh setup with matching task and execution controls. Use repeat count 1.</p><div id="imported-arms"></div><button id="add-imported-arm" type="button">Import previous arm</button>'
-      + '<div id="evaluation-settings" hidden>' + select("Evaluation", "evaluation-mode", [["reuse", "Reuse historical evaluation"], ["fresh", "Fresh evaluation of all candidates"]], "reuse", "Reuse keeps imported grades, scores and assessments unchanged. The judge adapts historical tests to each fresh implementation while testing the same behaviors. Fresh evaluation regrades and rescores every patch.")
-      + '<div id="paired-evaluation-baselines"></div></div></section>'
-      + '<details class="advanced" id="custom-task-fields"><summary>Custom task contract</summary><p class="hint">A portable pack owns its prompt, criteria, profile and commits. Otherwise supply all four standalone controls.</p><div class="grid">'
-      + field("Portable task-pack manifest", "task-pack")
-      + field("Task prompt file", "task-file")
-      + field("Criteria JSON file", "criteria")
-      + field("Base commit", "base")
-      + field("Forbidden solution commit", "forbidden")
-      + select("Task profile", "profile", [["", "Default"], ["task", "Portable task"], ["mekugi", "Mekugi"], ["skills-mgr-bundle", "Skills manager bundle"], ["godoxy-icons", "GoDoxy icons"]])
-      + "</div></details>";
-  } else if (workflow === "suite") {
-    fields = '<p class="description">Run a pinned set of tasks with fresh repeated pairs. Suites compare minimal and current setup. Task contracts own the model and evaluation controls.</p><div class="grid">'
-      + field("Suite manifest", "suite", "tasks/diverse-suite.json", "text", "The pinned diverse suite contains Gin, Flask, Express and NVM.")
-      + field("Source-mapping JSON file", "sources-file", "", "text", "Maps each suite task to its local checkout.")
-      + field("Fresh pairs per task", "count", "2", "number")
-      + select("Arm order", "order", [["alternating", "Alternating first arm"], ["concurrent", "Concurrent"]], "alternating")
-      + '</div><details class="advanced"><summary>Runtime and resource settings</summary><div class="grid">' + sharedFields()
-      + field("Codex authentication file for execution", "suite-auth-file", defaults["auth-file"])
-      + field("Reviewer treatment (optional)", "review-treatment")
-      + "</div></details>";
-  } else {
-    fields = '<p class="description">Freeze a Mekugi source snapshot, compile it in an immutable builder image, and retain executable identity and build logs. This operation makes no model requests.</p><div class="grid">'
-      + field("Mekugi source checkout", "source", defaults["mekugi-source"])
-      + field("Builder image", "image", defaults.image, "text", "An existing image with Go and Python 3.")
-      + field("Output parent (optional)", "output-parent")
-      + field("Docker executable", "docker-bin", defaults["docker-bin"]) + "</div>";
+function armSettings(row) {
+  const settings = { ...row.originalSettings,
+    model: armValue(row, "model"), reasoning_effort: armValue(row, "reasoning-effort"),
+    cpus: armValue(row, "cpus"), memory: armValue(row, "memory"), timeout_seconds: Number(armValue(row, "run-timeout")),
+    parallel_work: armInput(row, "parallel-work").checked,
+  };
+  delete settings.auto_compact_limit; delete settings.mekugi_flags; delete settings.skills;
+  if (armValue(row, "compact").trim()) settings.auto_compact_limit = Number(armValue(row, "compact"));
+  if (armValue(row, "launcher") === "mekugi") {
+    settings.mekugi_flags = MEKUGI_TOGGLES.filter(([name]) => !armInput(row, name).disabled).map(([name]) => "--" + name + "=" + armInput(row, name).checked);
+    for (const name of MEKUGI_VALUES) if (armValue(row, name).trim()) settings.mekugi_flags.push("--" + name + "=" + armValue(row, name).trim());
   }
-  $("launch-fields").innerHTML = fields;
-  if (workflow === "pair") {
-    $("f-task").addEventListener("change", () => {
-      const task = config.tasks.find((item) => item.id === $("f-task").value);
-      $("f-source").value = task.source;
-      $("f-source").closest(".field").querySelector(".hint").textContent = sourceHint(task);
-      $("f-auto-compact-limit").value = task.compactLimit ?? "";
-      if (task.preset) {
-        $("f-preset").value = task.preset;
-      }
+  if (armValue(row, "source") !== "import" && Object.keys(row.skillOverrides).length) settings.skills = { ...row.skillOverrides };
+  return settings;
+}
+function selectArm(row, focus = false) {
+  activeArm = row;
+  for (const panel of armElements()) {
+    const selected = panel === row;
+    panel.hidden = !selected;
+    const tab = $(panel.dataset.tab);
+    tab.setAttribute("aria-selected", String(selected)); tab.tabIndex = selected ? 0 : -1;
+  }
+  if (focus) $(row.dataset.tab).focus();
+  loadArmSkills(row);
+}
+function addCustomArm(launcher = "mekugi", revision = "HEAD", settings = {}) {
+  const index = ++customArmIndex, prefix = "arm-" + index;
+  const row = document.createElement("div");
+  row.id = prefix + "-panel"; row.className = "arm-panel"; row.setAttribute("role", "tabpanel");
+  row.dataset.tab = prefix + "-tab"; row.setAttribute("aria-labelledby", row.dataset.tab);
+  row.skillOverrides = { ...settings.skills }; row.originalSettings = settings;
+  const task = config.tasks.find(item => item.id === $("f-task").value);
+  const f = (label, name, value = "", type = "text", hint = "") => field(label, name, value, type, hint, prefix);
+  const sel = (label, name, values, value) => select(label, name, values, value, "", prefix);
+  const cb = (label, name, value = false) => check(label, name, prefix, value);
+  const grok = $("f-preset").value === "codex-mekugi-grok";
+  row.innerHTML = '<div class="arm-heading"><button class="remove-arm" type="button">Remove arm</button></div><div class="grid arm-identity">'
+    + sel("Candidate", "source", [["fresh", "Fresh run"], ["import", "Previous result"]], "fresh")
+    + '<div class="fresh-identity">' + sel("Launcher", "launcher", [["codex", "Codex"], ["mekugi", "Mekugi"], ...(grok ? [["grok", "Grok CLI"]] : [])], launcher) + '</div></div>'
+    + '<div class="import-fields grid" hidden>' + f("Previous run directory", "import-directory") + f("Previous arm key", "import-arm", "current") + '<p class="imported-setup hint"></p></div>'
+    + '<div class="fresh-fields"><div class="grid">'
+    + sel("Guidance", "setup", [["stock", "Minimal"], ["current", "Current tracked setup"], ["revision", "Setup commit"]], ["stock", "current"].includes(revision) ? revision : "revision")
+    + f("Setup revision", "revision", ["stock", "current"].includes(revision) ? "HEAD" : revision)
+    + '</div><div class="grid">' + sel("Model", "model", grok ? [["grok:grok-4.7", "Grok 4.7"]] : config.models.map(item => [item.id, item.title]), settings.model || (grok ? "grok:grok-4.7" : config.defaults.model))
+    + sel("Reasoning effort", "reasoning-effort", config.reasoningEfforts.map(value => [value, words(value)]), settings.reasoning_effort || (grok ? "high" : task.effort))
+    + '</div><details class="arm-mekugi advanced" open><summary>Mekugi behavior</summary><div class="toggle-list">'
+    + MEKUGI_TOGGLES.map(([name, label]) => cb(label, name, true)).join("")
+    + '</div><div class="grid">' + f("Response-start timeout", "timeout", "", "text", "Default: 10m. For example, 30s or 2m.")
+    + f("Stream idle timeout", "stream-idle-timeout", "", "text", "Default: 4m.") + '</div></details>'
+    + '<details class="arm-skills advanced"><summary>Skills <span class="skill-count"></span></summary><div class="skill-content"></div></details>'
+    + '<details class="advanced"><summary>Execution limits</summary><div class="grid">'
+    + f("CPU limit", "cpus", settings.cpus || "2", "number") + f("Memory limit", "memory", settings.memory || "4g")
+    + f("Time limit (seconds)", "run-timeout", settings.timeout_seconds ?? task.timeout, "number")
+    + f("Compaction token limit", "compact", settings.auto_compact_limit ?? ($("f-preset").value === "stock-mekugi" ? task.compactLimit ?? "" : ""), "number")
+    + '</div>' + cb("Request parallel work", "parallel-work", settings.parallel_work === true) + '</details>'
+    + '<div class="evaluation-baseline" hidden>' + sel("Historical evaluation baseline", "evaluation-baseline", [], "") + '</div></div>';
+  for (const input of row.querySelectorAll("input,select")) {
+    input.dataset.setting = input.name;
+    input.removeAttribute("name");
+    input.addEventListener("change", () => {
+      if (["setup", "revision"].includes(input.dataset.setting)) { row.skillOverrides = {}; row.skillsKey = undefined; }
+      if (input.dataset.setting === "launcher" && $("f-preset").value === "setup-commits" && new Set(armElements().map(panel => armValue(panel, "launcher"))).size > 1) $("f-preset").value = "custom";
       updateCombination();
     });
-    addCustomArm("codex", "stock"); addCustomArm("mekugi");
-    $("add-custom-arm").addEventListener("click", () => { addCustomArm(); updateCombination(); });
-    $("add-imported-arm").addEventListener("click", () => addImportedArm());
-    $("reuse-run").addEventListener("click", (event) => compareAgainstHead($("f-reuse-directory").value, "reuse-status", event.currentTarget));
-    $("f-reuse-directory").removeAttribute("name");
-    for (const id of ["f-preset", "f-current-launcher", "f-mekugi-build", "f-task-pack", "f-evaluation-mode"]) {
-      $(id).addEventListener("input", updateCombination);
-      $(id).addEventListener("change", updateCombination);
-    }
-    updateCombination();
   }
-  $("prepare-only").parentElement.hidden = workflow === "build";
-  updateConsent();
+  armInput(row, "cpus").step = "any";
+  // Runtime timeout and Mekugi response timeout have separate owners.
+  for (const flag of settings.mekugi_flags || []) {
+    const [name, value] = flag.slice(2).split("="); const input = armInput(row, name);
+    if (input?.type === "checkbox") input.checked = value !== "false";
+    else if (input) input.value = value;
+  }
+  row.querySelector(".remove-arm").addEventListener("click", () => {
+    const rows = armElements(), removed = rows.indexOf(row);
+    for (const panel of rows) {
+      const input = armInput(panel, "evaluation-baseline");
+      const index = rows.findIndex((_, i) => armKey(i) === input.value);
+      if (index >= removed) input.value = index === removed ? "" : armKey(index - 1);
+    }
+    $(row.dataset.tab).remove(); row.remove();
+    if (activeArm === row) activeArm = armElements()[Math.min(removed, armElements().length - 1)];
+    updateCombination(); selectArm(activeArm, true);
+  });
+  const tab = document.createElement("button"); tab.type = "button"; tab.id = row.dataset.tab;
+  tab.setAttribute("role", "tab"); tab.setAttribute("aria-controls", row.id);
+  tab.addEventListener("click", () => selectArm(row));
+  tab.addEventListener("keydown", event => {
+    const rows = armElements(), i = rows.indexOf(row);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : event.key === "ArrowRight" ? (i + 1) % rows.length : event.key === "ArrowLeft" ? (i + rows.length - 1) % rows.length : undefined;
+    if (next !== undefined) { event.preventDefault(); selectArm(rows[next], true); }
+  });
+  $("arm-tabs").append(tab); $("custom-arms").append(row);
+  return row;
+}
+async function loadArmSkills(row) {
+  if (!row || row.hidden || armValue(row, "source") === "import") return;
+  const setup = armValue(row, "setup"), revision = setup === "stock" ? "stock" : setup === "revision" ? armValue(row, "revision").trim() : undefined;
+  const directory = $("f-current-home").value.trim(), key = JSON.stringify([directory, setup, revision]);
+  if (row.skillsKey === key) return;
+  row.skillsKey = key;
+  const content = row.querySelector(".skill-content"), count = row.querySelector(".skill-count");
+  count.textContent = ""; content.innerHTML = '<div class="skill-skeleton" aria-label="Fetching setup skills" aria-busy="true"></div>';
+  try {
+    if (setup === "revision" && !revision) throw new Error("Enter a setup revision to choose skills.");
+    const data = setup === "stock" ? { skills: [] } : await api("setup-skills", { directory, revision });
+    if (row.skillsKey !== key || !row.isConnected) return;
+    count.textContent = data.skills.length ? "(" + data.skills.length + ")" : "";
+    content.innerHTML = data.skills.length ? '<div class="button-row skill-actions"><button type="button" class="disable-skills">Disable all</button><button type="button" class="reset-skills">Use setup defaults</button></div><div class="skill-list"></div>' : '<p class="hint">' + (setup === "stock" ? "Minimal guidance includes no setup skills." : "No skills are configured in this setup.") + '</p>';
+    for (const skill of data.skills) {
+      const label = document.createElement("label"); label.className = "check skill-toggle";
+      const input = document.createElement("input"); input.type = "checkbox"; input.checked = row.skillOverrides[skill.name] ?? skill.enabled;
+      input.addEventListener("change", () => { row.skillOverrides[skill.name] = input.checked; $("input-status").hidden = true; });
+      const text = document.createElement("span"); text.textContent = skill.name;
+      if (skill.conditional) { const note = document.createElement("small"); note.textContent = "Conditional in setup"; text.append(note); }
+      label.append(input, text); content.querySelector(".skill-list").append(label);
+    }
+    content.querySelector(".disable-skills")?.addEventListener("click", () => {
+      for (const input of content.querySelectorAll(".skill-list input")) {
+        input.checked = false;
+        input.dispatchEvent(new Event("change"));
+      }
+    });
+    content.querySelector(".reset-skills")?.addEventListener("click", () => { row.skillOverrides = {}; row.skillsKey = undefined; loadArmSkills(row); });
+  } catch (error) {
+    if (row.skillsKey !== key || !row.isConnected) return;
+    content.replaceChildren(); const message = document.createElement("p"); message.className = "error"; message.setAttribute("role", "alert"); message.textContent = error.message;
+    const retry = document.createElement("button"); retry.type = "button"; retry.textContent = "Retry skills";
+    retry.addEventListener("click", () => { row.skillsKey = undefined; loadArmSkills(row); }); content.append(message, retry);
+  }
+}
+function applyPreset() {
+  const preset = $("f-preset").value;
+  const definitions = {
+    custom: [["codex", "stock"], ["mekugi", "HEAD"]],
+    "setup-commits": [["codex", "HEAD"], ["codex", "HEAD"]],
+    "stock-current": [["codex", "stock"], ["codex", "current"]],
+    "same-setup": [["codex", "current"], ["mekugi", "current"]],
+    "stock-mekugi": [["codex", "stock"], ["mekugi", "stock"]],
+    "duplicate-output": [["mekugi", "current"], ["mekugi", "current"]],
+    "codex-mekugi-grok": [["mekugi", "stock"], ["grok", "stock"]],
+  };
+  $("custom-arms").replaceChildren(); $("arm-tabs").replaceChildren();
+  for (const [launcher, revision] of definitions[preset]) addCustomArm(launcher, revision);
+  activeArm = armElements()[0]; updateCombination(); selectArm(activeArm);
+}
+function drawLaunch() {
+  customArmIndex = 0; $("input-status").hidden = true;
+  $("prepare-only").checked = false; $("paid-consent").checked = false;
+  const task = config.tasks.find(item => item.id === config.defaults.task);
+  $("launch-fields").innerHTML = '<section class="task-settings"><h2>Task</h2><div class="grid">'
+    + select("Pinned task", "task", config.tasks.map(item => [item.id, item.title]), config.defaults.task)
+    + field("Source checkout", "source", task.source, "text", sourceHint(task)) + '</div>'
+    + '<details class="advanced" id="custom-task-fields" hidden><summary>Custom task contract</summary><div class="grid">'
+    + field("Portable task-pack manifest", "task-pack") + field("Task prompt file", "task-file") + field("Criteria JSON file", "criteria")
+    + field("Base commit", "base") + field("Forbidden solution commit", "forbidden")
+    + select("Task profile", "profile", [["", "Default"], ["task", "Portable task"], ["mekugi", "Mekugi"], ["skills-mgr-bundle", "Skills manager bundle"], ["godoxy-icons", "GoDoxy icons"]])
+    + '</div></details></section><section class="arm-workspace"><div class="section-heading"><h2>Arms</h2>'
+    + select("Comparison preset", "preset", config.comparisons.map(item => [item.id, item.title]), config.defaults.preset) + '</div>'
+    + '<div class="arm-tab-bar"><div id="arm-tabs" role="tablist" aria-label="Comparison arms"></div><button id="add-custom-arm" type="button">Add arm</button></div><div id="custom-arms"></div></section>'
+    + '<div id="evaluation-settings" hidden>' + select("Evaluation", "evaluation-mode", [["reuse", "Reuse historical evaluation"], ["fresh", "Fresh evaluation of all candidates"]], "reuse") + '</div>'
+    + '<details class="advanced"><summary>Repeat trials</summary><div class="grid">' + field("Fresh trial count", "count", "1", "number")
+    + select("Trial arm order", "order", [["concurrent", "Concurrent"], ["alternating", "Alternating first arm"]], "concurrent") + '</div></details>'
+    + '<details class="advanced"><summary>Host infrastructure</summary><div class="grid">' + sharedFields() + '</div></details>'
+    + '<details class="advanced"><summary>Start from a completed run</summary>' + field("Previous run directory", "reuse-directory")
+    + '<button id="reuse-run" type="button">Compare against HEAD</button><p id="reuse-status" role="status" hidden></p></details>';
+  $("f-reuse-directory").removeAttribute("name");
+  $("reuse-run").addEventListener("click", event => compareAgainstHead($("f-reuse-directory").value, "reuse-status", event.currentTarget));
+  $("f-preset").addEventListener("change", applyPreset);
+  $("add-custom-arm").addEventListener("click", () => { const row = addCustomArm(); updateCombination(); selectArm(row, true); });
+  $("f-task").addEventListener("change", () => {
+    const task = config.tasks.find(item => item.id === $("f-task").value);
+    $("f-source").value = task.source; $("f-source").closest(".field").querySelector(".hint").textContent = sourceHint(task);
+    if (task.preset) { $("f-preset").value = task.preset; applyPreset(); }
+    for (const row of armElements()) { armInput(row, "run-timeout").value = task.timeout; armInput(row, "reasoning-effort").value = task.effort; }
+    updateCombination();
+  });
+  for (const id of ["f-mekugi-build", "f-task-pack", "f-evaluation-mode"]) $(id).addEventListener("change", updateCombination);
+  $("f-current-home").addEventListener("change", () => { for (const row of armElements()) { row.skillOverrides = {}; row.skillsKey = undefined; } updateCombination(); });
+  $("launch-form").oninput = () => { $("input-status").hidden = true; };
+  applyPreset(); updateConsent();
 }
 function setEnabled(id, enabled) { if ($(id)) $(id).disabled = !enabled; }
 function updateCombination() {
-  const comparison = config.comparisons.find((item) => item.id === $("f-preset").value);
-  const grok = comparison.id === "codex-mekugi-grok";
-  const composition = comparison.id === "custom";
-  const configuredArms = customArmRows();
-  const slotCount = composition ? configuredArms.length : 2;
-  for (const row of $("imported-arms").children) {
-    const select = row.querySelector("select"), selected = select.value;
-    const keys = Array.from({ length: slotCount }, (_, i) => i === 0 ? "stock" : i === 1 ? "current" : "arm-" + (i + 1));
-    select.innerHTML = keys.map((key, i) => '<option value="' + key + '">' + esc("Setup " + (i + 1) + " (" + key + ")") + '</option>').join("");
-    select.value = keys.includes(selected) ? selected : "stock";
+  const preset = $("f-preset").value, rows = armElements(), imports = importedArmRows(), reuse = imports.length && $("f-evaluation-mode").value === "reuse";
+  $("add-custom-arm").hidden = preset !== "custom";
+  for (const [index, row] of rows.entries()) {
+    const imported = armValue(row, "source") === "import", launcher = armValue(row, "launcher");
+    const label = preset === "duplicate-output" && !imported ? "Mekugi · Output " + (index ? "on" : "off") : imported ? "Previous · " + armValue(row, "import-arm") : (launcher === "mekugi" ? "Mekugi" : launcher === "grok" ? "Grok CLI" : "Codex") + " · " + (armValue(row, "setup") === "stock" ? "Minimal" : armValue(row, "setup") === "current" ? "Current" : armValue(row, "revision"));
+    $(row.dataset.tab).textContent = label;
+    row.querySelector(".arm-heading").hidden = preset !== "custom" || rows.length <= 2;
+    row.querySelector(".fresh-fields").hidden = imported; row.querySelector(".fresh-identity").hidden = imported; row.querySelector(".import-fields").hidden = !imported;
+    armInput(row, "setup").disabled = preset !== "custom";
+    // Current-home snapshots belong only to presets that explicitly select them.
+    armInput(row, "setup").querySelector('option[value="current"]').hidden = preset === "custom";
+    armInput(row, "revision").closest(".field").hidden = armValue(row, "setup") !== "revision";
+    armInput(row, "launcher").disabled = !(preset === "custom" || preset === "stock-current" && index === 1 || preset === "setup-commits");
+    row.querySelector(".fresh-identity").hidden = imported || armInput(row, "launcher").disabled;
+    armInput(row, "setup").closest(".field").hidden = preset !== "custom";
+    const guidance = armInput(row, "setup").closest(".grid");
+    guidance.hidden = preset !== "custom" && armValue(row, "setup") !== "revision";
+    guidance.classList.toggle("single-field", preset !== "custom" || armValue(row, "setup") !== "revision");
+    row.querySelector(".arm-mekugi").hidden = launcher !== "mekugi";
+    const dedup = armInput(row, "deduplicate-output"); dedup.disabled = preset === "duplicate-output";
+    if (dedup.disabled) dedup.checked = index === 1;
+    row.querySelector(".evaluation-baseline").hidden = !reuse || imported;
+    const baseline = armInput(row, "evaluation-baseline"), previous = baseline.value;
+    baseline.innerHTML = imports.map(item => '<option value="' + item.target_arm + '">' + esc($(rows.find((_, i) => armKey(i) === item.target_arm).dataset.tab).textContent) + '</option>').join("");
+    baseline.value = imports.some(item => item.target_arm === previous) ? previous : imports.at(-1)?.target_arm || "";
   }
-  for (const button of $("custom-arms").querySelectorAll("button")) button.disabled = configuredArms.length <= 2;
-  const imports = importedArmRows();
-  $("evaluation-settings").hidden = !imports.length;
-  $("f-evaluation-mode").disabled = !imports.length;
-  const reuse = imports.length && $("f-evaluation-mode").value === "reuse";
-  const baselineOptions = imports.map((item, index) => [item.target_arm,
-    ($("imported-arms").children[index].dataset.sourceLabel || "Imported " + item.arm) + " · " + item.run_dir.split("/").at(-1)]);
-  const updateBaseline = (input) => {
-    const previous = input.value;
-    input.innerHTML = baselineOptions.map(([key, label]) => '<option value="' + esc(key) + '">' + esc(label) + '</option>').join("");
-    input.value = imports.some(item => item.target_arm === previous) ? previous : imports.at(-1)?.target_arm || "";
-    input.disabled = !reuse;
-  };
-  for (const [index, row] of [...$("custom-arms").children].entries()) {
-    for (const [i, label] of [...row.querySelectorAll(":scope > .field label")].entries()) label.textContent = ["Launcher ", "Setup ", "Setup revision "][i] + (index + 1);
-    const imported = [...$("imported-arms").children].find(source => source.querySelector("select").selectedIndex === index);
-    const label = row.querySelector(".imported-setup");
-    label.hidden = !imported;
-    label.textContent = imported ? "Imported: " + (imported.dataset.sourceLabel || imported.querySelectorAll("input")[1].value) : "";
-    for (const field of row.querySelectorAll(".field")) field.hidden = Boolean(imported);
-    if (!imported) row.querySelector("input").parentElement.hidden = row.querySelectorAll("select")[1].value === "stock";
-    const baseline = row.querySelector(".evaluation-baseline");
-    baseline.hidden = Boolean(imported) || !reuse;
-    baseline.querySelector(".field").hidden = false;
-    updateBaseline(baseline.querySelector("select"));
-  }
-  const paired = $("paired-evaluation-baselines");
-  paired.hidden = composition || !reuse;
-  const previousBaselines = Object.fromEntries([...paired.querySelectorAll("select")].map(input => [input.dataset.arm, input.value]));
-  paired.innerHTML = composition || !reuse ? "" : ["stock", "current"].filter(arm => !imports.some(item => item.target_arm === arm)).map(arm => select("Evaluation baseline for " + arm, "baseline-" + arm, baselineOptions, previousBaselines[arm] || imports.at(-1).target_arm)).join("");
-  for (const input of paired.querySelectorAll("select")) { input.dataset.arm = input.name.slice("baseline-".length); input.removeAttribute("name"); }
-  $("custom-composition").hidden = !composition;
-  const mekugi = composition ? configuredArms.some(arm => arm.launcher === "mekugi") : !["stock-current", "setup-commits"].includes(comparison.id) || $("f-current-launcher").value === "mekugi";
-  const titleB = comparison.id === "stock-current" && mekugi ? "Mekugi · current setup" : comparison.b;
-  $("comparison-preview").innerHTML = '<article><h2>' + esc(comparison.a) + '</h2><p>Fresh isolated workspace</p></article><article><h2>' + esc(titleB) + '</h2><p>Same task and resource limits</p></article>';
-  if (composition) $("comparison-preview").innerHTML = configuredArms.map(arm => "<article><h2>" + esc((arm.launcher === "mekugi" ? "Mekugi" : "Codex") + " + " + (arm.setup_commit === "stock" ? "Stock" : arm.setup_commit)) + "</h2><p>Fresh isolated workspace</p></article>").join("");
-  for (const imported of importedArmRows()) {
-    const index = imported.target_arm === "stock" ? 0 : imported.target_arm === "current" ? 1 : Number(imported.target_arm.slice(4)) - 1;
-    const preview = $("comparison-preview").children[index];
-    const sourceRow = [...$("imported-arms").children].find(row => row.querySelector("select").value === imported.target_arm);
-    if (preview) preview.innerHTML = '<h2>Imported ' + esc(sourceRow?.dataset.sourceLabel || imported.arm || "arm") + '</h2><p>' + esc(imported.run_dir || "Choose a previous run") + '</p>';
-  }
-  $("comparison-description").textContent = comparison.description + (grok ? " The fixed model is Grok 4.7." : "");
-  setEnabled("f-model", !grok);
-  setEnabled("f-current-launcher", ["stock-current", "setup-commits"].includes(comparison.id));
-  $("setup-commit-fields").hidden = comparison.id !== "setup-commits";
-  for (const name of ["setup-a-commit", "setup-b-commit"]) setEnabled("f-" + name, comparison.id === "setup-commits");
-  const sharedLimit = comparison.id === "stock-mekugi";
-  setEnabled("f-auto-compact-limit", sharedLimit);
-  $("compaction-limit-field").hidden = !sharedLimit;
-  const build = $("f-mekugi-build").value.trim();
-  for (const id of ["f-mekugi-source", "f-mekugi-bin"]) setEnabled(id, mekugi && !build);
+  const mekugi = rows.some(row => armValue(row, "launcher") === "mekugi");
+  for (const id of ["f-mekugi-source", "f-mekugi-bin"]) setEnabled(id, mekugi && !$("f-mekugi-build").value.trim());
   setEnabled("f-mekugi-build", mekugi);
-  for (const name of [...MEKUGI_TOGGLES.map(([name]) => name), ...MEKUGI_VALUES]) setEnabled("f-mekugi-" + name, mekugi);
-  setEnabled("f-mekugi-deduplicate-output", mekugi && comparison.id !== "duplicate-output");
-  $("deduplication-owned").hidden = comparison.id !== "duplicate-output";
-  for (const id of ["f-grok-bin", "f-grok-auth-file"]) setEnabled(id, grok);
-  setEnabled("f-protect-mekugi", mekugi && ["stock-current", "same-setup"].includes(comparison.id));
-  setEnabled("f-review-treatment", !["custom", "stock-mekugi", "codex-mekugi-grok", "setup-commits"].includes(comparison.id));
+  for (const id of ["f-grok-bin", "f-grok-auth-file"]) { setEnabled(id, preset === "codex-mekugi-grok"); $(id).closest(".field").hidden = preset !== "codex-mekugi-grok"; }
+  for (const id of ["f-mekugi-source", "f-mekugi-bin", "f-mekugi-build"]) $(id).closest(".field").hidden = !mekugi;
+  $("evaluation-settings").hidden = !imports.length; $("f-evaluation-mode").disabled = !imports.length;
   const custom = $("f-task").value === "custom";
   $("custom-task-fields").hidden = !custom;
   for (const input of $("custom-task-fields").querySelectorAll("input,select")) input.disabled = !custom;
   if (custom && $("f-task-pack").value.trim()) for (const name of ["base", "forbidden", "task-file", "criteria", "profile"]) setEnabled("f-" + name, false);
   $("input-status").hidden = true;
+  if (activeArm?.isConnected) selectArm(activeArm);
 }
 function updateConsent() {
-  const paid = workflow !== "build" && !$("prepare-only").checked;
+  const paid = !$("prepare-only").checked;
   $("consent-label").hidden = !paid;
   $("start-operation").disabled = busy || Boolean(activeId) || paid && !$("paid-consent").checked;
-  $("start-operation").textContent = workflow === "build" ? "Capture build" : paid ? workflow === "suite" ? "Prepare and run suite" : "Prepare and start run" : workflow === "suite" ? "Prepare suite" : "Prepare comparison";
-  $("inference-note").textContent = workflow === "build" ? "No model inference. A builder image must already be available."
-    : paid ? "This starts model requests using your local authentication and quota. API-equivalent costs are estimates, not subscription charges."
-    : workflow === "suite" ? "Prepares fresh pinned tasks and runs model-free preflight. It makes no model requests."
-    : "Preparation may clone the NVM source and rebuild a missing or stale image. It makes no model requests.";
+  $("start-operation").textContent = paid ? "Prepare and start run" : "Prepare comparison";
+  $("inference-note").textContent = paid ? "Uses your local authentication and quota. Costs are list-price estimates." : "Prepares isolated arms without model requests. Missing source checkouts and runtime images may be built.";
 }
 function launchRequest() {
-  const options = formOptions($("launch-form"));
-  if (workflow === "pair") {
-    if (options.preset === "custom") options.arms = JSON.stringify(customArmRows());
-    const imports = importedArmRows();
-    if (imports.length) options["import-arms"] = JSON.stringify(imports);
-    if (imports.length && options["evaluation-mode"] === "reuse") {
-      const mappings = options.preset === "custom" ? [...$("custom-arms").children].flatMap((row, i) => {
-        const arm = i === 0 ? "stock" : i === 1 ? "current" : "arm-" + (i + 1);
-        return imports.some(item => item.target_arm === arm) ? [] : [[arm, row.querySelector(".evaluation-baseline select").value]];
-      }) : [...$("paired-evaluation-baselines").querySelectorAll("select")].map(input => [input.dataset.arm, input.value]);
-      options["evaluation-baselines"] = JSON.stringify(Object.fromEntries(mappings));
+  const options = formOptions($("launch-form")), rows = armElements();
+  if (options.preset === "custom") options.arms = JSON.stringify(customArmRows());
+  if (options.preset === "setup-commits") {
+    options["setup-a-commit"] = armValue(rows[0], "revision"); options["setup-b-commit"] = armValue(rows[1], "revision");
+    // Different launchers make this an explicit composition rather than a shared-launcher preset.
+    if (armValue(rows[0], "launcher") !== armValue(rows[1], "launcher")) {
+      options.preset = "custom"; options.arms = JSON.stringify(customArmRows()); delete options["setup-a-commit"]; delete options["setup-b-commit"];
+    } else options["current-launcher"] = armValue(rows[1], "launcher");
+  }
+  if (options.preset === "stock-current") options["current-launcher"] = armValue(rows[1], "launcher");
+  options["arm-settings"] = JSON.stringify(Object.fromEntries(rows.map((row, i) => [armKey(i), armSettings(row)])));
+  const imports = importedArmRows();
+  if (imports.length) options["import-arms"] = JSON.stringify(imports);
+  if (imports.length && options["evaluation-mode"] === "reuse") options["evaluation-baselines"] = JSON.stringify(Object.fromEntries(rows.flatMap((row, i) => imports.some(item => item.target_arm === armKey(i)) ? [] : [[armKey(i), armValue(row, "evaluation-baseline")]])));
+  if ($("prepare-only").checked) options["prepare-only"] = true;
+  else if ($("paid-consent").checked) options["confirm-paid-inference"] = true;
+  return { command: "launch", options };
+}
+async function compareAgainstHead(directory, statusId, button) {
+  button.disabled = true; showNotice(statusId, "Reading retained comparison…");
+  try {
+    const draft = await api("comparison-draft", { directory }), options = draft.options;
+    drawLaunch();
+    for (const [name, value] of Object.entries(options)) if ($("f-" + name)) $("f-" + name).value = value;
+    $("custom-arms").replaceChildren(); $("arm-tabs").replaceChildren();
+    const settings = JSON.parse(options["arm-settings"] || "{}");
+    for (const [i, arm] of JSON.parse(options.arms).entries()) addCustomArm(arm.launcher, arm.setup_commit, {
+      model: options.model, reasoning_effort: options["reasoning-effort"], cpus: options.cpus, memory: options.memory,
+      timeout_seconds: Number(options.timeout), mekugi_flags: JSON.parse(options["mekugi-flags"] || "[]"), ...settings[armKey(i)],
+    });
+    const rows = armElements();
+    for (const imported of JSON.parse(options["import-arms"])) {
+      const row = rows.find((_, i) => armKey(i) === imported.target_arm);
+      armInput(row, "source").value = "import"; armInput(row, "import-directory").value = imported.run_dir; armInput(row, "import-arm").value = imported.arm;
+      row.querySelector(".imported-setup").textContent = draft.labels[imported.arm];
     }
-    const flags = [];
-    for (const name of [...MEKUGI_TOGGLES.map(([name]) => name), ...MEKUGI_VALUES]) {
-      const key = "mekugi-" + name;
-      const input = $("f-" + key);
-      delete options[key];
-      if (!input || input.disabled) continue;
-      if (input.type === "checkbox") flags.push(`--${name}=${input.checked}`);
-      else if (input.value.trim()) flags.push(`--${name}=${input.value.trim()}`);
-    }
-    if (flags.length) options["mekugi-flags"] = JSON.stringify(flags);
-  }
-  const command = workflow === "pair" ? "launch" : workflow === "suite" ? "prepare-suite" : "build-mekugi";
-  const body = { command, options };
-  if (workflow === "pair") {
-    if ($("prepare-only").checked) options["prepare-only"] = true;
-    else if ($("paid-consent").checked) options["confirm-paid-inference"] = true;
-  }
-  if (workflow === "suite") {
-    body.authFile = options["suite-auth-file"] || config.defaults["auth-file"];
-    delete options["suite-auth-file"];
-    body.runAfterPrepare = !$("prepare-only").checked;
-    body.confirmPaid = $("paid-consent").checked;
-  }
-  return body;
+    activeArm = rows.at(-1); updateCombination(); selectArm(activeArm, true);
+    selected = undefined; $("launch-view").hidden = false; $("watch-view").hidden = true;
+    history.replaceState(null, "", "/"); connectEvents();
+    showNotice("input-status", "Previous results imported. Review the fresh HEAD arm and authorize inference to start.");
+  } catch (error) { showNotice(statusId, error.message, true); }
+  finally { button.disabled = false; }
 }
 async function perform(id, endpoint, body) {
   if (busy || !body) return;
@@ -938,7 +911,6 @@ async function init() {
       const button = event.target.closest("[data-entry]");
       if (button) selectEntry(button.dataset.entry).catch((error) => showNotice("watch-error", error.message, true));
     });
-    for (const button of document.querySelectorAll("[data-workflow]")) button.addEventListener("click", () => { workflow = button.dataset.workflow; drawLaunch(); });
     $("prepare-only").addEventListener("change", () => { $("paid-consent").checked = false; updateConsent(); });
     $("paid-consent").addEventListener("change", updateConsent);
     $("check-inputs").addEventListener("click", () => perform("input-status", "check", launchRequest()));

@@ -47,32 +47,41 @@ use `--host 0.0.0.0` to listen on all IPv4 interfaces, or `--host ::` for IPv6.
 The workbench has no login and can control local files and paid runs. Bind only
 to trusted interfaces. Keep the server running while an operation is active.
 
-Choose a pinned task and comparison, set the source checkout, model, reasoning effort,
-and optional Mekugi settings, then **Check inputs**. The workbench explains incompatible
-combinations and missing local inputs before starting work. Advanced settings expose
-the existing preparation options, including custom task packs and task/criteria files.
-For **Setup commit versus setup commit**, select both revisions from the configuration
-repository. The launcher selection applies to both arms; tracked local edits stay out.
-See the [setup-commit guide](doc/cli.md#compare-setup-commits).
+Choose a pinned task and source checkout, then configure the comparison in the
+**Arms** tabs. Each arm has its own model, reasoning effort, execution limits and
+Mekugi behavior. Presets supply starting setups; **Custom composition** supports
+additional arms and independent launchers and setup commits. **Skills** offers
+individual switches for skills configured in that arm's setup registry. **Disable all**
+turns off every listed skill for that arm; **Use setup defaults** restores its selections. Changes
+apply to its disposable runtime home, not the host or another arm. Unchanged
+skills retain their setup's defaults, including conditions. Minimal guidance
+includes no setup skills.
+
+Use **Check inputs** before starting. **Host infrastructure** holds shared runtime
+paths and authentication-file paths. Custom task inputs appear only for the custom
+task. For **Setup commit versus setup commit**, choose the revisions in their arm
+tabs. Different launchers turn it into a custom composition; tracked local edits
+stay out of committed setup snapshots. See the [setup-commit guide](doc/cli.md#compare-setup-commits).
 Tasks with a pinned upstream repository, such as NVM and sqlite-utils multi-commit upgrade,
 clone a missing source checkout during preparation. The sqlite-utils task defaults to
 minimal Codex versus minimal Mekugi, a shared 200,000-token
 auto-compact limit, xhigh reasoning, and a 55-minute limit.
 Preparation only is off by default; explicitly consent to paid inference before
-starting a run, or select preparation only for a model-free check. Use the Mekugi
-behavior checkboxes and faint-text/timeout controls to configure the prepared run.
+starting a run, or select preparation only for a model-free check. Mekugi behavior
+switches and response/idle timeouts appear only on Mekugi arms.
 A repeat count of two or more prepares fresh trial pairs.
-To compare one fresh candidate with earlier results, use **Compare with previous
-runs**, choose the slot to replace, and enter the retained run directory and arm
-key. Add more imports for a custom multi-arm comparison, leaving at least one fresh
-slot and repeat count 1. Imported slots keep their original setup labels and skip
+To compare with earlier results, select **Previous result** as the candidate in an
+arm tab and enter the retained run directory and arm key. Add arms for a custom
+multi-arm comparison, leaving at least one fresh slot and repeat count 1. Imported
+slots keep their original setup labels and skip
 candidate execution. **Reuse historical evaluation**, the default, also preserves
 their grades, scores, and assessments. Select an imported evaluation baseline for
 each fresh setup; judges adapt its historical tests to the new implementation
 while testing the same behaviors. Choose **Fresh evaluation of all candidates**
 to regrade and rescore every patch instead.
 The [import guide](doc/cli.md#import-previous-arms) covers matching controls and CLI use.
-The suite workflow accepts a suite manifest and source-mapping file.
+Suite preparation and Mekugi build capture are available through the
+[CLI guide](doc/cli.md).
 
 The run view shows phase messages, elapsed time, persisted run/arm/judge status,
 candidate output tails, and partial results while work continues. Updates arrive
@@ -90,7 +99,6 @@ evidence, judge reasoning, warnings, trial/suite aggregates, and retained report
 patches, and logs. Unknown metrics stay unknown. Each result is descriptive evidence,
 not a causal conclusion. Report generation, source assessments, usage correction,
 invalidation, preflight, and grading are available as existing-run actions in the UI.
-Mekugi build capture is available as a separate model-free operation.
 Explicit selection loads the selected run even when automatic watching is paused.
 Pausing evidence updates keeps operation status and Stop feedback live.
 Loaded or refreshed views use current invalidation reasons instead of winner claims

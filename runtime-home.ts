@@ -1,3 +1,4 @@
+import { applySkillSelection } from "./setup-skills";
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -104,11 +105,11 @@ async function pluginSeed(runDir: string, state: RunState, auth: string, docker:
 export async function prepareRuntimeHome(options: {
   runDir: string; state: RunState; template: string; auth: string; docker: string;
   identity: unknown; sourceHome?: string; signal?: AbortSignal;
-  baseImage?: string;
+  baseImage?: string; skills?: Record<string, boolean>;
 }): Promise<Image> {
   const { runDir, state, docker, signal } = options;
   const base = await pluginSeed(runDir, state, options.auth, docker, options.baseImage ?? dependencyImage(state), signal);
-  const key = digest({ version: 3, base, setup: options.identity, sourceHome: options.sourceHome, operator: state.operator });
+  const key = digest({ version: 3, base, skills: options.skills, setup: options.identity, sourceHome: options.sourceHome, operator: state.operator });
   const pending = homePreparations.get(state) ?? new Map<string, Promise<Image>>();
   homePreparations.set(state, pending);
   const existingPreparation = pending.get(key);
@@ -123,6 +124,7 @@ export async function prepareRuntimeHome(options: {
       await checked([docker, "tag", base, buildBase], { signal });
       await cp(options.template, join(context, "home"), { recursive: true, verbatimSymlinks: true,
         filter: source => resolve(source) !== resolve(options.template, ".codex/auth.json") });
+      await applySkillSelection(join(context, "home"), options.skills);
       const configPath = join(context, "home/.codex/config.toml");
       if (await Bun.file(configPath).exists()) {
         const settings = { ...Bun.TOML.parse(await readFile(configPath, "utf8")),

@@ -118,6 +118,14 @@ count/order controls repeat the frozen snapshots. Paid inference still requires
 explicit consent. See the [snapshot contract](contract.md#prepare-an-isolated-pair)
 for runtime supplements and provenance limits.
 
+Per-arm settings are also accepted by `launch` and `prepare`. For example, use
+`--arm-settings '{"current":{"mekugi_flags":["--shell-guard=false"],"skills":{"example":false}}}'`
+with a Mekugi arm whose setup contains the named skill. The keys are retained arm
+keys (`stock`, `current`, `arm-3`, and so on); omitted settings keep the existing
+command defaults. See the [arm settings contract](contract.md#prepare-an-isolated-pair)
+for models, reasoning and resource controls. Skills are setup-level selections;
+repository-local selections keep skills-mgr's normal precedence.
+
 ## Repeat a pinned comparison
 
 Start from an unused prepared pair. `prepare-trials` runs model-free preflight, pins the immutable
@@ -312,14 +320,14 @@ The suite report gives task-level counts and B-minus-A time and estimated cost e
 
 ## Import previous arms
 
-In the workbench, enter a completed directory under **Reuse a completed run** and
+In the workbench, enter a completed directory under **Start from a completed run** and
 click **Compare against HEAD**, or attach the directory and use that action on its
 results page. The draft imports every completed arm and adds one fresh setup at
 the configuration repository's `HEAD`. It copies matching task, model, reasoning,
 runtime and resource controls. Review the fresh launcher and runtime paths, then
 confirm inference to start. The original evidence remains unchanged.
 
-For individual arm selection, use **Compare with previous runs**, or pass `--import-arms` to
+For individual arm selection, choose **Previous result** in an arm tab, or pass `--import-arms` to
 `launch` or `run`. Map each selected source arm to an existing comparison slot.
 For example, import a previous run's Mekugi result into the first slot and execute
 only the second slot:

@@ -69,9 +69,9 @@ export function usesMekugi(state: Pick<RunState, "comparison" | "execution"> & P
   return (arm === "current" || state.comparison === "setup-commits") && state.execution.current_launcher === "mekugi";
 }
 
-export function mekugiArmFlags(state: Pick<RunState, "comparison" | "mekugi_flags">, arm: ArmName): string[] {
+export function mekugiArmFlags(state: Pick<RunState, "comparison" | "mekugi_flags" | "arm_settings">, arm: ArmName): string[] {
   const treatment = state.comparison === "duplicate-output" ? [`--deduplicate-output=${arm === "current"}`] : [];
-  return [...(state.mekugi_flags ?? []), ...treatment];
+  return [...(state.arm_settings?.[arm]?.mekugi_flags ?? state.mekugi_flags ?? []), ...treatment];
 }
 
 export function mekugiIdentity(flags: string[]): { mode: string } {

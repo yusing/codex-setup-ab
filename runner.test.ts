@@ -142,6 +142,18 @@ async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi"
     mekugiBinary: currentLauncher === "mekugi" ? join(currentHome, "go/bin/mekugi") : undefined });
 }
 
+test("current setup defaults do not constrain independently selected arm models", async () => {
+  const currentHome = join(root, "different-model-home");
+  await cp(home, currentHome, { recursive: true, verbatimSymlinks: true });
+  await writeFile(join(currentHome, ".codex/config.toml"), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\nservice_tier = "default"\n');
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+    outputParent: root, currentHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    codexBinary: join(home, ".local/bin/codex"), armSettings: { stock: { model: "gpt-6.1-terra" }, current: { model: "gpt-6-astra" } } });
+  const state = await readState(run);
+  await verifyPreparedInputs(run, state);
+  expect(state.arm_settings).toEqual({ stock: { model: "gpt-6.1-terra" }, current: { model: "gpt-6-astra" } });
+});
+
 test("custom composition prepares independent launcher and stock/revision choices", async () => {
   const revision = (await checked(["git", "-C", home, "rev-parse", "HEAD"])).stdout.trim();
   for (const secondSetup of ["stock", revision]) {
@@ -172,6 +184,7 @@ test("custom composition executes and blindly assesses every isolated arm, then 
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
     comparison: "custom", arms: [{ launcher: "codex", setup_commit: revision }, { launcher: "mekugi", setup_commit: revision }, { launcher: "mekugi", setup_commit: "HEAD" }],
+    armSettings: { stock: { model: "gpt-6.1-terra", reasoning_effort: "high", cpus: "3", memory: "5g", timeout_seconds: 45, auto_compact_limit: 12345, parallel_work: true, skills: { "use-modern-go": false } }, current: { mekugi_flags: ["--shell-guard=false"] }, "arm-3": { mekugi_flags: ["--shell-guard=true"] } },
     mekugiSource, mekugiBinary: join(home, "go/bin/mekugi"), codexBinary: join(home, ".local/bin/codex") });
   const initial = await readState(run);
   const keys = ["stock", "current", "arm-3"];
@@ -187,6 +200,7 @@ test("custom composition executes and blindly assesses every isolated arm, then 
   const set = await readTrialSet(trials);
   const copied = await readState(join(trials, set.trials[0]!.run_dir));
   expect(copied.arm_configurations).toEqual(initial.arm_configurations);
+  expect(copied.arm_settings).toEqual(initial.arm_settings);
   expect(await Bun.file(join(trials, set.trials[0]!.run_dir, copied.arms["arm-3"]!.repository, "go.mod")).exists()).toBe(true);
   const auth = join(root, "custom-auth.json");
   await file(auth, "{}", 0o600);
@@ -226,10 +240,21 @@ test("custom composition executes and blindly assesses every isolated arm, then 
   expect(launches[0]).toContain("/usr/local/bin/codex");
   expect(launches[1]).toContain("/usr/local/bin/mekugi");
   expect(launches[2]).toContain("/usr/local/bin/mekugi");
+  expect(launches[0]).toContain("--model gpt-6.1-terra");
+  expect(launches[0]).toContain('model_reasoning_effort="high"');
+  expect(launches[0]).toContain("--cpus 3 --memory 5g");
+  expect(launches[0]).toContain("model_auto_compact_token_limit=12345");
+  expect(launches[1]).toContain("--shell-guard=false");
+  expect(launches[2]).toContain("--shell-guard=true");
+  expect(launches[1]).not.toContain("gpt-6.1-terra");
+  expect(await readFile(join(run, "artifacts/stock/task.md"), "utf8")).toContain("## Parallel work");
+  expect(await readFile(join(run, "artifacts/current/task.md"), "utf8")).not.toContain("## Parallel work");
+  expect((await Bun.file(join(run, initial.arms.stock.home_template, ".skills-mgr/.skills-mgr.json")).json()).skills["use-modern-go"].enabled).toBe("lang go");
   expect(log.indexOf(launches[2]!)).toBeLessThan(log.indexOf(launches[1]!));
   expect(log.indexOf(launches[1]!)).toBeLessThan(log.indexOf(launches[0]!));
   const report = await Bun.file(join(run, "reports/report.json")).json();
   expect(Object.keys(report.arms)).toEqual(keys);
+  expect(report.setup.arm_settings).toEqual(initial.arm_settings);
   expect(Object.keys(report.baseline_differences_percent)).toEqual(["current", "arm-3"]);
   expect(report.winner).toBe("none"); // Fake execution deliberately provides no usage or provider capture.
   expect(await Bun.file(join(run, "reports/bundle/arm-3-snapshot-manifest.json")).exists()).toBe(true);

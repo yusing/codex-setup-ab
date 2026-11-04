@@ -18,6 +18,7 @@ test("HEAD draft imports a custom composition and preserves shared controls with
     comparison: "custom", source: { path: root }, task: { sha256: pack.contract.task_sha256 },
     task_pack: { id: pack.manifest.id, path: "evaluator/task-pack.json" },
     execution: { model: "gpt-6.1-sol", reasoning_effort: "ultra" },
+    arm_settings: { "arm-3": { model: "gpt-6.1-terra", skills: { example: false }, mekugi_flags: ["--shell-guard=false"] } },
     resource_limits: { cpus: "4", memory: "4g" }, timeout_seconds: 7200, image: "test-image",
     runtime_tools: { codex_source: "/recorded/codex", bun: "/recorded/bun" },
     selected_arms: keys, arms: Object.fromEntries(keys.map(key => [key, { launcher: "mekugi" }])),
@@ -33,6 +34,8 @@ test("HEAD draft imports a custom composition and preserves shared controls with
   expect(config.prepare.arms).toHaveLength(4);
   expect(config.prepare.arms?.at(-1)).toEqual({ launcher: "mekugi", setup_commit: "HEAD" });
   expect(config.importArms?.map(item => item.arm)).toEqual(keys);
+  expect(config.prepare.armSettings?.["arm-3"]).toEqual({ model: "gpt-6.1-terra" });
+  expect(config.prepare.armSettings?.["arm-4"]).toEqual(state.arm_settings["arm-3"]);
   expect(config.prepare).toMatchObject({ cpus: "4", timeoutSeconds: 7200, model: "gpt-6.1-sol", reasoningEffort: "ultra" });
   expect(options["confirm-paid-inference"]).toBeUndefined();
   expect(await readFile(join(directory, "run.json"), "utf8")).toBe(original);
@@ -931,25 +934,38 @@ test("invalid launch inputs fail before creating a job, and paid consent is fres
   expect(entries.entries[0].job).toBeUndefined();
 });
 
-test("web Mekugi settings serialize unchecked and checked toggles and omit disabled controls", async () => {
+test("arm tabs serialize independent execution, Mekugi and skill settings through launch configuration", async () => {
   const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
-  const toggles = [
-    { name: "mekugi-shell-guard", type: "checkbox", checked: false, disabled: false },
-    { name: "mekugi-deduplicate-output", type: "checkbox", checked: true, disabled: true },
-    { name: "mekugi-child-reply-summary", type: "checkbox", checked: true, disabled: false },
-  ];
-  const elements = { "launch-form": { querySelectorAll: () => toggles }, "prepare-only": { checked: false }, "paid-consent": { checked: true },
-    "imported-arms": { children: [] },
-    ...Object.fromEntries(toggles.map(input => ["f-" + input.name, input])),
-    "f-mekugi-ansi-faint": { value: "off" }, "f-mekugi-timeout": { value: "30s" }, "f-mekugi-stream-idle-timeout": { value: "" },
+  const makeRow = (launcher: string, model: string, guard: boolean) => {
+    const inputs: Record<string, { value?: string; checked?: boolean; disabled?: boolean }> = Object.fromEntries(Object.entries({
+      launcher, model, setup: "revision", revision: "HEAD", source: "fresh", "reasoning-effort": "high", cpus: "2", memory: "4g", "run-timeout": "600", compact: "", timeout: "30s", "stream-idle-timeout": "",
+    }).map(([name, value]) => [name, { value }]));
+    inputs["parallel-work"] = { checked: false }; inputs["shell-guard"] = { checked: guard };
+    inputs["deduplicate-output"] = { checked: true }; inputs["child-reply-summary"] = { checked: true };
+    return { inputs, originalSettings: {}, skillOverrides: { example: guard }, querySelector: (selector: string) => inputs[selector.match(/"(.*?)"/)![1]!] };
   };
+  const rows = [makeRow("mekugi", "gpt-6-astra", false), makeRow("mekugi", "gpt-6.1-terra", true)];
+  const elements = { "custom-arms": { children: rows }, "launch-form": { querySelectorAll: () => [] }, "prepare-only": { checked: true }, "paid-consent": { checked: false } };
   const body = runInNewContext(source + '\nlaunchRequest()', {
     document: { getElementById: (id: keyof typeof elements) => elements[id] },
-    FormData: class { *[Symbol.iterator]() { yield ["mekugi-timeout", "30s"]; yield ["mekugi-ansi-faint", "off"]; } },
+    FormData: class { *[Symbol.iterator]() { yield ["preset", "custom"]; yield ["task", "nvm-download-no-eval"]; } },
   });
-  expect(body).toEqual({ command: "launch", options: {
-    "mekugi-flags": '["--shell-guard=false","--child-reply-summary=true","--ansi-faint=off","--timeout=30s"]', "confirm-paid-inference": true,
-  } });
+  const configuration = launchConfiguration(body.options);
+  expect(configuration.prepare.armSettings?.stock).toMatchObject({ model: "gpt-6-astra", skills: { example: false }, mekugi_flags: ["--shell-guard=false", "--deduplicate-output=true", "--child-reply-summary=true", "--timeout=30s"] });
+  expect(configuration.prepare.armSettings?.current).toMatchObject({ model: "gpt-6.1-terra", skills: { example: true }, mekugi_flags: ["--shell-guard=true", "--deduplicate-output=true", "--child-reply-summary=true", "--timeout=30s"] });
+  expect(body.options["mekugi-flags"]).toBeUndefined();
+  expect(configuration.prepareOnly).toBe(true);
+});
+
+test("setup skill catalog distinguishes empty, invalid and inaccessible selections without launching work", async () => {
+  await file(join(root, ".skills-mgr/.skills-mgr.json"), JSON.stringify({ skills: { enabled: { enabled: true }, disabled: { enabled: false }, conditional: { enabled: "lang go" } } }));
+  const response = await post("/api/setup-skills", { directory: root });
+  expect((await response.json()).skills).toEqual([{ name: "conditional", enabled: true, conditional: true }, { name: "disabled", enabled: false, conditional: false }, { name: "enabled", enabled: true, conditional: false }]);
+  expect((await (await post("/api/setup-skills", { directory: root, revision: "stock" })).json()).skills).toEqual([]);
+  expect((await post("/api/setup-skills", { directory: root, revision: "missing" })).status).toBe(400);
+  await file(join(root, ".skills-mgr/.skills-mgr.json"), "invalid");
+  expect((await post("/api/setup-skills", { directory: root })).status).toBe(400);
+  expect((await (await fetch(origin + "/api/entries")).json()).active).toBeUndefined();
 });
 
 test("the workbench model catalog offers Terra through launch configuration", async () => {

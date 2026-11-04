@@ -1,3 +1,4 @@
+import { parseArmSettings, validateArmSettings } from "./arm-settings";
 import { parseArmImports } from "./control";
 import { evaluationPlan } from "./evaluation";
 import { readState, writeState } from "./state";
@@ -110,8 +111,12 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (!/^[1-9]\d*(?:[bkmg])?$/i.test(memory)) throw new Error("Memory limit must be positive, for example 4g");
   const profile = stringOption(o, "profile", "task");
   if (!["mekugi", "task", "skills-mgr-bundle", "godoxy-icons"].includes(profile)) throw new Error("Unknown task profile");
+  const armSettings = o["arm-settings"] ? parseArmSettings(JSON.parse(stringOption(o, "arm-settings")), compositionKeys(customArms?.length ?? 2)) : undefined;
+  validateArmSettings({ comparison: comparison as PrepareOptions["comparison"], execution: { model, reasoning_effort: effort, service_tier: "default", current_launcher: mekugi ? "mekugi" : "codex" } as import("./types").RunState["execution"],
+    arms: Object.fromEntries(compositionKeys(customArms?.length ?? 2).map((key, index) => [key, { repository: "", home_template: "", launcher: customArms?.[index]?.launcher }])), arm_settings: armSettings });
   return {
     prepare: {
+      armSettings,
       arms: customArms,
       setupACommit: setupACommit || undefined, setupBCommit: setupBCommit || undefined,
       comparison: comparison as PrepareOptions["comparison"], model: model as PrepareOptions["model"], reasoningEffort: effort as PrepareOptions["reasoningEffort"],

@@ -349,7 +349,7 @@ test("bundle and repeated arm import retain sanitized runtime families without a
 });
 
 test("imports allow launcher-only image rebuilds and reject changed dependency controls", async () => {
-  for (const fault of ["none", "same-key", "operator", "recipe", "model"] as const) {
+  for (const fault of ["none", "same-key", "operator", "recipe", "model", "arm-model", "arm-matches"] as const) {
     const f = await publishedControl();
     for (const [i, state] of [f.source, f.treatment].entries()) {
       state.runtime_tools.mekugi_in_image = true;
@@ -358,6 +358,7 @@ test("imports allow launcher-only image rebuilds and reject changed dependency c
       if (i === 1 && fault === "same-key") state.runtime_tools = { ...f.source.runtime_tools };
       if (i === 1 && fault === "operator") state.operator.uid++;
       if (i === 1 && fault === "model") state.execution.model = "gpt-6.1-sol";
+      if (fault === "arm-matches" || i === 1 && fault === "arm-model") state.arm_settings = { [i ? "current" : "stock"]: { model: "gpt-6.1-terra" } };
       state.dependency_image = { base_image: state.image_id!, key: dependencyKey(state, state.image_id!), image_id: `sha256:${String(i + 5).repeat(64)}` };
     }
     if (fault === "recipe") f.treatment.dependency_image!.key = "unknown-recipe";
@@ -365,9 +366,9 @@ test("imports allow launcher-only image rebuilds and reject changed dependency c
     await writeFile(join(f.bundle, "run.json"), await readFile(join(f.sourceRun, "run.json")));
     await writeBundleManifest(f.bundle);
     const operation = importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]);
-    if (fault === "none") expect((await operation).current?.exit_code).toBe(0);
+    if (fault === "none" || fault === "arm-matches") expect((await operation).current?.exit_code).toBe(0);
     else {
-      await expect(operation).rejects.toThrow(fault === "model" ? "controls: model" : "controls: dependency image");
+      await expect(operation).rejects.toThrow(["model", "arm-model"].includes(fault) ? "controls: model" : "controls: dependency image");
       expect(await Bun.file(join(f.targetRun, "artifacts/current/changes.patch")).exists()).toBe(false);
     }
   }

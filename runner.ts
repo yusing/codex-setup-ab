@@ -1,3 +1,5 @@
+import { armRuntime, parallelWorkTask } from "./arm-settings";
+import { applySkillSelection } from "./setup-skills";
 import { armNames } from "./types";
 import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories, discardDownloadedCatalog, TASK_PATH } from "./dependencies";
 import { prepareRuntimeHome, runtimeHomeMounts } from "./runtime-home";
@@ -89,13 +91,14 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
   }
   await chmod(join(home, ".codex/auth.json"), 0o600);
   await mkdir(output, { recursive: true });
+  if (!cow) await applySkillSelection(home, state.arm_settings?.[arm]?.skills);
   if (cow) {
     const document = JSON.parse(await readFile(join(runDir, state.setup_revisions?.[arm]?.manifest ?? state.snapshot_manifest), "utf8"));
     const current = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8"));
     state.runtime_homes ??= {};
     state.runtime_homes[arm] = { ...await prepareRuntimeHome({ runDir, state, template, auth: authFile, docker, signal,
       identity: { files: document.files, repository: document.configuration_repository, template: state.arms[arm].home_template },
-      sourceHome: current.source_home }) };
+      sourceHome: current.source_home, skills: state.arm_settings?.[arm]?.skills }) };
   }
   return { home, output };
 }
@@ -317,6 +320,8 @@ export async function gradeArm(docker: string, runDir: string, state: RunState, 
 }
 
 async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, providerNetwork: string, task: string, signal: AbortSignal): Promise<ArmResult> {
+  state = armRuntime(state, arm);
+  if (state.arm_settings?.[arm]?.parallel_work) task = parallelWorkTask(task);
   const name = `codex-ab-${state.id}-${arm}`;
   const repository = resolve(runDir, state.arms[arm].repository);
   const stdoutPath = join(output, "codex.jsonl");
@@ -330,7 +335,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
   const exports = state.mekugi_exports_by_arm?.[arm] ?? (arm === exportArm ? state.mekugi_exports : undefined);
   const exportArgs = exports
-    ? ["--capture-output=/mekugi-exports/capture.jsonl", ...(state.mekugi_flags?.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"])] : [];
+    ? ["--capture-output=/mekugi-exports/capture.jsonl", ...(mekugiArmFlags(state, arm).some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"])] : [];
   const exportRoot = exports ? dirname(resolve(runDir, exports.capture)) : undefined;
   const exportMount = exportRoot ? ["-v", `${exportRoot}:/mekugi-exports`] : [];
   if (exportRoot) await mkdir(exportRoot, { recursive: true, mode: 0o700 });
@@ -347,7 +352,9 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const mekugiLauncher = exportArgs.length ? ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", ...codexLauncher] : codexLauncher;
   const launcher = grokCommand ?? (usesMise(state, arm) ? ["mise", "exec", "--", ...((state.comparison === "setup-commits" || state.comparison === "custom") ? ["sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []), ...mekugiLauncher] : mekugiLauncher);
   const grokPath = grokArm ? ["-e", `PATH=/home/ubuntu/.grok/bin:${TASK_PATH}`, "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", `PATH=${TASK_PATH}`];
-  const grokTask = grokArm ? ["-v", `${join(runDir, state.task.path)}:/control/task.md:ro`] : [];
+  const promptPath = join(output, "task.md");
+  await writeFile(promptPath, task);
+  const grokTask = grokArm ? ["-v", `${promptPath}:/control/task.md:ro`] : [];
   const debugStorage = mekugiArm && !protectedArm
     ? ["--tmpfs", `/home/ubuntu/.local/state/mekugi/debug:size=4g,mode=0700,uid=${state.operator.uid},gid=${state.operator.gid}`] : [];
   if (debugStorage.length) await mkdir(join(home, ".local/state/mekugi/debug"), { recursive: true, mode: 0o700 });

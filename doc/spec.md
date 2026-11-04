@@ -4,11 +4,14 @@
 
 ## Purpose and scope
 
-`codex-ab` runs controlled, descriptive comparisons of the same Codex model on the same repository task. In the default `stock-current` comparison, the **stock** arm receives only a minimal model, service-tier, permission, and workspace-trust configuration. The **current** arm receives an audited snapshot of the user's instructions, skills, hooks, roles, and supporting tools. Codex runs directly by default; the current arm can explicitly use a snapshotted Mekugi launcher. The `stock-mekugi` comparison instead gives both arms minimal guidance and identical configured tool access, comparing direct Codex with Mekugi without current-home agent guidance.
+`codex-ab` runs controlled, descriptive comparisons of coding-agent setups on the same repository task. In the default `stock-current` comparison, the **stock** arm receives only a minimal model, service-tier, permission, and workspace-trust configuration. The **current** arm receives an audited snapshot of the user's instructions, skills, hooks, roles, and supporting tools. Codex runs directly by default; the current arm can explicitly use a snapshotted Mekugi launcher. The `stock-mekugi` comparison instead gives both arms minimal guidance and identical configured tool access, comparing direct Codex with Mekugi without current-home agent guidance.
 
 This is designed for a careful pilot. A single pair does not support causal or general conclusions.
 Comparisons hold the task and declared controls fixed; launcher, guidance, and projection treatments
-are selected explicitly. Repeated pairs and diverse suites provide descriptive evidence, not
+are selected explicitly. Presets initialize equal candidate controls; per-arm
+settings can explicitly vary models, reasoning, resources, Mekugi behavior and
+setup-skill selection. Preset descriptions below describe their initial controls.
+Repeated pairs and diverse suites provide descriptive evidence, not
 randomized causal estimates. See the [CLI guide](cli.md) for repeated runs and task packs, and the
 [contract](contract.md) for isolation, evaluation, and evidence guarantees.
 
@@ -57,8 +60,10 @@ resolve identities through each pass's recorded presentation order. Missing
 identity mappings are shown as unavailable. Stored reports and evidence keep
 their original identifiers.
 
-The dark-mode workbench uses readable sans-serif typography, setup previews,
-and grouped run settings. Navigation, forms, and results adapt to narrow screens
+The dark-mode workbench groups candidate settings into arm tabs. Each arm owns its
+model, reasoning, resource limits, Mekugi behavior and setup-skill selection; task
+and host infrastructure are shared. Suite preparation and build capture use the CLI.
+Navigation, forms, and results adapt to narrow screens
 with visible keyboard focus. Fonts are served locally, including from the
 standalone executable; the browser does not contact an external font service.
 
@@ -190,13 +195,13 @@ the output projection rather than comparing direct Codex with Mekugi.
 
 Select supported model controls explicitly, for example
 `--model gpt-6.1-sol --reasoning-effort high`. This comparison accepts a current-home configuration
-that already uses those values; it does not require Astra/medium in that configuration.
+that already uses those values. Candidate model and reasoning settings are supplied
+at launch rather than constrained by the setup's configured defaults.
 Both arms retain identical current-home setup. Absolute paths under the original
 home (for example, `/home/yusing`) resolve to each arm's own isolated home through
 an alias alongside `/home/ubuntu`. The active host home is not mounted. Preflight
 uses a disposable writable home and matching alias; installed tools retain their existing read-only
-host-store mount, including when nested under that alias. Other comparisons keep
-their existing model guards and home-path behavior.
+host-store mount, including when nested under that alias. Other comparisons keep their existing home-path behavior.
 
 The comparison owns `--deduplicate-output`; supplying it through `--mekugi-flags`
 is rejected, as is `--protect-mekugi`.
@@ -226,10 +231,10 @@ Select the Mekugi executable with `--mekugi-bin`.
 Use `--mekugi-flags '["--deduplicate-output=false"]'` for explicit Mekugi options
 placed before its `codex` subcommand. The workbench presents these options as a
 Mekugi behavior group: checked toggles enable shell guarding, output deduplication,
-and child-reply summaries; unchecked toggles explicitly disable them. Faint text
-and response/idle timeouts have separate controls. In the deduplication comparison,
+and child-reply summaries; unchecked toggles explicitly disable them. Each Mekugi
+arm has its own response/idle timeouts. In the deduplication comparison,
 the comparison controls that toggle for both arms. Export diagnostics stay enabled
-by the runner. Settings apply to the prepared run without rewriting host configuration.
+by the runner. Settings apply to the selected arm without rewriting host configuration.
 Supported CLI flags include
 `--ansi-faint=auto|on|off`, `--deduplicate-output=true|false`,
 `--shell-guard=true|false`, `--child-reply-summary=true|false`, timeouts,

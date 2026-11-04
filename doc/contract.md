@@ -28,8 +28,9 @@ against the configuration repository at `--current-home`. Both references resolv
 commits before preparation. Each arm receives an independent, shallow snapshot of
 its revision, with no tracked working-tree overlay. Recorded commit/tree identities,
 per-arm manifests, reports, and trial controls identify both setups. Both arms use
-the service tier from revision B and the selected launcher (direct Codex by default, or Mekugi), model, reasoning effort,
-service tier, task, and pinned runtime binaries/tool store. Reviewer overlays and
+the service tier from revision B, the selected launcher (direct Codex by default,
+or Mekugi), task, and pinned runtime binaries/tool store. Model and reasoning
+controls are defaults that explicit per-arm settings can override. Reviewer overlays and
 asymmetric protected runtime are incompatible with this comparison. Candidate launch
 uses the pinned image launchers even when a revision contains an older executable.
 Codex configuration symlinks into the setup repository are read from the snapshot
@@ -42,8 +43,17 @@ For `custom`, supply `--arms` as an ordered JSON array, for example
 Stock setups retain configured mise tool access but omit custom instructions, skills, hooks, and Mekugi configuration.
 Each revision arm receives the chosen setup revision;
 HEAD means the committed revision, without working-tree edits. At least two arms are
-required. Shared model, reasoning, service tier (from the second setup, default for Stock), runtime,
-task, and resource controls apply to all arms. Reviewer overlays and protected runtime
+required. Model, reasoning and resource controls supply defaults. Optional `--arm-settings`
+JSON maps arm keys to independent `model`, `reasoning_effort`, `cpus`, `memory`,
+`timeout_seconds`, `auto_compact_limit`, `parallel_work`, `mekugi_flags`, and
+`skills` selections. The same per-arm settings are available for other comparisons.
+Task, service tier (from the second setup, default for Stock), and pinned runtime
+binaries remain shared. Skills map names in the selected setup registry to booleans;
+unchanged selections retain their setup defaults and conditions. Overrides change
+only the disposable runtime home, leaving the host and frozen setup intact.
+These are setup-level skills-mgr selections; repository-local selections retain
+the manager's normal precedence. Per-arm parallel work appends the existing
+delegation request to that candidate's prompt, retained with its artifacts. Reviewer overlays and protected runtime
 are unavailable for this composition. The first two retained keys are `stock` and
 `current`; subsequent keys are `arm-3`, `arm-4`, and so on. Each arm has an independent
 workspace, home, setup manifest, and launcher identity. Two blind assessment passes
@@ -136,13 +146,13 @@ After reviewing `run.json`, start the model runs explicitly:
   --confirm-paid-inference
 ```
 
-The command first checks that the base image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. Preflight builds or reuses a `codex-ab-deps:<key>` Docker image keyed by the base image ID, source commit/tree, submodules, preparation command, pinned Mekugi hash when selected, and operator identity. Dependency caches and the frozen Mekugi executable enter the final image, not source, homes, credentials, or evaluator controls. Mekugi startup checks and execution use that immutable image without a host Mekugi bind mount. Fresh containers share immutable image layers and get private copy-on-write storage; dependency changes made by an agent never reach another arm, another run, or grading. Each arm materializes its generated workspace assets offline using those cached dependencies. Grading uses the original dependency image offline with read-only candidate and harness mounts, a fresh private Docker copy-on-write root, and a shared immutable build-cache seed; cache writes and execution workspaces stay temporary. Evaluator cache reuse is described in the blind-judge section. Protected execution uses temporary Go build output because its root filesystem is read-only. Ignored `node_modules` directories created during preparation are removed after successful patch capture, unless an agent has tracked them or redirected their path; removed paths are recorded per arm. They can be regenerated from the shared image. The first image build may download dependencies; later matching runs reuse it. Build logs are saved under `artifacts/dependencies.stdout` and `artifacts/dependencies.stderr`, and the immutable dependency image ID is recorded in `run.json`. Keep that image available for later grading or trial runs. Docker images and build cache occupy shared disk space outside the corpus; this does not impose a 1 GB cap on source, tool snapshots, or captured logs. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both arms with the selected model and reasoning effort (defaults: gpt-6-astra and medium) concurrently with identical two-CPU and 4 GiB limits. Preflight and the final launch check verify copied controls, both setup templates, the host installed-tool file manifest, the selected Bun executable, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
+The command first checks that the base image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. Preflight builds or reuses a `codex-ab-deps:<key>` Docker image keyed by the base image ID, source commit/tree, submodules, preparation command, pinned Mekugi hash when selected, and operator identity. Dependency caches and the frozen Mekugi executable enter the final image, not source, homes, credentials, or evaluator controls. Mekugi startup checks and execution use that immutable image without a host Mekugi bind mount. Fresh containers share immutable image layers and get private copy-on-write storage; dependency changes made by an agent never reach another arm, another run, or grading. Each arm materializes its generated workspace assets offline using those cached dependencies. Grading uses the original dependency image offline with read-only candidate and harness mounts, a fresh private Docker copy-on-write root, and a shared immutable build-cache seed; cache writes and execution workspaces stay temporary. Evaluator cache reuse is described in the blind-judge section. Protected execution uses temporary Go build output because its root filesystem is read-only. Ignored `node_modules` directories created during preparation are removed after successful patch capture, unless an agent has tracked them or redirected their path; removed paths are recorded per arm. They can be regenerated from the shared image. The first image build may download dependencies; later matching runs reuse it. Build logs are saved under `artifacts/dependencies.stdout` and `artifacts/dependencies.stderr`, and the immutable dependency image ID is recorded in `run.json`. Keep that image available for later grading or trial runs. Docker images and build cache occupy shared disk space outside the corpus; this does not impose a 1 GB cap on source, tool snapshots, or captured logs. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both arms with the selected model and reasoning effort (defaults: gpt-6-astra and medium) concurrently with default two-CPU and 4 GiB limits, overridden by any explicit per-arm settings. Preflight and the final launch check verify copied controls, both setup templates, the host installed-tool file manifest, the selected Bun executable, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
 
 Mekugi arms use `mekugi codex headless --yolo` (without `codex` for third-party
 routing), admitting Main and its children through Mekugi's server-owned runtime.
 Stock arms retain `codex exec --json`. Both receive the task on stdin and run in
-the isolated workspace with the same model, reasoning, service tier, and resource
-controls. Both explicitly bypass hook trust for the captured setup; Mekugi carries
+the isolated workspace with their selected model, reasoning and resource controls
+and the shared service tier. Both explicitly bypass hook trust for the captured setup; Mekugi carries
 that override through admitted thread startup, independently of `--yolo`.
 Mekugi stdout retains host JSONL and its final logical-completion event;
 intermediate host turns for coordination do not finish the arm. Select a build

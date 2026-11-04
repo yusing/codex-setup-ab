@@ -1,6 +1,8 @@
+import { parallelWorkTask, parseArmSettings, validateArmSettings } from "./arm-settings";
+import { validateSkillSelection } from "./setup-skills";
 import { compositionKeys, parseArmConfigurations } from "./arms";
 import { CODEX_MODELS, REASONING_EFFORTS, armNames } from "./types";
-import { appendFile, chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -19,6 +21,7 @@ import { sha256, writeState } from "./state";
 import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort, JudgeReport } from "./types";
 
 export interface PrepareOptions {
+  armSettings?: Record<string, import("./types").ArmSettings>;
   arms?: import("./types").ArmConfiguration[];
   comparison?: import("./types").Comparison;
   setupACommit?: string;
@@ -135,6 +138,7 @@ function validatePairedMekugiComparison(comparison: RunState["comparison"], limi
 }
 
 export async function verifyPreparedInputs(runDir: string, state: RunState, purpose: "execution" | "judging" = "execution"): Promise<void> {
+  validateArmSettings(state);
   if (state.runtime_tools.mekugi_in_image && (!state.runtime_tools.mekugi_exec_source || !state.runtime_tools.mekugi_exec_sha256)) {
     throw new Error("snapshotted Mekugi companion identity is missing; prepare a fresh run");
   }
@@ -587,6 +591,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const customArms = comparison === "custom" ? parseArmConfigurations(options.arms) : undefined;
   if (comparison !== "custom" && options.arms) throw new Error("--arms requires custom comparison");
   const keys = compositionKeys(customArms?.length ?? 2);
+  const armSettings = options.armSettings ? parseArmSettings(options.armSettings, keys) : undefined;
   const commitComparison = comparison === "setup-commits" || comparison === "custom";
   if ((comparison === "setup-commits") !== Boolean(options.setupACommit && options.setupBCommit)
     || comparison !== "setup-commits" && Boolean(options.setupACommit || options.setupBCommit)) {
@@ -688,8 +693,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   progress(`created isolated run ${runDir}`);
   for (const dir of ["control", "evaluator", "sessions", "snapshots", "artifacts"]) await mkdir(join(runDir, dir), { recursive: true });
   await copyFile(taskPath, join(runDir, "control/task.md"));
-  if (options.parallelWork) await appendFile(join(runDir, "control/task.md"),
-    "\n\n## Parallel work\n\nUse delegates for independent work in parallel. Keep coupled work together and avoid overlapping edits. Give delegates the relevant requirements and context; each owns implementation and focused validation. Coordinate dependencies, integrate results, and validate the complete result.\n");
+  if (options.parallelWork) await writeFile(join(runDir, "control/task.md"), parallelWorkTask(await readFile(join(runDir, "control/task.md"), "utf8")));
   const preparedCriteria = criteriaContract
     ? { ...criteriaContract, task_sha256: await sha256(join(runDir, "control/task.md")) } : undefined;
   if (preparedCriteria) await writeFile(join(runDir, "evaluator/criteria.json"), JSON.stringify(preparedCriteria, null, 2));
@@ -792,10 +796,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const currentConfig = Bun.TOML.parse(await readFile(join(currentTemplate, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
   const configured = (key: string): string | undefined =>
     typeof currentConfig[key] === "string" ? currentConfig[key] : undefined;
-  if (!isolatedGuidance && !commitComparison && comparison !== "duplicate-output" &&
-      (configured("model") !== "gpt-6-astra" || configured("model_reasoning_effort") !== "medium")) {
-    throw new Error("current setup must configure model gpt-6-astra with medium reasoning for this benchmark");
-  }
   const serviceTier = isolatedGuidance ? "default" : configured("service_tier");
   if (!serviceTier) throw new Error("current setup does not declare service_tier");
   const currentSetupInstalls = isolatedFromCurrentTools
@@ -913,6 +913,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     resource_limits: { cpus: options.cpus, memory: options.memory },
     timeout_seconds: options.timeoutSeconds,
     setup_revisions: setupRevisions,
+    arm_settings: armSettings,
     arm_configurations: customArms?.map((arm, index) => ({ ...arm, setup_commit: revisions![index]! })),
     snapshot_manifest: relative(runDir, snapshotManifest),
     current_snapshot: { captured_at: snapshotDocument.created_at, manifest_sha256: await sha256(snapshotManifest) },
@@ -936,6 +937,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       current: { repository: repositories.current, home_template: grokComparison ? "snapshots/stock-grok/home/ubuntu" : comparison === "stock-mekugi" ? "snapshots/stock-mekugi/home/ubuntu" : "snapshots/current/home/ubuntu" },
     },
   };
+  validateArmSettings(state);
+  for (const [arm, settings] of Object.entries(armSettings ?? {})) if (settings.skills) await validateSkillSelection(join(runDir, state.arms[arm].home_template), settings.skills);
   await writeState(runDir, state);
   return runDir;
 }

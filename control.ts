@@ -1,3 +1,4 @@
+import { armRuntime } from "./arm-settings";
 import { copyFile, cp, lstat, mkdir, readFile, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { verifyBundleManifest } from "./bundle";
@@ -91,7 +92,7 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
       || !source.selected_arms?.includes(item.arm) || !armExecutionSucceeded(result) || published.validity !== "valid") {
       throw new Error("Import requires a completed, infrastructure-valid published arm");
     }
-    const expectedControls = comparisonIdentity(source), actual = comparisonIdentity(state);
+    const expectedControls = comparisonIdentity(armRuntime(source, item.arm)), actual = comparisonIdentity(armRuntime(state, item.target_arm));
     const differences = (Object.keys(expectedControls) as Array<keyof typeof expectedControls>).filter(key => JSON.stringify(expectedControls[key]) !== JSON.stringify(actual[key]));
     const mismatches: string[] = differences;
     if (!compatibleDependencyImages(source, state)) mismatches.push("dependency image");
@@ -215,6 +216,7 @@ export function controlIdentity(state: RunState): unknown {
     codex_sha256: state.runtime_tools.codex_sha256,
     codex_code_mode_host_sha256: state.runtime_tools.codex_code_mode_host_sha256,
     resource_limits: state.resource_limits, timeout_seconds: state.timeout_seconds,
+    ...(state.arm_settings?.stock ? { stock_settings: state.arm_settings.stock } : {}),
     stock_home_template: state.arms.stock.home_template,
     stock_setup_sha256: state.arms.stock.home_template === "snapshots/current/home/ubuntu"
       ? state.current_snapshot.manifest_sha256 : null,

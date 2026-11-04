@@ -322,7 +322,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     auto_compact_limit: state.auto_compact_limit,
     comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null,
     execution: state.execution, image_id: state.image_id, dependency_image: state.dependency_image, runtime_tools: state.runtime_tools,
-    setup_revisions: state.setup_revisions,
+    setup_revisions: state.setup_revisions, arm_settings: state.arm_settings,
     resource_limits: state.resource_limits, current_configuration: manifest.configuration_repository,
     review_treatment: treatment,
     arms: setupDescriptions,
