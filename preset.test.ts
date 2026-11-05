@@ -23,6 +23,9 @@ test("custom launch composes ordered launcher revisions and rejects incomplete i
   const configuration = launchConfiguration({ preset: "custom", arms: JSON.stringify(arms) });
   expect(configuration.prepare.arms).toEqual(arms.map(arm => ({ ...arm, launcher: arm.launcher === "stock" ? "codex" : arm.launcher })));
   expect(configuration.prepare.currentLauncher).toBe("mekugi");
+  const worktree = launchConfiguration({ preset: "custom", arms: JSON.stringify([{ launcher: "codex", setup_commit: "stock" }, { launcher: "mekugi", setup_commit: "worktree" }]), "current-home": "/config", "runtime-home": "/runtime" });
+  expect(worktree.prepare).toMatchObject({ currentHome: "/config", runtimeHome: "/runtime" });
+  expect(worktree.prepare.arms?.[1]?.setup_commit).toBe("worktree");
   expect(() => launchConfiguration({ preset: "custom", arms: "[]" })).toThrow("at least two");
   expect(() => launchConfiguration({ preset: "custom", arms: JSON.stringify(arms), "review-treatment": "/overlay" })).toThrow();
   expect(() => launchConfiguration({ preset: "stock-current", arms: JSON.stringify(arms) })).toThrow("requires");

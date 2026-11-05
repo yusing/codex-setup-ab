@@ -73,6 +73,7 @@ Prepare options:
   --criteria FILE       predetermined behavioral contract; defaults to task profile
   --output-parent DIR   parent for mktemp run directory (default system temp)
   --current-home DIR    configuration Git repository root (default current home)
+  --runtime-home DIR    installed tools and runtime supplements (default current-home)
   --setup-a-commit REF  baseline setup commit in --current-home (setup-commits)
   --setup-b-commit REF  treatment setup commit in --current-home (setup-commits)
   --review-treatment DIR  four-file reviewer overlay applied only to the current snapshot
@@ -207,7 +208,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       mekugiSource: o["mekugi-source"] as string | undefined,
       mekugiBinary: o["mekugi-bin"] as string | undefined,
       grokBinary: o["grok-bin"] as string | undefined,
-      currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),
+      currentHome: string(o, "current-home", homedir()), runtimeHome: o["runtime-home"] as string | undefined, image: string(o, "image", "codex-ab:0.1.0"),
       cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
       codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),
       bunBinary: o["bun-bin"] as string | undefined,

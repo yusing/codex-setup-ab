@@ -292,6 +292,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       if (!sourceExists && task?.repository) warnings.push(`The ${task.title} checkout will be cloned to ${config.prepare.source} from ${task.repository}`);
       else await required(config.prepare.source, "Source checkout", true);
       await required(config.prepare.currentHome, "Current setup home", true);
+      if (config.prepare.runtimeHome) await required(config.prepare.runtimeHome, "Runtime home", true);
       await required(config.prepare.codexBinary!, "Codex executable", false, true);
       await required(join(dirname(await realpath(config.prepare.codexBinary!)), "codex-code-mode-host"), "Code-mode host", false, true);
       await required(config.docker, "Docker executable", false, true);

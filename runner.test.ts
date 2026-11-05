@@ -21,6 +21,7 @@ import * as mekugi from "./mekugi";
 import * as containers from "./container";
 import { prepareEvaluatorCache } from "./semantic";
 import * as processes from "./process";
+import * as runtimeHomes from "./runtime-home";
 import { buildReport } from "./report";
 import { embeddedFallbackPricing, type PricingSnapshot } from "./usage";
 import { readToolStoreManifest } from "./snapshot";
@@ -177,6 +178,40 @@ test("custom composition prepares independent launcher and stock/revision choice
     const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, 4);
     await preflightRun(run, fake.path);
   }
+}, 30_000);
+
+test("custom composition snapshots tracked worktree edits using a separate runtime home", async () => {
+  const config = join(root, "worktree-configuration");
+  await checked(["git", "clone", "--no-local", home, config]);
+  await file(join(config, ".codex/AGENTS.md"), "optimized instruction\n");
+  await rm(join(config, ".codex/SMALL-TASK.md"));
+  const before = (await checked(["git", "-C", config, "status", "--porcelain"])).stdout;
+  const arms = [{ launcher: "codex" as const, setup_commit: "stock" },
+    { launcher: "codex" as const, setup_commit: "HEAD" },
+    { launcher: "codex" as const, setup_commit: "worktree" }];
+  const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+    outputParent: root, currentHome: config, runtimeHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    comparison: "custom", arms });
+  const state = await readState(run);
+  const frozen = join(run, state.arms.current!.home_template);
+  const edited = join(run, state.arms["arm-3"]!.home_template);
+  expect(await readFile(join(frozen, ".codex/AGENTS.md"), "utf8")).toBe("fixture\n");
+  expect(await readFile(join(edited, ".codex/AGENTS.md"), "utf8")).toBe("optimized instruction\n");
+  expect(await Bun.file(join(edited, ".codex/SMALL-TASK.md")).exists()).toBe(false);
+  expect(state.setup_revisions?.["arm-3"]?.worktree).toBe(true);
+  const manifest = JSON.parse(await readFile(join(run, state.setup_revisions!["arm-3"]!.manifest), "utf8"));
+  expect(manifest.configuration_repository.tracked_worktree_changes).toContain(".codex/AGENTS.md");
+  expect(state.runtime_tools.current_setup_installs).toBe(await realpath(join(home, ".local/share/mise/installs")));
+  await verifyPreparedInputs(run, state);
+  expect((await checked(["git", "-C", config, "status", "--porcelain"])).stdout).toBe(before);
+  const auth = join(root, "worktree-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, undefined, 3);
+  const runtime = spyOn(runtimeHomes, "prepareRuntimeHome").mockResolvedValue({ key: "fixture", image_id: `sha256:${"a".repeat(64)}` });
+  try {
+    await runPair({ runDir: run, authFile: auth, dockerBin: fake.path, arm: "arm-3" });
+    expect(runtime.mock.calls[0]?.[0].sourceHome).toBe(home);
+  } finally { runtime.mockRestore(); }
 }, 30_000);
 
 test("custom composition executes and blindly assesses every isolated arm, then retains all trial controls", async () => {

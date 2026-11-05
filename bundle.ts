@@ -293,7 +293,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     }
   }
   const setupDescriptions = state.setup_revisions
-    ? Object.fromEntries(Object.entries(state.setup_revisions).map(([arm, revision]) => [arm, `Configuration commit ${revision.commit}; ${state.arms[arm].launcher ?? state.execution.current_launcher ?? "codex"}; shared pinned runtime.`]))
+    ? Object.fromEntries(Object.entries(state.setup_revisions).map(([arm, revision]) => [arm, `Configuration commit ${revision.commit}${revision.worktree ? " with tracked worktree changes" : ""}; ${state.arms[arm].launcher ?? state.execution.current_launcher ?? "codex"}; shared pinned runtime.`]))
     : state.comparison === "duplicate-output"
     ? { stock: "Same current-home snapshot and Mekugi binary as B; duplicate-output projection off.", current: "Same current-home snapshot and Mekugi binary as A; duplicate-output projection on." }
     : state.comparison === "journal-compaction"

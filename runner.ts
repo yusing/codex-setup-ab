@@ -45,8 +45,8 @@ async function currentSetupMounts(runDir: string, state: RunState, arm: ArmName 
   const mounts = launcherMounts(runDir, state, arm);
   if (!usesMise(state, arm)) return mounts;
   if (state.comparison === "duplicate-output" || (state.comparison === "setup-commits" || state.comparison === "custom")) {
-    const snapshot = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8")) as { source_home?: string };
-    const sourceHome = snapshot.source_home;
+    const snapshot = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8")) as { source_home?: string; runtime_home?: string };
+    const sourceHome = snapshot.runtime_home ?? snapshot.source_home;
     if (typeof sourceHome !== "string" || !isAbsolute(sourceHome) || sourceHome === "/") throw new Error("invalid current setup home alias");
     if (sourceHome !== "/home/ubuntu" && !state.runtime_homes?.[arm]) {
       mounts.push("-v", `${home ?? resolve(runDir, state.arms[arm].home_template)}:${sourceHome}${home ? "" : ":ro"}`);
@@ -98,7 +98,7 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
     state.runtime_homes ??= {};
     state.runtime_homes[arm] = { ...await prepareRuntimeHome({ runDir, state, template, auth: authFile, docker, signal,
       identity: { files: document.files, repository: document.configuration_repository, template: state.arms[arm].home_template },
-      sourceHome: current.source_home, skills: state.arm_settings?.[arm]?.skills }) };
+      sourceHome: current.runtime_home ?? current.source_home, skills: state.arm_settings?.[arm]?.skills }) };
   }
   return { home, output };
 }

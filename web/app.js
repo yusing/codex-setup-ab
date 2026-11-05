@@ -79,6 +79,7 @@ function showNotice(id, text, error = false) {
 function sharedFields() {
   const d = config.defaults;
   return field("Setup repository / home", "current-home", d["current-home"])
+    + field("Runtime home (optional)", "runtime-home", "", "text", "Installed tools and runtime supplements; defaults to the setup home.")
     + field("Container image", "image", d.image)
     + field("Codex executable", "codex-bin", d["codex-bin"])
     + field("Codex authentication file", "auth-file", d["auth-file"])
@@ -97,7 +98,7 @@ const armElements = () => [...$("custom-arms").children];
 const armInput = (row, name) => row.querySelector('[data-setting="' + name + '"]');
 const armValue = (row, name) => armInput(row, name).value;
 function customArmRows() {
-  return armElements().map(row => ({ launcher: armValue(row, "launcher"), setup_commit: armValue(row, "setup") === "stock" ? "stock" : armValue(row, "revision") }));
+  return armElements().map(row => ({ launcher: armValue(row, "launcher"), setup_commit: armValue(row, "setup") === "stock" ? "stock" : armValue(row, "setup") === "current" ? "worktree" : armValue(row, "revision") }));
 }
 function importedArmRows() {
   return armElements().flatMap((row, i) => armValue(row, "source") === "import" ? [{ target_arm: armKey(i), run_dir: armValue(row, "import-directory").trim(), arm: armValue(row, "import-arm").trim() }] : []);
@@ -144,7 +145,7 @@ function addCustomArm(launcher = "mekugi", revision = "HEAD", settings = {}) {
     + '<div class="fresh-identity">' + sel("Launcher", "launcher", [["codex", "Codex"], ["mekugi", "Mekugi"], ...(grok ? [["grok", "Grok CLI"]] : [])], launcher) + '</div></div>'
     + '<div class="import-fields grid" hidden>' + f("Previous run directory", "import-directory") + f("Previous arm key", "import-arm", "current") + '<p class="imported-setup hint"></p></div>'
     + '<div class="fresh-fields"><div class="grid">'
-    + sel("Guidance", "setup", [["stock", "Minimal"], ["current", "Current tracked setup"], ["revision", "Setup commit"]], ["stock", "current"].includes(revision) ? revision : "revision")
+    + sel("Guidance", "setup", [["stock", "Minimal"], ["current", "Current tracked setup"], ["revision", "Setup commit"]], revision === "worktree" ? "current" : ["stock", "current"].includes(revision) ? revision : "revision")
     + f("Setup revision", "revision", ["stock", "current"].includes(revision) ? "HEAD" : revision)
     + '</div><div class="grid">' + sel("Model", "model", grok ? [["grok:grok-4.7", "Grok 4.7"]] : config.models.map(item => [item.id, item.title]), settings.model || (grok ? "grok:grok-4.7" : config.defaults.model))
     + sel("Reasoning effort", "reasoning-effort", config.reasoningEfforts.map(value => [value, words(value)]), settings.reasoning_effort || (grok ? "high" : task.effort))
@@ -295,8 +296,6 @@ function updateCombination() {
     row.querySelector(".arm-heading").hidden = preset !== "custom" || rows.length <= 2;
     row.querySelector(".fresh-fields").hidden = imported; row.querySelector(".fresh-identity").hidden = imported; row.querySelector(".import-fields").hidden = !imported;
     armInput(row, "setup").disabled = preset !== "custom";
-    // Current-home snapshots belong only to presets that explicitly select them.
-    armInput(row, "setup").querySelector('option[value="current"]').hidden = preset === "custom";
     armInput(row, "revision").closest(".field").hidden = armValue(row, "setup") !== "revision";
     armInput(row, "launcher").disabled = !(preset === "custom" || preset === "stock-current" && index === 1 || preset === "setup-commits");
     row.querySelector(".fresh-identity").hidden = imported || armInput(row, "launcher").disabled;

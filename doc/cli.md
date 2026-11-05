@@ -346,6 +346,12 @@ into `stock`, `current`, `arm-3`, and later slots. Leave at least one slot fresh
 the prepared launcher/setup choice in an imported slot is not executed. Its source
 label and setup provenance identify the actual historical candidate.
 
+To evaluate tracked edits from a separate configuration worktree, set `--current-home`
+to its repository root, `--runtime-home` to the home containing its installed runtime,
+and use `"setup_commit":"worktree"` for the fresh custom arm. A `HEAD` arm continues
+to use committed files only. Worktree changes are frozen in the arm manifest; untracked
+instruction files are excluded.
+
 Sources must have completed execution and finishing with a valid published bundle.
 The same pinned task, criteria, model, reasoning, service tier, base image, Codex
 binaries, resources, timeout, and compaction limit must match. Setup revisions,

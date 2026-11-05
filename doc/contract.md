@@ -39,10 +39,13 @@ and materialized before adaptation; targets outside the repository are rejected.
 For `custom`, supply `--arms` as an ordered JSON array, for example
 `[{"launcher":"codex","setup_commit":"stock"},{"launcher":"mekugi","setup_commit":"commit1"},{"launcher":"mekugi","setup_commit":"HEAD"}]`.
 `launcher` selects `codex` or `mekugi` (the legacy launcher alias `stock` means `codex`).
-`setup_commit` independently selects `stock` for minimal guidance or a Git revision.
+`setup_commit` independently selects `stock` for minimal guidance, `worktree` for
+the tracked working tree at `--current-home`, or a Git revision.
 Stock setups retain configured mise tool access but omit custom instructions, skills, hooks, and Mekugi configuration.
 Each revision arm receives the chosen setup revision;
-HEAD means the committed revision, without working-tree edits. At least two arms are
+HEAD means the committed revision, without working-tree edits. A worktree arm overlays
+tracked edits, staged additions, and deletions on its HEAD, and its manifest records
+the changed paths and captured files. At least two arms are
 required. Model, reasoning and resource controls supply defaults. Optional `--arm-settings`
 JSON maps arm keys to independent `model`, `reasoning_effort`, `cpus`, `memory`,
 `timeout_seconds`, `auto_compact_limit`, `parallel_work`, `mekugi_flags`, and
@@ -60,7 +63,10 @@ workspace, home, setup manifest, and launcher identity. Two blind assessment pas
 present all candidates in opposite orders. Reports retain every arm and show resource
 differences against the first arm; missing evidence never becomes zero usage.
 
-Installed hook binaries, plugins, remote-skill caches, and tool-store sidecars remain
+`--runtime-home` optionally selects a separate home for installed tools, hook binaries,
+plugins, remote-skill caches, and tool-store sidecars; it defaults to `--current-home`.
+This allows a configuration worktree to use an existing installation without copying
+the installation into that worktree. Those files remain
 runtime supplements, not historical builds. Revision-owned files are preserved,
 except that Mekugi-launched setup-commit snapshots omit the obsolete
 `orchestration.reviewers` table from `.config/mekugi/config.toml` for compatibility

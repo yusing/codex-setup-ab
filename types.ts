@@ -126,7 +126,7 @@ export interface RunState {
   timeout_seconds: number;
   arm_configurations?: ArmConfiguration[];
   arm_settings?: Record<ArmName, ArmSettings>;
-  setup_revisions?: Record<ArmName, { commit: string; tree: string; manifest: string; manifest_sha256: string }>;
+  setup_revisions?: Record<ArmName, { commit: string; tree: string; manifest: string; manifest_sha256: string; worktree?: boolean }>;
   snapshot_manifest: string;
   current_snapshot: { captured_at: string; manifest_sha256: string };
   runtime_tools: {

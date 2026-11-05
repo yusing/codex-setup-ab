@@ -62,6 +62,10 @@ paths and authentication-file paths. Custom task inputs appear only for the cust
 task. For **Setup commit versus setup commit**, choose the revisions in their arm
 tabs. Different launchers turn it into a custom composition; tracked local edits
 stay out of committed setup snapshots. See the [setup-commit guide](doc/cli.md#compare-setup-commits).
+In a custom composition, **Current tracked setup** captures tracked edits from the
+setup repository. If that repository is a separate worktree, set **Runtime home**
+under **Host infrastructure** to the home containing the installed tools and
+supplements. Untracked instruction files are not captured.
 Tasks with a pinned upstream repository, such as NVM and sqlite-utils multi-commit upgrade,
 clone a missing source checkout during preparation. The sqlite-utils task defaults to
 minimal Codex versus minimal Mekugi, a shared 200,000-token

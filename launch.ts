@@ -127,7 +127,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
       taskPath: resolve(stringOption(o, "task-file", "tasks/session-retention/task.md")),
       criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria")),
       taskPackPath: pack ? resolve(pack) : undefined,
-      currentHome: resolve(stringOption(o, "current-home")), image: stringOption(o, "image"), cpus, memory,
+      currentHome: resolve(stringOption(o, "current-home")), runtimeHome: o["runtime-home"] ? resolve(stringOption(o, "runtime-home")) : undefined, image: stringOption(o, "image"), cpus, memory,
       timeoutSeconds: positive(stringOption(o, "timeout", String(task.timeout)), "Timeout"), autoCompactLimit: limit,
       codexBinary: stringOption(o, "codex-bin"), bunBinary: stringOption(o, "bun-bin") || undefined,
       currentLauncher: mekugi ? comparison === "codex-mekugi-grok" ? "grok" : "mekugi" : "codex",

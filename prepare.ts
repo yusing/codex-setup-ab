@@ -45,6 +45,7 @@ export interface PrepareOptions {
   outputParent?: string;
   reviewTreatment?: string;
   currentHome: string;
+  runtimeHome?: string;
   image: string;
   cpus: string;
   memory: string;
@@ -173,7 +174,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState, purp
       if (!identity || identity.manifest !== expectedManifest || !(stockSetup ? identity.commit === "stock" && identity.tree === "stock" : /^[a-f0-9]{40}$/.test(identity.commit) && /^[a-f0-9]{40}$/.test(identity.tree)) || await sha256(join(runDir, identity.manifest)) !== identity.manifest_sha256) throw new Error(`${arm} setup revision manifest changed`);
       const recorded = JSON.parse(await readFile(join(runDir, identity.manifest), "utf8"));
       if (recorded.configuration_repository.commit !== identity.commit || recorded.configuration_repository.tree !== identity.tree
-        || recorded.configuration_repository.tracked_worktree_changes.length !== 0
+        || !identity.worktree && recorded.configuration_repository.tracked_worktree_changes.length !== 0
         || JSON.stringify(await manifest(join(runDir, state.arms[arm].home_template))) !== JSON.stringify(recorded.files)) throw new Error(`${arm} setup revision snapshot changed`);
     }
   } else if (state.setup_revisions) throw new Error("setup revisions require setup-commits");
@@ -338,7 +339,7 @@ export async function readSnapshotConfig(destination: string, sourceHome: string
   return readFile(path, "utf8");
 }
 
-async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, miseBinary: string | undefined, includeRuntimeSupplements: boolean, reviewTreatment?: string, revision?: string, runtimeHome = home): Promise<string> {
+async function snapshotCurrent(home: string, destination: string, mekugiBinary: string | undefined, miseBinary: string | undefined, includeRuntimeSupplements: boolean, reviewTreatment?: string, revision?: string, runtimeHome = home, overlayTracked = false, resourceHome = runtimeHome): Promise<string> {
   const repository = (await checked(["git", "-C", home, "rev-parse", "--show-toplevel"])).stdout.trim();
   if (await realpath(repository) !== await realpath(home)) throw new Error("--current-home must be the configuration repository root");
   if (revision) {
@@ -353,7 +354,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   const tree = (await checked(["git", "-C", destination, "rev-parse", "HEAD^{tree}"])).stdout.trim();
   // Include current tracked edits, additions and deletions without copying the
   // host's index, Git configuration, untracked credentials or session state.
-  const changed = revision ? [] : (await checked(["git", "-C", home, "diff", "--no-renames", "--name-only", "-z", commit, "--"])).stdout.split("\0").filter(Boolean);
+  const changed = revision && !overlayTracked ? [] : (await checked(["git", "-C", home, "diff", "--no-renames", "--name-only", "-z", commit, "--"])).stdout.split("\0").filter(Boolean);
   const changedSet = new Set(changed);
   const roots = changed.filter(item => {
     const parts = item.split("/");
@@ -382,7 +383,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     if (!revision && await exists(join(home, ".codex/herdr-agent-state.sh"))) {
       await copyRequired(join(home, ".codex/herdr-agent-state.sh"), join(destination, ".codex/herdr-agent-state.sh"));
     }
-    await copyRemoteSkillCache(home, destination);
+    await copyRemoteSkillCache(resourceHome, destination);
     await copyRequired(join(runtimeHome, ".cache/go-modern-guidelines/v0.1.1"), join(destination, ".cache/go-modern-guidelines/v0.1.1"));
   }
   if (miseBinary) {
@@ -402,8 +403,8 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
       if (!/^locks\/[A-Za-z0-9._~-]+\/[A-Za-z0-9._~-]+$/.test(sidecar)) throw new Error(`unsafe mise lock sidecar: ${sidecar}`);
       for (const name of ["pyproject.toml", "uv.lock"]) {
         const path = join(".config/mise", sidecar, name);
-        if (!(await lstat(join(home, path))).isFile()) throw new Error(`mise lock sidecar is not a regular file: ${path}`);
-        await copyRequired(join(home, path), join(destination, path));
+        if (!(await lstat(join(resourceHome, path))).isFile()) throw new Error(`mise lock sidecar is not a regular file: ${path}`);
+        await copyRequired(join(resourceHome, path), join(destination, path));
       }
     }
     await rm(join(destination, ".local/bin/mise"), { force: true });
@@ -455,10 +456,10 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   await rm(loginProfile, { force: true });
   await writeFile(loginProfile, `${loginContents}\n# Prefer the task environment after user shell initialization.\nexport PATH="/opt/task-deps/python/bin:$PATH"\n`);
   const output = join(dirname(destination), "snapshot-manifest.json");
-  await writeFile(output, `${JSON.stringify({ created_at: new Date().toISOString(), source_home: home,
+  await writeFile(output, `${JSON.stringify({ created_at: new Date().toISOString(), source_home: home, runtime_home: runtimeHome,
     review_treatment: reviewTreatment ? { source: reviewTreatment, files: treatmentFiles } : null,
     configuration_repository: { path: repository, commit, tree, tracked_worktree_changes: changed }, adaptations: [
-    revision ? "configuration repository shallow-fetched at the selected commit; no working-tree overlay" : "configuration repository shallow-cloned independently with its remote removed; current tracked working-tree changes overlaid",
+    revision && !overlayTracked ? "configuration repository shallow-fetched at the selected commit; no working-tree overlay" : "configuration repository independently captured with current tracked working-tree changes overlaid",
     "project trust entries replaced with /workspace",
     "Bash login profile restores task Python PATH after user shell initialization",
     ...(omittedMekugiReviewers ? [".config/mekugi/config.toml: obsolete orchestration.reviewers omitted for shared Mekugi runtime compatibility; original retained in the selected configuration commit"] : []),
@@ -576,6 +577,7 @@ const REVIEW_TREATMENT_FILES = [
 ] as const;
 
 export async function prepare(options: PrepareOptions): Promise<string> {
+  const runtimeHome = options.runtimeHome ?? options.currentHome;
   const build = options.mekugiBuild ? await readMekugiBuild(options.mekugiBuild) : undefined;
   if (build && !build.binaries.mekugi_exec) throw new Error("Mekugi build must pin both executables; capture a fresh build");
   if (build) options = { ...options, currentLauncher: options.comparison === "codex-mekugi-grok" ? "grok" : "mekugi",
@@ -599,7 +601,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   }
   if (commitComparison && (options.reviewTreatment || options.protectMekugi)) throw new Error("setup-commits does not accept reviewer overlays or asymmetric protected runtime");
   const revisions = commitComparison ? await Promise.all((customArms?.map(arm => arm.setup_commit) ?? [options.setupACommit!, options.setupBCommit!]).map(async ref =>
-    comparison === "custom" && ref === "stock" ? "stock" : (await checked(["git", "-C", options.currentHome, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).stdout.trim())) : undefined;
+    comparison === "custom" && ref === "stock" ? "stock" : (await checked(["git", "-C", options.currentHome, "rev-parse", "--verify", "--end-of-options", `${ref === "worktree" && comparison === "custom" ? "HEAD" : ref}^{commit}`])).stdout.trim())) : undefined;
   const pairedComparison = isPairedMekugiComparison(comparison);
   const pairedExports = pairedComparison || commitComparison && (customArms ? customArms.some(arm => arm.launcher === "mekugi") : options.currentLauncher === "mekugi" || Boolean(build));
   validatePairedMekugiComparison(comparison, options.autoCompactLimit, mekugiFlags, Boolean(options.protectMekugi));
@@ -643,13 +645,13 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const taskPath = await realpath(options.taskPath);
   const criteriaPath = options.criteriaPath ? await realpath(options.criteriaPath) : undefined;
   const criteriaContract = pack?.contract ?? (criteriaPath ? validateCriteria(JSON.parse(await readFile(criteriaPath, "utf8")), await sha256(taskPath)) : undefined);
-  const codexBinary = await realpath(options.codexBinary ?? join(options.currentHome, ".local/bin/codex"));
+  const codexBinary = await realpath(options.codexBinary ?? join(runtimeHome, ".local/bin/codex"));
   const codexVersion = (await checked([codexBinary, "--version"])).stdout.trim();
   if (!/^codex-cli \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(codexVersion)) throw new Error(`unexpected Codex version: ${codexVersion}`);
   const codexSha256 = await sha256(codexBinary);
   const codeModeHost = await realpath(join(dirname(codexBinary), "codex-code-mode-host"));
   const codeModeHostStat = await stat(codeModeHost);
-  const pinnedBun = join(options.currentHome, ".local/share/mise/installs/bun/1.4.2/bin/bun");
+  const pinnedBun = join(runtimeHome, ".local/share/mise/installs/bun/1.4.2/bin/bun");
   const selectedBun = options.bunBinary ?? (await exists(pinnedBun) ? pinnedBun : Bun.which("bun"));
   if (!selectedBun) throw new Error("Bun 1.4 or later is required; install Bun or pass --bun-bin");
   const bunBinary = await realpath(selectedBun);
@@ -661,12 +663,12 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     throw new Error(`Bun 1.4 or later is required, got ${bunVersion || "(empty version)"}`);
   }
   if (!codeModeHostStat.isFile() || (codeModeHostStat.mode & 0o111) === 0) throw new Error(`Codex code-mode host is not executable: ${codeModeHost}`);
-  const miseBinary = isolatedFromCurrentTools ? undefined : await realpath(join(options.currentHome, ".local/bin/mise"));
+  const miseBinary = isolatedFromCurrentTools ? undefined : await realpath(join(runtimeHome, ".local/bin/mise"));
   const miseStat = miseBinary ? await stat(miseBinary) : undefined;
   if (miseStat && (!miseStat.isFile() || (miseStat.mode & 0o111) === 0)) throw new Error(`current setup manager is not executable: ${miseBinary}`);
   const miseSha256 = miseBinary ? await sha256(miseBinary) : undefined;
   const mekugiBinary = needsMekugi
-    ? await realpath(options.mekugiBinary ?? join(options.currentHome, "go/bin/mekugi"))
+    ? await realpath(options.mekugiBinary ?? join(runtimeHome, "go/bin/mekugi"))
     : undefined;
   const mekugiStat = mekugiBinary ? await stat(mekugiBinary) : undefined;
   if (mekugiStat && (!mekugiStat.isFile() || (mekugiStat.mode & 0o111) === 0)) throw new Error(`Mekugi launcher is not executable: ${mekugiBinary}`);
@@ -677,7 +679,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     if (!info.isFile() || (info.mode & 0o111) === 0) throw new Error("Mekugi companion is not executable");
   }
   const mekugiExecSha256 = mekugiExec ? await sha256(mekugiExec) : undefined;
-  const grokBinary = grokComparison ? await realpath(options.grokBinary ?? join(options.currentHome, ".grok/bin/grok")) : undefined;
+  const grokBinary = grokComparison ? await realpath(options.grokBinary ?? join(runtimeHome, ".grok/bin/grok")) : undefined;
   const grokStat = grokBinary ? await stat(grokBinary) : undefined;
   if (grokStat && (!grokStat.isFile() || (grokStat.mode & 0o111) === 0)) throw new Error(`Grok executable is not executable: ${grokBinary}`);
   const grokSha256 = grokBinary ? await sha256(grokBinary) : undefined;
@@ -766,30 +768,30 @@ export async function prepare(options: PrepareOptions): Promise<string> {
 
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
   await mkdir(currentTemplate, { recursive: true });
-  const captureSetup = async (template: string, revision: string | undefined, runtimeHome: string) => {
+  const captureSetup = async (template: string, revision: string | undefined, supplementHome: string, overlayTracked = false) => {
     if (revision !== "stock") return snapshotCurrent(options.currentHome, template,
-      isolatedGuidance ? undefined : mekugiBinary, miseBinary, !isolatedGuidance, reviewTreatment, revision, runtimeHome);
+      isolatedGuidance ? undefined : mekugiBinary, miseBinary, !isolatedGuidance, reviewTreatment, revision, supplementHome, overlayTracked, runtimeHome);
     await mkdir(join(template, ".codex"), { recursive: true });
     await writeFile(join(template, ".codex/config.toml"), minimalCodexConfig(model, reasoningEffort), { mode: 0o600 });
     for (const path of TOOL_SETUP_PATHS.filter(path => path !== ".local/bin/mise")) {
-      if (await exists(join(options.currentHome, path))) await copyRequired(join(options.currentHome, path), join(template, path));
+      if (await exists(join(runtimeHome, path))) await copyRequired(join(runtimeHome, path), join(template, path));
     }
     const output = join(dirname(template), "snapshot-manifest.json");
-    await writeFile(output, JSON.stringify({ created_at: new Date().toISOString(), source_home: options.currentHome,
+    await writeFile(output, JSON.stringify({ created_at: new Date().toISOString(), source_home: options.currentHome, runtime_home: runtimeHome,
       configuration_repository: { commit: "stock", tree: "stock", tracked_worktree_changes: [] },
       files: await manifest(template) }, null, 2));
     return output;
   };
-  const snapshotManifest = await captureSetup(currentTemplate, revisions?.[1], options.currentHome);
+  const snapshotManifest = await captureSetup(currentTemplate, revisions?.[1], runtimeHome, customArms?.[1]?.setup_commit === "worktree");
   let setupRevisions: RunState["setup_revisions"];
   if (revisions) {
     setupRevisions = {};
     for (const [index, arm] of keys.entries()) {
       const template = join(runDir, `snapshots/${arm}/home/ubuntu`);
       await mkdir(template, { recursive: true });
-      const path = index === 1 ? snapshotManifest : await captureSetup(template, revisions[index], revisions[1] === "stock" ? options.currentHome : currentTemplate);
+      const path = index === 1 ? snapshotManifest : await captureSetup(template, revisions[index], revisions[1] === "stock" ? runtimeHome : currentTemplate, customArms?.[index]?.setup_commit === "worktree");
       const document = JSON.parse(await readFile(path, "utf8"));
-      setupRevisions[arm] = { commit: document.configuration_repository.commit, tree: document.configuration_repository.tree,
+      setupRevisions[arm] = { commit: document.configuration_repository.commit, tree: document.configuration_repository.tree, ...(customArms?.[index]?.setup_commit === "worktree" ? { worktree: true } : {}),
         manifest: relative(runDir, path), manifest_sha256: await sha256(path) };
     }
   }
@@ -800,7 +802,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (!serviceTier) throw new Error("current setup does not declare service_tier");
   const currentSetupInstalls = isolatedFromCurrentTools
     ? join(runDir, "snapshots/current/mise/installs")
-    : await realpath(join(options.currentHome, ".local/share/mise/installs"));
+    : await realpath(join(runtimeHome, ".local/share/mise/installs"));
   let setupFiles: SnapshotFile[] = [];
   if (isolatedFromCurrentTools) {
     progress("omitting the unused current-home tool store from isolated launcher snapshots");
@@ -819,9 +821,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     progress(`recording Linuxbrew tool metadata for read-only mount: ${prefix}`);
     toolManifest.linuxbrew = { prefix, files: await recordToolStore(prefix) };
   }
-  const cargoBin = join(await realpath(options.currentHome), ".cargo/bin");
+  const cargoBin = join(await realpath(runtimeHome), ".cargo/bin");
   if (setupFiles.some(file => file.path.startsWith("rust/") && file.type === "symlink" && file.target === cargoBin)) {
-    const rustup = join(await realpath(options.currentHome), ".rustup");
+    const rustup = join(await realpath(runtimeHome), ".rustup");
     progress("recording metadata for read-only Cargo binaries and Rustup runtime (no content reads)");
     toolManifest.rust = { cargo_bin: cargoBin, rustup,
       cargo_files: await recordToolStore(cargoBin), rustup_files: await recordToolStore(rustup) };

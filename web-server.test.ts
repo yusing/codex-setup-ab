@@ -955,6 +955,12 @@ test("arm tabs serialize independent execution, Mekugi and skill settings throug
   expect(configuration.prepare.armSettings?.current).toMatchObject({ model: "gpt-6.1-terra", skills: { example: true }, mekugi_flags: ["--shell-guard=true", "--deduplicate-output=true", "--child-reply-summary=true", "--timeout=30s"] });
   expect(body.options["mekugi-flags"]).toBeUndefined();
   expect(configuration.prepareOnly).toBe(true);
+  rows[1]!.inputs.setup!.value = "current";
+  const worktree = runInNewContext(source + '\nlaunchRequest()', {
+    document: { getElementById: (id: keyof typeof elements) => elements[id] },
+    FormData: class { *[Symbol.iterator]() { yield ["preset", "custom"]; yield ["task", "nvm-download-no-eval"]; yield ["current-home", "/config"]; yield ["runtime-home", "/runtime"]; } },
+  });
+  expect(launchConfiguration(worktree.options).prepare).toMatchObject({ currentHome: "/config", runtimeHome: "/runtime", arms: [{ setup_commit: "HEAD" }, { setup_commit: "worktree" }] });
 });
 
 test("setup skill catalog distinguishes empty, invalid and inaccessible selections without launching work", async () => {
