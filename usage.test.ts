@@ -587,12 +587,12 @@ describe("applyMekugiProviderUsage", () => {
   });
 
   test("uses only explicitly complete v7 provider usage and preserves rollout fallback", () => {
-    for (const complete of [true, false]) {
+    for (const [complete, legacy] of [[true, true], [true, false], [false, true], [false, false]]) {
       const metered = rollout();
       const before = structuredClone(metered);
       const provider = attempt(300, 200, 30);
       Object.assign(provider.usage, { complete_attempts: complete ? 1 : 0,
-        incomplete_attempts: complete ? 0 : 1, unknown_attempts: 0, missing_attempts: 0 });
+        incomplete_attempts: complete ? 0 : 1, missing_attempts: 0, ...legacy ? { unknown_attempts: 0 } : {} });
       const result = applyMekugiProviderUsage(metered, { exchanges: [
         { sequence: 1, request_kind: "turn", thread_id: "root", provider_attempts: [provider] },
       ] });

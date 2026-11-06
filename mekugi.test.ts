@@ -181,6 +181,39 @@ test("wrapper forwards termination and waits for the final runtime snapshot", as
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("bundled analyzer accepts usage coverage with and without the retired unknown count", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codex-ab-mekugi-coverage-"));
+  try {
+    for (const name of ["analyze_capture.py", "benchmark_jsonl.py"] as const) {
+      await writeFile(join(root, name), MEKUGI_EXPORT_SCRIPTS[name]);
+    }
+    const program = `
+import json
+from analyze_capture import usage_coverage
+
+current = {'provider_attempts': 2, 'complete_attempts': 1, 'incomplete_attempts': 1, 'missing_attempts': 0}
+outcomes = {'current': usage_coverage(current), 'legacy': usage_coverage(dict(current, unknown_attempts=0))}
+for case, value in {'negative_unknown': dict(current, unknown_attempts=-1), 'missing_complete': {'provider_attempts': 0}}.items():
+    try:
+        usage_coverage(value)
+    except ValueError as error:
+        outcomes[case] = str(error)
+    else:
+        raise AssertionError(f'{case} was accepted')
+print(json.dumps(outcomes))
+`;
+    const result = await exec(["python3", "-c", program], { cwd: root });
+    expect(result.exitCode, result.stderr).toBe(0);
+    const counts = { complete_attempts: 1, incomplete_attempts: 1, unknown_attempts: 0, missing_attempts: 0 };
+    expect(JSON.parse(result.stdout)).toEqual({
+      current: counts, legacy: counts,
+      negative_unknown: "invalid usage coverage", missing_complete: "invalid usage coverage",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("bundled analyzer reconciles only configured measured threads and provider usage", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-mekugi-reconciliation-"));
   try {

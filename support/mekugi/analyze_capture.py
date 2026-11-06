@@ -488,7 +488,8 @@ def validate_response_metadata(raw: dict, measured: dict) -> None:
 
 
 def usage_coverage(value: dict) -> dict[str, int]:
-    result = {key: value.get(key) for key in COVERAGE_KEYS}
+    # Current Mekugi schema-7 metrics omit the unreachable unknown state; older snapshots keep it.
+    result = {key: value.get(key, 0 if key == "unknown_attempts" else None) for key in COVERAGE_KEYS}
     if any(type(count) is not int or count < 0 for count in result.values()):
         raise ValueError("invalid usage coverage")
     if sum(result[key] for key in COVERAGE_KEYS[:3]) != value.get("provider_attempts"):
