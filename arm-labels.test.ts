@@ -10,3 +10,11 @@ test("arm names follow setup and launcher rather than storage position", () => {
   expect(armLabels({ execution, comparison: "duplicate-output" })).toEqual({ stock: "Codex + Mekugi (duplicate output off)", current: "Codex + Mekugi (duplicate output on)" });
   expect(armLabels({ execution, comparison: "codex-mekugi-grok" })).toEqual({ stock: "Codex + Mekugi (Grok)", current: "Grok CLI" });
 });
+
+test("an imported arm sharing a fresh arm's label names its source run", () => {
+  const source = { source_run_id: "task-run-base", source_arm: "current" as const, bundle_sha256: "", directory: "", evidence_arm: "current" as const, files: [] };
+  expect(armLabels({ execution, comparison: "stock-mekugi", imported_arms: { stock: { ...source, label: "Codex + Mekugi (minimal setup)" } } as RunState["imported_arms"] }))
+    .toEqual({ stock: "Codex + Mekugi (minimal setup) · run task-run-base", current: "Codex + Mekugi (minimal setup)" });
+  expect(armLabels({ execution, comparison: "stock-mekugi", imported_arms: { stock: { ...source, label: "Codex (minimal setup)" } } as RunState["imported_arms"] }))
+    .toEqual({ stock: "Codex (minimal setup)", current: "Codex + Mekugi (minimal setup)" });
+});
