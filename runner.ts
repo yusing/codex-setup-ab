@@ -10,6 +10,8 @@ import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedContainerOptions, type OwnedNetwork } from "./container";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
+import { readCandidateManifest, readRegularEvidence, verifyCandidateReconstruction } from "./candidate-evidence";
+import { verifyFixedInputs } from "./fixed-workflow";
 import { executorOwnership, launcherMounts, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { armExecutionSucceeded, readState, writeState, withRunLock } from "./state";
@@ -62,7 +64,8 @@ async function inspectCandidate(docker: string, runDir: string, state: RunState,
   const spec = { mode: capture ? "capture" : "verify", baseline, clean, discardDependencies, base: state.source.base_commit,
     tree: state.source.base_tree, forbidden: state.source.forbidden_commit, icons: state.profile === "godoxy-icons", submodules: state.submodules ?? [] };
   const result = await runOwnedContainer({ docker, name: `codex-ab-${state.id}-${label}`, signal, timeoutMs: 60_000,
-    createArgs: [...containerArgs(state), "--network", "none", "-e", "GIT_OPTIONAL_LOCKS=0", "-v", `${repository}:/workspace${capture ? "" : ":ro"}`,
+    createArgs: [...containerArgs(state), "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-e", "GIT_OPTIONAL_LOCKS=0", "-v", `${repository}:/workspace:ro`,
+      "-v", `${join(runDir, "seed.git")}:/seed.git:ro`,
       ...(capture ? ["-v", `${capture}:/capture`] : []),
       imageRef(state), "bun", "-e", candidateSource, JSON.stringify(spec)] });
   if (result.exitCode !== 0 || result.timedOut || result.canceled) throw new Error(`candidate ${label} verification failed: ${result.stderr.trim()}`);
@@ -298,7 +301,7 @@ async function prewarm(docker: string, runDir: string, state: RunState, arm: Arm
     cow?.image_id ?? imageRef(state), "sh", "-lc", command] });
   if (cow && result.snapshotImageId) cow.image_id = result.snapshotImageId;
   if (result.exitCode !== 0) throw new Error(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]} cache prewarm failed: ${result.stderr.trim()}`);
-  await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true);
+  await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true, undefined, await generatedDependencyDirectories(repo));
 }
 export async function gradeArm(docker: string, runDir: string, state: RunState, arm: ArmName, patchPath: string, signal: AbortSignal): Promise<ArmResult["grade"]> {
   if (!state.criteria) throw new Error("run requires task-derived semantic criteria");
@@ -309,7 +312,15 @@ export async function gradeArm(docker: string, runDir: string, state: RunState, 
   await initializeSubmodules(evaluator, state.submodules ?? []);
   await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
   const patchStat = await Bun.file(patchPath).size;
-  if (patchStat > 0) await checked(["git", "-C", evaluator, "apply", "--binary", patchPath]);
+  if (patchStat > 0) await checked(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", evaluator, "apply", "--index", "--binary", patchPath]);
+  const captured = state.results?.[arm]?.capture_identity;
+  if (captured?.status === "verified") {
+    const manifest = await readCandidateManifest(join(runDir, captured.manifest_path), patchPath);
+    if (manifest.base_commit !== state.source.base_commit || manifest.base_tree !== state.source.base_tree) throw new Error("candidate capture baseline mismatch");
+    if (manifest.captured_tree !== captured.tree || manifest.patch_sha256 !== captured.patch_sha256) throw new Error("retained candidate identity differs from manifest");
+    await verifyCandidateReconstruction(evaluator, manifest);
+    state.results![arm]!.changed_files = manifest.changed_files;
+  }
   await inspectCandidate(docker, runDir, state, evaluator, `${arm}-grade-verify`, signal, true, false);
   const allowedPaths = state.criteria.contract.allowed_paths;
   const forbiddenChanges = allowedPaths ? (state.results?.[arm]?.changed_files ?? []).filter(path => !allowedPaths.includes(path)) : [];
@@ -414,14 +425,18 @@ async function collectArm(docker: string, runDir: string, state: RunState, arm: 
   try {
     // Cleanup has completed before collection. Use a fresh signal so canceled
     // inference can still preserve its available patch without launching models.
-    await inspectCandidate(docker, runDir, state, repository, `${arm}-capture`, new AbortController().signal, false, false, dirname(patchPath), discardDependencies);
-    for (const path of [patchPath, join(dirname(patchPath), "result.json")]) {
-      if (!(await lstat(path)).isFile()) throw new Error("capture artifact must be a regular file");
-    }
-    const metadata = JSON.parse(await readFile(join(dirname(patchPath), "result.json"), "utf8")) as { changed_files?: unknown; head_after_agent?: unknown };
-    if (!Array.isArray(metadata.changed_files) || metadata.changed_files.some(value => typeof value !== "string")
-      || typeof metadata.head_after_agent !== "string" || !/^[0-9a-f]{40}$/.test(metadata.head_after_agent)) throw new Error("invalid capture metadata");
-    result.changed_files = metadata.changed_files;
+    const destination = await mkdtemp(join(dirname(patchPath), "capture-"));
+    await inspectCandidate(docker, runDir, state, repository, `${arm}-capture`, new AbortController().signal, false, false, destination, discardDependencies);
+    const generatedPatch = join(destination, "changes.patch");
+    const manifest = await readCandidateManifest(join(destination, "candidate-manifest.json"), generatedPatch);
+    const metadata = JSON.parse((await readRegularEvidence(join(destination, "result.json"))).toString("utf8")) as { head_after_agent?: unknown };
+    if (typeof metadata.head_after_agent !== "string" || !/^[0-9a-f]{40}$/.test(metadata.head_after_agent)) throw new Error("invalid capture metadata");
+    // Only fresh output was writable in the collector; publish after validation.
+    await copyFile(generatedPatch, patchPath, 1);
+    const manifestPath = join(dirname(patchPath), "candidate-manifest.json");
+    await copyFile(join(destination, "candidate-manifest.json"), manifestPath, 1);
+    result.capture_identity = { status: "verified", manifest_path: relative(runDir, manifestPath), tree: manifest.captured_tree, patch_sha256: manifest.patch_sha256 };
+    result.changed_files = manifest.changed_files;
     result.head_after_agent = metadata.head_after_agent;
   } catch (error) {
     result.collection_error = error instanceof Error ? error.message : String(error);
@@ -435,6 +450,10 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`run is ${state.status}; prepare a new run instead of resuming or restarting it`);
   if (!state.criteria) throw new Error("run has no evaluator contract; prepare with --criteria");
+  if (state.fixed_verifier) {
+    if (options.importArms?.length || state.planned_imports?.length || options.controlRun || state.evaluation?.mode === "reuse") throw new Error("fixed-verifier runs require fresh arms; historical fixed-verifier reuse is not supported");
+    await verifyFixedInputs(runDir, state);
+  }
   options = { ...options, importArms: options.importArms ?? state.planned_imports };
   state.evaluation = evaluationPlan(options.evaluationMode ?? state.evaluation?.mode,
     options.evaluationBaselines ?? (options.evaluationMode === "fresh" ? undefined : state.evaluation?.baselines), options.importArms, armNames(state));
@@ -460,9 +479,11 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
-  let providerNetwork: OwnedNetwork | undefined;
+  const providerNetworks: Record<string, OwnedNetwork> = {};
   try {
-    providerNetwork = await createOwnedNetwork(docker, `codex-ab-${state.id}-provider`, controller.signal);
+    for (const arm of activeArms) providerNetworks[arm] = await createOwnedNetwork(docker, `codex-ab-${state.id}-provider-${arm}`, controller.signal);
+    state.network_policy = { schema: "codex-ab.network-policy.v1", candidate: "online-unrestricted", closed_book: false,
+      arm_connectivity: "separate-docker-networks", evaluator: "offline", judge: "provider-network-source-reader" };
     const auth = resolve(options.authFile);
     const authMode = (await import("node:fs/promises")).stat(auth).then(s => s.mode & 0o777);
     if ((await authMode) & 0o077) throw new Error("auth file must not be accessible by group or others (expected mode 0600)");
@@ -491,7 +512,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     if (controller.signal.aborted) throw new Error("canceled while reading the task; no agent was launched");
     for (const arm of activeArms) {
       const repo = resolve(runDir, state.arms[arm].repository);
-      await inspectCandidate(docker, runDir, state, repo, `${arm}-launch-verify`, controller.signal, true, true);
+      await inspectCandidate(docker, runDir, state, repo, `${arm}-launch-verify`, controller.signal, true, true, undefined, generatedDependencies[arm]);
     }
     const order = state.arm_order ?? "concurrent";
     if (!["concurrent", "stock-first", "current-first"].includes(order)) throw new Error("invalid arm execution order");
@@ -510,7 +531,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         status: "started",
       };
       await writeState(runDir, state);
-      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, providerNetwork!.name, task, controller.signal)));
+      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, providerNetworks[arm]!.name, task, controller.signal)));
       settled.forEach((item, index) => {
         const arm = batch[index]!;
         const attempt = state.arm_attempts![arm]!;
@@ -568,10 +589,12 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     await writeState(runDir, state);
     throw error;
   } finally {
-    await providerNetwork?.remove();
+    const cleanup = await Promise.allSettled(Object.values(providerNetworks).map(network => network.remove()));
     options.signal?.removeEventListener("abort", externalCancel);
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
+    const failed = cleanup.find(item => item.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   }
 }
 

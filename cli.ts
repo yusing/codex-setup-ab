@@ -17,6 +17,8 @@ import { judgeRun } from "./judge";
 import { buildReport, invalidateRun } from "./report";
 import { runLaunch } from "./launch";
 import { serveWorkbench } from "./web-server";
+import { configureFixedVerifierRun, runFixedVerifiersUnlocked, verifyFixedArm } from "./fixed-workflow";
+import { withRunLock } from "./state";
 
 export const VERSION = "0.1.1";
 const DEFAULT_BASE = "0368c3b3abf4da904caec63948646b2a579c0695";
@@ -43,6 +45,9 @@ Usage:
   codex-ab run-trials --trial-set DIR --confirm-paid-inference [--auth-file FILE] [--docker-bin FILE]
   codex-ab report-trials --trial-set DIR
   codex-ab preflight --run-dir DIR [--docker-bin FILE]
+  codex-ab configure-fixed --run-dir DIR --config FILE --task-dir DIR [--prompt-path instruction.md]
+  codex-ab verify-fixed --run-dir DIR [--docker-bin FILE]
+  codex-ab verify-fixed --run-dir DIR --arm NAME --config FILE --task-dir DIR [--prompt-path instruction.md]
   codex-ab run --run-dir DIR --confirm-paid-inference [--import-arms JSON] [options]
   codex-ab finish --run-dir DIR --confirm-paid-inference [--recover-judge] [options]
   codex-ab reevaluate --run-dir SOURCE [--output-parent DIR] --confirm-paid-inference [options]
@@ -221,6 +226,21 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     if (order !== "concurrent" && order !== "alternating") throw new Error("--order must be concurrent or alternating");
     process.stdout.write(`${await prepareTrials({ runDir: string(o, "run-dir"), count: Number(string(o, "count")),
       schedule: order, outputParent: o["output-parent"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined })}\n`);
+    return 0;
+  }
+  if (command === "configure-fixed") {
+    await configureFixedVerifierRun({ runDir: string(o, "run-dir"), configPath: string(o, "config"), taskDir: string(o, "task-dir"), promptPath: o["prompt-path"] as string | undefined });
+    process.stdout.write("Pinned original verifier configured; no model calls made.\n");
+    return 0;
+  }
+  if (command === "verify-fixed") {
+    const runDir = resolve(string(o, "run-dir"));
+    if (o.arm || o.config || o["task-dir"]) {
+      await verifyFixedArm({ runDir, arm: string(o, "arm"), configPath: string(o, "config"), taskDir: string(o, "task-dir"),
+        promptPath: o["prompt-path"] as string | undefined, dockerBin: o["docker-bin"] as string | undefined });
+    } else await withRunLock(runDir, () => runFixedVerifiersUnlocked(runDir, string(o, "docker-bin", process.env.CODEX_AB_DOCKER_BIN ?? "docker")));
+    const paths = await buildReport(runDir);
+    process.stdout.write(`${paths.markdownPath}\n`);
     return 0;
   }
   if (command === "prepare-suite") {

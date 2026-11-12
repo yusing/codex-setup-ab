@@ -113,11 +113,11 @@ test("capture replaces rollout evidence with metered retry attempts and separate
     { sequence: 1, thread_id: "root", request_kind: "prewarm", provider_attempts: [attempt(90)] },
     { sequence: 2, thread_id: "root", request_kind: "turn", provider_attempts: [attempt(100)] },
     { sequence: 3, thread_id: "root", request_kind: "turn", provider_attempts: [
-      attempt(180, 100, "failed"), { model: "model-a", status: "failed" }, attempt(200, 180),
+      attempt(180, 100, "failed"), attempt(0, 0, "failed"), attempt(200, 180),
     ] },
   ] }, pricing)).toBeNull();
-  expect(result.cache_usage?.requests).toEqual([100, 180, 200].map((input, i) => ({
-    thread_id: "root", model: "model-a", usage: usage(input, [0, 100, 180][i]),
+  expect(result.cache_usage?.requests).toEqual([100, 180, 0, 200].map((input, i) => ({
+    thread_id: "root", model: "model-a", usage: usage(input, [0, 100, 0, 180][i]),
   })));
   expect(result.cache_usage?.prewarm).toEqual({ usage: usage(90), request_count: 1, estimated_api_usd: 0.09 });
   expect(result.totals.input_tokens).toBe(480);

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { writeBundleManifest } from "./bundle";
 import { sha256, writeState } from "./state";
 import type { RunState } from "./types";
+import { reliabilityReport } from "./reliability";
 
 test("additional arms aggregate against the baseline without zero-filling missing values", () => {
   const report = { arms: { stock: { result: { agent_elapsed_ms: 1000 } }, current: { result: { agent_elapsed_ms: 2000 } }, "arm-3": { result: { agent_elapsed_ms: 3000 } } } };
@@ -34,10 +35,23 @@ test("paired aggregates preserve negatives, omit missing metrics, and never zero
   expect(result.total_tokens!.percent.mean).toBe(0);
   expect(result.grader_seconds!.difference.n).toBe(0);
   expect(result.grader_seconds!.difference.mean).toBeNull();
+  expect(result.estimated_api_usd!.difference.n).toBe(0);
   expect(aggregatePairs([]).estimated_api_usd!.difference.mean).toBeNull();
   expect(summarize([1]).sample_sd).toBeNull();
   expect(summarize([1, 3])).toMatchObject({ n: 2, mean: 2, median: 2, min: 1, max: 3 });
   expect(summarize([1, 3]).sample_sd).toBeCloseTo(Math.sqrt(2));
+});
+
+test("numeric cost observations require explicit comparable evidence before entering aggregate cost effects", () => {
+  const report = { arms: {
+    stock: { usage: { complete: true, totals: { estimated_api_usd: 1 } } },
+    current: { usage: { complete: true, totals: { estimated_api_usd: 2 } } },
+  }, reliability: { schema: "codex-ab.reliability.v1", attempts: [{ arm: "stock", cost_eligible: true }, { arm: "current", cost_eligible: false }] } } as Parameters<typeof aggregatePairs>[0][number];
+  expect(aggregatePairs([report]).estimated_api_usd!.difference).toMatchObject({ n: 0, mean: null });
+  report.reliability!.attempts[1]!.cost_eligible = true;
+  expect(aggregatePairs([report]).estimated_api_usd!.difference).toMatchObject({ n: 1, mean: 1 });
+  delete report.reliability;
+  expect(aggregatePairs([report]).estimated_api_usd!.difference).toMatchObject({ n: 0, mean: null });
 });
 
 test("complete metered pair reports enter the retained aggregate while partial pairs remain explicit", async () => {
@@ -72,9 +86,13 @@ test("complete metered pair reports enter the retained aggregate while partial p
         arms: Object.fromEntries(["stock", "current"].map(arm => [arm, {
           usage: { complete: true, totals: { total_tokens: arm === "stock" ? 100 : index === 1 ? 50 : 150,
             estimated_api_usd: index === 2 ? null : arm === "stock" ? 1 : 2 } },
-          result: { agent_elapsed_ms: arm === "stock" ? 1000 : 2000, grade: { elapsed_ms: 100 } },
+          result: { agent_elapsed_ms: arm === "stock" ? 1000 : 2000, grade: { elapsed_ms: 100, passed: index !== 3 && !(index === 2 && arm === "current") } },
         }])),
         judge: { usage: { complete: true, totals: { estimated_api_usd: 0.5 } } },
+        reliability: reliabilityReport(["stock", "current"].map(arm => ({ attempt_id: runId, task_id: "fixture-task", arm,
+          source: "fresh", schedule: "concurrent", execution: index === 3 ? "infrastructure_failure" : index === 2 && arm === "current" ? "model_failure" : "completed",
+          behavior: index === 3 || index === 2 && arm === "current" ? "unassessed" : "pass", evaluation_validity: index === 3 ? "invalid" : "valid",
+          candidate_cost_usd: index === 2 ? null : arm === "stock" ? 1 : 2, cost_eligible: index !== 2, evidence: "verified" }))),
       };
       await writeFile(join(evidence, "report.json"), JSON.stringify(report));
       await writeFile(join(evidence, "report.md"), `Pair ${index} complete setup, source judgments and pricing fixture.`);
@@ -95,6 +113,12 @@ test("complete metered pair reports enter the retained aggregate while partial p
     expect(result.current_minus_stock.estimated_api_usd.difference).toMatchObject({ n: 1, mean: 1 });
     expect(result.winners).toEqual({ stock: 0, current: 1, tie: 1, none: 0 });
     expect(result.judge_estimated_api_usd).toMatchObject({ n: 4, total: 2 });
+    expect(result.schema).toBe("codex-ab.trial-report.v2");
+    expect(result.reliability.arms.stock).toMatchObject({ attempted: 4, scored: 3, passing: 3, cost_covered: 2, cost_per_verified_success_usd: null });
+    expect(result.reliability.arms.current).toMatchObject({ scored: 3, passing: 2, outcomes: { model_failure: 1, infrastructure_failure: 1 } });
+    expect(result.joint_success_comparisons.current.agent_seconds.difference.n).toBe(1);
+    expect(result.uncertainty["current_minus_stock.pass_rate"][0]).toMatchObject({ matched_tasks: 1, matched_pairs: 3,
+      interval: { status: "unavailable" } });
     const markdown = await readFile(path, "utf8");
     expect(markdown).toContain("Pair 1 complete setup, source judgments and pricing fixture.");
     expect(result.pairs[3].reason).toBe("no compaction observed");
@@ -107,5 +131,6 @@ test("complete metered pair reports enter the retained aggregate while partial p
     const missingResult = JSON.parse(await readFile(join(missing, "..", "report.json"), "utf8"));
     expect(missingResult.eligible_pairs).toBe(1);
     expect(missingResult.pairs[0].reason).toContain("retained bundle evidence changed");
+    expect(missingResult.reliability.arms.stock).toMatchObject({ scored: 2, outcomes: { unassessed: 1 } });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

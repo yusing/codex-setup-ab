@@ -1,5 +1,12 @@
 # Agent-directed CLI guide
 
+For trusted verifier evidence and task-pack migration, see
+[verifier completion and qualification](verification.md). To retain an original
+benchmark verifier unchanged, use the separate
+[fixed-verifier configuration and execution path](fixed-verifier.md).
+The [four-cell preparation helper](guidance-launcher.md) prepares matched guidance
+and launcher trials without authorizing inference.
+
 [README](../README.md) · [Specification](spec.md) · [Contract](contract.md) · [CLI guide](cli.md)
 
 Run commands from the repository root. Human-directed work uses the
@@ -35,7 +42,7 @@ docker build \
 
 The harness follows the selected host Codex version, not a separately pinned CLI release. The container operator is always `1000:1000`. The preset runner checks an existing image before use and rebuilds it when its operator identity or the Codex/code-mode-host binary hashes differ from the selected host setup, or its PATH-resolved Bun cannot run, so stale images are not reused after a Codex update. Rebuild older images without Bun before manual preflight. Existing prepared runs retain their recorded runtime identities; prepare a new run to use an updated host pair.
 
-No model request occurs during the build or `prepare`. The `run` command includes two independent source-assessment passes after a completed pair. Each pass has two stages when the first harness succeeds, or three when one repair stage is needed; every stage allows at most three Sol launches on capacity errors. `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
+No model request occurs during the build or `prepare`. Adaptive `run` includes two source-assessment passes in reversed presentation orders after a completed pair. These are presentation-bias checks, not independent ground truth. The restricted source-reader judge currently requires Codex CLI 0.154.0; other selected candidate versions can be prepared, but adaptive source-judge inference fails closed until the boundary is qualified for that version. Each pass has two stages when the first harness succeeds, or three when one repair stage is needed; every stage allows at most three Sol launches on capacity errors. `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
 
 ## Find and inspect retained evidence
 
@@ -144,7 +151,7 @@ arm order, prepare with `--order alternating`: A then B for odd-numbered pairs, 
 pairs. This changes resource contention relative to concurrent arms and is recorded in every
 report. Do not pool the two schedules as equivalent experiments.
 
-Execution includes both arms and their independent judges for every pair, so it consumes model
+Execution includes both arms and their reversed-order judge passes for every pair, so it consumes model
 quota repeatedly. Start it only when intended:
 
 ```sh
@@ -436,7 +443,7 @@ Use `prepare --profile godoxy-icons --reasoning-effort medium` (or `xhigh`) with
 
 The source must contain local repositories at `goutils`, `internal/go-oidc`, and `internal/gopsutil` with the base commit's gitlink objects. Preparation shallow-fetches those exact commits into independent submodule clones, removes their remotes, and records their paths, source provenance, and SHAs in `run.json`. It rejects root remotes and initialized or populated `webui` throughout setup, patch collection, and grading. It does not initialize `webui`. The current arm uses the same audited current-home snapshot rules as the default profile.
 
-Preflight retains the bare-image and local Code Mode checks. Go's module-selected toolchain must be at least 1.27. Candidate edits inside the pinned submodules are rejected during patch collection. The supplied criteria choose dependency preparation and existing tests; use the icons package with `-ldflags=-checklinkname=0` where needed. Both independent semantic passes evaluate the task against the captured candidates.
+Preflight retains the bare-image and local Code Mode checks. Go's module-selected toolchain must be at least 1.27. Candidate edits inside the pinned submodules are rejected during patch collection. The supplied criteria choose dependency preparation and existing tests; use the icons package with `-ldflags=-checklinkname=0` where needed. Both reversed-order semantic passes evaluate the task against the captured candidates.
 
 
 The workflow is hybrid: grading, usage accounting, token/time/cost breakdowns, report generation,

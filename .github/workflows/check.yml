@@ -1,6 +1,11 @@
 name: Check
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -19,3 +24,33 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run build
+
+  model-free-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CODEX_AB_LIVE_DOCKER: "1"
+      CODEX_AB_LIVE_MEKUGI: "0"
+      CODEX_AB_LIVE_IMAGE: codex-ab:model-free
+      CODEX_AB_VERIFIER_IMAGE: codex-ab:model-free
+      CODEX_AB_FLASK_SOURCE: ${{ github.workspace }}/.flask-source
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: oven-sh/setup-bun@v2.2.0
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - name: Build credential-free boundary fixture
+        run: docker build -f Dockerfile.model-free --build-arg FIXTURE_UID=$(id -u) --build-arg FIXTURE_GID=$(id -g) -t codex-ab:model-free .
+      - name: Fetch pinned Flask qualification source
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: pallets/flask
+          ref: 7203feabf723edae0286ae5dc64fec8ac4c91735
+          fetch-depth: 0
+          path: .flask-source
+          persist-credentials: false
+      - name: Exercise real collection, supervisor, reader, network, and cleanup boundaries
+        run: bun test --timeout 60000 candidate.live.test.ts semantic.live.test.ts judge-boundary.live.test.ts network.live.test.ts container.live.test.ts fixed-verifier.live.test.ts flask-qualification.live.test.ts
+      - name: Exercise published import and reevaluation preservation
+        run: bun test control.test.ts bundle.test.ts

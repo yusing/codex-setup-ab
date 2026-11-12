@@ -8,6 +8,7 @@ import { writeBundleManifest } from "./bundle";
 import { sha256, writeState } from "./state";
 import { reportTrials, trialControls, type TrialSet } from "./trials";
 import type { RunState } from "./types";
+import { reliabilityReport } from "./reliability";
 
 type PairFixture = {
   stockSeconds: number;
@@ -77,6 +78,11 @@ async function writeTrialSet(directory: string, task: string, setup: "standard",
         stock: arm(fixture.stockSeconds, fixture.stockPassed, fixture.stockUsd),
         current: arm(fixture.currentSeconds, fixture.currentPassed, fixture.currentUsd),
       },
+      reliability: reliabilityReport((["stock", "current"] as const).map(key => ({ attempt_id: runId, task_id: task, arm: key,
+        source: "fresh", schedule: "concurrent", execution: "completed",
+        behavior: (key === "stock" ? fixture.stockPassed : fixture.currentPassed) === false ? "fail" : "pass", evaluation_validity: "valid",
+        candidate_cost_usd: (key === "stock" ? fixture.stockUsd : fixture.currentUsd) ?? null,
+        cost_eligible: typeof (key === "stock" ? fixture.stockUsd : fixture.currentUsd) === "number", evidence: "verified" }))),
     };
     await writeFile(join(evidence, "report.json"), JSON.stringify(report));
     await writeFile(join(evidence, "report.md"), `Fixture evidence: ${task}, ${setup}, pair ${index}.\n`);
@@ -159,6 +165,14 @@ test("suite report filters to both-passing pairs, leaves missing costs unknown, 
       .toMatchObject({ agent_seconds: 1, estimated_api_usd: null });
     expect(report.macro.agent_seconds.standard).toMatchObject({ n: 2, mean: 2 });
     expect(report.macro.estimated_api_usd.standard).toMatchObject({ n: 1, mean: 1 });
+    expect(report.schema).toBe("codex-ab.suite-report.v2");
+    expect(report.reliability.arms.stock).toMatchObject({ scored: 4, passing: 4, pass_rate: 1, cost_covered: 2, cost_per_verified_success_usd: null });
+    expect(report.reliability.arms.current).toMatchObject({ scored: 4, passing: 3, pass_rate: 0.75 });
+    expect(report.uncertainty.pass_rate[0]).toMatchObject({ matched_tasks: 2, matched_pairs: 4, mean_difference: -0.25,
+      interval: { status: "unstable", lower: -0.5, upper: 0 } });
+    expect(report.uncertainty.joint_success_agent_seconds[0]).toMatchObject({ matched_tasks: 2, matched_pairs: 3, mean_difference: 2 });
+    expect(report.uncertainty.joint_success_estimated_api_usd[0]).toMatchObject({ matched_tasks: 1, matched_pairs: 2, mean_difference: 1,
+      interval: { status: "unavailable" } });
     const markdown = await readFile(reportPath, "utf8");
     expect(markdown).toContain("unknown");
     expect(markdown).toStartWith("# Cross-task benchmark suite\n\n");

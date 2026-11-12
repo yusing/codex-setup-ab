@@ -7,6 +7,7 @@ import { buildReport, invalidateRun } from "./report";
 import { MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import { readState, sha256, writeState } from "./state";
 import { CURRENT_SCORE_RUBRIC, LEGACY_SCORE_RUBRIC, SCORING_CATALOG, qualityAspectKeys, type ArmName, type ArmResult, type CommandEvidence, type JudgeReport, type RunState } from "./types";
+import { verifiedBehaviorFixture } from "./test-support/behavioral-evidence";
 import type { PricingSnapshot } from "./usage";
 
 let root: string;
@@ -35,6 +36,13 @@ function armResult(arm: ArmName, passed: boolean): ArmResult {
     grade: { preparation: command("prepare"), router_suite: command("router", passed ? 0 : 1), elapsed_ms: 750, passed,
       semantic: { "pass-1": [assessed], "pass-1-existing": [existing], "pass-2": [assessed], "pass-2-existing": [existing] } },
   };
+}
+
+async function verifyFixtureArm(run: string, state: RunState, arm: ArmName): Promise<void> {
+  const result = state.results![arm]!;
+  result.grade!.semantic = verifiedBehaviorFixture(state, result.grade!.passed);
+  result.capture_identity = { status: "verified", manifest_path: `artifacts/${arm}/candidate-manifest.json`, tree: "fixture-tree", patch_sha256: "fixture-patch" };
+  await file(join(run, result.capture_identity.manifest_path), JSON.stringify({ fixture: "model-free synthetic capture identity" }));
 }
 
 const pricing: PricingSnapshot = {
@@ -85,6 +93,8 @@ async function fixtureRun(stockPassed = true, currentPassed = true): Promise<{ r
     },
     pricing, results: { stock: armResult("stock", stockPassed), current: armResult("current", currentPassed) },
   };
+  await verifyFixtureArm(run, state, "stock");
+  await verifyFixtureArm(run, state, "current");
   await writeState(run, state);
   const auth = join(root, "auth.json");
   await file(auth, "{}\n", 0o600);
@@ -155,7 +165,8 @@ test("recovered results disclose cancellation and keep incompatible duration com
   expect(report.recovery.current).toEqual(state.results!.current!.recovery);
   expect(report.agent_timing).toMatchObject({ sources: { stock: "native-controller", current: "docker-inspect" }, comparison_available: false });
   expect(report.efficiency.faster).toBeNull();
-  expect(report.efficiency.lower_estimated_cost).toBe("stock");
+  expect(report.efficiency.lower_estimated_cost).toBe("none");
+  expect(report.evidence_dimensions.stock.request_coverage).toBe("unverified");
   expect(report.current_minus_stock_percent.agent_elapsed_ms).toBeNull();
   expect(report.current_minus_stock_percent.total_tokens).not.toBeNull();
   const markdown = await readFile(paths.markdownPath, "utf8");
@@ -278,6 +289,7 @@ test("third-arm quality winner maps through both blind orders and missing third-
   state.setup_revisions = Object.fromEntries(Object.keys(state.arms).map((arm, index) => [arm,
     { commit: String(index).repeat(40), tree: "tree", manifest: "manifest", manifest_sha256: "hash" }]));
   state.results![third] = armResult(third, true);
+  await verifyFixtureArm(run, state, third);
   state.arm_attempts![third] = { codex_home: "arms/arm-3/home/ubuntu/.codex", container: "third", status: "stopped", started_at: "fixture" };
   await usageSession(join(run, state.arm_attempts![third]!.codex_home), "third-agent", "gpt-6-astra");
   const orders = [["stock", "current", third], [third, "current", "stock"]];
@@ -314,7 +326,7 @@ test("third-arm quality winner maps through both blind orders and missing third-
   expect(missing.arms[third].usage.complete).toBe(false);
   expect(missing.arms[third].usage.totals.total_tokens).toBe(0); // Retained raw accumulator, not a measured total.
   const markdown = await readFile(missingPaths.markdownPath, "utf8");
-  const row = markdown.split("\n").find(line => line.startsWith("| Codex (setup 222222222222) |") && line.includes(" | pass | "));
+  const row = markdown.split("## Arms\n\n")[1]!.split("\n").find(line => line.startsWith("| Codex (setup 222222222222) |") && line.includes(" | pass | "));
   expect(row?.split("|").slice(5, -1).map(value => value.trim())).toEqual(Array(9).fill("unknown"));
   const source = (await readFile(join(import.meta.dir, "web/app.js"), "utf8")).replace(/\ninit\(\);\s*$/, "");
   const { runInNewContext } = await import("node:vm");
@@ -351,7 +363,7 @@ test("judge requires task-derived criteria instead of legacy source-only grading
   const state = await readState(run);
   delete state.criteria;
   await writeState(run, state);
-  await expect(judgeRun(run, auth)).rejects.toThrow("judge requires task-derived criteria");
+  await expect(judgeRun(run, auth)).rejects.toThrow("requires a frozen task-derived criteria contract");
   expect((await readState(run)).judge).toBeUndefined();
 });
 
@@ -584,10 +596,10 @@ describe("report completion and winner eligibility", () => {
     const report = await Bun.file(paths.jsonPath).json();
     expect(report.winner).toBe("none");
     expect(report.winner_reason).toBe("Neither candidate passed the required checks.");
-    expect(report.efficiency).toEqual({ faster: "stock", lower_estimated_cost: "stock" });
+    expect(report.efficiency).toEqual({ faster: "stock", lower_estimated_cost: "none" });
     const markdown = await readFile(paths.markdownPath, "utf8");
     expect(markdown).toContain("Winner explanation: Neither candidate passed the required checks.");
-    expect(markdown).toContain("Lower estimated list-price cost: **Codex (minimal setup)**");
+    expect(markdown).toContain("Lower estimated list-price cost: **none**");
     expect(markdown).toContain("| input | uncached input | cached input | cache write input |");
     expect(markdown).toContain("minus Codex (minimal setup): 10 total input tokens, but 10 uncached input tokens");
     expect(markdown).toContain("descriptive only, not a quality winner");
@@ -842,17 +854,9 @@ test("a later covered semantic pass cannot hide earlier unassessed criteria", as
 test("an executed failure decides the losing arm despite another pass's unassessed criteria", async () => {
   const { run } = await fixtureRun();
   const state = await readState(run);
-  state.criteria = { path: "evaluator/criteria.json", sha256: "criteria",
-    contract: { schema: "codex-ab.criteria.v1", task_sha256: state.task.sha256,
-      criteria: [{ id: "behavior", description: "Required behavior" }], preparation: "true", existing_tests: "true", qualification: "not-run" } };
-  const passed = { criterion: "behavior", status: "pass" as const, basis: "executed" as const, reasoning: "Executed" };
   state.results!.stock!.grade!.passed = false;
-  state.results!.stock!.grade!.semantic = {
-    "pass-1": [{ ...passed, status: "unassessed" }], "pass-1-existing": [passed],
-    "pass-2": [{ ...passed, status: "fail" }], "pass-2-existing": [passed],
-  };
-  state.results!.current!.grade!.passed = true;
-  state.results!.current!.grade!.semantic = { "pass-1": [passed], "pass-1-existing": [passed], "pass-2": [passed], "pass-2-existing": [passed] };
+  await verifyFixtureArm(run, state, "stock");
+  state.results!.stock!.grade!.semantic!["pass-1"]![0]!.status = "unassessed";
   await writeState(run, state);
   await fixtureJudge(run, "candidate-2", "candidate-1");
   const result = await buildReport(run);
@@ -863,7 +867,7 @@ test("an executed failure decides the losing arm despite another pass's unassess
   expect(await readFile(result.markdownPath, "utf8")).toContain("| Codex (minimal setup) | fail |");
 });
 
-test("conclusive source-only interface failures do not hide completed assessment", async () => {
+test("source-only interface failures cannot establish a verified behavioral assessment", async () => {
   const { run } = await fixtureRun(false, true);
   const state = await readState(run);
   state.criteria = { path: "evaluator/criteria.json", sha256: "criteria",
@@ -881,10 +885,12 @@ test("conclusive source-only interface failures do not hide completed assessment
   await writeState(run, state);
   const result = await buildReport(run);
   const report = JSON.parse(await readFile(result.jsonPath, "utf8"));
-  expect(report.checks_executed).toBe(true);
+  expect(report.checks_executed).toBe(false);
+  expect(report.reliability.arms.stock.scored).toBe(0);
+  expect(report.winner).toBe("none");
 });
 
-test("semantic criteria and existing checks complete grading without synthetic command evidence", async () => {
+test("command outcomes alone cannot complete behavioral grading without supervisor evidence", async () => {
   const { run } = await fixtureRun();
   const state = await readState(run);
   state.criteria = { path: "evaluator/criteria.json", sha256: "criteria",
@@ -903,9 +909,10 @@ test("semantic criteria and existing checks complete grading without synthetic c
   await fixtureJudge(run, "candidate-1", "candidate-2");
   const paths = await buildReport(run);
   const report = JSON.parse(await readFile(paths.jsonPath, "utf8"));
-  expect(report.checks_executed).toBe(true);
-  expect(report.measurement_complete).toBe(true);
-  expect(report.winner).toBe("stock");
+  expect(report.checks_executed).toBe(false);
+  expect(report.measurement_complete).toBe(false);
+  expect(report.winner).toBe("none");
+  expect(report.reliability.arms.stock.scored).toBe(0);
   expect(report.arms.stock.result.grade.semantic["pass-1"][0].execution.command).toBe("node --test");
   expect(Object.keys(report.arms.stock.result.grade).sort()).toEqual(["elapsed_ms", "passed", "preparation", "router_suite", "semantic"]);
 });
@@ -930,6 +937,91 @@ test("historical records without semantic criteria remain descriptive despite st
   expect(report.arms.stock.usage.totals.total_tokens).toBe(24);
   expect(await readFile(paths.markdownPath, "utf8")).toContain("Historical measurements are descriptive only");
   expect(await readFile(statePath, "utf8")).toBe(before);
+});
+
+test("verified fresh and historical attempts retain separate provenance without inventing historical holistic choices", async () => {
+  const { run } = await fixtureRun();
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  let report = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(report.reliability.arms.stock).toMatchObject({ scored: 1, passing: 1, sources: ["fresh"] });
+  expect(report.quality_selection.passes[0]).toMatchObject({ holistic_judge_preference: "stock", selection_eligible: true });
+  const state = await readState(run);
+  state.imported_control = { source_run_id: "historical-source", bundle_sha256: "bundle", controls_sha256: "controls", stdout_sha256: "stdout", stderr_sha256: "stderr" };
+  state.evaluation = { mode: "reuse" };
+  await writeState(run, state);
+  report = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(report.reliability.attempts.map((attempt: { arm: string; source: string }) => [attempt.arm, attempt.source])).toEqual([["stock", "historical"], ["current", "fresh"]]);
+  expect(report.quality_selection.policy).toBe("eligible-weighted-score");
+  expect(report.quality_selection.passes.every((pass: { holistic_judge_preference: unknown }) => pass.holistic_judge_preference === null)).toBe(true);
+});
+
+test("legacy or mixed supervisor coverage cannot pass, rank, or enter scored reliability", async () => {
+  for (const mixed of [false, true]) {
+    const { run } = await fixtureRun();
+    await fixtureJudge(run, "candidate-1", "candidate-2");
+    const state = await readState(run);
+    for (const result of Object.values(state.results!)) {
+      for (const rows of Object.values(result!.grade!.semantic!)) for (const row of rows) delete row.schema;
+      if (mixed) result!.grade!.semantic!["pass-1"]![0]!.schema = "codex-ab.criterion-evidence.v2";
+      else delete result!.capture_identity;
+    }
+    await writeState(run, state);
+    const before = await readFile(join(run, "run.json"), "utf8");
+    const report = await Bun.file((await buildReport(run)).jsonPath).json();
+    expect(report).toMatchObject({ winner: "none", checks_executed: false, measurement_complete: false });
+    expect(report.reliability.arms.stock).toMatchObject({ scored: 0, passing: 0, excluded: 1 });
+    expect(report.quality_selection.behavioral_eligibility).toEqual([]);
+    expect(report.quality_selection.passes[0]).toMatchObject({ weighted_score_leaders: [], selection_eligible: false, disagreement: false });
+    expect(report.judge.result.winner).toBe("stock");
+    expect(await readFile(join(run, "run.json"), "utf8")).toBe(before);
+  }
+});
+
+test("an active candidate attempt is unknown rather than an infrastructure failure", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  delete state.results!.current;
+  state.status = "running";
+  state.arm_attempts!.current!.status = "started";
+  delete state.arm_attempts!.current!.finished_at;
+  await writeState(run, state);
+  const report = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(report.evidence_dimensions.current.execution).toBe("unknown");
+  expect(report.reliability.arms.current.outcomes).toMatchObject({ infrastructure_failure: 0, unassessed: 1 });
+});
+
+test.each(["critical", "incomplete-competitor"])("overall selection obeys the same quality eligibility as its explanation: %s", async fault => {
+  const { run } = await fixtureRun();
+  await fixtureJudge(run, "candidate-1", "candidate-2");
+  const state = await readState(run);
+  const first = state.judge!.passes[0]!;
+  if (fault === "critical") first.issues.push({ candidate: "candidate-1", severity: "critical", detail: "Retained critical finding excludes the preferred candidate." });
+  else first.scores["candidate-2"].weighted_total = null;
+  await writeState(run, state);
+  const report = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(report.measurement_complete).toBe(true);
+  expect(report.winner).toBe("none");
+  expect(report.quality_selection.passes[0].selection_eligible).toBe(false);
+  expect(report.winner_reason).toContain("eligible quality evidence");
+});
+
+test("fixed-verifier singletons have no comparison winner and invalid cleanup excludes eligibility", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.fixed_verifier = { mode: "fixed-verifier", config_path: "evaluator/fixed-inputs/config.json", config_sha256: "fixture", task_directory: "evaluator/fixed-inputs/task", prompt_path: "instruction.md" };
+  state.selected_arms = ["stock"];
+  state.results!.stock!.grade!.fixed = { schema: "codex-ab.fixed-result.v1", mode: "fixed-verifier", execution_status: "completed",
+    behavioral_result: "pass", evaluation_validity: "valid", cleanup_verified: true, reason: "Synthetic fixed result fixture." } as NonNullable<NonNullable<ArmResult["grade"]>["fixed"]>;
+  await writeState(run, state);
+  let report = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(report).toMatchObject({ evaluator_mode: "fixed-verifier", judge_required: false, winner: "none", measurement_complete: true });
+  expect(report.quality_selection.behavioral_eligibility).toEqual(["stock"]);
+  state.results!.stock!.grade!.fixed!.cleanup_verified = false;
+  await writeState(run, state);
+  report = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(report).toMatchObject({ winner: "none", measurement_complete: false });
+  expect(report.quality_selection.behavioral_eligibility).toEqual([]);
+  expect(report.reliability.arms.stock).toMatchObject({ scored: 0, passing: 0 });
 });
 
 

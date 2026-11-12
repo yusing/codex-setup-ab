@@ -39,6 +39,7 @@ export interface HistoricalEvaluation {
 /** Preserve failed and unassessed outcomes as well as successful evaluations. */
 export function historicalEvaluation(source: RunState, arm: ArmName): HistoricalEvaluation {
   const grade = source.results?.[arm]?.grade;
+  if (source.fixed_verifier || grade?.fixed) throw new Error("fixed-verifier evaluation reuse is not yet supported; prepare a fresh fixed comparison");
   const unavailable = () => new Error(`Historical arm ${arm} lacks a complete retained evaluation; choose fresh evaluation`);
   if (!grade || source.judge?.status !== "complete") throw unavailable();
   const passes = {} as HistoricalEvaluation["passes"];

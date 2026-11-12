@@ -131,9 +131,14 @@ Validate the image and snapshotted dependencies without making a model request:
 ```
 
 Preflight verifies provider reachability over the same kind of temporary, IPv6-capable Docker
-network used for inference. Agent pairs and each judge attempt receive run-owned networks that
-are removed after their containers stop; offline preparation and evaluation remain on
-`--network none`. This supports IPv6-only provider endpoints without using host networking.
+network used for inference. Each candidate arm has a separate run-owned Docker network;
+each judge attempt also has its own network. These networks are removed after their
+containers stop. Offline preparation and evaluation use `--network none`.
+The candidate policy is explicitly `online-unrestricted`, with `closed_book: false`:
+there is no runner-enforced provider destination allowlist. Removing reference commits
+from the initial checkout does not establish that solutions are unavailable online.
+Reports record this policy and the separate-arm connectivity boundary. This supports
+IPv6-only provider endpoints without using host networking.
 
 Preflight has its own persisted phase status and diagnostics. A failed check leaves
 candidate execution and source assessment unstarted. Launch still retains an available
@@ -152,7 +157,7 @@ After reviewing `run.json`, start the model runs explicitly:
   --confirm-paid-inference
 ```
 
-The command first checks that the base image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. Preflight builds or reuses a `codex-ab-deps:<key>` Docker image keyed by the base image ID, source commit/tree, submodules, preparation command, pinned Mekugi hash when selected, and operator identity. Dependency caches and the frozen Mekugi executable enter the final image, not source, homes, credentials, or evaluator controls. Mekugi startup checks and execution use that immutable image without a host Mekugi bind mount. Fresh containers share immutable image layers and get private copy-on-write storage; dependency changes made by an agent never reach another arm, another run, or grading. Each arm materializes its generated workspace assets offline using those cached dependencies. Grading uses the original dependency image offline with read-only candidate and harness mounts, a fresh private Docker copy-on-write root, and a shared immutable build-cache seed; cache writes and execution workspaces stay temporary. Evaluator cache reuse is described in the blind-judge section. Protected execution uses temporary Go build output because its root filesystem is read-only. Ignored `node_modules` directories created during preparation are removed after successful patch capture, unless an agent has tracked them or redirected their path; removed paths are recorded per arm. They can be regenerated from the shared image. The first image build may download dependencies; later matching runs reuse it. Build logs are saved under `artifacts/dependencies.stdout` and `artifacts/dependencies.stderr`, and the immutable dependency image ID is recorded in `run.json`. Keep that image available for later grading or trial runs. Docker images and build cache occupy shared disk space outside the corpus; this does not impose a 1 GB cap on source, tool snapshots, or captured logs. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both arms with the selected model and reasoning effort (defaults: gpt-6-astra and medium) concurrently with default two-CPU and 4 GiB limits, overridden by any explicit per-arm settings. Preflight and the final launch check verify copied controls, both setup templates, the host installed-tool file manifest, the selected Bun executable, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
+The command first checks that the base image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. Preflight builds or reuses a `codex-ab-deps:<key>` Docker image keyed by the base image ID, source commit/tree, submodules, preparation command, pinned Mekugi hash when selected, and operator identity. Dependency caches and the frozen Mekugi executable enter the final image, not source, homes, credentials, or evaluator controls. Mekugi startup checks and execution use that immutable image without a host Mekugi bind mount. Fresh containers share immutable image layers and get private copy-on-write storage; dependency changes made by an agent never reach another arm, another run, or grading. Each arm materializes its generated workspace assets offline using those cached dependencies. Grading uses the original dependency image offline with read-only candidate and harness mounts, a fresh private Docker copy-on-write root, and a shared immutable build-cache seed; cache writes and execution workspaces stay temporary. Evaluator cache reuse is described in the blind-judge section. Protected execution uses temporary Go build output because its root filesystem is read-only. Declared regenerable `node_modules` directories created during preparation are excluded from the capture manifest unless they contain tracked source. The collector does not remove candidate files; it records exclusions and can regenerate dependencies from the shared image. The first image build may download dependencies; later matching runs reuse it. Build logs are saved under `artifacts/dependencies.stdout` and `artifacts/dependencies.stderr`, and the immutable dependency image ID is recorded in `run.json`. Keep that image available for later grading or trial runs. Docker images and build cache occupy shared disk space outside the corpus; this does not impose a 1 GB cap on source, tool snapshots, or captured logs. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both arms with the selected model and reasoning effort (defaults: gpt-6-astra and medium) concurrently with default two-CPU and 4 GiB limits, overridden by any explicit per-arm settings. Preflight and the final launch check verify copied controls, both setup templates, the host installed-tool file manifest, the selected Bun executable, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
 
 Mekugi arms use `mekugi codex headless --yolo` (without `codex` for third-party
 routing), admitting Main and its children through Mekugi's server-owned runtime.
@@ -183,7 +188,7 @@ before paid inference. This is a new evaluation, not a restart of the source run
 
 `launch` and `run` accept `--import-arms`, a JSON array of mappings with
 `target_arm`, `run_dir`, and `arm`. Each mapping fills an existing comparison slot
-from a completed, infrastructure-valid published run. An optional `bundle_sha256`
+from a completed, infrastructure-valid published adaptive run. An optional `bundle_sha256`
 pins its bundle manifest; otherwise the harness captures the current manifest hash.
 Targets must be distinct and leave at least one fresh arm. Imported results retain
 their source setup labels, execution times, logs, rollouts, and available provider
@@ -191,8 +196,14 @@ accounting. Task, baseline, criteria, model, reasoning, service tier, base image
 binaries, resource limits, and timeout must match; setup and launcher treatments
 may differ. Evidence is verified and copied before candidate inference. Evaluation
 mode `reuse` preserves imported grades and per-pass scores and assessments;
-`fresh` grades and blindly assesses all patches together. Missing usage stays unknown. Costs are recomputed
-with the new run's pricing snapshot. Sources remain unchanged and the new run
+`fresh` grades and blindly assesses all patches together. Active and archived session
+rollouts retain their namespaces and checksums. Before any repricing, import remeters
+the retained evidence against the source pricing and checks the original reported
+totals and coverage. Original measurements and verification results remain in
+`accounting-verification.json`; repricing uses the new snapshot separately. Old
+rollout or accounting schemas and missing trusted capture provenance are rejected.
+Unknown current-format usage remains unknown and cannot establish complete accounting.
+Sources remain unchanged and the new run
 retains provenance and measurement evidence independently of their directories.
 Imports cannot be combined with `--arm`, legacy `--control-run`, or repeated-trial
 launches. Use one comparison per launch for historical imports.
@@ -267,7 +278,21 @@ match the retained snapshot; changed packs, modified pack prompts, and shared
 compaction limits require manual configuration. Draft creation performs no inference
 and leaves source evidence unchanged. Full import verification still runs before execution.
 
-After all agents stop, the runner captures tracked, committed, staged, and untracked changes as a binary patch relative to the recorded immutable base. Only then does it create separate evaluator workspaces. Independent semantic passes run the predetermined existing tests and author checks against each candidate's actual interfaces. Git inspection and patch capture run in separate offline containers, never on the host. Agent and grader times remain separate.
+After all agents stop, the runner captures the actual filesystem as a binary patch
+relative to the immutable base. The offline collector receives a read-only candidate
+mount and trusted seed; only a fresh, dedicated capture destination is writable.
+Candidate Git configuration, filters, hooks, external diffs, and replace refs cannot
+choose the captured bytes. Capture includes ignored new source files and preserves
+binary contents, executable modes, and raw symlink targets. Only declared regenerable
+preparation directories are excluded, and tracked source within them is retained.
+Pinned submodule identities and contents remain immutable.
+
+`codex-ab.candidate-manifest.v1` records file identities, modes, sizes, the resulting
+Git tree, exclusions, changed paths, and patch hash. The runner independently checks
+that manifest and the fresh evaluator reconstruction against the retained patch and
+immutable base before grading. Imports require the current trusted capture manifest
+and v2 rollout/accounting schemas; missing or old provenance is rejected. Git inspection
+and patch capture run in offline containers. Agent and grader times remain separate.
 
 For Mekugi's original router task, use the `mekugi` profile and explicitly select `--current-launcher mekugi` with `--mekugi-bin`. Historical result bundles retain their recorded image names and identities. Historical source snapshots may still use the `hpatch:core/v1` plugin ABI; preparation supports it without rewriting benchmark source.
 
@@ -332,12 +357,13 @@ failing behavioral checks are ignored and their evidence stands. If there are no
 unassessed criteria, no repair-model request is made. A final source assessment can
 identify a wrongly wired ordinary failure as unassessed, but cannot replace its
 assertions with a passing check in that run.
-Harnesses must use the runtime required by the inspected entry point. Evaluator-owned setup mistakes,
-such as a wrong interpreter, invented entry point, or missing harness-only dependency, must be
-reported on a line beginning `HARNESS_ERROR:` and exit 125; candidate errors reached through documented supported setup remain
-behavioral evidence. Ordinary assertion failures are reserved for checks that reached the target
-behavior. An exception raised by the evaluator's own check wrapper, outside the check command, is
-reported the same way and is unassessed.
+Harnesses must use the runtime required by the inspected entry point. A trusted
+supervisor records executor setup, evaluator wiring, assertion failures, candidate
+errors, incomplete execution, timeout, and cancellation separately. Candidate output,
+exception vocabulary, exit 125, and a printed `HARNESS_ERROR:` marker cannot assign
+failure provenance. Evaluator-only dependencies must be declared and checked outside
+the candidate import path. The supervisor retains the exact check and case identities;
+candidate processes cannot write its result or signal its privileged parent.
 Earlier evidence remains available to the final assessment; real behavior failures must not be
 weakened into passes. Different names and test wiring are allowed; different required outcomes are
 not. Compilation or setup failures caused by assumed names, runtimes, or entry points remain
@@ -345,13 +371,13 @@ not. Compilation or setup failures caused by assumed names, runtimes, or entry p
 can be a source-only defect. An unsupported source-only failure becomes unassessed instead of aborting judgment.
 An executed failure must be supported by a failed check for that same criterion. If its check
 passed or could not assess the behavior, the failure label becomes unassessed and retains the
-judge's observation. Failures from other criteria remain separate evidence. Passing requires executed evidence plus the judge's assessment that the
-check actually covers the criterion. Both passes, disagreements, source, commands, outputs and
-repair attempts are retained. Exception wording alone does not identify the faulty
-owner. An explicit harness-error marker remains unassessed even if a shell swallows
-its nonzero exit. Known empty test-suite reports also remain unassessed. This is not
-a proof that arbitrary zero-exit programs exercised the criterion; the source
-assessment must still verify relevant assertions. Detected candidate-file mutations
+judge's observation. Failures from other criteria remain separate evidence. Passing
+requires completed supervisor assertions, qualified frozen controls, and the judge's
+assessment that those assertions cover the criterion. Raw probe status remains visible
+when qualification is missing or invalid. Both reversed-order passes, disagreements,
+source, commands, outputs, and repairs are retained. They check presentation bias and
+do not provide independent ground truth. A legacy command's zero exit, nonempty output,
+or printed test count cannot establish a pass. Detected candidate-file mutations
 report changed paths with before/after hashes or modes (up to 100 paths, with the
 total count), rather than an undiagnosable generic failure.
 
@@ -360,12 +386,19 @@ candidate in which files matching the patterns (shell-style, where `*` also matc
 inside `.git`) are replaced by the baseline commit's matching files; the candidate's own matching
 files are removed first. Declare it only when the baseline files pass unchanged against the
 reference endpoint. A failure is evidence that retained behavior regressed or that the candidate
-edited expectations the task did not require changing. A Go build failure there is unassessed,
-because candidates may legitimately refactor internal interfaces. The result is shown to the
+edited expectations the task did not require changing. A nonzero retained-test command is recorded without classifying its cause from compiler
+wording; source assessment must distinguish regression from incompatible test wiring. The result is shown to the
 judge, recorded as `pass-N-retained`, and reported, but it is not a criterion and does not change
 the existing-test gate, eligibility, or a decided grade.
 
-Prewritten hidden tests are no longer supported. Supply behavioral criteria, not evaluator source. Semantic assessment requires every configured arm and cannot restart a started assessment.
+Adaptive semantic grading uses behavioral criteria and frozen evaluator controls.
+The separate [fixed-verifier mode](fixed-verifier.md) executes a pinned original
+benchmark verifier and reports its reward independently of adaptive source quality.
+Generic imports and evaluation reuse do not yet support configured fixed-verifier
+runs. Semantic assessment requires every configured arm and cannot restart a started
+assessment. See [verifier completion and qualification](verification.md) for the
+supported observation protocol, control schema, repair invariants, and migration
+requirements for existing task packs.
 
 Harness authoring, an optional repair, and final assessment each have their own recorded model
 attempts, with the existing capacity-only retry policy. Model usage and timing remain separate
@@ -380,7 +413,16 @@ The `run` command performs blind semantic assessment automatically after all can
 ./dist/codex-ab judge --run-dir "$run_dir" --confirm-paid-inference
 ```
 
-The gpt-6.1-sol judge uses high reasoning and the fast service tier. It receives the task, anonymous patches, changed-file lists, bounded output summaries, and complete read-only evaluator evidence under `/evidence`, plus anonymous evaluator source directories for inspecting affected contracts and callers. It does not receive arm labels, costs, agent logs, or either agent's writable filesystem. Task packs with a pinned upstream reference also mount its frozen commit patches and combined diff read-only under `/reference`. Both stages use them to establish task-scoped behavior while accepting equivalent designs and safe improvements; source comparison does not replace executed criterion evidence. The judge assesses final candidate trees, not commit-by-commit correspondence. Two independent homes containing only the minimal Codex configuration judge opposite presentation orders; they do not copy the task agents' mise runtime. Each pass uses two stages when its first harness succeeds or three when one repair stage is needed, with up to three capacity attempts per stage. Each assessment returns validated JSON scores from 0 to 5 for correctness (25%), simplicity (25%), completeness (20%), implementation performance (12%), maintainability (10%), approach (4%), and test quality (4%), plus evidence, issues, and a winner. A complete weighted total ranges from 0 to 100. Historical four-component assessments retain their correctness/completeness/maintainability/test-quality weights of 50/20/20/10 and are not ranked against the expanded rubric. Critical findings override totals; a candidate that failed any required gate cannot win. Disagreement is reported rather than forced into consensus. Large logs stay retained and inspectable without being duplicated into the prompt. Oversized patches or summary packs still fail explicitly. Historical reports retain their recorded judge metadata. When judging an older run whose saved prices lack gpt-6.1-sol, the judge records a separate fallback rate for its own usage without changing the run's original pricing snapshot or trial controls.
+The gpt-6.1-sol judge uses high reasoning and the fast service tier. It receives the task, anonymous patches, changed-file lists, bounded output summaries, and complete read-only evaluator evidence under `/evidence`, plus anonymous evaluator source directories for inspecting affected contracts and callers. It does not receive arm labels, costs, agent logs, or either agent's writable filesystem. Task packs with a pinned upstream reference also mount its frozen commit patches and combined diff read-only under `/reference`. Both stages use them to establish task-scoped behavior while accepting equivalent designs and safe improvements; source comparison does not replace executed criterion evidence. The judge assesses final candidate trees, not commit-by-commit correspondence. Two separate homes containing the restricted source-reader configuration judge opposite presentation orders; they do not copy the task agents' mise runtime. Each pass uses two stages when its first harness succeeds or three when one repair stage is needed, with up to three capacity attempts per stage. Each assessment returns validated JSON scores from 0 to 5 for correctness (25%), simplicity (25%), completeness (20%), implementation performance (12%), maintainability (10%), approach (4%), and test quality (4%), plus evidence, issues, and a winner. A complete weighted total ranges from 0 to 100. Historical four-component assessments retain their correctness/completeness/maintainability/test-quality weights of 50/20/20/10 and are not ranked against the expanded rubric. Critical findings override totals; a candidate that failed any required gate cannot win. Disagreement is reported rather than forced into consensus. Large logs stay retained and inspectable without being duplicated into the prompt. Oversized patches or summary packs still fail explicitly. Historical reports retain their recorded judge metadata. When judging an older run whose saved prices lack gpt-6.1-sol, the judge records a separate fallback rate for its own usage without changing the run's original pricing snapshot or trial controls.
+
+The source-reading judge has no model-accessible shell, unified execution, Code Mode,
+delegation, plugin/app, hook, image-viewer, or web-search capability. A fixed MCP broker
+exposes bounded reads of candidate, reference, and evidence files and can write only
+the attempt's check-plan JSON. It rejects symlink traversal, special files, and paths
+outside those roots. Candidate execution remains in the credential-free offline
+executor. This boundary is qualified for Codex CLI 0.154.0; other versions fail closed
+before source-judge inference until their tool-registration behavior is qualified.
+Read-only sandbox configuration also prevents direct patch writes by the model.
 
 Judging verifies retained inputs and uses the pinned images. It does not require
 unused host tool installations to remain unchanged after candidate execution.
@@ -410,8 +452,10 @@ Bun caches directly over the immutable image seed. No full cache is copied into
 its temporary workspace. Native cache behavior, including Go executable reuse,
 remains intact. Existing Go seed payloads remain read-only to prevent access-time
 bookkeeping from copying aged payloads into every check; native action indexes
-and new cache entries remain writable. Checks stay offline, non-root, capability-free, and resource
-bounded, with read-only candidate and harness mounts. A check cannot change its
+and new cache entries remain writable. Candidate check processes stay offline,
+unprivileged, capability-free, and resource bounded. Their trusted supervisor starts
+with only the capabilities needed to prepare the private workspace and drop child
+privileges. Candidate and harness mounts are read-only. A check cannot change its
 image, another check's cache, or original candidate files. Cache writes stay
 outside report bundles and credential-bearing judge containers. Candidate source
 copies, outputs, and temporary execution workspaces remain separate.
@@ -428,6 +472,45 @@ model substitution or conversational-agent fallback. Once the command exits, it 
 judge attempt; historical failed attempts remain unchanged. The exception is an explicit `finish --recover-judge` for a judge that timed out, or failed on a validation rule the current runner handles without failing: an unsupported source-only or executed failure, or a harness repair that resubmitted a successful check. Recovery also supports setup-commit judges that exited before producing output because their inherited setup configuration referenced an unavailable model-instructions file. The retained configuration and startup diagnostic must establish that specific failure; fresh judge homes use independent minimal configuration. Recovery requires completed existing tests in both passes, no recorded pass, no running attempt, and no partially executed evidence round. It archives the failed bundle, reuses completed existing-test evidence and evidence rounds, replays every completed judge stage's recorded response under current validation, and launches fresh attempts only for stages that never completed. Prior attempts and their usage remain recorded. Recovery does not resume an interrupted model conversation, change the timeout, or restart either A/B agent; another failure remains a failed finishing attempt.
 
 ## Report
+
+New pair, trial, and suite reports use versioned v2 schemas. They expose execution
+status, capture identity, behavioral result, evaluation validity, usage observation
+validity, request coverage, and pricing precision as separate dimensions.
+Published `MANIFEST.sha256` files use `codex-ab.bundle-manifest.v2`: a version
+header followed by JSON file-identity rows. Each row binds the literal path,
+file kind/executable mode, size, and content hash; symlinks hash their literal
+targets without following them. Git metadata is excluded. Nested manifests are
+included, and only the current manifest excludes itself. Verification rejects
+older byte-only manifests, link-target changes, and executable-mode changes.
+`codex-ab.usage.v2` does not infer complete request coverage from plausible token
+counters or a well-formed session file. Counters must be finite, nonnegative safe
+integers; cached-input and reasoning-output relationships must also be valid.
+Cumulative snapshots are not summed with delegated or per-request usage without
+an explicit reconciliation basis. Aggregate or approximate estimates remain visible
+but cannot support an eligible cost ranking. The current direct-Codex session format
+does not establish complete request coverage; that limit is reported explicitly.
+
+Quality selection records behavioral eligibility, each pass's weighted-score leader,
+the holistic judge preference, the selection policy, and any comparable disagreement.
+Fresh source judging retains its holistic policy; historical evaluation reuse retains
+its compatible weighted-score policy. Missing required evidence, incompatible rubrics,
+missing score dimensions, or critical findings cannot produce a verified quality
+selection. Agent command time is not a measurement of implementation performance.
+
+The existing paired efficiency view on joint successes remains available. A separate
+scored-attempt view includes verified passes, defined task/model failures, and candidate
+budget timeouts. Infrastructure failures, evaluator failures, administrative cancellations,
+unassessed outcomes, and unstarted slots have separate counts. Cost per verified success
+uses eligible candidate spend across all scored attempts; unknown costs leave it
+unavailable, and zero successes never produce a zero cost. Judge spend is separate.
+
+Paired uncertainty averages repeats within each task and resamples matched task means
+with equal task weights. Fresh and historical sources and execution schedules remain
+separate cohorts. Fewer than two matched tasks has no cross-task interval; very small
+task sets carry an instability warning. Repeats on one task do not increase task coverage.
+The [experiment guide](guidance-launcher.md) documents denominators and the four-cell
+guidance/launcher contrasts. Fixed-verifier rewards are labeled separately from adaptive
+quality and do not establish an official FHE result or methodology equivalence.
 
 ```sh
 ./dist/codex-ab report --run-dir "$run_dir"
@@ -471,7 +554,7 @@ recalculates weighted scores, records the input hash, and shows agreement or dis
 Imported assessments do not restart inference, replace the official judge, supply missing usage,
 or change overall winner eligibility. They are supplied evidence, not an operational fallback.
 
-The runner automatically writes `reports/report.md`, `reports/report.json`, and a checksummed `reports/bundle/` after execution, including partial runs. The bundle contains setup identities, task and evaluator controls, captured patches, interaction and role audits, source assessment, paired comparison, semantic check results, and integrity checks. Encrypted interaction content remains unknown; command waits are counted separately from reviewer-status polling. The standalone `report` command refreshes the standard report and an existing finishing bundle without starting inference. Readable rejected judge responses are retained separately as unvalidated evidence, never as an eligible winner. It includes raw, uncached, cached, cache-write, output, reasoning-output, and total tokens for root and child agents; estimated public-list API cost; command time; agent and grader wall time; gate status; B-minus-A percentages; both raw judge passes; and a separate judge cost. Pricing is fetched and snapshotted once per run, with source, timestamp, assumptions, and warnings. If usage or required checks are incomplete, the report shows no overall winner. An assessed criterion failure in either pass settles that arm's failed grade even when the other pass left criteria unassessed; a winner still needs complete checks in both passes. When both candidates fail, neither wins; the report explains why and separately identifies the faster and lower-estimated-cost arms without declaring a quality winner.
+The runner automatically writes `reports/report.md`, `reports/report.json`, and a checksummed `reports/bundle/` after execution, including partial runs. The bundle contains setup identities, task and evaluator controls, captured patches, interaction and role audits, source assessment, paired comparison, semantic check results, and integrity checks. Encrypted interaction content remains unknown; command waits are counted separately from reviewer-status polling. The standalone `report` command refreshes the standard report and an existing finishing bundle without starting inference. Readable rejected judge responses are retained separately as unvalidated evidence, never as an eligible winner. It includes raw, uncached, cached, cache-write, output, reasoning-output, and total tokens for root and child agents; estimated public-list API cost; command time; agent and grader wall time; gate status; B-minus-A percentages; both raw judge passes; and a separate judge cost. Pricing is fetched and snapshotted once per run, with source, timestamp, assumptions, and warnings. If usage or required checks are incomplete, the report shows no overall winner. An independently verified and qualified criterion failure can settle a new reliable failed outcome even when other criteria remain unassessed; a verified pass still needs complete checks in both passes. Historical raw grades remain visible without acquiring new evidence guarantees. When both candidates fail, neither wins; the report explains why and separately identifies the faster and lower-estimated-cost arms without declaring a quality winner.
 
 Validated Mekugi exports also report compaction answerer, provider cost and cost
 from the first compaction onward, excluding prewarm. Older exports without

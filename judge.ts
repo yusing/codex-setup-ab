@@ -3,6 +3,7 @@ import { armNames, candidateIds, qualityAspectKeys, CURRENT_SCORE_RUBRIC, LEGACY
 import { access, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { JUDGE_MODEL, runSemanticJudge } from "./semantic-judge";
+import { verifyAdaptiveJudgeInputs } from "./semantic-preflight";
 import { armExecutionSucceeded, readState, withRunLock, writeState } from "./state";
 import { embeddedFallbackPricing, fetchPricing, type PricingSnapshot } from "./usage";
 import type { ArmName, CommandEvidence, JudgePass, JudgeReport, RunState } from "./types";
@@ -280,6 +281,7 @@ export async function judgeRunUnlocked(runDirectory: string, authFile: string, d
   if (!armNames(state).every(arm => armExecutionSucceeded(state.results?.[arm]))) throw new Error("judge requires successful agent execution in both arms");
   if (recover) await assertRecoverableJudge(runDir, state);
   else if (state.judge) throw new Error("judge already started for this immutable run; it cannot be resumed or retried");
+  await verifyAdaptiveJudgeInputs(runDir, state);
   const auth = resolve(authFile);
   if (((await stat(auth)).mode & 0o777) & 0o077) throw new Error("auth file must be mode 0600");
 

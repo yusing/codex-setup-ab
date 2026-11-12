@@ -1,0 +1,21 @@
+# Model-free boundary fixtures: no user credentials or production source images.
+FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS codex-runtime
+RUN npm install --prefix /opt/codex @openai/codex@0.154.0
+FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv git util-linux ca-certificates libstdc++6 && rm -rf /var/lib/apt/lists/*
+COPY tasks/flask-ipv6-server-name/requirements.txt /tmp/flask-qualification-requirements.txt
+RUN python3 -m venv /opt/task-deps/python \
+    && /opt/task-deps/python/bin/pip install --no-cache-dir -r /tmp/flask-qualification-requirements.txt
+COPY --from=codex-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=codex-runtime /opt/codex /opt/codex
+RUN ln -s /opt/codex/node_modules/.bin/codex /usr/local/bin/codex
+ARG FIXTURE_UID=1001
+ARG FIXTURE_GID=1001
+RUN mkdir -p /home/ubuntu/.codex /workspace && chown -R ${FIXTURE_UID}:${FIXTURE_GID} /home/ubuntu /workspace
+ENV HOME=/home/ubuntu CODEX_HOME=/home/ubuntu/.codex
+WORKDIR /workspace
+USER ${FIXTURE_UID}:${FIXTURE_GID}
+ENTRYPOINT []
+# The copied Node binary and npm-installed Codex must run as the fixture UID.
+RUN node --version && bun --version && python3 --version && git --version && codex --version

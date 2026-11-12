@@ -1,10 +1,13 @@
 import { dependencyImage } from "./dependencies";
 import { join, posix } from "node:path";
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { exec } from "./process";
 import { writeState } from "./state";
 import { runOwnedContainer } from "./container";
+import supervisorSource from "./semantic-supervisor.txt" with { type: "text" };
+import { semanticCheckHash, validateVerification, validateVerifierRecord, type SemanticVerification } from "./semantic-protocol";
+import { validateEvaluatorControls, type EvaluatorControls, type EvaluatorQualification } from "./semantic-qualification";
 import type { ArmName, CommandEvidence, RunState } from "./types";
 
 export interface BehavioralCriterion {
@@ -24,6 +27,10 @@ export interface CriteriaContract {
   retained_tests?: { patterns: string[]; command: string };
   evaluator_guidance?: string;
   qualification: "not-run";
+  /** Optional independent assertions for the predetermined existing-test gate. */
+  existing_test_verification?: SemanticVerification;
+  /** Frozen with the task and retained only in evaluator inputs. */
+  evaluator_controls?: EvaluatorControls;
 }
 
 export interface SemanticCheck {
@@ -31,15 +38,23 @@ export interface SemanticCheck {
   files: Array<{ path: string; source: string }>;
   command: string[];
   rationale: string;
+  verification?: SemanticVerification;
+  /** Python modules used only by evaluator wiring, checked without candidate imports. */
+  evaluator_dependencies?: string[];
+  repair?: { defect: string; retained_inputs: string[]; retained_assertions: string[]; retained_edge_cases: string[]; retained_failure_conditions: string[] };
 }
 
 export interface CriterionEvidence {
+  schema?: "codex-ab.criterion-evidence.v2";
   criterion: string;
   status: "pass" | "fail" | "unassessed";
   basis: "executed" | "source-only";
   reasoning: string;
   check?: SemanticCheck;
   execution?: CommandEvidence;
+  qualification?: EvaluatorQualification;
+  /** Raw supervisor result before evaluator qualification affects eligibility. */
+  probe_status?: "pass" | "fail" | "unassessed";
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -78,6 +93,8 @@ export function validateCriteria(value: unknown, taskSha256: string): CriteriaCo
         !path.split("/").some(part => part === ".." || part === ".git" || !part)))) {
     throw new Error("allowed_paths must name explicit task-required relative files");
   }
+  if (contract.existing_test_verification !== undefined) validateVerification(contract.existing_test_verification);
+  if (contract.evaluator_controls !== undefined) validateEvaluatorControls(contract.evaluator_controls, [...ids]);
   // Qualification claims require separate retained evidence; this path makes none.
   if (contract.qualification !== "not-run") throw new Error("criteria qualification must be not-run; no oracle qualification has been executed");
   if (Object.hasOwn(contract, "black_box")) throw new Error("prewritten hidden checks are no longer supported; use task-derived semantic assessment");
@@ -104,122 +121,30 @@ export function validateSemanticChecks(value: unknown, contract: CriteriaContrac
       }
       paths.add(file.path);
     }
+    if (check.verification !== undefined) validateVerification(check.verification);
+    if (check.evaluator_dependencies !== undefined && (!Array.isArray(check.evaluator_dependencies) ||
+        !check.evaluator_dependencies.every(item => typeof item === "string" && /^[a-zA-Z_]\w*$/.test(item)))) throw new Error("invalid evaluator-only Python dependencies");
+    if (check.repair !== undefined) {
+      const repair = object(check.repair);
+      if (!nonempty(repair.defect) || !["retained_inputs", "retained_assertions", "retained_edge_cases", "retained_failure_conditions"].every(key =>
+          Array.isArray(repair[key]) && (repair[key] as unknown[]).length > 0 && (repair[key] as unknown[]).every(nonempty))) throw new Error("repair requires an auditable defect and retained obligations");
+    }
     return check as unknown as SemanticCheck;
   });
 }
 
 export function checkOutcome(check: SemanticCheck, execution: CommandEvidence): CriterionEvidence {
-  const output = `${execution.stdout}\n${execution.stderr}`;
-  // Error vocabulary does not identify its owner. Candidate initialization can
-  // fail with exactly the same exceptions as an incorrectly wired evaluator.
-  const harnessFailure = execution.exit_code < 0 || execution.exit_code === 125 || /^HARNESS_ERROR:/m.test(output);
-  const goResults = output.split("\n").filter(line => /^(?:ok\s|\?\s)/.test(line));
-  const ranTests = /\b(?:Ran [1-9]\d* tests?\b|collected [1-9]\d* items?\b)/.test(output)
-    || /^(?:# tests [1-9]\d*\s*|\s*[1-9]\d* pass\s*)$/m.test(output)
-    || goResults.some(line => /^ok\s/.test(line) && !/\[no test(?:s to run| files)\]/.test(line));
-  // Empty fragments can coexist with real coverage. In particular, Bun's
-  // "0 pass" also describes an all-failing suite, not an empty execution.
-  const emptyTests = execution.exit_code === 0 && !ranTests && (
-    /^(?:.*\bRan 0 tests\b.*|.*\bcollected 0 items\b.*|# tests 0\s*|No test files found.*|No tests found!.*)$/m.test(output)
-    || (goResults.length > 0 && goResults.every(line => /\[no test(?:s to run| files)\]/.test(line))));
-  const unusable = harnessFailure || emptyTests;
+  const verifier = execution.verifier;
+  const expected = check.verification?.cases.length ?? 0;
+  const valid = validateVerifierRecord(verifier, check, expected);
+  const status = valid?.status === "passed" ? "pass"
+    : valid && ["assertion_failure", "candidate_error"].includes(valid.status) ? "fail" : "unassessed";
   return {
-    criterion: check.criterion, status: unusable ? "unassessed" : execution.exit_code === 0 ? "pass" : "fail",
-    basis: "executed", reasoning: unusable ? emptyTests ? "The selected test command ran no tests; it does not establish behavioral coverage."
-      : "The evaluator could not execute a usable check; repair its harness without changing the required outcome." : check.rationale,
+    schema: "codex-ab.criterion-evidence.v2", criterion: check.criterion, status, basis: "executed",
+    reasoning: valid?.detail ?? "No valid supervisor completion record was retained; command output and exit status alone cannot establish behavioral coverage.",
     check, execution,
   };
 }
-
-/** Baseline tests may legitimately stop compiling after internal refactors; only executed failures are evidence. */
-export function retainedOutcome(evidence: CriterionEvidence): CriterionEvidence {
-  const output = `${evidence.execution?.stdout ?? ""}\n${evidence.execution?.stderr ?? ""}`;
-  if (evidence.status !== "fail" || !/^FAIL\s.*\[(?:build|setup) failed\]$/m.test(output)) return evidence;
-  return { ...evidence, status: "unassessed",
-    reasoning: "Unchanged baseline tests do not build against the candidate's internal interfaces; this neither establishes nor refutes retained behavior." };
-}
-
-// Candidate source is mounted read-only. Workspace and cache writes use private
-// container storage. The interpreter never sees model credentials or a Docker socket.
-const CHECK_PROGRAM = `
-import hashlib, json, os, pathlib, shutil, subprocess, sys, time
-import fnmatch, traceback
-def wrapper_crash(kind, value, trace):
-    # This wrapper is evaluator-owned; its own exceptions never describe the candidate.
-    traceback.print_exception(kind, value, trace)
-    print('HARNESS_ERROR: evaluator wrapper raised ' + kind.__name__, file=sys.stderr)
-    sys.stderr.flush()
-    os._exit(125)
-sys.excepthook = wrapper_crash
-candidate, harness = pathlib.Path('/candidate'), json.load(open('/harness.json'))
-workspace = pathlib.Path('/tmp/evaluation')
-shutil.copytree(candidate, workspace, symlinks=True)
-# Each check has a disposable cache lifetime. Defer background eviction so Go
-# does not delete old immutable payloads whose access timestamps cannot change.
-# Explicit native cache cleaning still works normally.
-cache = pathlib.Path('/opt/task-deps/go-build')
-if cache.is_dir():
-    (cache / 'trim.txt').write_text(str(int(time.time())))
-def fingerprints(root):
-    result = {}
-    for path in root.rglob('*'):
-        rel = str(path.relative_to(root))
-        if path.is_symlink():
-            result[rel] = ('link', os.readlink(path))
-        elif path.is_file():
-            result[rel] = ('file', hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mode & 0o7777)
-    return result
-baseline = fingerprints(workspace)
-prepared = subprocess.run(['sh', '-lc', harness.get('preparation', 'true')], cwd=workspace)
-if prepared.returncode:
-    print('HARNESS_ERROR: evaluator dependency preparation failed', file=sys.stderr)
-    raise SystemExit(125)
-cwd = workspace
-retained = harness.get('retained')
-if retained is not None:
-    # Run unchanged baseline files against candidate production code in a
-    # scratch copy; the candidate's own matching files are removed first.
-    cwd = pathlib.Path('/tmp/retained')
-    shutil.copytree(workspace, cwd, symlinks=True)
-    matches = lambda rel: rel.split('/')[0] != '.git' and any(fnmatch.fnmatchcase(rel, pattern) for pattern in retained['patterns'])
-    for path in list(cwd.rglob('*')):
-        if (path.is_symlink() or path.is_file()) and matches(str(path.relative_to(cwd))):
-            path.unlink()
-    base_tree, restored = pathlib.Path('/baseline'), 0
-    for path in base_tree.rglob('*'):
-        rel = str(path.relative_to(base_tree))
-        if path.is_file() and not path.is_symlink() and matches(rel):
-            (cwd / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(path, cwd / rel)
-            restored += 1
-    if not restored:
-        print('HARNESS_ERROR: no baseline files match the retained test patterns', file=sys.stderr)
-        raise SystemExit(125)
-for item in harness['files']:
-    target = workspace / item['path']
-    if target.exists() or target.is_symlink() or not target.resolve().is_relative_to(workspace):
-        raise SystemExit('HARNESS_ERROR: harness must not overwrite candidate files or traverse symlinks')
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(item['source'])
-try:
-    result = subprocess.run(harness['command'], cwd=cwd)
-except OSError as error:
-    print('HARNESS_ERROR: ' + str(error), file=sys.stderr)
-    raise SystemExit(125)
-def current_identity(relative):
-    path = workspace / relative
-    if path.is_symlink():
-        return ('link', os.readlink(path))
-    if path.is_file():
-        return ('file', hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mode & 0o7777)
-    return None
-changed = [{'path': path, 'before': identity, 'after': current_identity(path)}
-           for path, identity in baseline.items() if current_identity(path) != identity]
-if changed:
-    print('HARNESS_ERROR: check modified candidate files: ' + json.dumps({'changes': changed[:100], 'total': len(changed)}), file=sys.stderr)
-    raise SystemExit(125)
-raise SystemExit(result.returncode)
-`;
 
 /** Warm only pinned baseline code; checks share its immutable image seed. */
 export async function prepareEvaluatorCache(runDir: string, state: RunState, docker: string, signal?: AbortSignal): Promise<void> {
@@ -298,31 +223,54 @@ export async function executeSemanticCheck(options: {
   const { runDir, state, check } = options;
   await mkdir(options.output, { recursive: true, mode: 0o700 });
   const harnessPath = join(options.output, "harness.json");
-  await writeFile(harnessPath, JSON.stringify({ ...check, preparation: options.state.criteria?.contract.preparation ?? "true",
+  const supervisorOutput = join(options.output, "supervisor");
+  await mkdir(supervisorOutput, { recursive: true, mode: 0o700 });
+  await rm(join(supervisorOutput, "result.json"), { force: true });
+  const resultUid = process.getuid?.() ?? 1000;
+  const candidateUid = resultUid === 65534 ? 65533 : 65534;
+  // Leave time to kill an unprivileged child and persist its protected record
+  // before the host's outer container deadline. Short budgets retain 100ms.
+  const executionBudget = Math.max(0.1, state.timeout_seconds - 2);
+  await writeFile(harnessPath, JSON.stringify({ ...check,
+    check_sha256: semanticCheckHash(check), candidate_uid: candidateUid, candidate_gid: candidateUid,
+    execution_timeout_seconds: executionBudget,
+    case_timeout_seconds: Math.min(executionBudget, 120),
+    preparation: options.state.criteria?.contract.preparation ?? "true",
     ...(options.retained ? { retained: { patterns: options.retained.patterns } } : {}) }, null, 2), { mode: 0o600 });
   const started = new Date();
   const result = await runOwnedContainer({
     docker: options.docker, name: options.name, signal: options.signal,
     timeoutMs: state.timeout_seconds * 1000,
-    createArgs: ["--network", "none", "--cap-drop", "ALL",
+    createArgs: ["--network", "none", "--user", "0:0", "--cap-drop", "ALL",
+      "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--cap-add", "KILL",
       "--security-opt", "no-new-privileges", "--cpus", state.resource_limits.cpus,
       "--memory", state.resource_limits.memory, "--tmpfs", "/tmp:exec,size=4g,mode=1777",
       "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
       "-e", "XDG_STATE_HOME=/tmp/state", "-e", "XDG_CONFIG_HOME=/tmp/config",
       "-e", "MEKUGI_RUNTIME_DIR=/tmp/runtime",
       "-e", "PYTHONDONTWRITEBYTECODE=1", "-v", `${options.candidate}:/candidate:ro`,
-      "-v", `${harnessPath}:/harness.json:ro`,
+      "-v", `${harnessPath}:/harness.json:ro`, "-v", `${supervisorOutput}:/verifier-results:rw`,
       ...(options.retained ? ["-v", `${options.retained.baseline}:/baseline:ro`] : []),
       ...(options.arm && !state.dependency_image ? ["-v", `${join(runDir, "arms", options.arm, "grader-go-pkg-cache")}:/home/ubuntu/go/pkg:ro`,
         ...(state.profile !== "godoxy-icons" ? ["-v", `${join(runDir, "arms", options.arm, "grader-bun-cache")}:/home/ubuntu/.bun/install/cache:ro`] : [])] : []),
-      state.evaluator_cache_image?.image_id ?? dependencyImage(state), "python3", "-c", CHECK_PROGRAM],
+      state.evaluator_cache_image?.image_id ?? dependencyImage(state), "python3", "-I", "-c", supervisorSource],
   });
+  const saved = await readFile(join(supervisorOutput, "result.json"), "utf8").then(value => {
+    try { return JSON.parse(value) as unknown; } catch { return undefined; }
+  }, () => undefined);
+  let verifier = validateVerifierRecord(saved, check, check.verification?.cases.length ?? 0);
+  if (verifier?.status === "passed" && result.exitCode !== 0) verifier = undefined;
+  if (result.timedOut || result.canceled) verifier = {
+    schema: "codex-ab.verifier-result.v1", check_sha256: semanticCheckHash(check),
+    status: result.canceled ? "canceled" : "timeout", completed: 0,
+    expected: check.verification?.cases.length ?? 0, detail: result.canceled ? "Evaluation was canceled." : "Evaluation timed out.", cases: [],
+  };
   const execution: CommandEvidence = {
+    ...(verifier ? { verifier } : {}),
     command: JSON.stringify(check.command), started_at: started.toISOString(), elapsed_ms: result.elapsedMs,
     exit_code: result.timedOut || result.canceled ? -1 : result.exitCode, stdout: result.stdout, stderr: result.stderr,
   };
-  const outcome = checkOutcome(check, execution);
-  const evidence = options.retained ? retainedOutcome(outcome) : outcome;
+  const evidence = checkOutcome(check, execution);
   await writeFile(join(options.output, "evidence.json"), JSON.stringify(evidence, null, 2), { mode: 0o600 });
   return evidence;
 }

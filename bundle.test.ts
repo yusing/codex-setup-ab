@@ -1,8 +1,38 @@
 import { expect, test } from "bun:test";
-import { auditSession, finalizeBundle } from "./bundle";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { auditSession, finalizeBundle, verifyBundleManifest, writeBundleManifest } from "./bundle";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { sha256 } from "./state";
+
+test("bundle seals bind executable modes, literal links, unusual paths and nested manifests", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bundle-identities-"));
+  const bundle = join(root, "original"), copy = join(root, "copy");
+  try {
+    await mkdir(join(bundle, "nested"), { recursive: true });
+    const unusual = "tab\tand\nnewline";
+    await writeFile(join(bundle, unusual), "literal path\n");
+    for (const name of ["left", "right"]) await writeFile(join(bundle, name), "same bytes\n", { mode: 0o644 });
+    await symlink("left", join(bundle, "entrypoint"));
+    await writeFile(join(bundle, "nested/MANIFEST.sha256"), "nested evidence\n");
+    await writeBundleManifest(bundle);
+    const hash = await sha256(join(bundle, "MANIFEST.sha256"));
+    const rows = (await readFile(join(bundle, "MANIFEST.sha256"), "utf8")).trim().split("\n");
+    expect(rows.shift()).toBe("codex-ab.bundle-manifest.v2");
+    expect(rows.map(row => JSON.parse(row).path)).toContain(unusual);
+    await cp(bundle, copy, { recursive: true, verbatimSymlinks: true });
+    await verifyBundleManifest(copy, hash);
+    await chmod(join(copy, "left"), 0o755);
+    await expect(verifyBundleManifest(copy, hash)).rejects.toThrow("bundle evidence changed");
+    await chmod(join(copy, "left"), 0o644);
+    await rm(join(copy, "entrypoint")); await symlink("right", join(copy, "entrypoint"));
+    await expect(verifyBundleManifest(copy, hash)).rejects.toThrow("bundle evidence changed");
+    await rm(join(copy, "entrypoint")); await symlink("left", join(copy, "entrypoint"));
+    await verifyBundleManifest(copy, hash);
+    await writeFile(join(copy, "nested/MANIFEST.sha256"), "changed nested evidence\n");
+    await expect(verifyBundleManifest(copy, hash)).rejects.toThrow("bundle evidence changed");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("interaction audit separates command waits, collaboration and encrypted payloads without copying bodies", () => {
   const events = [

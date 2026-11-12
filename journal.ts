@@ -46,7 +46,6 @@ function providerCost(exchange: RecordValue): { provider_requests: number | null
   let tokens = 0;
   for (const attempt of exchange.provider_attempts) {
     const usage = providerAttemptUsage(attempt);
-    if (usage === "none") continue;
     if (!usage) return { provider_requests, provider_tokens: null };
     tokens += usage.input_tokens + usage.output_tokens;
     if (!Number.isSafeInteger(tokens)) return { provider_requests, provider_tokens: null };

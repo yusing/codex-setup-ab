@@ -3,7 +3,8 @@ import { join } from "node:path";
 
 import { createSessionDiagnostics, sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
 import { journalEvidence } from "./journal";
-import { mekugiMetricRuntimes, providerAttemptUsage } from "./provider-usage";
+import { mekugiMetricRuntimes, providerAttemptUsage, validCounter } from "./provider-usage";
+import { rolloutPaths } from "./rollout-evidence";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_TIMEOUT_MS = 8_000;
@@ -73,6 +74,13 @@ export interface AgentUsage {
 }
 
 export interface MeteredRollouts {
+  /** Absent in historical reports. `complete` is retained as a legacy observation flag. */
+  measurement_schema?: "codex-ab.usage.v2";
+  observation_validity?: "valid" | "partial" | "unavailable";
+  request_coverage?: "verified" | "unverified" | "partial" | "unavailable";
+  pricing_precision?: "per-request" | "aggregate-flat-rate" | "approximate" | "unavailable";
+  coverage_basis?: string;
+  unreconciled_cumulative?: Array<{ thread_id: string; model: string; usage: Usage }>;
   journal?: import("./journal").JournalEvidence;
   sessions: SessionDiagnostics[];
   agents: AgentUsage[];
@@ -91,6 +99,15 @@ export interface MeteredRollouts {
     /** Observed startup usage only, excluded from paired task totals. */
     prewarm: { usage: Usage; request_count: number; estimated_api_usd: number | null } | null;
   };
+}
+
+/** A parseable observation is not proof that every billable request was retained. */
+export function costRankingEligible(usage: MeteredRollouts | undefined): boolean {
+  return usage?.measurement_schema === "codex-ab.usage.v2"
+    && usage.observation_validity === "valid" && usage.request_coverage === "verified"
+    && (usage.pricing_precision === "per-request" || usage.pricing_precision === "aggregate-flat-rate")
+    && usage.totals.estimated_api_usd !== null && Number.isFinite(usage.totals.estimated_api_usd)
+    && usage.totals.estimated_api_usd >= 0;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -157,7 +174,9 @@ function isObject(value: unknown): value is JsonObject {
 }
 
 function addUsage(target: Usage, source: Usage): void {
-  for (const key of USAGE_KEYS) target[key] += source[key];
+  const sums = USAGE_KEYS.map(key => target[key] + source[key]);
+  if (sums.some(value => !validCounter(value))) throw new Error("usage aggregation exceeds safe integer range");
+  for (const [index, key] of USAGE_KEYS.entries()) target[key] = sums[index]!;
 }
 
 function usageFrom(value: unknown, context: string, warnings: string[]): Usage | null {
@@ -169,12 +188,18 @@ function usageFrom(value: unknown, context: string, warnings: string[]): Usage |
   let valid = true;
   for (const key of USAGE_KEYS) {
     const tokenCount = value[key];
-    if (typeof tokenCount !== "number" || !Number.isSafeInteger(tokenCount) || tokenCount < 0) {
+    if (!validCounter(tokenCount)) {
       warnings.push(`${context}: ${key} is missing or invalid`);
       valid = false;
       continue;
     }
     usage[key] = tokenCount;
+  }
+  // Cache reads and reasoning are subsets in Codex's schema; cache writes are
+  // separately charged. Do not impose a total-token identity on other providers.
+  if (valid && (usage.cached_input_tokens > usage.input_tokens || usage.reasoning_output_tokens > usage.output_tokens)) {
+    warnings.push(`${context}: cache/reasoning tokens exceed their owning totals`);
+    valid = false;
   }
   return valid ? usage : null;
 }
@@ -300,27 +325,6 @@ export async function fetchPricing(): Promise<PricingSnapshot> {
   };
 }
 
-async function jsonlPaths(root: string): Promise<string[]> {
-  const paths: string[] = [];
-  async function visit(directory: string): Promise<void> {
-    let entries;
-    try {
-      entries = await readdir(directory, { withFileTypes: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
-    }
-    for (const entry of entries) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile() && entry.name.endsWith(".jsonl")) paths.push(path);
-    }
-  }
-  await visit(join(root, "sessions"));
-  await visit(join(root, "archived_sessions"));
-  return paths.sort();
-}
-
 function responseKey(value: unknown): string | null {
   if (typeof value === "string" && value.length > 0) {
     const trimmed = value.trim();
@@ -378,7 +382,7 @@ function requestCost(usage: Usage, rates: ModelPricing): CostComponents {
   }
   const uncached = Math.max(usage.input_tokens - usage.cached_input_tokens, 0);
   const cost = (tokens: number, price: number | null): number | null =>
-    tokens === 0 ? 0 : price === null || !Number.isFinite(price) ? null : tokens * price;
+    tokens === 0 ? 0 : price === null || !Number.isFinite(price) || price < 0 || !Number.isFinite(tokens * price) ? null : tokens * price;
   return {
     uncached_input_usd: cost(uncached, prompt),
     cached_input_usd: cost(usage.cached_input_tokens, cacheRead),
@@ -439,7 +443,8 @@ export async function readMekugiNativeCost(stdoutPath: string, tokenMetricsPath?
  * direct Codex rollouts do not record it either. Returns why rollout usage was
  * kept, or null after replacement.
  */
-export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unknown, pricing?: PricingSnapshot): string | null {
+export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unknown, pricing?: PricingSnapshot,
+  validatedCapture = false): string | null {
   const runtimes = mekugiMetricRuntimes(metrics);
   if (!runtimes) return "validated metrics have no provider exchanges";
   const exchanges = runtimes.flatMap(runtime => runtime.exchanges);
@@ -463,7 +468,6 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
     for (const attempt of exchange.provider_attempts) {
       if (!isObject(attempt)) return `${label} has an invalid provider attempt`;
       const counts = providerAttemptUsage(attempt);
-      if (counts === "none") continue;
       if (!counts) return `${label} has a provider attempt without complete usage`;
       const { input_tokens: input, cached_input_tokens: cached, output_tokens: output, reasoning_tokens: reasoning } = counts;
       const model = typeof attempt.model === "string" && attempt.model ? attempt.model : null;
@@ -493,6 +497,7 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
   const known = new Set(metered.sessions.map(session => session.thread_id));
   for (const threadId of captured) if (!known.has(threadId)) return `capture thread ${threadId} has no Codex rollout`;
   for (const threadId of rolloutThreads) if (!captured.has(threadId)) return `rollout thread ${threadId} has no captured provider attempts`;
+  if (!groups.size) return "provider capture has no metered task attempts; zero usage is not established";
 
   const visible: Record<string, number | null> = {};
   for (const agent of metered.agents) {
@@ -533,6 +538,13 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
   metered.journal = journalEvidence(metrics) ?? undefined;
   metered.cache_usage = { requests: orderKnown ? cacheRequests : null, prewarm: kindsKnown ? prewarm : null };
   const attempts = metered.agents.reduce((sum, agent) => sum + agent.request_count!, 0);
+  metered.measurement_schema = "codex-ab.usage.v2";
+  metered.observation_validity = "valid";
+  metered.request_coverage = validatedCapture ? "verified" : "unverified";
+  metered.pricing_precision = metered.totals.estimated_api_usd === null ? "unavailable" : "per-request";
+  metered.coverage_basis = validatedCapture
+    ? "Every retained provider attempt has explicit complete usage in externally validated Mekugi captures; prewarm is separate."
+    : "Provider attempt counters are valid observations; full capture validation was not supplied.";
   metered.warnings.push(`Mekugi tokens and requests use ${attempts} validated provider attempts, excluding prewarm; the Codex rollout recorded ${rolloutRequests ?? "unknown"} requests and ${rolloutInput} input tokens`);
   return null;
 }
@@ -566,7 +578,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
   const files: SessionFile[] = [];
   let paths: string[] = [];
   try {
-    paths = await jsonlPaths(codexHome);
+    paths = await rolloutPaths(codexHome);
   } catch (error) {
     warnings.push(`cannot enumerate rollout files: ${error instanceof Error ? error.message : String(error)}`);
     complete = false;
@@ -574,6 +586,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
 
   const candidates: UsageCandidate[] = [];
   const fallbackByThread = new Map<string, Pick<RequestUsage, "model" | "usage">>();
+  const potentiallyDelegatedCounters = new Set<string>();
   const modelsSeenByThread = new Map<string, Set<string>>();
   const commandIds = new Set<string>();
   let commandSeconds = 0;
@@ -588,6 +601,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
     const fileCommandIds = new Set<string>();
     const modelsSeen = new Set<string>();
     let fallback: Pick<RequestUsage, "model" | "usage"> | undefined;
+    let delegatedCounter = false;
     let fileComplete = true;
     let fileCommandSeconds = commandSeconds;
     let currentModel = "unknown";
@@ -635,6 +649,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
           fileCandidates.push({ key, fileThreadId: "", ownerThreadId: declared, model: currentModel, usage, position: eventPosition });
         }
         if (event.type === "event_msg" && payload.type === "token_count" && isObject(payload.info)) {
+          if (Array.isArray(payload.info.orchestrated_role_token_usage) && payload.info.orchestrated_role_token_usage.length) delegatedCounter = true;
           const usage = usageFrom(payload.info.total_token_usage, `${path}: token_count.total_token_usage`, fileWarnings);
           if (usage) fallback = { model: currentModel, usage };
           else fileComplete = false;
@@ -645,7 +660,6 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
           const duration = durationSeconds(payload.item.duration);
           if (duration === null) {
             fileWarnings.push(`${path}: completed command has missing or invalid duration`);
-            fileComplete = false;
           } else {
             if (!id || !exclusions?.command_ids.includes(id)) fileCommandSeconds += duration;
             if (id) fileCommandIds.add(id);
@@ -669,6 +683,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
       candidates.push(candidate);
     }
     if (fallback) fallbackByThread.set(threadId, fallback);
+    if (delegatedCounter) potentiallyDelegatedCounters.add(threadId);
     const priorModels = modelsSeenByThread.get(threadId) ?? new Set<string>();
     for (const model of modelsSeen) priorModels.add(model);
     modelsSeenByThread.set(threadId, priorModels);
@@ -728,8 +743,16 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
 
 
   const threadsWithRecords = new Set(requests.map((request) => request.threadId));
+  const unreconciled: NonNullable<MeteredRollouts["unreconciled_cumulative"]> = [];
+  const parents = new Set(files.map(file => file.session.parent_thread_id).filter(Boolean));
   for (const [threadId, fallback] of fallbackByThread) {
     if (threadsWithRecords.has(threadId)) continue;
+    if (knownThreads.size > 1 || parents.has(threadId) || potentiallyDelegatedCounters.has(threadId)) {
+      unreconciled.push({ thread_id: threadId, ...fallback });
+      warnings.push(`${threadId}: cumulative counters may include delegated work; retained separately without adding them to child/request totals`);
+      complete = false;
+      continue;
+    }
     requests.push({ threadId, model: fallback.model, usage: fallback.usage });
     warnings.push(`${threadId}: token_count.total_token_usage is cumulative and priced as one request; long-context cost is approximate`);
     const models = modelsSeenByThread.get(threadId);
@@ -760,6 +783,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
     if (!request.excluded) group.requests.push(request.usage);
   }
 
+  const observationValidity: MeteredRollouts["observation_validity"] = requests.length === 0 ? "unavailable" : complete ? "valid" : "partial";
   const agents: AgentUsage[] = [];
   for (const group of groups.values()) {
     const rates = ratesFor(pricing, group.model);
@@ -814,6 +838,12 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
   if (hasUnmeteredThread) estimatedTotal = null;
 
   return {
+    measurement_schema: "codex-ab.usage.v2",
+    observation_validity: observationValidity,
+    request_coverage: observationValidity === "unavailable" ? "unavailable" : observationValidity === "partial" ? "partial" : "unverified",
+    pricing_precision: estimatedTotal === null ? "unavailable" : [...groups.values()].some(group => group.approximate) ? "approximate" : "per-request",
+    coverage_basis: "Retained Codex records are observations; no supported pinned-runtime protocol proves complete request coverage or reconciles delegated cumulative counters.",
+    ...(unreconciled.length ? { unreconciled_cumulative: unreconciled } : {}),
     agents,
     cache_usage: {
       requests: complete && files.length === knownThreads.size && candidates.every(candidate => candidate.key) &&
@@ -887,11 +917,15 @@ export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot):
   const totals = emptyUsage();
   let estimatedTotal: number | null = 0;
   let complete = true;
+  let observationsValid = true;
+  let approximatePricing = false;
+  let allSingleRequests = true;
   let found = false;
-  const markIncomplete = (warning: string): void => {
+  const markIncomplete = (warning: string, invalidObservation = true): void => {
     warnings.push(warning);
     complete = false;
     estimatedTotal = null;
+    if (invalidObservation) observationsValid = false;
   };
   const visit = async (directory: string): Promise<void> => {
     let entries;
@@ -923,20 +957,23 @@ export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot):
           commandSeconds = null;
           warnings.push(`${path}: Grok command timing is unavailable or incomplete in events.jsonl`);
         } else if (commandSeconds !== null) commandSeconds += timing.seconds;
-        const model = typeof session.primaryModelId === "string" ? session.primaryModelId : "grok-4.7";
-        const usage: Usage = {
-          input_tokens: typeof session.inputTokens === "number" ? session.inputTokens : 0,
-          cached_input_tokens: typeof session.cachedReadTokens === "number" ? session.cachedReadTokens : 0,
-          cache_write_input_tokens: typeof session.cacheCreationTokens === "number" ? session.cacheCreationTokens : 0,
-          output_tokens: typeof session.outputTokens === "number" ? session.outputTokens : 0,
-          reasoning_output_tokens: typeof session.reasoningTokens === "number" ? session.reasoningTokens : 0,
-          total_tokens: typeof session.totalTokens === "number" ? session.totalTokens : 0,
-        };
-        if ([session.inputTokens, session.outputTokens, session.totalTokens].some(value => typeof value !== "number")) {
-          markIncomplete(`${path}: Grok usage totals are incomplete`);
+        const model = typeof session.primaryModelId === "string" && session.primaryModelId ? session.primaryModelId : "unknown";
+        const fields = { input_tokens: session.inputTokens, cached_input_tokens: session.cachedReadTokens,
+          cache_write_input_tokens: session.cacheCreationTokens, output_tokens: session.outputTokens,
+          reasoning_output_tokens: session.reasoningTokens, total_tokens: session.totalTokens };
+        // Validate shared scalar invariants without importing Codex's total-token equation.
+        if (Object.values(fields).some(value => !validCounter(value))
+          || Number(fields.cached_input_tokens) > Number(fields.input_tokens)
+          || Number(fields.reasoning_output_tokens) > Number(fields.output_tokens)) {
+          markIncomplete(`${path}: Grok usage totals are incomplete or invalid`);
+          continue;
         }
-        const modelCalls = typeof session.modelCalls === "number" && Number.isSafeInteger(session.modelCalls) && session.modelCalls >= 0
-          ? session.modelCalls : null;
+        const usage = fields as Usage;
+        const modelCalls = validCounter(session.modelCalls) ? session.modelCalls : null;
+        if (modelCalls === null || modelCalls === 0 && USAGE_KEYS.some(key => usage[key] !== 0)) {
+          markIncomplete(`${path}: Grok modelCalls is missing or inconsistent`);
+        }
+        allSingleRequests &&= modelCalls === 1;
         const emptyCosts: CostComponents = {
           uncached_input_usd: null, cached_input_usd: null, cache_write_input_usd: null, output_usd: null,
         };
@@ -948,15 +985,18 @@ export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot):
         method = "grok_usage.session (list-price estimate)";
         const rates = ratesFor(pricing, model);
         if (!rates) {
-          markIncomplete(`${path}: no API price for Grok model ${model}`);
+          markIncomplete(`${path}: no API price for Grok model ${model}`, false);
         } else {
           // Session totals are not a single prompt. Without request usage, quote base rates
           // explicitly rather than activating a long-context tier on the cumulative total.
           const aggregate = modelCalls !== 1;
-          if (aggregate && rates.overrides.length > 0) warnings.push(`${path}: Grok list-price estimate uses base rates; request-level long-context tiers cannot be reconstructed from session totals`);
+          if (aggregate && rates.overrides.length > 0) {
+            approximatePricing = true;
+            warnings.push(`${path}: Grok list-price estimate uses base rates; request-level long-context tiers cannot be reconstructed from session totals`);
+          }
           costs = requestCost(usage, aggregate ? { ...rates, overrides: [] } : rates);
           estimated = totalCost(costs);
-          if (estimated === null) markIncomplete(`${path}: required Grok API price component is missing`);
+          if (estimated === null) markIncomplete(`${path}: required Grok API price component is missing`, false);
         }
         agents.push({
           model,
@@ -981,5 +1021,10 @@ export async function meterGrokHome(grokHome: string, pricing: PricingSnapshot):
     markIncomplete(`cannot enumerate Grok usage: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (!found) markIncomplete("no readable Grok usage.json found");
-  return { agents, sessions, totals: { ...totals, estimated_api_usd: estimatedTotal, command_seconds: found ? commandSeconds : null }, warnings: [...new Set(warnings)], complete };
+  return { measurement_schema: "codex-ab.usage.v2",
+    observation_validity: !agents.length ? "unavailable" : observationsValid ? "valid" : "partial",
+    request_coverage: !agents.length ? "unavailable" : observationsValid ? "unverified" : "partial",
+    pricing_precision: estimatedTotal === null ? "unavailable" : approximatePricing ? "approximate" : allSingleRequests ? "per-request" : "aggregate-flat-rate",
+    coverage_basis: "Grok session totals do not independently prove that all billable attempts were retained.",
+    agents, sessions, totals: { ...totals, estimated_api_usd: estimatedTotal, command_seconds: found ? commandSeconds : null }, warnings: [...new Set(warnings)], complete };
 }

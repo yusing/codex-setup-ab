@@ -4,7 +4,10 @@ import { armLabels } from "./arm-labels";
 import { mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { applyMekugiProviderUsage, fetchPricing, meterGrokHome, meterRollouts, readMekugiNativeCost, USAGE_KEYS, type MeteredRollouts, type PricingSnapshot } from "./usage";
+import { applyMekugiProviderUsage, costRankingEligible, fetchPricing, meterGrokHome, meterRollouts, readMekugiNativeCost, USAGE_KEYS, type MeteredRollouts, type PricingSnapshot } from "./usage";
+import { reliabilityMarkdown, reliabilityReport, type ReliabilityAttempt } from "./reliability";
+import { qualitySelection } from "./quality-selection";
+import { adaptiveBehaviorEvidence } from "./behavioral-evidence";
 import { isPairedMekugiComparison, usesMekugi, validateMekugiExports } from "./mekugi";
 import { performanceComparison, performanceMarkdown } from "./diagnostics";
 import { explainResources, resourceExplanationMarkdown } from "./assessment-explanation";
@@ -90,6 +93,11 @@ function sumMeters(meters: Array<{ home: string; usage: MeteredRollouts }>): Met
     if (totals.estimated_api_usd !== null) totals.estimated_api_usd = meter.usage.totals.estimated_api_usd === null ? null : totals.estimated_api_usd + meter.usage.totals.estimated_api_usd;
   }
   return {
+    measurement_schema: "codex-ab.usage.v2",
+    observation_validity: meters.length && meters.every(meter => meter.usage.observation_validity === "valid") ? "valid" : "partial",
+    request_coverage: meters.length && meters.every(meter => meter.usage.request_coverage === "verified") ? "verified" : "unverified",
+    pricing_precision: meters.length && meters.every(meter => meter.usage.pricing_precision === "per-request") ? "per-request" : "approximate",
+    coverage_basis: "Aggregate preserves each judge attempt's observation, request-coverage, and pricing limits.",
     sessions: meters.flatMap(meter => meter.usage.sessions),
     agents: meters.flatMap(meter => meter.usage.agents),
     totals,
@@ -108,37 +116,8 @@ function graderSeconds(result: ArmResult | undefined): number | null {
   return result.grade.elapsed_ms / 1000;
 }
 
-function resultHasAllChecks(result: ArmResult | undefined, criteria?: RunState["criteria"]): boolean {
-  if (!criteria || !result?.grade || result.grade.evaluator_error) return false;
-  if (![1, 2].every(pass => {
-    const semantic = result.grade!.semantic;
-    const assessed = semantic?.[`pass-${pass}`];
-    const existing = semantic?.[`pass-${pass}-existing`];
-    return assessed !== undefined && existing !== undefined &&
-      assessed.length === criteria.contract.criteria.length &&
-      existing.length === 1 && assessed.every(item => item.status !== "unassessed" && (item.basis === "executed" || item.status === "fail")) &&
-      existing.every(item => item.status !== "unassessed" && item.basis === "executed");
-  })) return false;
-  return [result.grade.preparation, result.grade.router_suite]
-    .every(check => check.command !== "not run" && check.exit_code !== -1);
-}
-
-// An assessed failure settles a failed grade even when another pass left criteria unassessed.
-function resultIsDecided(result: ArmResult | undefined, criteria?: RunState["criteria"]): boolean {
-  if (resultHasAllChecks(result, criteria)) return true;
-  if (!criteria || !result?.grade || result.grade.evaluator_error || result.grade.passed !== false) return false;
-  // Retained baseline tests are non-gating evidence; they cannot settle a grade.
-  return Object.entries(result.grade.semantic ?? {}).some(([key, items]) => !key.endsWith("-retained") && items.some(item => item.status === "fail"));
-}
-
 function number(value: number | null | undefined, digits = 0): string {
   return value === null || value === undefined ? "unknown" : value.toFixed(digits);
-}
-
-function gradeLabel(result: ArmResult | undefined, criteria?: RunState["criteria"]): string {
-  if (!result?.grade) return "missing";
-  if (result.grade.evaluator_error || !resultIsDecided(result, criteria)) return "unassessed";
-  return result.grade.passed === true ? "pass" : "fail";
 }
 
 function passMarkdown(pass: JudgePass, labels: Record<ArmName, string>): string {
@@ -227,7 +206,7 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
     let metered = usage[arm];
     if (!metered) continue;
     const exports = diagnosticsByArm?.[arm] ?? mekugiDiagnostics;
-    const kept = exports?.status === "valid" ? applyMekugiProviderUsage(metered, exports.metrics, pricing) : exports?.reason ?? "exports were not requested";
+    const kept = exports?.status === "valid" ? applyMekugiProviderUsage(metered, exports.metrics, pricing, true) : exports?.reason ?? "exports were not requested";
     if (kept !== null) {
       const codexHome = c.state.arm_attempts?.[c.arm]?.codex_home ?? join(dirname(c.state.arms[c.arm].repository), "home/ubuntu/.codex");
       metered = usage[arm] = await meterRollouts(resolve(c.root, codexHome), pricing);
@@ -241,6 +220,15 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       metricsPath ? join(c.root, dirname(metricsPath), "token-metrics.md") : undefined) : null;
     metered.recorded_api_usd = nativeCost;
     if (nativeCost !== null) metered.warnings.push(`Mekugi native estimate USD ${nativeCost.toFixed(4)} is retained separately, not used for the list-price comparison`);
+  }
+  const importAccounting: Record<string, unknown> = {};
+  for (const [arm, imported] of Object.entries(state.imported_arms ?? {})) {
+    const verification = await Bun.file(join(runDir, imported.directory, "accounting-verification.json")).json().catch(() => ({ status: "unverifiable" }));
+    importAccounting[arm] = verification;
+    if (verification.status !== "verified" && usage[arm]) {
+      usage[arm]!.request_coverage = "unverified";
+      usage[arm]!.warnings.push(`Historical accounting ${verification.status}; original-price verification and current repricing are separate.`);
+    }
   }
   const judgeAttempts = state.judge ? await Promise.all(state.judge.usage_homes.map(async home => ({ home, usage: await meterRollouts(join(runDir, home), pricing) }))) : [];
   const judgeUsage = state.judge ? sumMeters(judgeAttempts) : undefined;
@@ -265,37 +253,67 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
     const state = await readState(runDir);
     const invalidityReasons = state.invalidity_reasons ?? [];
     const valid = invalidityReasons.length === 0;
-    const checksExecuted = state.status === "complete" && selectedArms.every(arm => resultIsDecided(state.results?.[arm], state.criteria));
+    const behaviorEvidence = Object.fromEntries(ARMS.map(arm => {
+      const result = state.results?.[arm];
+      if (!state.fixed_verifier) return [arm, adaptiveBehaviorEvidence(result, state)];
+      const fixed = result?.grade?.fixed;
+      const verified = result?.capture_identity?.status === "verified" && result.grade?.preparation.exit_code === 0
+        && !result.grade.evaluator_error && fixed?.evaluation_validity === "valid" && fixed.cleanup_verified
+        && ["completed", "nonzero"].includes(fixed.execution_status)
+        && (fixed.behavioral_result === "pass" || fixed.behavioral_result === "fail");
+      return [arm, { behavior: verified ? fixed.behavioral_result : "unassessed",
+        evaluation_validity: verified ? "valid" : result?.grade?.evaluator_error || fixed ? "invalid" : "unassessed",
+        evidence: result?.capture_identity?.status === "verified" ? "verified" : result ? "legacy_unverified" : "unavailable",
+        coverage: { required: 1, verified_pass: verified && fixed.behavioral_result === "pass" ? 1 : 0,
+          verified_fail: verified && fixed.behavioral_result === "fail" ? 1 : 0, unassessed: verified ? 0 : 1, complete: verified },
+        issues: verified ? [] : [fixed?.reason ?? "No valid fixed verifier result is available."] }];
+    })) as Record<ArmName, ReturnType<typeof adaptiveBehaviorEvidence>>;
+    const behaviorallyEligible = (arm: ArmName) => valid && behaviorEvidence[arm]?.behavior === "pass"
+      && behaviorEvidence[arm]?.evaluation_validity === "valid" && state.results?.[arm]?.exit_code === 0
+      && !state.results[arm]!.timed_out && !state.results[arm]!.canceled
+      && !state.results[arm]!.lifecycle_error && !state.results[arm]!.collection_error;
+    const checksExecuted = state.status === "complete" && selectedArms.every(arm => behaviorEvidence[arm]?.behavior !== "unassessed"
+      && behaviorEvidence[arm]?.evaluation_validity === "valid");
     const gatesComplete = valid && checksExecuted;
     const armUsageComplete = selectedArms.every(arm => usage[arm]?.complete === true);
-    const judgeComplete = state.judge?.status === "complete"
+    const judgeComplete = !!state.fixed_verifier || state.judge?.status === "complete"
       && typeof state.judge.finished_at === "string"
       && state.judge.passes.length === 2
       && state.judge.passes.every((pass, index) => pass.pass === index + 1)
       && state.judge.usage_homes.length === (state.judge.attempts?.length ?? 2)
       && typeof state.judge.agreement === "boolean";
-    const judgeUsageComplete = judgeUsage?.complete === true;
+    const judgeUsageComplete = !!state.fixed_verifier || judgeUsage?.complete === true;
     const diagnosticsComplete = !(isPairedMekugiComparison(state.comparison) || state.comparison === "custom" && ARMS.some(isMekugi)) || (diagnosticsByArm !== null && ARMS.filter(isMekugi).every(arm => diagnosticsByArm[arm]?.status === "valid"));
     const comparisonExclusion = state.comparison === "journal-compaction" ? compactionComparisonExclusion(ARMS.map(arm => usage[arm]?.journal)) : null;
     const measurementComplete = !comparisonExclusion && valid && state.finishing?.status !== "failed" && checksExecuted && armUsageComplete && judgeComplete && judgeUsageComplete && diagnosticsComplete;
 
     const judgedWinner = state.judge?.winner ?? "none";
     const scoringIssue = scoreComparisonIssue(state.judge?.passes ?? []) ?? null;
+    const adaptiveQuality = qualitySelection(state.judge?.passes ?? [], selectedArms.filter(behaviorallyEligible), state.evaluation?.mode === "reuse");
+    const qualitySelectionComplete = adaptiveQuality.passes.length === 2
+      && adaptiveQuality.passes.every(pass => pass.selection_eligible && pass.eligible_selection === judgedWinner);
     const retainedReevaluation = state.evaluation?.mode === "fresh" && !!state.imported_arms && ARMS.every(arm => !!state.imported_arms?.[arm]);
     let effectiveWinner: ArmName | "tie" | "none" = "none";
-    if (measurementComplete && state.judge?.agreement === true && !scoringIssue) {
-      const eligible = (arm: ArmName) => state.results?.[arm]?.grade?.passed === true && resultHasAllChecks(state.results[arm], state.criteria);
-      if (ARMS.includes(judgedWinner) && eligible(judgedWinner)) effectiveWinner = judgedWinner;
-      if (judgedWinner === "tie" && ARMS.every(eligible)) effectiveWinner = "tie";
+    if (selectedArms.length >= 2 && measurementComplete && state.judge?.agreement === true && !scoringIssue && qualitySelectionComplete) {
+      if (selectedArms.includes(judgedWinner) && behaviorallyEligible(judgedWinner)) effectiveWinner = judgedWinner;
+      if (judgedWinner === "tie" && selectedArms.every(behaviorallyEligible)) effectiveWinner = "tie";
+    }
+    if (state.fixed_verifier && selectedArms.length >= 2 && measurementComplete) {
+      const passing = selectedArms.filter(behaviorallyEligible);
+      effectiveWinner = passing.length === 1 ? passing[0]! : passing.length === selectedArms.length ? "tie" : "none";
     }
 
     const winnerReason = selectedArms.length === 1 ? "Single-arm run: no paired winner."
       : comparisonExclusion ? `Comparison excluded: ${comparisonExclusion}.`
       : !valid ? "Infrastructure invalid: winner suppressed."
-      : checksExecuted && selectedArms.every(arm => state.results?.[arm]?.grade?.passed === false) ? (ARMS.length === 2 ? "Neither candidate passed the required checks." : "No candidate passed the required checks.")
+      : state.fixed_verifier ? "Original fixed-verifier outcomes; adaptive source-quality judgments are separate. Comparability to an official benchmark has not been established."
+      : checksExecuted && selectedArms.every(arm => behaviorEvidence[arm]?.behavior === "fail") ? (ARMS.length === 2 ? "Neither candidate passed the required checks." : "No candidate passed the required checks.")
       : !measurementComplete ? "Required checks, usage, or judge evidence is incomplete."
       : scoringIssue ? scoringIssue
       : !state.judge?.agreement ? "The judge passes disagree."
+      : judgedWinner !== "none" && !qualitySelectionComplete ? "The recorded judge preference lacks complete eligible quality evidence in both passes."
+      : effectiveWinner === "none" && judgedWinner !== "none" && !selectedArms.some(behaviorallyEligible)
+        ? "The recorded selection has no verified behavioral pass."
       : effectiveWinner === "none" ? "The judge selected neither eligible candidate."
       : effectiveWinner === "tie" ? "All eligible candidates tied." : state.evaluation?.mode === "reuse"
         ? "The eligible candidate led the historical weighted-score comparison in both passes."
@@ -315,13 +333,14 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
     const recovery = Object.fromEntries(selectedArms.flatMap(arm => state.results?.[arm]?.recovery ? [[arm, state.results[arm]!.recovery!]] : []));
     const efficiency = selectedArms.length >= 2 ? {
       faster: agentTiming.comparison_available ? metricWinner(selectedArms.map(arm => state.results?.[arm]?.agent_elapsed_ms)) : null,
-      lower_estimated_cost: metricWinner(selectedArms.map(arm => usage[arm]?.complete ? usage[arm]!.totals.estimated_api_usd : null)),
+      lower_estimated_cost: metricWinner(selectedArms.map(arm => costRankingEligible(usage[arm]) ? usage[arm]!.totals.estimated_api_usd : null)),
     } : null;
     const baselineDifferences = Object.fromEntries(ARMS.slice(1).map(arm => {
       const baseline = ARMS[0]!;
       const changes: Record<string, number | null> = {};
       for (const key of [...USAGE_KEYS, "estimated_api_usd", "command_seconds"] as const) {
-        changes[key] = percent(usage[baseline]?.complete ? usage[baseline]!.totals[key] : null, usage[arm]?.complete ? usage[arm]!.totals[key] : null);
+        changes[key] = percent((key === "estimated_api_usd" ? costRankingEligible(usage[baseline]) : usage[baseline]?.complete) ? usage[baseline]!.totals[key] : null,
+          (key === "estimated_api_usd" ? costRankingEligible(usage[arm]) : usage[arm]?.complete) ? usage[arm]!.totals[key] : null);
       }
       changes.agent_elapsed_ms = comparableTiming([baseline, arm])
         ? percent(state.results?.[baseline]?.agent_elapsed_ms ?? null, state.results?.[arm]?.agent_elapsed_ms ?? null) : null;
@@ -338,13 +357,46 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
         rejectedSourceAssessment = { pass, error: state.judge.error, response: await readJudgeResponse(runDir, pass) };
       } catch { /* A failed process or malformed response may have no readable assessment. */ }
     }
-    const semanticPassOrder = ["pass-1-existing", "pass-1-retained", "pass-1", "pass-2-existing", "pass-2-retained", "pass-2"];
+    const semanticPassOrder = ["pass-1-existing-command", "pass-1-existing", "pass-1-retained", "pass-1", "pass-2-existing-command", "pass-2-existing", "pass-2-retained", "pass-2"];
     const semanticRows = ARMS.flatMap(arm => Object.entries(state.results?.[arm]?.grade?.semantic ?? {})
       .sort(([left], [right]) => semanticPassOrder.indexOf(left) - semanticPassOrder.indexOf(right))
       .flatMap(([pass, criteria]) =>
         criteria.map(item => `| ${labels[arm as ArmName]} | ${pass} | ${item.criterion} | ${item.status} | ${item.basis} | ${item.reasoning.replaceAll("|", "\\|").replaceAll("\n", " ")} |`)));
     const semanticMarkdown = state.criteria ? `## Behavioral acceptance criteria\n\nContract SHA-256: ${state.criteria.sha256}. Oracle qualification: ${state.criteria.contract.qualification}. The contract was fixed before model execution. Executed harness source, argv, outputs and each repair are retained in the machine bundle. Source-only reasoning is labeled separately.\n\n| Arm | Pass | Criterion | Result | Evidence | Reasoning |\n| --- | --- | --- | --- | --- | --- |\n${semanticRows.join("\n") || "| Both | None | All | unassessed | none | Semantic assessment has not completed. |"}\n\n` : "";
+    const reliability = reliabilityReport(ARMS.map((arm): ReliabilityAttempt => {
+      const result = state.results?.[arm], attempt = state.arm_attempts?.[arm];
+      const verified = behaviorEvidence[arm]!;
+      return { attempt_id: state.id, task_id: `${state.task_pack?.id ?? "task"}:${state.task.sha256}:${state.source.base_commit}`,
+        arm, source: state.imported_arms?.[arm] || state.imported_control && arm === "stock" ? "historical" : "fresh", schedule: state.arm_order ?? "concurrent",
+        execution: !result ? attempt ? attempt.status === "started" && !attempt.finished_at ? "unknown" : "infrastructure_failure" : "not_started" : result.canceled ? "administrative_cancellation"
+          : result.lifecycle_error || result.collection_error || !valid ? "infrastructure_failure" : result.timed_out ? "budget_timeout"
+          : result.exit_code !== 0 ? "unknown" : "completed",
+        behavior: verified.behavior, evaluation_validity: verified.evaluation_validity,
+        candidate_cost_usd: usage[arm]?.totals.estimated_api_usd ?? null, cost_eligible: costRankingEligible(usage[arm]),
+        evidence: verified.evidence };
+    }));
+    const quality = state.fixed_verifier ? { schema: "codex-ab.quality-selection.v1", policy: "fixed-verifier-reward",
+      behavioral_eligibility: selectedArms.filter(behaviorallyEligible), passes: [],
+      has_score_preference_disagreement: false, interpretation: "Original pinned verifier rewards are independent of adaptive quality scores; this is not an official full-benchmark result." }
+      : adaptiveQuality;
     const report = {
+      schema: "codex-ab.pair-report.v2",
+      evaluator_mode: state.fixed_verifier ? "fixed-verifier" : "adaptive",
+      fixed_verifier: state.fixed_verifier ?? null,
+      fixed_verifier_results: state.fixed_verifiers ?? null,
+      judge_required: !state.fixed_verifier,
+      reliability,
+      quality_selection: quality,
+      import_accounting: importAccounting,
+      evidence_dimensions: Object.fromEntries(ARMS.map(arm => [arm, {
+        capture: state.results?.[arm]?.capture_identity ?? { status: "legacy-unverified" },
+        execution: reliability.attempts.find(attempt => attempt.arm === arm)?.execution,
+        behavior: reliability.attempts.find(attempt => attempt.arm === arm)?.behavior,
+        evaluation_validity: reliability.attempts.find(attempt => attempt.arm === arm)?.evaluation_validity,
+        behavioral_coverage: behaviorEvidence[arm]!.coverage, behavioral_evidence_issues: behaviorEvidence[arm]!.issues,
+        usage_observation: usage[arm]?.observation_validity ?? "unavailable", request_coverage: usage[arm]?.request_coverage ?? "unavailable",
+        pricing_precision: usage[arm]?.pricing_precision ?? "unavailable", cost_ranking_eligible: costRankingEligible(usage[arm]),
+      }])),
       generated_at: new Date().toISOString(),
       run_id: state.id,
       design: retainedReevaluation ? "fresh reevaluation of retained implementations; implementation agents were not rerun; original measurements remain historical"
@@ -354,7 +406,7 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       evaluation: state.evaluation ?? { mode: "fresh" },
       profile: state.profile ?? "hpatch",
       source: state.source,
-      setup: { arm_settings: state.arm_settings, setup_revisions: state.setup_revisions, ...state.execution, auto_compact_limit: state.auto_compact_limit ?? null, dependency_image: state.dependency_image, comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], imported_control: state.imported_control ?? null, imported_arms: state.imported_arms ?? null, arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null, resource_limits: state.resource_limits, snapshot_manifest: state.snapshot_manifest },
+      setup: { experiment: state.experiment, network_policy: state.network_policy, arm_settings: state.arm_settings, setup_revisions: state.setup_revisions, ...state.execution, auto_compact_limit: state.auto_compact_limit ?? null, dependency_image: state.dependency_image, comparison: state.comparison ?? "stock-current", mekugi_flags: state.mekugi_flags ?? [], imported_control: state.imported_control ?? null, imported_arms: state.imported_arms ?? null, arm_order: state.arm_order ?? "concurrent", trial: state.trial ?? null, resource_limits: state.resource_limits, snapshot_manifest: state.snapshot_manifest },
       preflight: state.preflight ?? null,
       finishing: state.finishing ?? null,
       status: state.status,
@@ -400,7 +452,7 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       const result = state.results?.[arm];
       const totals = usage[arm]?.complete ? usage[arm]!.totals : undefined;
       const uncached = totals ? totals.input_tokens - totals.cached_input_tokens : null;
-      return `| ${labels[arm as ArmName]}${result?.recovery ? " (recovered)" : ""} | ${gradeLabel(result, state.criteria)} | ${number(result ? result.agent_elapsed_ms / 1000 : null, 3)}${result?.recovery ? " (Docker container duration)" : ""} | ${number(graderSeconds(result), 3)} | ${number(totals?.input_tokens)} | ${number(uncached)} | ${number(totals?.cached_input_tokens)} | ${number(totals?.cache_write_input_tokens)} | ${number(totals?.output_tokens)} | ${number(totals?.reasoning_output_tokens)} | ${number(totals?.total_tokens)} | ${number(totals?.command_seconds, 3)} | ${number(totals?.estimated_api_usd, 6)} |`;
+      return `| ${labels[arm as ArmName]}${result?.recovery ? " (recovered)" : ""} | ${result?.grade ? behaviorEvidence[arm]!.behavior : "missing"} | ${number(result ? result.agent_elapsed_ms / 1000 : null, 3)}${result?.recovery ? " (Docker container duration)" : ""} | ${number(graderSeconds(result), 3)} | ${number(totals?.input_tokens)} | ${number(uncached)} | ${number(totals?.cached_input_tokens)} | ${number(totals?.cache_write_input_tokens)} | ${number(totals?.output_tokens)} | ${number(totals?.reasoning_output_tokens)} | ${number(totals?.total_tokens)} | ${number(totals?.command_seconds, 3)} | ${number(totals?.estimated_api_usd, 6)} |`;
     });
     const stockTotals = usage.stock?.complete ? usage.stock.totals : undefined;
     const inputDifferences = stockTotals ? selectedArms.filter(arm => arm !== "stock").flatMap(arm => {
@@ -445,7 +497,7 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       ? `${valid
         ? `Status: **${state.judge.status}**. ${state.judge.passes.length} of 2 passes produced valid results.`
         : `Status: **invalidated**. ${state.judge.passes.length} recorded passes are retained for audit only; their scores, criterion verdicts, and winner are not valid.`}${state.judge.error ? ` Recorded error: ${state.judge.error}` : ""}\n\n${valid && state.judge.status === "complete"
-        ? `Two independent reversed-order passes ${state.judge.agreement ? "agreed" : "disagreed"}. Judge winner: **${winnerLabel(state.judge.winner)}**.${state.judge.disagreement ? ` ${state.judge.disagreement}` : ""}`
+        ? `Two reversed-order bias-check passes ${state.judge.agreement ? "agreed" : "disagreed"}. Recorded judge preference: **${winnerLabel(state.judge.winner)}**; eligibility is shown separately above.${state.judge.disagreement ? ` ${state.judge.disagreement}` : ""}`
         : "No judge winner is eligible from an incomplete or invalidated assessment."}\n\n${state.judge.passes.map(pass => passMarkdown(pass, labels)).join("\n\n")}\n\n### Judge usage by attempted pass\n\n| Pass | usage status | input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${judgeRows.join("\n") || "| - | missing | - | - | - | - | - | - | - | unknown |"}\n\nJudge aggregate estimated list-price API cost: ${number(judgeUsage?.totals.estimated_api_usd, 6)} USD; ${number(judgeUsage?.totals.total_tokens)} total tokens.`
       : "Not run.";
     const invalidityNotice = valid ? "" : `> **Infrastructure validity: INVALID**\n>\n${invalidityReasons.map(reason => `> - ${reason}`).join("\n")}\n>\n> Measurements are retained, but gates, completion, and winner are suppressed.\n\n`;
@@ -463,7 +515,12 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       : [{ label: "", diagnostics: mekugiDiagnostics }])
       .map(({ label, diagnostics }) => (label ? `### ${label}\n\n` : "") + (diagnostics ? `Validation: ${diagnostics.status}. ${diagnostics.reason ?? "Capturer-owned schema and raw evidence reconcile."}\n\nThese exports are within-arm diagnostics, not measured savings against direct Codex. ${state.comparison === "codex-mekugi-grok" ? "Codex JSONL and Grok usage.json remain the paired accounting sources." : "Codex JSONL and rollout usage remain the paired accounting source."} ${state.protected_runtime ? "Capture/runtime mounts are read-only in the executor namespace; the trusted router retains write access. Preflight checks this boundary without inference." : "Export files are writable within the agent container, so consistency validation is not tamper-proof provenance."}\n\n\`\`\`json\n${JSON.stringify(diagnostics.metrics && typeof diagnostics.metrics === "object" ? Object.fromEntries(Object.entries(diagnostics.metrics).filter(([key]) => ["schema", "mode", "model_protocol", "requests", "usage", "capture", "mekugi"].includes(key))) : null, null, 2)}\n\`\`\`` : "Not requested or unavailable in this historical run.")).join("\n\n");
     const md = `# Codex A/B report\n\n${invalidityNotice}> This is a descriptive benchmark. ${retainedReevaluation ? "This freshly reevaluates retained implementations without rerunning implementation agents. Original agent measurements remain historical; host tool-store contents and configuration may differ across runs." : state.imported_arms ? "This run compares historical arms with fresh candidates. Host tool-store contents and configuration may differ across runs." : state.imported_control ? "This fresh treatment uses a historical stock control, not a new simultaneous pair. Host tool-store contents and configuration may differ across runs." : selectedArms.length === 1 ? "This single-arm run has no paired winner." : "This single paired run does not establish a causal or generalizable difference."}\n\n- Run: \`${state.id}\`\n- Base: \`${state.source.base_commit}\` (tree \`${state.source.base_tree}\`, source timestamp ${state.source.source_timestamp})\n${state.arm_settings ? ARMS.map(arm => { const runtime = armRuntime(state, arm); return `- ${labels[arm]}: ${runtime.execution.model}, ${runtime.execution.reasoning_effort} reasoning, ${runtime.resource_limits.cpus} CPUs, ${runtime.resource_limits.memory} memory, ${runtime.timeout_seconds}s time limit`; }).join("\n") : `- Model: ${state.execution.model}, ${state.execution.reasoning_effort} reasoning, ${state.execution.service_tier} service tier`}\n- Infrastructure validity: **${valid ? "valid" : "invalid"}**\n- Required checks decided: **${checksExecuted ? "yes" : "no"}**\n- Gate result eligible: **${gatesComplete ? "yes" : "no"}**\n- Arm usage complete: **${armUsageComplete ? "yes" : "no"}**\n- Judge result and usage complete: **${valid && judgeComplete && judgeUsageComplete ? "yes" : "no"}**\n- Overall winner: **${winnerLabel(effectiveWinner)}**\n- Winner explanation: ${winnerReason}\n${efficiency ? `- Faster arm: **${efficiency.faster === null ? "not available" : winnerLabel(efficiency.faster)}**. Lower estimated list-price cost: **${winnerLabel(efficiency.lower_estimated_cost)}** (descriptive only, not a quality winner).\n` : ""}\nA failed grade does not make measurement incomplete. It only makes that candidate ineligible to win. An assessed failure settles a failed grade even when another pass left criteria unassessed; a winner still needs complete checks in both passes. Missing checks, usage, or infrastructure validity make the overall result incomplete and suppress the winner.\n\n${resourceExplanationMarkdown(resourceExplanation)}\n\n${mechanismsMarkdown(mechanisms)}\n\n${journalEvidenceMarkdown(selectedArms.map(arm => ({ label: labels[arm], evidence: usage[arm]?.journal })), state.comparison === "journal-compaction")}\n\n## Task and setup\n\n${taskText.trim().split("\n").map(line => `> ${line}`).join("\n")}\n\n- Comparison: ${state.comparison ?? "stock-current"}.\n${ARMS.map(arm => `- ${arm}: ${labels[arm]}.`).join("\n")}\n- Default Mekugi flags: ${JSON.stringify(state.mekugi_flags ?? [])}.\n${state.arm_settings ? ARMS.map(arm => `- ${labels[arm]} settings: ${JSON.stringify(state.arm_settings?.[arm] ?? {})}.`).join("\n") : ""}\n- Codex: ${state.runtime_tools.codex_version}; executable SHA-256 ${state.runtime_tools.codex_sha256}.\n- Grok: ${state.runtime_tools.grok_version ?? "not used"}; executable SHA-256 ${state.runtime_tools.grok_sha256 ?? "n/a"}.\n- Image: ${state.image_id ?? state.image}.\n- Dependency image: ${state.dependency_image?.image_id ?? "legacy per-run caches"}.\n- Default resources: ${state.resource_limits.cpus} CPUs, ${state.resource_limits.memory} memory.\n- Arm execution order: ${state.arm_order ?? "concurrent"}.\n- Trial set: ${state.trial ? `${state.trial.set_id}, pair ${state.trial.index}, controls SHA-256 ${state.trial.controls_sha256}` : "standalone pair"}.\n${setupProvenance}\n- Task SHA-256: ${state.task.sha256}.\n- Runtime boundary: ${state.protected_runtime ? "A: direct Codex with ordinary provider egress. B: Mekugi-owned private namespaces, capability-free executor, router-only egress and read-only capture/runtime mounts. This boundary differs between arms." : "ordinary container boundary; Mekugi exports are executor-writable"}.\n- Mekugi build provenance: ${state.mekugi_build ? `source SHA-256 ${state.mekugi_build.identity.source_archive_sha256}; builder ${state.mekugi_build.identity.image_id}` : "not supplied; executable hashes alone do not establish source provenance"}.\n- Task pack: ${state.task_pack ? `${state.task_pack.id}; snapshot SHA-256 ${state.task_pack.sha256}` : "standalone controls"}.\n\n## Arms\n\n| Arm | preparation, semantic criteria, and scoped package checks | agent seconds | grader seconds | input | uncached input | cached input | cache write input | output | reasoning output | total | command seconds | API-equivalent USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${armRows.join("\n")}\n\n${costExplanation}\n\nAll arm cost comparisons use captured list prices, not mixed native/provider totals. Grok session-only estimates use base rates when request-level tiering is unavailable; see warnings. Mekugi arm tokens and requests come from validated provider attempts, excluding prewarm, so they include router-side re-sends and retries that the Codex rollout omits; without a validated capture they fall back to the Codex rollout, as the warnings state. Direct Codex rollouts omit prewarm too.\n\n### Native/provider costs (not the comparison basis)\n\n| Arm | recorded USD | source |\n| --- | ---: | --- |\n${recordedCostRows.join("\n")}\n\nThese figures may use different rates, service tiers, or accounting scopes. Fewer total tokens alone does not guarantee lower cost: uncached input and output have different prices.\n\n## Mekugi within-arm diagnostics\n\n${mekugiDiagnosticsMarkdown}\n\n${semanticMarkdown}## Check details\n\n${checkDetails.join("\n")}\n\n${Object.entries(baselineDifferences).map(([arm, differences]) => `## ${labels[arm]} minus ${labels[ARMS[0]!]}\n\n${Object.entries(differences).map(([key, value]) => `- ${key}: ${value === null ? "not available" : `${value}%`}`).join("\n")}`).join("\n\n")}\n\n${performanceText}\n\n## Judge\n\n${judgeSummary}\n\n${suppliedMarkdown}## Pricing provenance\n\nAll compared USD figures use the captured list-price snapshot. Grok aggregate estimates use base rates, with unknown request-level long-context premiums excluded and explicitly warned. Native/provider-reported totals are retained separately for reconciliation, not mixed into comparison costs. These estimates are not subscription charges or invoices; service-tier premiums are not modeled.\n\n- Source: ${pricing.source}\n- Fetched at: ${pricing.fetched_at}\n- Catalog: ${pricing.catalog_url}\n${pricing.assumptions.map(assumption => `- Assumption: ${assumption}`).join("\n") || "- No pricing assumptions recorded."}\n\n## Warnings\n\n${warnings.map(warning => `- ${warning}`).join("\n") || "- None."}\n\nThis is the complete human-readable result: task/setup, behavioral explanation, measurements, checks, and source judgments are inline. The accompanying JSON is machine-readable evidence, not another required report.\n`;
-    let rendered = md;
+    const dimensions = `## Evidence dimensions\n\n| Arm | Capture | Execution | Behavior | Evaluation | Usage | Request coverage | Pricing | Cost ranking |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${Object.entries(report.evidence_dimensions).map(([arm, d]) => `| ${labels[arm]} | ${d.capture.status} | ${d.execution} | ${d.behavior} | ${d.evaluation_validity} | ${d.usage_observation} | ${d.request_coverage} | ${d.pricing_precision} | ${d.cost_ranking_eligible ? "eligible" : "unavailable"} |`).join("\n")}\n\n## Quality selection policy\n\nPolicy: **${quality.policy}**. ${quality.interpretation}\n\n| Pass | Weighted-score leaders | Holistic preference | Disagreement |\n| --- | --- | --- | --- |\n${quality.passes.map(pass => `| ${pass.pass} | ${pass.weighted_score_leaders.map(winnerLabel).join(", ") || "unavailable"} | ${pass.holistic_judge_preference === null ? "not applicable" : winnerLabel(pass.holistic_judge_preference)} | ${pass.preference_comparison_available ? pass.disagreement ? "yes" : "no" : "unavailable"} |`).join("\n")}\n\n`;
+    let rendered = md.replace("## Arms\n\n", `${reliabilityMarkdown(reliability, labels)}\n${dimensions}## Arms\n\n`);
+    if (state.fixed_verifiers) {
+      const fixed = `## Original fixed verifier results\n\nThese rewards are separate from adaptive source-quality assessments. Original supplied bytes and runtime controls are pinned; official FHE 1.1 provenance and a matched benchmark control have not been established.\n\n| Arm | Attempt | Dataset | Execution | Behavior | Evaluation validity | Reward |\n| --- | --- | --- | --- | --- | --- | ---: |\n${Object.entries(state.fixed_verifiers).flatMap(([arm, attempts]) => attempts.map((attempt, index) => { const r = attempt.result; return `| ${labels[arm]} | ${index + 1} | ${r.config.dataset.name}@${r.config.dataset.version} | ${r.execution_status} | ${r.behavioral_result} | ${r.evaluation_validity} | ${r.reward?.reward ?? "unavailable"} |`; })).join("\n")}\n\n`;
+      rendered = rendered.replace("## Arms\n\n", `${fixed}## Arms\n\n`);
+    }
     if (Object.keys(recovery).length) {
       const notice = `> **Recovered evidence**\n>\n${Object.entries(recovery).map(([arm, item]) => `> - ${labels[arm]}: recovered from run ${item.source_run_id}, arm ${item.source_arm}; collected ${item.collected_at}. Timing: Docker container duration (docker-inspect); native controller elapsed time unavailable.\n${item.caveats.map(caveat => `>   - ${caveat.replaceAll("\n", " ")}`).join("\n")}`).join("\n")}\n>\n> ${agentTiming.caveat}\n\n`;
       rendered = rendered.replace("# Codex A/B report\n\n", `# Codex A/B report\n\n${notice}`);

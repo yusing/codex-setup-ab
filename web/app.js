@@ -441,7 +441,7 @@ function metricTable(report, state, labels) {
   const keys = Object.keys(labels);
   const criteria = report.criteria ?? state.criteria;
   const rows = [
-    ["Behavioral grade", arm => gradeChip(values(arm).result, criteria), "", true],
+    ["Behavioral grade", arm => gradeChip(obj(report.evidence_dimensions)[arm]), "", true],
     ["Agent time", arm => duration(values(arm).result.agent_elapsed_ms) + (values(arm).result.recovery ? " (recovered Docker container duration)" : ""), "agent_elapsed_ms"],
     ["Estimated API cost", arm => typeof values(arm).totals.estimated_api_usd === "number" ? "$" + metric(values(arm).totals.estimated_api_usd, 6) : "Unknown", "estimated_api_usd"],
     ["Total tokens", arm => metric(values(arm).totals.total_tokens), "total_tokens"],
@@ -470,25 +470,10 @@ function recoveryNotice(report, state, labels) {
 function statusChip(status, text = words(status)) {
   return '<span class="status-chip ' + esc(status) + '">' + esc(text) + "</span>";
 }
-function gradeChip(result, criteria) {
-  const grade = obj(obj(result).grade);
-  const semantic = obj(grade.semantic);
-  const required = obj(obj(criteria).contract).criteria;
-  // An assessed failure settles the grade even when other checks remain unassessed.
-  // Retained baseline tests are non-gating evidence and cannot settle a grade.
-  const failed = grade.passed === false && Object.entries(semantic).some(([key, items]) => !key.endsWith("-retained")
-    && (Array.isArray(items) ? items : []).some((item) => obj(item).status === "fail"));
-  const covered = Array.isArray(required) && [1, 2].every((pass) => {
-    const assessed = semantic["pass-" + pass], existing = semantic["pass-" + pass + "-existing"];
-    return Array.isArray(assessed) && assessed.length === required.length
-      && assessed.every((item) => item.status !== "unassessed" && (item.basis === "executed" || item.status === "fail"))
-      && Array.isArray(existing) && existing.length === 1
-      && existing.every((item) => item.status !== "unassessed" && item.basis === "executed");
-  });
-  const pending = !Array.isArray(required) || grade.evaluator_error || (!failed && (!covered
-    || [grade.preparation, grade.router_suite].some((check) => obj(check).command === "not run" || obj(check).exit_code === -1)));
-  const passed = pending ? undefined : grade.passed;
-  return passed === true ? statusChip("pass", "Passed") : passed === false ? statusChip("fail", "Failed") : statusChip("unassessed", "Not graded");
+function gradeChip(evidence) {
+  const verified = obj(evidence);
+  const behavior = verified.evaluation_validity === "valid" ? verified.behavior : "unassessed";
+  return behavior === "pass" ? statusChip("pass", "Passed") : behavior === "fail" ? statusChip("fail", "Failed") : statusChip("unassessed", "Not graded");
 }
 function armGrade(report, state, arm) {
   return obj(obj(obj(obj(report.arms)[arm]).result).grade ?? obj(obj(state.results)[arm]).grade);
@@ -543,7 +528,7 @@ function verdictSummary(report, state, labels, complete) {
         + (existing && existing !== "pass" ? " · existing tests " + esc(words(existing)) : "")
         + (retained && retained !== "pass" ? " · retained baseline tests " + esc(words(retained)) : "") + "</li>";
     });
-    return '<article class="verdict-card ' + side + '"><h4>' + esc(labels[arm]) + "</h4>" + gradeChip({ grade: armGrade(report, state, arm) }, report.criteria ?? state.criteria)
+    return '<article class="verdict-card ' + side + '"><h4>' + esc(labels[arm]) + "</h4>" + gradeChip(obj(report.evidence_dimensions)[arm])
       + (lines.length ? "<ul>" + lines.join("") + "</ul>" : '<p class="hint">No criterion results recorded.</p>') + "</article>";
   };
   return '<div class="result-summary' + (settled ? "" : " warn") + '"><strong>' + esc(headline) + "</strong><p>" + esc(report.winner_reason || report.comparison_exclusion || "Interpret the available evidence with its validity gates.") + "</p>"
@@ -612,6 +597,39 @@ function resourceSummary(report) {
       : '<p class="hint">The recorded workflow does not establish why extra requests occurred. Request counts alone cannot identify the responsible instruction, retries, or cache-miss cause.</p>')
     + '<p class="hint">Accounting locates the difference; observed workflow contributors do not establish a general causal effect from one run.</p>';
 }
+function reliabilityTable(report, labels) {
+  const cohorts = obj(report.reliability).cohorts;
+  if (!Array.isArray(cohorts)) return '<p class="hint">Scored-attempt reliability is unavailable for this report.</p>';
+  const rows = cohorts.map(({arm,source,schedule,summary:s}) => '<tr><th>'+esc(labels[arm] || arm)+'</th><td>'+esc(source+' / '+schedule)+'</td><td>'+metric(s.attempted)+'</td><td>'+metric(s.scored)+'</td><td>'+metric(s.passing)+'</td><td>'+metric(s.excluded)+'</td><td>'+metric(s.cost_covered)+' / '+metric(s.scored)+'</td><td>'+(s.pass_rate == null ? 'Unavailable' : metric(s.pass_rate*100,1)+'%')+'</td><td>'+(s.cost_per_verified_success_usd == null ? esc(s.cost_per_verified_success_status) : '$'+metric(s.cost_per_verified_success_usd,6))+'</td></tr>').join('');
+  return '<h3>Scored-attempt reliability</h3><p class="hint">Task/model failures and candidate budget timeouts are scored. Infrastructure failures, evaluator failures, unassessed outcomes, and administrative cancellations are excluded and counted separately. Costs include scored failures; evaluator spend is separate.</p><div class="table-scroll"><table><thead><tr><th>Setup</th><th>Source / schedule</th><th>Attempted</th><th>Scored</th><th>Passing</th><th>Excluded</th><th>Cost covered</th><th>Pass rate</th><th>USD / verified success</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+    +disclosure('Outcome categories, timeout rates and coverage',report.reliability,labels);
+}
+
+function evidenceDimensions(report, labels) {
+  const entries = Object.entries(obj(report.evidence_dimensions));
+  if (!entries.length) return '';
+  const quality = obj(report.quality_selection);
+  return '<h3>Evidence validity</h3><div class="table-scroll"><table><thead><tr><th>Setup</th><th>Capture</th><th>Execution</th><th>Behavior</th><th>Evaluation</th><th>Usage observation</th><th>Request coverage</th><th>Pricing precision</th><th>Cost ranking</th></tr></thead><tbody>'
+    +entries.map(([arm,d])=>'<tr><th>'+esc(labels[arm] || arm)+'</th>'+[obj(d.capture).status,d.execution,d.behavior,d.evaluation_validity,d.usage_observation,d.request_coverage,d.pricing_precision,d.cost_ranking_eligible?'eligible':'unavailable'].map(value=>'<td>'+esc(value || 'unknown')+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>'
+    +'<h3>Quality selection</h3><p class="hint">Policy: '+esc(quality.policy || 'unknown')+'. '+esc(quality.interpretation || '')+'</p>'
+    +'<div class="table-scroll"><table><thead><tr><th>Pass</th><th>Weighted-score leaders</th><th>Holistic preference</th><th>Disagreement</th></tr></thead><tbody>'
+    +(quality.passes || []).map(p=>'<tr><th>'+esc(p.pass)+'</th><td>'+esc((p.weighted_score_leaders || []).map(arm=>labels[arm] || arm).join(', ') || 'Unavailable')+'</td><td>'+esc(p.holistic_judge_preference === null?'Not applicable':labels[p.holistic_judge_preference] || p.holistic_judge_preference)+'</td><td>'+esc(p.preference_comparison_available ? p.disagreement ? 'Yes' : 'No' : 'Unavailable')+'</td></tr>').join('')+'</tbody></table></div>';
+}
+
+function fixedVerifierResults(report, labels) {
+  const attempts = Object.entries(obj(report.fixed_verifier_results)).flatMap(([arm, items]) =>
+    (Array.isArray(items) ? items : []).map((item, index) => ({arm, index, result: obj(item.result)})));
+  if (!attempts.length) return '';
+  return '<h3>Original fixed verifier</h3><p class="hint">'+(report.evaluator_mode === 'fixed-verifier'
+    ? 'This run uses the pinned original reward gate.' : 'These supplemental outcomes leave the adaptive quality assessment unchanged.')
+    +' Original-verifier rewards retain their upstream trust boundary. Official benchmark comparability has not been established.</p>'
+    +'<div class="table-scroll"><table><thead><tr><th>Setup / verifier attempt</th><th>Dataset / task</th><th>Execution</th><th>Behavior</th><th>Evaluation</th><th>Reward</th></tr></thead><tbody>'
+    +attempts.map(({arm,index,result:r})=>'<tr><th>'+esc((labels[arm] || arm)+' / '+(index+1))+'</th><td>'
+      +esc(obj(obj(r.config).dataset).name+' '+obj(obj(r.config).dataset).version+' / '+obj(obj(r.config).task).id)+'</td><td>'
+      +esc(r.execution_status)+'</td><td>'+esc(r.behavioral_result)+'</td><td>'+esc(r.evaluation_validity)+'</td><td>'
+      +esc(r.reward == null ? 'Unavailable' : JSON.stringify(r.reward))+'</td></tr>').join('')+'</tbody></table></div>';
+}
+
 function qualityAspectsTable(pass, names, scoring) {
   const order = Array.isArray(pass.presentation) ? pass.presentation : [];
   if (!order.length) return "";
@@ -655,7 +673,7 @@ function resultContent(data) {
       + (stopped ? "The operation ended before candidate results were collected. See the operation status and phase log."
         : "Preparing isolated workspaces and recording runtime metadata. Setup identities and measurements appear after preparation publishes the run state. Follow the phase log for progress.") + "</p>";
   }
-  if (!Object.keys(report).length) return "<h2>Partial results</h2>" + invalidationNotice + recoveryNotice({}, state, labels) + "<p class='hint'>The report appears when the CLI generates it. Collected grades remain visible while work continues.</p>" + (data.entry.kind === "pair" ? metricTable({}, state, labels) : "");
+  if (!Object.keys(report).length) return "<h2>Partial results</h2>" + invalidationNotice + recoveryNotice({}, state, labels) + "<p class='hint'>The report appears when the CLI generates it. Behavioral grades require verified report evidence; available measurements remain visible while work continues.</p>" + (data.entry.kind === "pair" ? metricTable({}, state, labels) : "");
   if (data.entry.kind === "pair") {
     const warnings = [...new Set([...currentInvalidity, ...(report.invalidity_reasons || []), ...Object.values(obj(report.arms)).flatMap((arm) => obj(arm.usage).warnings || [])])];
     const complete = report.measurement_complete === true && !invalidated;
@@ -665,6 +683,8 @@ function resultContent(data) {
     return "<h2>Comparison results</h2>" + recoveryNotice(report, state, labels) + "<p class='hint'>" + esc(report.design || "Descriptive paired evidence") + "</p>" + evaluationNote
       + (invalidated ? invalidationNotice : verdictSummary(report, state, labels, complete))
       + scoreTable(report, labels)
+      + evidenceDimensions(report, labels) + reliabilityTable(report, labels)
+      + fixedVerifierResults(report, labels)
       + "<h3>Measurements</h3>" + metricTable(report, state, labels)
       + (warnings.length ? '<ul class="warning-list">' + warnings.map((warning) => "<li>" + esc(warning) + "</li>").join("") + "</ul>" : "")
       + (invalidated || report.validity === "invalid" ? "" : judgeSummary(report.judge, labels, report.scoring))
@@ -683,6 +703,7 @@ function resultContent(data) {
     }).join("");
     return "<h2>Trial-set results</h2><p>" + metric(report.eligible_pairs) + " eligible runs of " + metric(report.planned_pairs) + " planned.</p><p class='hint'>Unavailable metrics are excluded. These observations do not establish causality.</p>" + tables
       + disclosure("Distributions, medians and sample variation", comparisons, labels)
+      + reliabilityTable(report, labels) + disclosure("Paired uncertainty over tasks", report.uncertainty) + disclosure("Guidance and launcher interaction", report.factorial)
       + disclosure("Run eligibility, results and source assessments", report.pairs, labels)
       + disclosure("Complete trial report", report, labels);
   }
@@ -690,6 +711,7 @@ function resultContent(data) {
     const rows = (report.rows || []).map((row) => "<tr><th>" + esc(row.task) + "</th><td>" + esc(row.setup) + "</td><td>" + metric(row.planned) + "</td><td>" + metric(row.measured) + "</td><td>" + metric(row.both_pass) + "</td></tr>").join("");
     return "<h2>Suite results</h2><p class='hint'>Time and cost effects include eligible, complete, both-passing pairs. Macro statistics weight tasks equally.</p>"
       + '<div class="table-scroll" tabindex="0" role="region" aria-label="Suite measurements"><table><thead><tr><th>Task</th><th>Setup</th><th>Planned</th><th>Measured</th><th>Both pass</th></tr></thead><tbody>' + rows + "</tbody></table></div>"
+      + reliabilityTable(report, labels) + disclosure("Paired uncertainty over tasks", report.uncertainty)
       + disclosure("Per-task time and cost effects", report.effects) + disclosure("Equal-task macro statistics", report.macro) + disclosure("Complete suite report", report);
   }
   return "<h2>Captured build</h2>" + disclosure("Build identity", state);

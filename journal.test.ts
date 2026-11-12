@@ -32,8 +32,9 @@ test("incomplete order and usage never become zero post-compaction cost", () => 
 
 test("provider cost uses the arm usage attempt rule", () => {
   const cost = (provider_attempts: unknown[]) => journalEvidence({ exchanges: [{ sequence: 1, thread_id: "root", request_kind: "compaction", provider_attempts }] })!.compactions[0];
-  // A failed attempt without usage costs nothing but still counts as a request.
-  expect(cost([{ status: "failed" }, { status: "completed", usage: usage(5, 1) }])).toMatchObject({ provider_requests: 2, provider_tokens: 6 });
+  // Missing usage on a failed attempt does not establish zero billable tokens.
+  expect(cost([{ status: "failed" }, { status: "completed", usage: usage(5, 1) }])).toMatchObject({ provider_requests: 2, provider_tokens: null });
+  expect(cost([{ status: "failed", usage: usage(0, 0) }, { status: "completed", usage: usage(5, 1) }])).toMatchObject({ provider_requests: 2, provider_tokens: 6 });
   // Arm usage rejects partial counts, so compaction cost must not invent a total from them.
   expect(cost([{ status: "completed", usage: { input_tokens: 5, output_tokens: 1 } }])).toMatchObject({ provider_requests: 1, provider_tokens: null });
 });
