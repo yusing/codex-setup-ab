@@ -429,13 +429,8 @@ async function collectArm(docker: string, runDir: string, state: RunState, arm: 
     await inspectCandidate(docker, runDir, state, repository, `${arm}-capture`, new AbortController().signal, false, false, destination, discardDependencies);
     const generatedPatch = join(destination, "changes.patch");
     const manifest = await readCandidateManifest(join(destination, "candidate-manifest.json"), generatedPatch);
-    for (const path of [generatedPatch, join(destination, "result.json")]) {
-      if (!(await lstat(path)).isFile()) throw new Error("capture artifact must be a regular file");
-    }
-    const metadata = JSON.parse((await readRegularEvidence(join(destination, "result.json"))).toString("utf8")) as { changed_files?: unknown; head_after_agent?: unknown };
-    if (!Array.isArray(metadata.changed_files) || metadata.changed_files.some(value => typeof value !== "string")
-      || typeof metadata.head_after_agent !== "string" || !/^[0-9a-f]{40}$/.test(metadata.head_after_agent)) throw new Error("invalid capture metadata");
-    if (JSON.stringify(metadata.changed_files) !== JSON.stringify(manifest.changed_files)) throw new Error("capture metadata and trusted change list disagree");
+    const metadata = JSON.parse((await readRegularEvidence(join(destination, "result.json"))).toString("utf8")) as { head_after_agent?: unknown };
+    if (typeof metadata.head_after_agent !== "string" || !/^[0-9a-f]{40}$/.test(metadata.head_after_agent)) throw new Error("invalid capture metadata");
     // Only fresh output was writable in the collector; publish after validation.
     await copyFile(generatedPatch, patchPath, 1);
     const manifestPath = join(dirname(patchPath), "candidate-manifest.json");

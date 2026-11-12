@@ -1,9 +1,10 @@
-import { cp, copyFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, copyFile, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { readState, sha256, writeState } from "./state";
 import type { ArmName } from "./types";
 import { mekugiRuntimeCaptures } from "./mekugi";
-import { ROLLOUT_SCHEMA, rolloutIdentity, rolloutPaths } from "./rollout-evidence";
+import { ROLLOUT_SCHEMA, rolloutPaths } from "./rollout-evidence";
+import { candidateFiles } from "./candidate-evidence";
 import { verifyFixedInputs } from "./fixed-workflow";
 import { fixedTreeIdentity, validateFixedVerifierConfig, type FixedVerifierResult } from "./fixed-verifier";
 
@@ -69,16 +70,6 @@ export function auditSession(jsonl: string): SessionAudit {
     });
   }
   return result;
-}
-
-async function regularFiles(directory: string): Promise<string[]> {
-  const files: string[] = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) files.push(...await regularFiles(path));
-    else if (entry.isFile()) files.push(path);
-  }
-  return files.sort();
 }
 
 function within(root: string, path: string): string {
@@ -282,10 +273,10 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       continue;
     }
-    for (const file of files.filter(path => path.endsWith(".jsonl"))) {
+    for (const file of files) {
       sessions[arm]!.push(auditSession(await readFile(file, "utf8")));
     }
-    rolloutFiles[arm] = await rolloutIdentity(directory);
+    rolloutFiles[arm] = await Promise.all(files.map(async file => ({ path: relative(directory, file), sha256: await sha256(file) })));
   }
   await write("rollout-files.json", { schema: ROLLOUT_SCHEMA, arms: rolloutFiles });
   const audit = Object.fromEntries(Object.entries(sessions).map(([arm, entries]) => [arm, (entries ?? []).map(session => {
@@ -389,9 +380,8 @@ export async function finalizeBundle(runDirectory: string): Promise<void> {
 }
 
 async function bundleManifestContents(destination: string): Promise<string> {
-  const checksums = await Promise.all((await regularFiles(destination)).filter(path => path !== join(destination, "MANIFEST.sha256")).map(async path =>
-    `${await sha256(path)}  ${relative(destination, path)}`));
-  return `${checksums.join("\n")}\n`;
+  const files = (await candidateFiles(destination)).filter(file => file.path !== "MANIFEST.sha256");
+  return ["codex-ab.bundle-manifest.v2", ...files.map(file => JSON.stringify(file)), ""].join("\n");
 }
 
 export async function writeBundleManifest(destination: string): Promise<void> {

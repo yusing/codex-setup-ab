@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { checkOutcome, retainedOutcome, validateCriteria, validateSemanticChecks } from "./semantic";
+import { checkOutcome, validateCriteria, validateSemanticChecks } from "./semantic";
 import { readFile } from "node:fs/promises";
 import { checked } from "./process";
 import { criterionAssessmentSchema, prepareSemanticAssessment, semanticHarnessSchema, semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
@@ -118,16 +118,13 @@ test("candidate text and child-selected exit codes cannot impersonate supervisor
   expect(checkOutcome(check, { ...base, verifier: { ...record("passed"), completed: 0, cases: [] } }).status).toBe("unassessed");
 });
 
-test("retained baseline tests keep candidate compile failures rather than relabeling output", () => {
+test("retained baseline tests require a safe pattern set and nonempty command", () => {
   const retained = { patterns: ["*_test.go"], command: "go test ." };
   expect(validateCriteria({ ...contract, retained_tests: retained }, "task").retained_tests).toEqual(retained);
   for (const value of [{ ...retained, patterns: [] }, { ...retained, command: "" }, { ...retained, patterns: ["../x_test.go"] },
     { ...retained, patterns: ["/abs_test.go"] }, { ...retained, patterns: [".git/*"] }, "go test ."]) {
     expect(() => validateCriteria({ ...contract, retained_tests: value }, "task")).toThrow("retained_tests");
   }
-  const evidence = { criterion: "__retained_tests", status: "fail" as const, basis: "executed" as const, reasoning: "Candidate failed",
-    execution: { command: "go test", started_at: "", elapsed_ms: 1, exit_code: 1, stdout: "FAIL example [build failed]", stderr: "" } };
-  expect(retainedOutcome(evidence).status).toBe("fail");
 });
 
 test("retained baseline tests run baseline files against each candidate as separate evidence", async () => {
@@ -248,6 +245,33 @@ test("a purely behavioral failure does not buy another harness-authoring round",
     await prepareSemanticAssessment({ runDir: root, state, contract, pass: 1, order: ["stock"], docker: "unused", persistState: async () => {},
       ask: async stage => { stages.push(stage); return { "candidate-1": [{ criterion: "sum", files: [], command: ["test"], rationale: "Sum behavior", verification, repair }] }; } });
     expect(stages).toEqual(["harness-1"]);
+  } finally { run.mockRestore(); qualified.mockRestore(); await rm(root, { recursive: true, force: true }); }
+});
+
+test.each(["wiring", "args", "stdin", "legacy-command", "legacy-unlock"])("repair freezes declared command data while preserving wiring adaptation: %s", async fault => {
+  const root = await mkdtemp(join(tmpdir(), "semantic-repair-inputs-"));
+  const state = { id: "repair-inputs", task: { sha256: "task" }, image: "fixture", execution: { current_launcher: "codex" },
+    timeout_seconds: 1, resource_limits: { cpus: "1", memory: "1g" }, results: { stock: { grade: { elapsed_ms: 0 } } } } as unknown as RunState;
+  const first = { criterion: "sum", files: [], command: ["true"], rationale: "Add a negative and a positive input.",
+    verification: { schema: "codex-ab.verification.v1" as const, cases: [{ id: "negative", kind: "command" as const,
+      command: ["/missing-python", "adder.py"], args: ["-2", "3"] as string[] | undefined, stdin: "", expected_exit: 0, format: "text" as const, expected: "1\n" }] } };
+  if (fault.startsWith("legacy")) { delete first.verification.cases[0]!.args; first.verification.cases[0]!.command.push("-2", "3"); }
+  const replacement = { ...structuredClone(first), repair };
+  const probe = replacement.verification.cases[0]!;
+  probe.command = ["python3", "fixed/adder.py"];
+  if (fault === "args") probe.args = ["2", "-1"];
+  if (fault === "stdin") probe.stdin = "different case data";
+  if (fault === "legacy-unlock") probe.args = [];
+  const qualified = qualificationFixture();
+  const run = spyOn(containers, "runOwnedContainer").mockImplementation(async options => {
+    await supervisorFixture(options, options.name.includes("round-1") ? "evaluator_wiring" : "passed");
+    return { exitCode: 0, timedOut: false, canceled: false, elapsedMs: 1, stdout: "", stderr: "", cleanupVerified: true };
+  });
+  try {
+    const result = prepareSemanticAssessment({ runDir: root, state, contract, pass: 1, order: ["stock"], docker: "unused", persistState: async () => {},
+      ask: async stage => ({ "candidate-1": [stage === "harness-1" ? first : replacement] }) });
+    if (fault === "wiring") expect((await result).candidates["candidate-1"][0]!.status).toBe("pass");
+    else await expect(result).rejects.toThrow("repair changed retained case inputs");
   } finally { run.mockRestore(); qualified.mockRestore(); await rm(root, { recursive: true, force: true }); }
 });
 

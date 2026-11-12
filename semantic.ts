@@ -146,9 +146,6 @@ export function checkOutcome(check: SemanticCheck, execution: CommandEvidence): 
   };
 }
 
-/** Output vocabulary is candidate-controlled and cannot relabel a failure. */
-export function retainedOutcome(evidence: CriterionEvidence): CriterionEvidence { return evidence; }
-
 /** Warm only pinned baseline code; checks share its immutable image seed. */
 export async function prepareEvaluatorCache(runDir: string, state: RunState, docker: string, signal?: AbortSignal): Promise<void> {
   const arm = Object.keys(state.arms).find(arm => state.evaluation?.mode !== "reuse" || !state.imported_arms?.[arm]);
@@ -229,14 +226,13 @@ export async function executeSemanticCheck(options: {
   const supervisorOutput = join(options.output, "supervisor");
   await mkdir(supervisorOutput, { recursive: true, mode: 0o700 });
   await rm(join(supervisorOutput, "result.json"), { force: true });
-  const resultUid = process.getuid?.() ?? 1000, resultGid = process.getgid?.() ?? 1000;
+  const resultUid = process.getuid?.() ?? 1000;
   const candidateUid = resultUid === 65534 ? 65533 : 65534;
   // Leave time to kill an unprivileged child and persist its protected record
   // before the host's outer container deadline. Short budgets retain 100ms.
   const executionBudget = Math.max(0.1, state.timeout_seconds - 2);
   await writeFile(harnessPath, JSON.stringify({ ...check,
     check_sha256: semanticCheckHash(check), candidate_uid: candidateUid, candidate_gid: candidateUid,
-    result_uid: resultUid, result_gid: resultGid,
     execution_timeout_seconds: executionBudget,
     case_timeout_seconds: Math.min(executionBudget, 120),
     preparation: options.state.criteria?.contract.preparation ?? "true",
@@ -274,8 +270,7 @@ export async function executeSemanticCheck(options: {
     command: JSON.stringify(check.command), started_at: started.toISOString(), elapsed_ms: result.elapsedMs,
     exit_code: result.timedOut || result.canceled ? -1 : result.exitCode, stdout: result.stdout, stderr: result.stderr,
   };
-  const outcome = checkOutcome(check, execution);
-  const evidence = options.retained ? retainedOutcome(outcome) : outcome;
+  const evidence = checkOutcome(check, execution);
   await writeFile(join(options.output, "evidence.json"), JSON.stringify(evidence, null, 2), { mode: 0o600 });
   return evidence;
 }

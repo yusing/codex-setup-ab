@@ -143,8 +143,6 @@ try {
     const manifest = { schema: "codex-ab.candidate-manifest.v1", base_commit: spec.base, base_tree: spec.tree,
       captured_tree: capturedTree, excluded_directories: [...excluded].sort(), files: captured, changed_files: changedFiles, patch_sha256: hash(patch) };
     await writeFile(join(output, "candidate-manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { flag: "wx" });
-    await writeFile(join(output, "result.json"), JSON.stringify({ changed_files: changedFiles, head_after_agent: head }), { flag: "wx" });
-    // The candidate mount is read-only. Reproducible caches are excluded, never deleted here.
-    await writeFile(join(output, "discarded-dependencies.json"), "[]\n", { flag: "wx" });
+    await writeFile(join(output, "result.json"), JSON.stringify({ head_after_agent: head }), { flag: "wx" });
   }
 } finally { await rm(scratch, { recursive: true, force: true }); }

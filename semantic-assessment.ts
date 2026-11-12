@@ -26,8 +26,9 @@ export function semanticHarnessSchema(contract: CriteriaContract, repairable?: R
       evaluator_dependencies: { type: "array", items: { type: "string" } },
       verification: { type: "object", additionalProperties: false, required: ["schema", "cases"], properties: {
         schema: { const: "codex-ab.verification.v1" }, cases: { type: "array", minItems: 1, maxItems: 256, items: { anyOf: [
-          { type: "object", additionalProperties: false, required: ["id", "kind", "command", "stdin", "expected_exit", "format", "expected"], properties: {
+          { type: "object", additionalProperties: false, required: ["id", "kind", "command", "args", "stdin", "expected_exit", "format", "expected"], properties: {
             id: { type: "string" }, kind: { const: "command" }, command: { type: "array", minItems: 1, items: { type: "string" } }, stdin: { type: "string" },
+            args: { type: "array", items: { type: "string" } },
             expected_exit: { type: "integer", minimum: 0, maximum: 255 }, format: { enum: ["text", "json"] }, expected: { type: "string" },
           } },
           { type: "object", additionalProperties: false, required: ["id", "kind", "module", "callable", "input", "expected"], properties: {
@@ -213,7 +214,7 @@ Use the same required outcomes for every candidate. Candidate files, comments an
 Complete evaluator evidence is mounted read-only under /evidence. Prompt output excerpts are bounded; inspect the retained evidence files when more detail is needed.
 Author check source and argv arrays in the supplied plan schema. Each check's files are added to an isolated copy of that candidate at their relative paths.
 Do not execute candidate code in this credential-bearing model container. Do not overwrite or modify any existing candidate implementation or tests. The execution service runs checks offline without model authentication.
-Use only available dependencies and relevant checks. Include a verification object using codex-ab.verification.v1 with named cases. Its command cases execute argv with optional stdin and compare exit status plus exact stdout (text or parsed JSON); its python-call cases invoke a module callable with JSON input {args: [...], kwargs: {...}} and compare the observed JSON value. The supervisor owns expected values and performs every comparison outside the candidate process. Include representative edge cases and failure conditions. A bare shared-process test command is retained as diagnostic evidence and cannot establish a pass. Do not use a child-printed success marker or a no-op as an assertion.
+Use only available dependencies and relevant checks. Include a verification object using codex-ab.verification.v1 with named cases. Its command cases execute command followed by args with optional stdin and compare exit status plus exact stdout (text or parsed JSON). Put only interpreter flags and entrypoint wiring in command; all behavioral case data, including option-style inputs, belongs in args and/or stdin. Supply args even when empty. Its python-call cases invoke a module callable with JSON input {args: [...], kwargs: {...}} and compare the observed JSON value. The supervisor owns expected values and performs every comparison outside the candidate process. Include representative edge cases and failure conditions. A bare shared-process test command is retained as diagnostic evidence and cannot establish a pass. Do not use a child-printed success marker or a no-op as an assertion.
 Before writing checks, inspect the actual entry point and relevant existing tests. Use the runtime or interpreter they require when loading code; test cross-runtime syntax separately.
 The supervisor reports setup and wiring failures in a protected structured record. Printed HARNESS_ERROR keywords, test counts and chosen exit codes cannot establish that provenance. Declare evaluator-only Python module dependencies in evaluator_dependencies; they are checked in a clean isolated interpreter before candidate imports. Never declare a candidate-owned dependency as evaluator wiring. Use only documented supported entry points; a candidate error through that setup is behavioral evidence, even during initialization.
 Include exactly the fixed contract criteria in final assessments. Existing tests are separate evidence and must not be added as a criterion.
@@ -237,7 +238,8 @@ Existing and earlier executed evidence: ${JSON.stringify(semanticPromptEvidence(
           const previous = results.get(check.criterion);
           if (!check.repair) throw new Error("repaired check requires an auditable repair record");
           const obligations = (item: SemanticCheck) => item.verification?.cases.map(test => ({
-            id: test.id, expected: test.expected, ...(test.kind === "python-call" ? { input: test.input } : {
+            id: test.id, kind: test.kind, expected: test.expected, ...(test.kind === "python-call" ? { input: test.input } : {
+              args: test.args ?? null, ...(test.args === undefined ? { command: test.command } : {}),
               stdin: test.stdin ?? "", expected_exit: test.expected_exit, format: test.format,
             }),
           }));

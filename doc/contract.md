@@ -476,6 +476,12 @@ judge attempt; historical failed attempts remain unchanged. The exception is an 
 New pair, trial, and suite reports use versioned v2 schemas. They expose execution
 status, capture identity, behavioral result, evaluation validity, usage observation
 validity, request coverage, and pricing precision as separate dimensions.
+Published `MANIFEST.sha256` files use `codex-ab.bundle-manifest.v2`: a version
+header followed by JSON file-identity rows. Each row binds the literal path,
+file kind/executable mode, size, and content hash; symlinks hash their literal
+targets without following them. Git metadata is excluded. Nested manifests are
+included, and only the current manifest excludes itself. Verification rejects
+older byte-only manifests, link-target changes, and executable-mode changes.
 `codex-ab.usage.v2` does not infer complete request coverage from plausible token
 counters or a well-formed session file. Counters must be finite, nonnegative safe
 integers; cached-input and reasoning-output relationships must also be valid.

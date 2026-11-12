@@ -1,4 +1,5 @@
-import fnmatch, hashlib, importlib, json, os, pathlib, resource, shutil, signal, subprocess, sys, tempfile, time, traceback
+import fnmatch, hashlib, importlib, json, os, pathlib, resource, selectors, shutil, signal, subprocess, sys, time, traceback
+from decimal import Decimal, DecimalException
 
 # This process only interprets data. Candidate code and authored shell commands
 # run in children with another UID, no capabilities, no credentials and no network.
@@ -30,8 +31,6 @@ def child_identity():
     capabilities = dict(line.split(':', 1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
     if any(int(capabilities.get(key, '0').strip(), 16) for key in ('CapEff', 'CapPrm', 'CapAmb')):
         raise RuntimeError('Candidate capabilities did not clear after dropping privileges')
-    # Candidate stdout cannot exhaust the supervisor's disk or memory.
-    resource.setrlimit(resource.RLIMIT_FSIZE, (4 * 1024 * 1024, 4 * 1024 * 1024))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 def run(command, cwd, stdin=''):
@@ -39,28 +38,63 @@ def run(command, cwd, stdin=''):
     if budget <= 0: finish('timeout', 'The evaluator exhausted its command execution time budget.')
     env = dict(os.environ)
     env.update(HOME='/tmp/candidate-home', TMPDIR='/tmp/candidate-tmp',
-               XDG_CACHE_HOME='/tmp/candidate-home/.cache', GOCACHE='/tmp/candidate-home/go-build',
-               BUN_INSTALL_CACHE_DIR='/tmp/candidate-home/bun-cache', PIP_CACHE_DIR='/tmp/candidate-home/pip-cache',
+               XDG_CACHE_HOME='/tmp/candidate-home/.cache', PIP_CACHE_DIR='/tmp/candidate-home/pip-cache',
                PYTHONDONTWRITEBYTECODE='1')
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-        process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE, stdout=out, stderr=err,
-                                   env=env, preexec_fn=child_identity, start_new_session=True, close_fds=True)
-        timed_out = False
-        try:
-            process.communicate(stdin.encode(), timeout=budget)
-        except subprocess.TimeoutExpired:
-            # The root supervisor retains CAP_KILL; child_identity clears all
-            # effective/permitted/ambient capabilities before candidate code.
-            try: os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError: pass
-            process.communicate()
-            timed_out = True
-        out.seek(0); err.seek(0)
-        stdout, stderr = out.read(4 * 1024 * 1024).decode(errors='replace'), err.read(4 * 1024 * 1024).decode(errors='replace')
-        sys.stdout.write(stdout); sys.stdout.flush()
-        sys.stderr.write(stderr); sys.stderr.flush()
-        if timed_out: finish('timeout', 'The candidate command exceeded its evaluator time budget.')
-        return process.returncode, stdout, stderr
+    process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               env=env, preexec_fn=child_identity, start_new_session=True, close_fds=True)
+    output = {'stdout': bytearray(), 'stderr': bytearray()}
+    pending, offset = stdin.encode(), 0
+    end = time.monotonic() + budget
+    timed_out = overflow = False
+    try:
+        with selectors.DefaultSelector() as streams:
+            for name, pipe in [('stdout', process.stdout), ('stderr', process.stderr)]:
+                os.set_blocking(pipe.fileno(), False)
+                streams.register(pipe, selectors.EVENT_READ, name)
+            if pending:
+                os.set_blocking(process.stdin.fileno(), False)
+                streams.register(process.stdin, selectors.EVENT_WRITE, 'stdin')
+            else: process.stdin.close()
+            while streams.get_map():
+                remaining = end - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                for key, _ in streams.select(remaining):
+                    if key.data == 'stdin':
+                        try: offset += os.write(key.fd, pending[offset:offset + 65536])
+                        except BrokenPipeError: offset = len(pending)
+                        if offset == len(pending):
+                            streams.unregister(key.fileobj)
+                            key.fileobj.close()
+                    else:
+                        data = os.read(key.fd, 65536)
+                        if not data:
+                            streams.unregister(key.fileobj)
+                            key.fileobj.close()
+                        else:
+                            room = 4 * 1024 * 1024 - len(output[key.data])
+                            output[key.data].extend(data[:room])
+                            if len(data) > room:
+                                overflow = True
+                                break
+                if overflow: break
+            if not (timed_out or overflow):
+                try: process.wait(timeout=max(0, end - time.monotonic()))
+                except subprocess.TimeoutExpired: timed_out = True
+    finally:
+        # Stop descendants as well, including after an otherwise normal exit.
+        # The root supervisor retains CAP_KILL; child_identity clears child caps.
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        process.wait()
+        for pipe in (process.stdin, process.stdout, process.stderr): pipe.close()
+    stdout, stderr = (output[name].decode(errors='replace') for name in ('stdout', 'stderr'))
+    sys.stdout.write(stdout); sys.stdout.flush()
+    sys.stderr.write(stderr); sys.stderr.flush()
+    if timed_out: finish('timeout', 'The candidate command exceeded its evaluator time budget.')
+    if overflow: finish('incomplete', 'The candidate command exceeded the 4 MiB per-stream observation limit.')
+    return process.returncode, stdout, stderr
 
 def identity(path):
     if path.is_symlink(): return ['link', os.readlink(path)]
@@ -75,9 +109,34 @@ def own(root):
     for path in [root, *root.rglob('*')]:
         os.chown(path, uid, gid, follow_symlinks=False)
 
+def prepare_cache(root, go=False):
+    if not root.is_dir(): return
+    # Directory ownership permits native additions/replacements without copying
+    # package payloads into the writable layer. Go's small action indexes also
+    # require in-place updates; sealed compiled payloads remain readable only.
+    for path in [root, *root.rglob('*')]:
+        mutable_index = go and path.is_file() and not (path.name.endswith('-d') or path.parent.name.endswith('-d'))
+        if not path.is_symlink() and (path.is_dir() or mutable_index):
+            os.chown(path, uid, gid, follow_symlinks=False)
+
 def strict_json(value):
     def invalid(value): raise ValueError('nonfinite JSON value')
-    return json.dumps(json.loads(value, parse_constant=invalid), sort_keys=True, separators=(',', ':'), allow_nan=False)
+    return json.loads(value, parse_int=Decimal, parse_float=Decimal, parse_constant=invalid)
+
+def equal_json(left, right):
+    if type(left) is not type(right): return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(equal_json(value, right[key]) for key, value in left.items())
+    if isinstance(left, list):
+        return len(left) == len(right) and all(equal_json(a, b) for a, b in zip(left, right))
+    return left == right
+
+def source_changes(baseline):
+    changes = []
+    for path, before in sorted(baseline.items()):
+        after = identity(workspace / path)
+        if after != before: changes.append(dict(path=path, before=before, after=after))
+    return json.dumps(dict(total=len(changes), changes=changes[:100])) if changes else None
 
 try:
     if os.geteuid() != 0 or uid == 0 or gid == 0:
@@ -87,6 +146,12 @@ try:
     harness_stat = pathlib.Path('/harness.json').stat()
     if harness_stat.st_uid == uid or (harness_stat.st_mode & 0o077):
         finish('executor_setup', 'Verifier expectations must be private to the supervisor.')
+    expected_values = []
+    for case in checks:
+        try:
+            expected_values.append(strict_json(case['expected']) if case.get('format', 'json') == 'json' else case['expected'])
+        except (ValueError, TypeError, DecimalException):
+            finish('evaluator_wiring', 'A verifier expectation is not supported JSON.')
     shutil.copytree(candidate, workspace, symlinks=True)
     own(workspace)
     for name in ('candidate-home', 'candidate-tmp'):
@@ -96,6 +161,8 @@ try:
     baseline = fingerprints(workspace)
     cache = pathlib.Path('/opt/task-deps/go-build')
     if cache.is_dir(): (cache / 'trim.txt').write_text(str(int(time.time())))
+    prepare_cache(pathlib.Path(os.environ.get('GOCACHE', '/opt/task-deps/go-build')), go=True)
+    prepare_cache(pathlib.Path(os.environ.get('BUN_INSTALL_CACHE_DIR', '/opt/task-deps/bun')))
     # Both dependency preparation and arbitrary test commands are unprivileged.
     code, _, _ = run(['sh', '-lc', harness.get('preparation', 'true')], workspace)
     if code: finish('candidate_error', 'Candidate preparation failed through the predetermined setup.', 1)
@@ -135,13 +202,13 @@ try:
     own(workspace)
     if not checks:
         code, _, _ = run(harness['command'], cwd)
-        changed = [path for path, value in baseline.items() if identity(workspace / path) != value]
-        if changed: finish('evaluator_wiring', 'Check modified candidate files: ' + json.dumps(changed[:100]))
+        changed = source_changes(baseline)
+        if changed: finish('evaluator_wiring', 'Check modified candidate files: ' + changed)
         if code: finish('candidate_error', 'Candidate or shared-process test command failed; output is evidence, not supervisor provenance.', 1)
         finish('incomplete', 'Legacy command exited zero without supervisor-owned assertions. Test output alone cannot attest completion.')
     failure_kind = None
-    for case in checks:
-        command, stdin = case.get('command'), case.get('stdin', '')
+    for index, case in enumerate(checks):
+        command, stdin = case.get('command', []) + case.get('args', []), case.get('stdin', '')
         if case['kind'] == 'python-call':
             # This helper reports an observed value only. All expected values and
             # assertions remain in the parent; a child success marker is ignored.
@@ -159,15 +226,15 @@ print(json.dumps(value,allow_nan=False))
         passed = code == wanted_code
         if passed:
             try:
-                if case.get('format', 'json') == 'json': passed = strict_json(stdout) == strict_json(case['expected'])
+                if case.get('format', 'json') == 'json': passed = equal_json(strict_json(stdout), expected_values[index])
                 else: passed = stdout == case['expected']
-            except (ValueError, TypeError): passed = False
+            except (ValueError, TypeError, DecimalException): passed = False
         record['cases'].append(dict(id=case['id'], status='pass' if passed else 'fail', exit_code=code,
                                     stdout=stdout, stderr=stderr))
         record['completed'] += 1
         if not passed: failure_kind = 'candidate_error' if code != wanted_code else failure_kind or 'assertion_failure'
-    changed = [path for path, value in baseline.items() if identity(workspace / path) != value]
-    if changed: finish('candidate_error', 'Candidate execution modified its source files: ' + json.dumps(changed[:100]), 1)
+    changed = source_changes(baseline)
+    if changed: finish('candidate_error', 'Candidate execution modified its source files: ' + changed, 1)
     finish(failure_kind or 'passed', 'Supervisor completed each required assertion.', 1 if failure_kind else 0)
 except FileNotFoundError as error:
     finish('evaluator_wiring', 'Executor could not find a configured command or input: ' + str(error))

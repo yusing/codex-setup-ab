@@ -9,7 +9,10 @@ export interface SemanticVerification {
 export type SemanticProbe = {
   id: string;
   kind: "command";
+  /** Interpreter and entrypoint wiring, separate from behavioral input arguments. */
   command: string[];
+  /** Frozen case data appended to command. Without this field, all argv is frozen. */
+  args?: string[];
   stdin?: string;
   expected_exit: number;
   format: "text" | "json";
@@ -60,6 +63,7 @@ export function validateVerification(value: unknown): SemanticVerification {
     ids.add(item.id);
     if (item.kind === "command") {
       if (!Array.isArray(item.command) || !item.command.length || !item.command.every(part => typeof part === "string" && part.length > 0) ||
+          (item.args !== undefined && (!Array.isArray(item.args) || !item.args.every(part => typeof part === "string"))) ||
           (item.stdin !== undefined && typeof item.stdin !== "string") || !Number.isSafeInteger(item.expected_exit) || item.expected_exit < 0 || item.expected_exit > 255 ||
           !["text", "json"].includes(item.format) || typeof item.expected !== "string") throw new Error("invalid command verification case");
       if (item.format === "json") json(item.expected, "expected");

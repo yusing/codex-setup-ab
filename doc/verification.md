@@ -26,7 +26,11 @@ and a 120-second per-command cap. Timed-out command output is retained.
 
 - `command`: run argv with optional text stdin; assert both the exit code and
   exact stdout. `format: "text"` compares exact text, including newlines.
-  `format: "json"` compares parsed JSON structurally.
+  `format: "json"` compares parsed JSON structurally, including equivalent numeric
+  spellings such as `1`, `1.0`, and `1e0`. Booleans are not numbers.
+  Put interpreter/entrypoint wiring in `command` and behavioral arguments,
+  including option-style inputs, in `args`; the executor appends `args` to
+  `command`. Case data may also be supplied in `stdin`.
 - `python-call`: import a documented module and invoke its callable in an
   unprivileged Python child. `input` is JSON text containing `args` and `kwargs`;
   `expected` is JSON text. The parent compares the observed JSON value. A library
@@ -39,6 +43,11 @@ claim an attested native function return against a deliberately reflective
 implementation that forges the same observable RPC value. It measures the
 declared external observations, with sensitive/incorrect checks constrained by
 frozen qualification controls.
+
+The supervisor bounds stdout and stderr independently to 4 MiB each, without
+limiting build artifacts or other child-created files. An extra byte stops the
+command process group and leaves the observation unassessed, including during
+preparation. A retained output prefix can never establish a passing assertion.
 
 Legacy `command` checks still execute and retain their output. A zero exit without
 supervisor assertions is **unassessed**, even if a test runner prints a passing
@@ -182,7 +191,11 @@ nonempty lists named `retained_inputs`, `retained_assertions`,
 `retained_edge_cases`, and `retained_failure_conditions`. The runner independently
 checks that ordered case IDs, inputs and expected values are unchanged. An
 interface/command adaptation may reach a different implementation without
-changing those obligations. Qualification repeats on the replacement. A previous
+changing those obligations. Command cases with an explicit `args` array can adapt
+their `command` wiring while preserving `args`, stdin, output, exit status, and
+format. Newly authored plans declare `args`, even when empty. A case originally
+missing `args` freezes its entire command; a repair cannot add `args` to unlock
+it. Case kinds are also frozen. Qualification repeats on the replacement. A previous
 behavioral failure cannot be cleared by a later passing assessment, including
 when importing a manually altered evidence history.
 

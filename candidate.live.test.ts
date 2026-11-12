@@ -66,12 +66,12 @@ liveTest("live capture preserves exact candidate files without executing hooks o
   expect(result.stderr).not.toContain("SyntaxError");
   expect(result.exitCode).toBe(0);
   expect(await readFile(victim, "utf8")).toBe("untouched");
-  expect(await Bun.file(join(capture, "discarded-dependencies.json")).json()).toEqual([]);
   expect(await Bun.file(join(repo, "plugins/node_modules/package")).exists()).toBe(true);
   expect(await Bun.file(join(repo, "hook-ran")).exists()).toBe(false);
-  const metadata = await Bun.file(join(capture, "result.json")).json();
-  expect(metadata.changed_files).toContain(unusual);
-  expect(metadata.changed_files).toContain("committed.txt");
+  const manifest = await readCandidateManifest(join(capture, "candidate-manifest.json"), join(capture, "changes.patch"));
+  expect(manifest.changed_files).toContain(unusual);
+  expect(manifest.changed_files).toContain("committed.txt");
+  expect(manifest.excluded_directories).toEqual(["plugins/node_modules/"]);
   const evaluator = join(root, "evaluator");
   await checked(["git", "clone", seed, evaluator]);
   const patch = join(capture, "changes.patch");
@@ -97,7 +97,7 @@ liveTest("live capture never follows an output symlink into the host filesystem"
 }, 30_000);
 
 
-liveTest("live dependency cleanup preserves tracked packages and redirected directories", async () => {
+liveTest("live dependency exclusions preserve tracked packages and redirected directories", async () => {
   await writeFile(join(repo, ".gitignore"), "node_modules/\n");
   await mkdir(join(repo, "tracked/node_modules"), { recursive: true });
   await writeFile(join(repo, "tracked/node_modules/source"), "keep");
@@ -108,7 +108,8 @@ liveTest("live dependency cleanup preserves tracked packages and redirected dire
   await symlink("../outside/node_modules", join(repo, "redirected/node_modules"));
   const result = await inspect("capture", false, ["tracked/node_modules/", "redirected/node_modules/", "../../node_modules/"]);
   expect(result.exitCode, result.stderr).toBe(0);
-  expect(await Bun.file(join(capture, "discarded-dependencies.json")).json()).toEqual([]);
+  const manifest = await readCandidateManifest(join(capture, "candidate-manifest.json"), join(capture, "changes.patch"));
+  expect(manifest.files.some(file => file.path === "tracked/node_modules/source")).toBe(true);
   expect(await Bun.file(join(repo, "tracked/node_modules/source")).text()).toBe("keep");
   expect(await Bun.file(join(repo, "outside/node_modules/package")).text()).toBe("keep");
 }, 30_000);

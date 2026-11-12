@@ -10,7 +10,7 @@ import type { RunState } from "./types";
 
 const source = process.env.CODEX_AB_LIVE_DEPENDENCY_SOURCE;
 const liveTest = process.env.CODEX_AB_LIVE_DOCKER === "1" && source ? test : test.skip;
-liveTest("real workload reuses dependency image offline with isolated writes and a small corpus", async () => {
+liveTest("real workload reuses dependency image offline with isolated writes and excluded capture caches", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-deps-live-"));
   const docker = process.env.CODEX_AB_DOCKER_BIN ?? "docker";
   const image = process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:0.1.0";
@@ -18,6 +18,7 @@ liveTest("real workload reuses dependency image offline with isolated writes and
     await mkdir(join(root, "artifacts"));
     await checked(["git", "clone", "--depth=1", "--no-local", source!, join(root, "repo")]);
     await checked(["git", "-C", join(root, "repo"), "remote", "remove", "origin"]);
+    await checked(["git", "clone", "--bare", "--no-hardlinks", join(root, "repo"), join(root, "seed.git")]);
     const baseImage = (await checked([docker, "image", "inspect", "--format", "{{.Id}}", image])).stdout.trim();
     const state = {
       image_id: baseImage, operator: { uid: 1000, gid: 1000 },
@@ -41,28 +42,33 @@ liveTest("real workload reuses dependency image offline with isolated writes and
     expect(a.exitCode, a.stderr).toBe(0);
     const b = await run("sibling", ["-v", `${join(root, "repo-b")}:/workspace`, "-v", `${join(root, "home-b")}:/home/ubuntu`], `${state.criteria!.contract.preparation} && test ! -e /opt/task-deps/bun/private-write`);
     expect(b.exitCode, b.stderr).toBe(0);
-    const before = Number((await checked(["du", "-sb", root])).stdout.split(/\s/)[0]);
+    await mkdir(join(root, "captures"));
     for (const repo of ["repo", "repo-b"]) {
       const path = join(root, repo);
       const directories = await generatedDependencyDirectories(path);
       expect(directories).toContain("plugins/node_modules/");
-      const capture = join(root, `capture-${repo}`);
+      const capture = join(root, "captures", repo);
       await mkdir(capture);
       const captured = await runOwnedContainer({ docker, name: `codex-ab-deps-live-${process.pid}-capture-${repo}`,
-        createArgs: ["--network", "none", "-v", `${path}:/workspace`, "-v", `${capture}:/capture`,
+        createArgs: ["--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-v", `${path}:/workspace:ro`,
+          "-v", `${join(root, "seed.git")}:/seed.git:ro`, "-v", `${capture}:/capture`,
           dependencyImage(state), "bun", "-e", candidateSource,
           JSON.stringify({ mode: "capture", baseline: false, clean: false, base: state.source.base_commit,
             tree: state.source.base_tree, forbidden: "0".repeat(40), icons: false, submodules: [], discardDependencies: directories })] });
       expect(captured.exitCode, captured.stderr).toBe(0);
-      expect(await Bun.file(join(capture, "discarded-dependencies.json")).json()).toEqual(directories);
+      const manifest = await Bun.file(join(capture, "candidate-manifest.json")).json();
+      expect(manifest.excluded_directories).toEqual(directories);
+      expect(manifest.files.some((file: { path: string }) => directories.some(directory => file.path.startsWith(directory)))).toBe(false);
+      expect(await generatedDependencyDirectories(path)).toEqual(directories);
     }
     const grader = await run("grader", ["--read-only", "--tmpfs", "/tmp:exec,size=4g,mode=1777", "-e", "GOCACHE=/tmp/go-build", "-e", "GOPROXY=off", "-e", "GOSUMDB=off"],
       `${preparation} && test ! -e /opt/task-deps/bun/private-write && go test ./internal/router/toolplugin`);
     expect(grader.exitCode, grader.stderr).toBe(0);
-    const bytes = Number((await checked(["du", "-sb", root])).stdout.split(/\s/)[0]);
-    expect(bytes).toBeLessThan(1_000_000_000);
-    await writeFile(join(root, "artifacts/measurement.json"), JSON.stringify({ bytes, dependency_image: first }));
-    console.log(`dependency fixture corpus: ${before} bytes before cleanup, ${bytes} retained bytes; shared image ${first!.image_id}`);
+    const captureBytes = Number((await checked(["du", "-sb", join(root, "captures")])).stdout.split(/\s/)[0]);
+    const workspaceBytes = (await checked(["du", "-sb", join(root, "repo"), join(root, "repo-b")])).stdout.split("\n").filter(Boolean)
+      .reduce((total, line) => total + Number(line.split(/\s/)[0]), 0);
+    await writeFile(join(root, "artifacts/measurement.json"), JSON.stringify({ capture_bytes: captureBytes, workspace_bytes: workspaceBytes, dependency_image: first }));
+    console.log(`dependency fixture: ${captureBytes} capture-artifact bytes, ${workspaceBytes} retained workspace bytes; shared image ${first!.image_id}`);
   } catch (error) {
     const log = Bun.file(join(root, "artifacts/dependencies.stderr"));
     if (await log.exists()) console.error(await log.text());

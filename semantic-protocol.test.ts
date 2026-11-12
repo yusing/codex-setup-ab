@@ -23,6 +23,7 @@ test("verification schema rejects zero cases, unsafe fields and invalid observat
     { ...check.verification, cases: [{ ...check.verification!.cases[0], expected: "1e400" }] },
     { ...check.verification, cases: [{ ...check.verification!.cases[0], module: "../../module" }] },
     { ...check.verification, cases: [{ id: "command", kind: "command", command: ["true"], expected_exit: -1, format: "text", expected: "" }] },
+    { ...check.verification, cases: [{ id: "command", kind: "command", command: ["true"], args: [3], expected_exit: 0, format: "text", expected: "" }] },
     { ...check.verification, cases: [check.verification!.cases[0], check.verification!.cases[0]] }]) {
     expect(() => validateVerification(verification)).toThrow();
   }

@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, isAbsolute } from "node:path";
+import { pathToFileURL } from "node:url";
 import { checked } from "./process";
+import { initializeSubmodules } from "./prepare";
 import { executeSemanticCheck, type CriterionEvidence, type SemanticCheck } from "./semantic";
 import { semanticCheckHash } from "./semantic-protocol";
 import type { RunState } from "./types";
@@ -96,9 +98,11 @@ export async function qualifySemanticCheck(options: {
     for (const control of controls.cases.filter(item => item.expected[check.criterion])) {
       const root = join(options.output, control.id);
       const tree = join(root, "candidate");
-      await mkdir(tree, { recursive: true, mode: 0o700 });
-      await checked(["git", "--git-dir", join(options.runDir, "seed.git"), "archive", "--format=tar", "-o", join(root, "baseline.tar"), state.source.base_commit]);
-      await checked(["tar", "-xf", join(root, "baseline.tar"), "-C", tree]);
+      await mkdir(root, { recursive: true, mode: 0o700 });
+      await checked(["git", "init", tree]);
+      await checked(["git", "-C", tree, "fetch", "--no-tags", "--depth=1", pathToFileURL(join(options.runDir, "seed.git")).href, state.source.base_commit]);
+      await checked(["git", "-C", tree, "checkout", "--detach", state.source.base_commit]);
+      await initializeSubmodules(tree, state.submodules ?? []);
       if (control.base === "reference") {
         const pin = state.upstream_reference?.files.find(item => item.path.endsWith("/changes.patch"));
         if (!pin) throw new Error("reference qualification requires a pinned upstream reference");
@@ -147,7 +151,6 @@ export async function qualifySemanticCheck(options: {
       // Frozen criteria/reference identities plus execution evidence are retained.
       // Avoid publishing a redundant complete repository for every control/check.
       await rm(tree, { recursive: true, force: true });
-      await rm(join(root, "baseline.tar"));
     }
     const complete = ["reference", "alternative", "baseline", "negative"].every(role => record.results.some(item => item.role === role)) &&
       record.results.some(item => item.role === "reference" && item.expected === "pass") &&

@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { executeSemanticCheck, prepareEvaluatorCache } from "./semantic";
@@ -161,6 +161,143 @@ liveTest("supervisor assertions resist early zero exit, spoofed output and candi
     expect(cli.status).toBe("pass");
   } finally { await rm(root, { recursive: true, force: true }); }
 }, 180_000);
+
+liveTest("supervisor reuses seeded Bun and Go caches with isolated unprivileged writes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "supervisor-cache-"));
+  const tag = `codex-ab-cache-fixture:${crypto.randomUUID()}`;
+  const docker = process.env.CODEX_AB_DOCKER_BIN ?? "docker";
+  let retainedImage = false;
+  let server: ReturnType<typeof Bun.serve> | undefined;
+  try {
+    const project = join(root, "project"), candidate = join(root, "candidate");
+    const pkg = join(root, "package"); await mkdir(pkg); await mkdir(project);
+    await writeFile(join(pkg, "package.json"), '{"name":"verifier-cache-fixture","version":"1.0.0","main":"index.js"}');
+    await writeFile(join(pkg, "index.js"), 'module.exports = "seeded dependency";\n');
+    const tarball = join(root, "package.tgz");
+    await checked(["tar", "-czf", tarball, "-C", root, "package"]);
+    server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      if (new URL(request.url).pathname.endsWith(".tgz")) return new Response(Bun.file(tarball));
+      return Response.json({ name: "verifier-cache-fixture", "dist-tags": { latest: "1.0.0" }, versions: {
+        "1.0.0": { name: "verifier-cache-fixture", version: "1.0.0", dist: { tarball: `http://127.0.0.1:${server!.port}/package.tgz` } },
+      } });
+    } });
+    await writeFile(join(project, "package.json"), '{"dependencies":{"verifier-cache-fixture":"1.0.0"}}');
+    await writeFile(join(project, ".npmrc"), `registry=http://127.0.0.1:${server.port}\n`);
+    const owner = `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`;
+    const seed = await containers.runOwnedContainer({ docker, name: `supervisor-cache-seed-${process.pid}`, timeoutMs: 60_000,
+      snapshotImage: tag, snapshotUser: owner,
+      createArgs: ["--network", "host", "--user", "0:0", "-e", "GOCACHE=/opt/task-deps/go-build", "-e", "BUN_INSTALL_CACHE_DIR=/opt/task-deps/bun",
+        "-v", `${project}:/seed-project`, process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:0.1.0", "sh", "-c",
+        `set -eu; mkdir -p /opt/task-deps/bun /opt/task-deps/go-build/00; chown -R ${owner} /opt/task-deps/bun /opt/task-deps/go-build; cd /seed-project; `
+        + `setpriv --reuid=${owner.split(":")[0]} --regid=${owner.split(":")[1]} --clear-groups bun install --registry http://127.0.0.1:${server.port}; `
+        + `printf payload > "$GOCACHE/00/seed-d"; chmod 444 "$GOCACHE/00/seed-d"; `
+        + `printf index > "$GOCACHE/00/seed-a"; chown ${owner} "$GOCACHE/00/seed-a"; chmod 600 "$GOCACHE/00/seed-a"`] });
+    retainedImage = !!seed.snapshotImageId;
+    expect(seed.exitCode, seed.stderr).toBe(0);
+    await rm(join(project, "node_modules"), { recursive: true });
+    await cp(project, candidate, { recursive: true });
+    server.stop(true); server = undefined;
+    const state = { id: `cache-${process.pid}`, timeout_seconds: 30, resource_limits: { cpus: "1", memory: "1g" }, image: seed.snapshotImageId!,
+      criteria: { contract: { preparation: "bun install --frozen-lockfile --offline" } } } as RunState;
+    for (const name of ["first", "second"]) {
+      const command = 'test "$GOCACHE" = /opt/task-deps/go-build && test "$BUN_INSTALL_CACHE_DIR" = /opt/task-deps/bun '
+        + '&& test -r "$GOCACHE/00/seed-d" && test ! -w "$GOCACHE/00/seed-d" && test -w "$GOCACHE/00/seed-a" '
+        + '&& test ! -e "$GOCACHE/cross-check" && test ! -e "$BUN_INSTALL_CACHE_DIR/cross-check" '
+        + '&& bun -e \'console.log(require("verifier-cache-fixture"))\''
+        + (name === "first" ? ' && touch "$GOCACHE/cross-check" "$BUN_INSTALL_CACHE_DIR/cross-check"' : "");
+      const evidence = await executeSemanticCheck({ runDir: root, state, candidate, output: join(root, name), name: `supervisor-cache-${process.pid}-${name}`, docker,
+        check: { criterion: "cache", files: [], command: ["true"], rationale: "Seed payloads are reused with private writable cache state.",
+          verification: { schema: "codex-ab.verification.v1", cases: [{ id: "cache", kind: "command", command: ["sh", "-c", command], expected_exit: 0, format: "text", expected: "seeded dependency\n" }] } } });
+      expect(evidence.status, evidence.execution?.stderr).toBe("pass");
+    }
+  } finally {
+    server?.stop(true);
+    if (retainedImage) await checked([docker, "image", "rm", tag]);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 90_000);
+
+liveTest("supervisor compares parsed JSON values rather than numeric spellings or Python bool coercions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "supervisor-json-"));
+  try {
+    const candidate = join(root, "candidate"); await mkdir(candidate);
+    const state = { id: `json-${process.pid}`, timeout_seconds: 30, resource_limits: { cpus: "1", memory: "1g" },
+      image: process.env.CODEX_AB_VERIFIER_IMAGE ?? "python:3.13-slim" } as RunState;
+    const cases = [
+      ["numbers", '{"a":[1.0,-0.0,1e0],"b":null}', '{"b":null,"a":[1,0,1]}', "pass"],
+      ["boolean", '{"a":[true]}', '{"a":[1]}', "fail"],
+      ["string", '"1"', "1", "fail"],
+      ["array-order", "[1,2]", "[2,1]", "fail"],
+      ["key-set", '{"a":1}', '{"b":1}', "fail"],
+      ["nonfinite", "NaN", "null", "fail"],
+      ["huge-exponent", "1e999999999999999999999999", "0", "fail"],
+    ] as const;
+    for (const [name, observed, expected, status] of cases) {
+      const evidence = await executeSemanticCheck({ runDir: root, state, candidate, output: join(root, name), name: `supervisor-json-${process.pid}-${name}`, docker: "docker",
+        check: { criterion: "json", files: [], command: ["true"], rationale: "JSON observations retain structural and numeric semantics.",
+          verification: { schema: "codex-ab.verification.v1", cases: [{ id: name, kind: "command", command: ["python3", "-c", "import sys; print(sys.argv[1])"], args: [observed], expected_exit: 0, format: "json", expected }] } } });
+      expect(evidence.status).toBe(status);
+    }
+    const unsupported = await executeSemanticCheck({ runDir: root, state, candidate, output: join(root, "unsupported-expectation"),
+      name: `supervisor-json-${process.pid}-unsupported-expectation`, docker: "docker",
+      check: { criterion: "json", files: [], command: ["true"], rationale: "Unsupported expectations are evaluator wiring, not candidate failures.",
+        verification: { schema: "codex-ab.verification.v1", cases: [{ id: "unsupported", kind: "command", command: ["printf", "0"], expected_exit: 0, format: "json", expected: "1e999999999999999999999999" }] } } });
+    expect(unsupported.status).toBe("unassessed");
+    expect(unsupported.execution?.verifier).toMatchObject({ status: "evaluator_wiring", completed: 0 });
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 60_000);
+
+liveTest("supervisor bounds observation streams without capping build files or blocking large stdin", async () => {
+  const root = await mkdtemp(join(tmpdir(), "supervisor-streams-"));
+  const limit = 4 * 1024 * 1024;
+  try {
+    const candidate = join(root, "candidate"); await mkdir(candidate);
+    const state = { id: `streams-${process.pid}`, timeout_seconds: 20, resource_limits: { cpus: "1", memory: "1g" },
+      image: process.env.CODEX_AB_VERIFIER_IMAGE ?? "python:3.13-slim",
+      criteria: { contract: { preparation: "python3 -c \"open('/tmp/prepared-artifact', 'wb').write(b'x' * (5 * 1024 * 1024))\"" } } } as RunState;
+    const run = (name: string, script: string, expected: string, stdin = "") => executeSemanticCheck({ runDir: root, state, candidate,
+      output: join(root, name), name: `supervisor-streams-${process.pid}-${name}`, docker: "docker",
+      check: { criterion: "streams", files: [], command: ["true"], rationale: "Resource bounds apply to observation streams, not legitimate build artifacts.",
+        verification: { schema: "codex-ab.verification.v1", cases: [{ id: name, kind: "command", command: ["python3", "-c", script], stdin, expected_exit: 0, format: "text", expected }] } } });
+    expect((await run("artifact", "import pathlib; p=pathlib.Path('/tmp/build-artifact'); p.write_bytes(b'x'*(5*1024*1024)); print(p.stat().st_size)", "5242880\n")).status).toBe("pass");
+    expect((await run("stdin", "import sys; print(len(sys.stdin.read()))", "5242880\n", "x".repeat(5 * 1024 * 1024))).status).toBe("pass");
+    expect((await run("exact", `import sys; sys.stdout.write('x'*${limit})`, "x".repeat(limit))).status).toBe("pass");
+    for (const stream of ["stdout", "stderr"]) {
+      const evidence = await run(`overflow-${stream}`, `import subprocess,sys; subprocess.Popen(['sleep','60']); sys.${stream}.write('x'*${limit + 1}); sys.${stream}.flush()`, stream === "stdout" ? "x".repeat(limit) : "");
+      expect(evidence.status).toBe("unassessed");
+      expect(evidence.execution?.verifier?.status).toBe("incomplete");
+      expect(evidence.execution?.[stream]).toHaveLength(limit);
+      expect(evidence.execution?.elapsed_ms).toBeLessThan(15_000);
+    }
+    state.criteria!.contract.preparation = `python3 -c "print('x'*${limit + 1})"`;
+    expect((await run("preparation-overflow", "print('unreached')", "unreached\n")).execution?.verifier?.status).toBe("incomplete");
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 90_000);
+
+liveTest("source mutation diagnostics retain identities and the full changed-path count", async () => {
+  const root = await mkdtemp(join(tmpdir(), "supervisor-mutations-"));
+  try {
+    const candidate = join(root, "candidate"); await mkdir(candidate);
+    for (let i = 0; i < 101; i++) await writeFile(join(candidate, `file-${i}`), "original\n");
+    await symlink("file-0", join(candidate, "a-link"));
+    await writeFile(join(candidate, "b-deleted"), "original\n");
+    const state = { id: `mutations-${process.pid}`, timeout_seconds: 20, resource_limits: { cpus: "1", memory: "1g" },
+      image: process.env.CODEX_AB_VERIFIER_IMAGE ?? "python:3.13-slim" } as RunState;
+    const evidence = await executeSemanticCheck({ runDir: root, state, candidate, output: join(root, "out"), name: `supervisor-mutations-${process.pid}`, docker: "docker",
+      check: { criterion: "mutation", files: [{ path: "authored.py", source: "# authored additions are not original source\n" }], command: ["true"], rationale: "Original-source mutation remains diagnosed.",
+        verification: { schema: "codex-ab.verification.v1", cases: [{ id: "mutate", kind: "command", command: ["python3", "-c", "import pathlib; link=pathlib.Path('a-link'); link.unlink(); link.symlink_to('file-1'); pathlib.Path('b-deleted').unlink(); [p.write_text('changed') for p in pathlib.Path('.').glob('file-*')]"], expected_exit: 0, format: "text", expected: "" }] } } });
+    expect(evidence.status).toBe("fail");
+    const detail = evidence.execution!.verifier!.detail;
+    const diagnostics = JSON.parse(detail.slice(detail.indexOf("{")));
+    expect(diagnostics.total).toBe(103);
+    expect(diagnostics.changes).toHaveLength(100);
+    expect(diagnostics.changes[0]).toEqual({ path: "a-link", before: ["link", "file-0"], after: ["link", "file-1"] });
+    expect(diagnostics.changes[1]).toMatchObject({ path: "b-deleted", after: null });
+    expect(diagnostics.changes[2]).toMatchObject({ path: "file-0", before: ["file", expect.stringMatching(/^[a-f0-9]{64}$/), expect.any(Number)],
+      after: ["file", expect.stringMatching(/^[a-f0-9]{64}$/), expect.any(Number)] });
+    expect(diagnostics.changes[2].before[1]).not.toBe(diagnostics.changes[2].after[1]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+}, 30_000);
 
 liveTest("supervisor kills a zero-capability candidate and retains timeout before the outer deadline", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-verifier-timeout-"));

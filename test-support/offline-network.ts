@@ -1,4 +1,8 @@
 /** Ordinary tests may use their local HTTP fixtures, never external fetches. */
+// Git fixtures must not inherit operator signing, hooks, filters or other config.
+process.env.GIT_CONFIG_NOSYSTEM = "1";
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+
 function loopbackUrl(input: string | URL | Request): URL {
   const url = new URL(input instanceof Request ? input.url : input);
   const hostname = url.hostname.toLowerCase();

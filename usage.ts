@@ -468,7 +468,6 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
     for (const attempt of exchange.provider_attempts) {
       if (!isObject(attempt)) return `${label} has an invalid provider attempt`;
       const counts = providerAttemptUsage(attempt);
-      if (counts === "none") continue;
       if (!counts) return `${label} has a provider attempt without complete usage`;
       const { input_tokens: input, cached_input_tokens: cached, output_tokens: output, reasoning_tokens: reasoning } = counts;
       const model = typeof attempt.model === "string" && attempt.model ? attempt.model : null;

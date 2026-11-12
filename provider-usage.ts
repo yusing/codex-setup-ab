@@ -27,7 +27,7 @@ export function mekugiMetricRuntimes(metrics: unknown): Array<{ capture?: string
  * Read provider counts only when recorded. A failed request can still be billable;
  * absence of usage never proves zero. Explicit all-zero counters remain valid.
  */
-export function providerAttemptUsage(attempt: unknown): ProviderAttemptUsage | "none" | null {
+export function providerAttemptUsage(attempt: unknown): ProviderAttemptUsage | null {
   if (!isObject(attempt)) return null;
   const recorded = isObject(attempt.usage) ? attempt.usage : {};
   const coverage = ["complete_attempts", "incomplete_attempts", "unknown_attempts", "missing_attempts"];
