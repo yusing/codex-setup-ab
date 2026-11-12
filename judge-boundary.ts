@@ -4,8 +4,14 @@ import { runOwnedContainer } from "./container";
 import reader from "./judge-reader.mjs" with { type: "text" };
 import type { RunState } from "./types";
 
-/** Feature semantics reviewed against openai/codex rust-v0.154.0. */
-export const JUDGE_DISABLED_FEATURES = ["shell_tool", "unified_exec", "code_mode", "multi_agent", "multi_agent_v2", "apps", "plugins", "hooks", "view_image"] as const;
+/**
+ * rust-v0.154.0 tools/spec_plan.rs add_shell_tools returns before registering
+ * either executor when ShellTool is false. UnifiedExec only selects persistent
+ * versus one-shot execution; only managed requirements can keep it disabled.
+ * Pinned source blob: 01054b1b504811a5fee21d6bc083c1f5117d52ea.
+ */
+export const JUDGE_DISABLED_FEATURES = ["shell_tool", "code_mode", "code_mode_host", "multi_agent", "multi_agent_v2", "apps", "plugins", "hooks", "view_image",
+  "computer_use", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "image_generation"] as const;
 export function sourceJudgeConfig(base: string): string {
   return base.replace('sandbox_mode = "danger-full-access"', 'sandbox_mode = "read-only"').replace('\n[projects.', '\nweb_search = "disabled"\n[projects.')
     + '\n[features]\n' + JUDGE_DISABLED_FEATURES.map(key => `${key} = false`).join("\n")
@@ -16,7 +22,9 @@ export async function prepareJudgeReader(root: string): Promise<string> {
 }
 export function assertJudgeFeatures(output: string): void {
   for (const key of JUDGE_DISABLED_FEATURES) {
-    if (!new RegExp(`^${key}\\s+.*\\sfalse\\s*$`, "m").test(output)) throw new Error(`source judge runtime did not prove ${key}=false; inference is blocked`);
+    const rows = output.split(/\r?\n/).filter(line => new RegExp(`^${key}(?:[ \\t]|$)`).test(line));
+    if (rows.length !== 1 || !new RegExp(`^${key}[ \\t]+(?:stable|under development|experimental|deprecated|removed)[ \\t]+false[ \\t]*$`).test(rows[0]!))
+      throw new Error(`source judge runtime did not prove ${key}=false; inference is blocked`);
   }
 }
 /** No credentials, candidate code, or model calls in capability qualification. */

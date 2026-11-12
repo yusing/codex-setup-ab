@@ -44,6 +44,12 @@ export async function prepareFlaskQualificationRun(source: string, root: string,
   const reference = await snapshotUpstreamReference(root, source, pin);
   const candidate = join(root, "evaluator/stock");
   await mkdir(candidate, { recursive: true });
+  // This fixture uses per-arm cache mounts instead of a dependency_image.
+  // Create their bind sources as the host operator before Docker can create
+  // root-owned parent directories that would prevent fixture cleanup.
+  for (const cache of ["grader-go-pkg-cache", "grader-bun-cache"]) {
+    await mkdir(join(root, "arms/stock", cache), { recursive: true });
+  }
   await checked(["tar", "-xf", join(root, "baseline.tar"), "-C", candidate]);
   await checked(["git", "-C", candidate, "apply", "--binary", join(root, "evaluator/upstream/changes.patch")]);
   await mkdir(join(root, "control"), { recursive: true });

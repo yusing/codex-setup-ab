@@ -223,7 +223,7 @@ CODEX_AB_LIVE_DOCKER=1 CODEX_AB_VERIFIER_IMAGE=codex-ab:model-free \
 
 The source-judge live test uses the pinned Codex CLI and a local Responses mock
 inside a container with networking disabled. It inspects the tools actually
-advertised to the provider without supplying credentials or purchasing model
+advertised to the provider without supplying real provider credentials or purchasing model
 output. Its allowlist includes the reader and native utility tools. Native
 `apply_patch` remains registered: read-only/never policy denies writes before
 diff emission or patch execution, but verification reads can still expose a
@@ -231,3 +231,11 @@ path-existence or guessed-context oracle beyond the broker's roots. This is
 not a claim that all native reads are confined to the broker. Generic process
 execution, code mode, delegation, plugins, apps, hooks, and image tools are
 disabled for the pinned source judge.
+
+Shell execution is disabled through `shell_tool=false`. In Codex CLI 0.154.0,
+`unified_exec` remains enabled under ordinary configuration; it chooses the
+execution variant and is not an execution-denial gate. The pinned
+[tool registration](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/core/src/tools/spec_plan.rs)
+returns before registering either shell variant when `shell_tool` is disabled.
+Qualification requires that master flag to remain false, and the live provider
+mock rejects any advertised process-execution tools.

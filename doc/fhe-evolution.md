@@ -119,8 +119,8 @@ Validation on the completed local implementation (Bun 1.4.4):
 | `bun run build` | Passed; standalone CLI compiled. |
 | `git diff --check` | Passed. |
 | Real Flask source observations | All four expected control outcome pairs matched; original pytest diagnostics are listed above. |
-| New model-free Docker CI gate | Implemented, **not executed** in this workspace: Docker is unavailable. |
-| GitHub publication | Blocked: the connected integration returned HTTP 403, `Resource not accessible by integration`, on a minimal blob write. No branch or PR was created. |
+| Model-free Docker CI gate | Runs in GitHub Actions; [PR #1 checks](https://github.com/yusing/codex-setup-ab/pull/1/checks) record the results. Docker is unavailable in the implementation workspace. |
+| GitHub publication | Write access restored; published as [draft PR #1](https://github.com/yusing/codex-setup-ab/pull/1). The initial published tree exactly matches the locally tested implementation. |
 
 The 28 local skips explicitly include Docker, live Mekugi, original-task/cache
 fixtures, and the host-specific Code Mode companion. They are not successful

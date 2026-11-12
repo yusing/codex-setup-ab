@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { prepareSemanticAssessment, validateCriterionAssessments } from "./semantic-assessment";
@@ -15,6 +15,11 @@ liveTest("actual Flask task qualifies reference, baseline, negative source mutat
   try {
     const image = (await checked(["docker", "image", "inspect", "--format", "{{.Id}}", process.env.CODEX_AB_VERIFIER_IMAGE ?? "codex-ab:model-free"])).stdout.trim();
     const state = await prepareFlaskQualificationRun(source!, root, image);
+    for (const cache of ["grader-go-pkg-cache", "grader-bun-cache"]) {
+      const directory = await stat(join(root, "arms/stock", cache));
+      expect(directory.isDirectory()).toBe(true);
+      expect(directory.uid).toBe(process.getuid!());
+    }
     const checks = flaskQualificationChecks(state.criteria!.contract);
     const stages: string[] = [];
     const evidence = await prepareSemanticAssessment({ runDir: root, state, contract: state.criteria!.contract,

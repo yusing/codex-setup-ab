@@ -33,8 +33,9 @@ liveTest("pinned source judge disables execution flags and its broker restricts 
 },60_000);
 
 // SSE fixtures follow openai/codex rust-v0.154.0 core/tests/common/responses.rs.
-// Only the provider endpoint/auth requirement changes; the production OpenAI
-// provider identity, bundled model catalog, judge config and broker stay intact.
+// A named loopback provider is required: this pinned CLI rejects overrides of
+// reserved builtin provider IDs. The pinned model, judge config and broker stay
+// intact, and every actually advertised tool is checked against the allowlist.
 const mockProvider = String.raw`
 import { createServer } from 'node:http';
 import { execFileSync, spawn } from 'node:child_process';
@@ -66,14 +67,15 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const port = server.address().port;
 const version = execFileSync('codex', ['--version'], {encoding:'utf8'}).trim();
 const args = ['exec','--json','--color','never','--skip-git-repo-check','--model','gpt-6.1-sol',
-  '-c','model_providers.openai.name="OpenAI"',
-  '-c','model_providers.openai.base_url="http://127.0.0.1:'+port+'/v1"',
-  '-c','model_providers.openai.wire_api="responses"',
-  '-c','model_providers.openai.requires_openai_auth=false',
-  '-c','model_providers.openai.supports_websockets=false',
-  '-c','model_providers.openai.request_max_retries=0',
-  '-c','model_providers.openai.stream_max_retries=0','-'];
-const child = spawn('codex', args, {cwd:'/workspace',env:{PATH:process.env.PATH,HOME:'/home/ubuntu',CODEX_HOME:'/home/ubuntu/.codex',LANG:'C.UTF-8'},stdio:['pipe','pipe','pipe']});
+  '-c','model_provider="fixture"',
+  '-c','model_providers.fixture.name="Loopback boundary fixture"',
+  '-c','model_providers.fixture.base_url="http://127.0.0.1:'+port+'/v1"',
+  '-c','model_providers.fixture.wire_api="responses"',
+  '-c','model_providers.fixture.requires_openai_auth=false',
+  '-c','model_providers.fixture.supports_websockets=false',
+  '-c','model_providers.fixture.request_max_retries=0',
+  '-c','model_providers.fixture.stream_max_retries=0','-'];
+const child = spawn('codex', args, {cwd:'/workspace',env:{PATH:process.env.PATH,HOME:'/home/ubuntu',CODEX_HOME:'/home/ubuntu/.codex',TMPDIR:process.env.TMPDIR ?? '/tmp',LANG:'C.UTF-8'},stdio:['pipe','pipe','pipe']});
 let stdout = '', stderr = '';
 child.stdout.on('data', chunk => {stdout += chunk;});
 child.stderr.on('data', chunk => {stderr += chunk;});

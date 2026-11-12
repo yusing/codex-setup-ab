@@ -42,6 +42,6 @@ liveTest("separate arm networks deny peer DNS and direct IPv4 and IPv6 connectio
   for (const network of [a,...(b ? [b] : [])]) {
     const absent=await exec([docker,"network","inspect",network.name]);
     expect(absent.exitCode).not.toBe(0);
-    expect(absent.stderr.toLowerCase()).toContain("no such network");
+    expect(absent.stderr.toLowerCase()).toMatch(/no such network|network .+ not found/);
   }
 },30_000);

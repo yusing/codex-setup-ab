@@ -145,7 +145,13 @@ beforeAll(async () => {
   home = await fixtureHome();
 });
 
-afterAll(async () => { process.env.PATH = originalPath; await rm(root, { recursive: true, force: true }); });
+// This file retains every prepared run, cloned repository, and evidence bundle
+// until all orchestration tests finish. CI can need more than Bun's default 5s
+// hook budget to unlink that accumulated tree; only teardown gets extra time.
+afterAll(async function removeRunnerFixtures() {
+  process.env.PATH = originalPath;
+  await rm(root, { recursive: true, force: true });
+}, 30_000);
 beforeEach(() => { process.env.PATH = `${brewPrefix}/bin:${originalPath}`; });
 
 async function prepare(options: Parameters<typeof prepareInputs>[0]): Promise<string> {

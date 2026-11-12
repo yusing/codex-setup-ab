@@ -13,6 +13,21 @@ test("judge registration disables executable tools and keeps broker paths outsid
   expect(() => assertJudgeFeatures(JUDGE_DISABLED_FEATURES.map(key => `${key} stable false`).join("\n"))).not.toThrow();
   expect(() => assertJudgeFeatures("shell_tool stable true")).toThrow("inference is blocked");
 });
+test("shell_tool is the execution master gate even when unified_exec selects the one-shot fallback", () => {
+  const disabled = JUDGE_DISABLED_FEATURES.map(key => `${key} stable false`).join("\n");
+  expect(() => assertJudgeFeatures(`${disabled}\nunified_exec stable true\n`)).not.toThrow();
+  expect(() => assertJudgeFeatures(disabled.replace("shell_tool stable false", "shell_tool stable true") + "\nunified_exec stable false\n"))
+    .toThrow("shell_tool=false");
+  for (const key of JUDGE_DISABLED_FEATURES) {
+    expect(() => assertJudgeFeatures(disabled.replace(`${key} stable false`, `${key} stable true`))).toThrow(`${key}=false`);
+    expect(() => assertJudgeFeatures(disabled.replace(`${key} stable false`, ""))).toThrow(`${key}=false`);
+  }
+});
+test("ambiguous or multiline feature evidence cannot qualify the source judge", () => {
+  const disabled = JUDGE_DISABLED_FEATURES.map(key => `${key} stable false`).join("\n");
+  expect(() => assertJudgeFeatures(disabled + "\nshell_tool stable true")).toThrow("shell_tool=false");
+  expect(() => assertJudgeFeatures(disabled.replace("shell_tool stable false", "shell_tool\nother_feature stable false"))).toThrow("shell_tool=false");
+});
 test("real source reader blocks traversal, credential paths, symlinks, execution and arbitrary writes", async () => {
   const root = await mkdtemp(join(tmpdir(), "judge-reader-"));
   try {
