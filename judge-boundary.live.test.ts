@@ -117,11 +117,11 @@ liveTest("pinned CLI advertises only approved source and utility tools to a cred
       expect(request.authorization).toBe(false);
       const tools = leafTools(request.body.tools);
       expect(tools.length).toBeGreaterThan(0);
-      for (const tool of tools) {
+      const unexpectedTools = tools.filter(tool => {
         const name = tool.name.replace(/^functions\./, "");
-        expect(utilities.has(name) || broker.test(name), `unexpected advertised tool ${tool.type}:${tool.name}`).toBe(true);
-        expect(["function", "custom"].includes(tool.type), `unexpected advertised tool type ${tool.type}`).toBe(true);
-      }
+        return !(utilities.has(name) || broker.test(name)) || !["function", "custom"].includes(tool.type);
+      }).map(tool => `${tool.type}:${tool.name}`);
+      expect(unexpectedTools, "unexpected advertised tools").toEqual([]);
       for (const name of ["list_files", "read_file", "write_check_plan"]) {
         expect(tools.some(tool => broker.test(tool.name.replace(/^functions\./, "")) && tool.name.endsWith(name))).toBe(true);
       }

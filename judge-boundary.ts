@@ -11,7 +11,7 @@ import type { RunState } from "./types";
  * Pinned source blob: 01054b1b504811a5fee21d6bc083c1f5117d52ea.
  */
 export const JUDGE_DISABLED_FEATURES = ["shell_tool", "code_mode", "code_mode_host", "multi_agent", "multi_agent_v2", "apps", "plugins", "hooks", "view_image",
-  "computer_use", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "image_generation"] as const;
+  "computer_use", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "image_generation", "goals", "sleep_tool", "skill_search"] as const;
 export function sourceJudgeConfig(base: string): string {
   return base.replace('sandbox_mode = "danger-full-access"', 'sandbox_mode = "read-only"').replace('\n[projects.', '\nweb_search = "disabled"\n[projects.')
     + '\n[features]\n' + JUDGE_DISABLED_FEATURES.map(key => `${key} = false`).join("\n")
