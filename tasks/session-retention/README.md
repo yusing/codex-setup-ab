@@ -78,18 +78,81 @@ compiles the affected test packages with no matching tests and readonly module
 resolution. Bulk `go mod download` adds incidental workspace checksums on these
 snapshots, so preparation acquires only the selected test dependency graph.
 Browser asset builds and general generation are unnecessary for this task.
+The reference's environment-facts regression also needs Git supporting
+[`--no-lazy-fetch`](https://github.com/git/git/blob/v2.46.0/Documentation/git.txt),
+available in Git 2.46 and newer. Git 2.43 rejects that option and makes
+`TestEnvironmentFactsCompactionProviderInput` fail despite correct context
+refresh. The standard image supplies supported Git, and normal launch readiness
+rebuilds stale standard images lacking the required capability. Retained
+immutable image IDs stay unchanged. Do not skip the test or change the pinned
+upstream source to accommodate an older image.
 
 The focused gate covers Thread Control, coordination presentation, Session
 Control, and launch tests matching `Wait|Compaction`. Run fixtures with isolated
 `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, and `MEKUGI_RUNTIME_DIR`. Native-provider
 acceptance tests are opt-in and must be reported separately from offline fixtures.
 
+The frozen `existing_test_verification` observes actual Thread Control service
+state: foreign-session rejection, default-any addressed-message identity and
+payload, consumed-message non-replay, and paused root/child recovery with the
+same work generation. A private Go overlay supplies the observer without editing
+candidate source. The supervisor compares the complete JSON observation. This
+is a scoped retained-behavior gate, not certification of every test matched by
+`Wait|Compaction`; the original command remains a separate diagnostic.
+
+Each criterion has pinned reference and unchanged-baseline controls, a precise
+hash-bound production-source negative, and a valid alternative replacing the
+descendant membership check with equivalent index lookup. The alternative
+preserves the pinned implementation's other behavior, rather than claiming an
+independently authored compaction design.
+
+| Criterion | Model-free service observation | Targeted incorrect control |
+| --- | --- | --- |
+| `aggregate-waits` | Failed and interrupted outcomes remain pending until both results are delivered, then retain selected order | Never select aggregate outcomes |
+| `messages-and-deadlines` | An incomplete aggregate wait expires from its registered deadline | Discard the registered deadline |
+| `checkpoint-admission` | Standalone registration reports scheduled and creates exactly one continuation | Omit the standalone compact intent |
+| `native-settlement` | Yielded execution cannot stop; compact dispatch waits for host settlement | Treat yielded execution as successful settlement |
+| `continuation-barrier` | Messages and wakes remain blocked until compaction acknowledgment | Mark native compaction completed at dispatch |
+| `failure-and-supersession` | Uncertain compaction pauses without retry or wake | Allow uncertain compact dispatch to be claimed again |
+| `integration-and-contracts` | Combine preserved authenticated message handling with new aggregate results and retained ordered outcomes/mode after restart | Accept a foreign caller session |
+
+The unchanged baseline passes the separate retained-behavior gate and fails all
+seven criterion observations, including the new aggregate recovery workflow.
+These checks deliberately qualify only the
+listed service observations. They do not establish every branch of a criterion,
+contract-document updates, native-provider execution, or all Session Control and
+Claude launch integration. The pinned upstream tests and specifications remain
+the evidence for that wider scope.
+
+Run the source-backed checks without model inference from this repository:
+
+```sh
+CODEX_AB_SESSION_SOURCE=/path/to/mekugi \
+  bun test session-retention-qualification.test.ts
+```
+
+The command archives both exact pins into temporary directories and applies
+controls only there. Add `CODEX_AB_LIVE_DOCKER=1` and set
+`CODEX_AB_SESSION_IMAGE` to a dependency-prepared image to exercise the ordinary
+offline supervisor and qualification path as well. Source-only checks do not
+establish the container boundary. Neither mode runs live native providers.
+
 On October 29, 2026, both snapshots passed the focused gate with Go 1.27.3 and
 Bun 1.4.4, including an offline rerun. The baseline had 176 passing test/subtest
 outcomes; the reference had 234 and one native-Claude acceptance skip. Compile-only
 preparation preserved tracked source and checksum files on both snapshots with
-warm caches. Cold-cache and Docker preparation remain unverified.
+warm caches.
 
-The manifest retains `qualification: "not-run"`. No Docker or paid-inference run
-has qualified this replacement task. Candidate duration, adaptive-judge quality,
-and observed compaction remain unmeasured.
+Model-free migration checks additionally passed the original focused gate on both
+snapshots in an offline dependency-prepared container with Go 1.27.1, Bun 1.4.2,
+and Git 2.56.1. The scoped frozen observations and all 28 control expectations
+also passed through the ordinary offline supervisor and qualification executor
+at two CPUs and 4 GiB per container. The complete supervisor matrix can take
+tens of minutes because each control repeats preparation. Cold-cache launcher
+preparation remains unverified.
+
+The manifest retains `qualification: "not-run"`: qualification is recorded per
+authored check and its frozen controls, not asserted by a pack-wide label.
+Candidate duration, adaptive-judge quality, native-provider execution, and
+observed compaction remain unmeasured. Prepare a fresh run to use the migrated
+contract; retained runs keep their originally frozen inputs.

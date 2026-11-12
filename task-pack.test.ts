@@ -4,6 +4,37 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadTaskPack } from "./task-pack";
 import { flaskQualificationChecks } from "./test-support/flask-qualification";
+import { verifyAdaptiveContract } from "./semantic-preflight";
+import { validateCriteria, type CriteriaContract } from "./semantic";
+import type { RunState } from "./types";
+
+test("every bundled task freezes an adaptive-ready contract before candidate execution", async () => {
+  const contracts: Array<{ path: string; contract: CriteriaContract; reference?: string }> = [];
+  for (const path of new Bun.Glob("tasks/*/manifest.json").scanSync({ cwd: import.meta.dir })) {
+    const pack = await loadTaskPack(join(import.meta.dir, path));
+    contracts.push({ path, contract: pack.contract, reference: pack.manifest.source.reference_commit });
+  }
+  for (const path of new Bun.Glob("tasks/*/criteria.json").scanSync({ cwd: import.meta.dir })) {
+    const directory = join(import.meta.dir, path, "..");
+    const prompt = await readFile(join(directory, "task.md"));
+    const hash = new Bun.CryptoHasher("sha256").update(prompt).digest("hex");
+    contracts.push({ path, contract: validateCriteria(JSON.parse(await readFile(join(import.meta.dir, path), "utf8")), hash) });
+  }
+  expect(contracts.length).toBeGreaterThan(0);
+  for (const { path, contract, reference } of contracts) {
+    const state = { task: { sha256: contract.task_sha256 }, criteria: { contract },
+      ...(reference ? { upstream_reference: { end_commit: reference } } : {}) } as RunState;
+    expect(() => verifyAdaptiveContract(state), path).not.toThrow();
+    const missing = structuredClone(state);
+    delete missing.criteria!.contract.existing_test_verification;
+    expect(() => verifyAdaptiveContract(missing), path).toThrow("existing_test_verification");
+    for (const role of ["reference", "baseline", "negative", "alternative"]) {
+      const incomplete = structuredClone(state);
+      incomplete.criteria!.contract.evaluator_controls!.cases = incomplete.criteria!.contract.evaluator_controls!.cases.filter(control => control.role !== role);
+      expect(() => verifyAdaptiveContract(incomplete), `${path}: ${role}`).toThrow("complete frozen evaluator controls");
+    }
+  }
+});
 
 test("Flask IPv6 pack freezes real source controls and meaningful independent observations", async () => {
   const pack = await loadTaskPack(join(import.meta.dir, "tasks/flask-ipv6-server-name/manifest.json"));

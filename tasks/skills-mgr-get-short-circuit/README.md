@@ -34,6 +34,37 @@ durable state, and is backed by discriminating tests. See the
 The unchanged baseline test suite passes against the reference, so the manifest
 declares [retained baseline tests](../../doc/contract.md#task-derived-semantic-grading).
 
+## Frozen observations and model-free checks
+
+The existing-behavior gate independently compares real `get`, script execution,
+line-range reading, missing/nested evidence, and `list` observations. The original
+Go suite remains a separate diagnostic, not proof that this observation gate
+completed or that the whole suite was independently verified.
+
+Evaluator-only controls start from the pinned reference or baseline. Targeted
+source mutations restore a full acquisition walk, incorrectly optimize a wildcard,
+drop cancellation, or write a durable evidence file; a separate control removes
+the reference regression tests. A valid alternative bounds traversal workers at
+eight instead of thirty-two without changing the requested behavior. Precise
+patches bind both their preimage and postimage hashes.
+
+The model-free regression runs all five criterion checks through the ordinary
+offline supervisor and qualification path:
+
+```sh
+CODEX_AB_LIVE_DOCKER=1 CODEX_AB_SKILLS_MGR_SOURCE=/path/to/skills-mgr \
+  CODEX_AB_SKILLS_VERIFIER_IMAGE=codex-ab:skills-mgr-migration-offline \
+  bun test skills-other-qualification.live.test.ts
+```
+
+Prepare the dependency image with the pinned Go modules available offline.
+The checks exercise four root-evidence queries, eight other expressions,
+nested/ignored evidence and edits, cancellation, shared list evaluation, and
+task-local file snapshots. The tests criterion additionally requires named Go
+test failures against full-walk and wildcard mutations. These observations do
+not establish absence of every possible filesystem write or comprehensive test
+quality; adaptive checks must still assess the complete requested scope.
+
 ## Launch
 
 Select **Skills manager fast conditional acquisition** (task ID

@@ -40,7 +40,162 @@
       ],
       "command": "go test . -count=1"
     },
-    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact output wording, helper names, architecture, or patch shape. Candidate-authored tests may support but never redefine the criteria. A successful empty test selection is not a pass. Mark genuine evaluator wiring failures explicitly as HARNESS_ERROR and exit 125; do not relabel a candidate exception based on its error wording. Retained baseline tests, when reported, run the unchanged baseline test files against the candidate's production code; their failure is evidence about retained behavior or edited expectations, while a build failure there is unassessed. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness. The single upstream commit is frozen read-only under /reference: acquisition_evidence_test.go establishes the fast path (TestAcquisitionShortCircuitsSingleEvidenceQuery uses an unrelated .gitignore directory that makes a complete scan fail), retained complete evaluation for other expressions (TestAcquisitionKeepsCompleteEvidenceForOtherExpressions), and nested evidence and edits. The reference stops traversal only for an isolated known-name query and keeps complete snapshots for shared evaluators; equivalent designs that preserve every baseline decision are acceptable. Measure timing only with generous margins on a synthetic tree; prefer deterministic observations of avoided traversal.",
-    "qualification": "not-run"
+    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact output wording, helper names, architecture, or patch shape. Candidate-authored tests may support but never redefine the criteria. A successful empty test selection is not a pass. Use supervisor evidence to classify evaluator wiring failures as unassessed; printed markers and candidate-chosen exit codes do not determine failure ownership. Retained baseline tests, when reported, run the unchanged baseline test files against the candidate's production code; their failure is evidence about retained behavior or edited expectations, while a build failure there is unassessed. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness. The single upstream commit is frozen read-only under /reference: acquisition_evidence_test.go establishes the fast path (TestAcquisitionShortCircuitsSingleEvidenceQuery uses an unrelated .gitignore directory that makes a complete scan fail), retained complete evaluation for other expressions (TestAcquisitionKeepsCompleteEvidenceForOtherExpressions), and nested evidence and edits. The reference stops traversal only for an isolated known-name query and keeps complete snapshots for shared evaluators; equivalent designs that preserve every baseline decision are acceptable. Measure timing only with generous margins on a synthetic tree; prefer deterministic observations of avoided traversal. Frozen existing observations cover actual get/run/list and project-evidence behavior; controls target isolated-query routing, complete expression semantics, cancellation, and persistent-state regressions. Model-free mutation-sensitivity observations have the declared fixture scope, not universal proof of candidate test quality.",
+    "qualification": "not-run",
+    "existing_test_verification": {
+      "schema": "codex-ab.verification.v1",
+      "cases": [
+        {
+          "id": "retained-acquisition-observations",
+          "kind": "command",
+          "command": [
+            "python3",
+            "-I",
+            "-c",
+            "import json, os, pathlib, subprocess, sys, tempfile, uuid\nOBSERVER = 'package main\\n\\nimport (\\n \"bytes\"\\n \"context\"\\n \"crypto/sha256\"\\n \"encoding/json\"\\n \"errors\"\\n \"fmt\"\\n \"io/fs\"\\n \"os\"\\n \"path/filepath\"\\n \"strings\"\\n \"testing\"\\n)\\n\\nfunc TestABFrozenObservation(t *testing.T) {\\n scope := os.Getenv(\"AB_SCOPE\")\\n output := map[string]any{}\\n fixture := func(expression string) (*manager, string) {\\n  m := newTestManager(t)\\n  project := t.TempDir()\\n  writeFile(t, filepath.Join(m.paths.userSkills,\"example\",\"SKILL.md\"), skillFile(\"example\",\"Example skill.\",\"body\\\\n\"))\\n  writeExecutable(t, filepath.Join(m.paths.userSkills,\"example\",\"check.sh\"),\"#!/bin/sh\\\\nprintf checked\\\\n\")\\n  if err := saveLock(project,testLock(nil,map[string]string{\"example\":expression},nil)); err != nil { t.Fatal(err) }\\n  return m,project\\n }\\n get := func(m *manager,p string) (string,error) { var b bytes.Buffer; e:=m.getContext(context.Background(),p,\"example\",\"\",&b); return b.String(),e }\\n poison := func(p string) { if e:=os.MkdirAll(filepath.Join(p,\"unrelated\",\".gitignore\"),0755); e!=nil { t.Fatal(e) } }\\n errClass := func(e error) string { if e==nil { return \"ok\" }; if errors.Is(e,context.Canceled) { return \"canceled\" }; if strings.Contains(e.Error(),\"not enabled\") { return \"disabled\" }; if strings.Contains(e.Error(),\"read project ignore file\") { return \"traversal\" }; return \"other\" }\\n switch scope {\\n case \"existing\":\\n  m,p:=fixture(\"true\")\\n  body,e:=get(m,p); output[\"get\"]=body; output[\"get_status\"]=errClass(e)\\n  c,e:=m.scriptCommandContext(context.Background(),p,\"example/check.sh\",nil)\\n  if e!=nil { output[\"run_status\"]=errClass(e) } else { b,e:=c.Output(); output[\"run\"]=string(b);output[\"run_status\"]=errClass(e) }\\n  var lines bytes.Buffer; e=m.getContext(context.Background(),p,\"example\",\"1:1\",&lines); output[\"range\"]=lines.String();output[\"range_status\"]=errClass(e)\\n  if e:=saveLock(p,testLock(nil,map[string]string{\"example\":\"lang rust\"},nil));e!=nil {t.Fatal(e)}\\n  _,e=get(m,p);output[\"missing\"]=errClass(e)\\n  writeFile(t,filepath.Join(p,\"nested\",\"src\",\"lib.rs\"),\"\")\\n  body,e=get(m,p);output[\"nested\"]=body;output[\"nested_status\"]=errClass(e)\\n  var list bytes.Buffer;e=m.listContext(context.Background(),p,&list);output[\"listed\"]=strings.Contains(list.String(),`name=\"example\"`);output[\"list_status\"]=errClass(e)\\n case \"fast\":\\n  rows:=[]any{}\\n  for _,pair:=range [][2]string{{\"lang rust\",\"Cargo.toml\"},{\"lang ts\",\"main.ts\"},{\"tooling shadowtree\",\".shadowtree.toml\"},{\"tooling k8s\",\"Chart.yaml\"}} {\\n   m,p:=fixture(pair[0]);writeFile(t,filepath.Join(p,pair[1]),\"\");poison(p)\\n   body,e:=get(m,p);row:=map[string]any{\"expression\":pair[0],\"body\":body,\"get\":errClass(e)}\\n   c,e:=m.scriptCommandContext(context.Background(),p,\"example/check.sh\",nil);row[\"run\"]=errClass(e)\\n   if e==nil { b,e:=c.Output();row[\"script\"]=string(b);row[\"run\"]=errClass(e) } else {row[\"script\"]=\"\"}\\n   rows=append(rows,row)\\n  };output[\"queries\"]=rows\\n case \"semantics\":\\n  rows:=[]any{}\\n  for _,expr:=range []string{\"lang rust && true\",`query=lang; \"$query\" rust`,\"UNUSED=1 lang rust\",\"lang rust >/dev/null\",`lang rust >\"$(lang rust; printf /dev/null)\"`,\"lang r*\",\"tooling shadow*\",\"has_dependency example\"} {\\n   m,p:=fixture(expr)\\n   writeFile(t,filepath.Join(p,\"Cargo.toml\"),\"[dependencies]\\\\nexample = \\\\\"1\\\\\"\\\\n\")\\n   for _,name:=range []string{\"rust\",\".shadowtree.toml\",\"shadowtree\"} {writeFile(t,filepath.Join(p,name),\"\")}\\n   body,e:=get(m,p);row:=map[string]any{\"expression\":expr,\"clean\":errClass(e),\"body\":body}\\n   poison(p);_,e=get(m,p);row[\"poisoned\"]=errClass(e);rows=append(rows,row)\\n  };output[\"expressions\"]=rows\\n case \"shared\":\\n  m,p:=fixture(\"lang rust\")\\n  writeFile(t,filepath.Join(p,\".gitignore\"),\"ignored/\\\\n\");writeFile(t,filepath.Join(p,\"ignored\",\"Cargo.toml\"),\"\")\\n  _,e:=get(m,p);output[\"ignored\"]=errClass(e)\\n  nested:=filepath.Join(p,\"src\",\"nested\",\"lib.rs\");writeFile(t,nested,\"\");body,e:=get(m,p);output[\"added\"]=body;output[\"added_status\"]=errClass(e)\\n  if e:=os.Remove(nested);e!=nil {t.Fatal(e)};_,e=get(m,p);output[\"removed\"]=errClass(e)\\n  writeFile(t,nested,\"\");ctx,cancel:=context.WithCancel(context.Background());cancel();var b bytes.Buffer;e=m.getContext(ctx,p,\"example\",\"\",&b);output[\"canceled_get\"]=errors.Is(e,context.Canceled)\\n  _,e=m.scriptCommandContext(ctx,p,\"example/check.sh\",nil);output[\"canceled_run\"]=errors.Is(e,context.Canceled)\\n  writeFile(t,filepath.Join(m.paths.userSkills,\"second\",\"SKILL.md\"),skillFile(\"second\",\"Second skill.\",\"second\\\\n\"))\\n  writeFile(t,filepath.Join(p,\"other\",\"main.py\"),\"\")\\n  if e:=saveLock(p,testLock(nil,map[string]string{\"example\":\"lang rust\",\"second\":\"lang python\"},nil));e!=nil {t.Fatal(e)}\\n  b.Reset();e=m.listContext(context.Background(),p,&b);output[\"list_status\"]=errClass(e);output[\"rust_listed\"]=strings.Contains(b.String(),`name=\"example\"`);output[\"python_listed\"]=strings.Contains(b.String(),`name=\"second\"`)\\n  poison(p);b.Reset();e=m.listContext(context.Background(),p,&b);output[\"poisoned_list\"]=errClass(e)\\n case \"cache\":\\n  m,p:=fixture(\"lang rust\");writeFile(t,filepath.Join(p,\"Cargo.toml\"),\"\")\\n  roots:=[]string{p,filepath.Dir(filepath.Dir(m.paths.managerHome))}\\n  snapshot:=func() map[string]string { result:=map[string]string{};for _,root:=range roots {e:=filepath.WalkDir(root,func(path string,d fs.DirEntry,e error) error {if e!=nil{return e};if d.Type().IsRegular(){b,e:=os.ReadFile(path);if e!=nil{return e};info,e:=d.Info();if e!=nil{return e};result[path]=fmt.Sprintf(\"%o:%x\",info.Mode().Perm(),sha256.Sum256(b))};return nil});if e!=nil{t.Fatal(e)}};return result }\\n  before,_:=json.Marshal(snapshot());body,e:=get(m,p);output[\"body\"]=body;output[\"get_status\"]=errClass(e);body,e=get(m,p);output[\"repeat\"]=body;output[\"repeat_status\"]=errClass(e);after,_:=json.Marshal(snapshot());output[\"unchanged\"]=bytes.Equal(before,after)\\n  if e:=os.Remove(filepath.Join(p,\"Cargo.toml\"));e!=nil{t.Fatal(e)};_,e=get(m,p);output[\"removed\"]=errClass(e)\\n default:t.Fatalf(\"unknown observer scope %q\",scope)\\n }\\n b,e:=json.Marshal(output);if e!=nil{t.Fatal(e)};if e:=os.WriteFile(os.Getenv(\"AB_OUTPUT\"),b,0600);e!=nil{t.Fatal(e)}\\n}\\n'\nscope = sys.argv[1]\nwith tempfile.TemporaryDirectory(prefix='ab-observer-') as temp:\n    private = pathlib.Path(temp)\n    source = private / 'observer_test.go'\n    source.write_text(OBSERVER)\n    virtual = pathlib.Path.cwd() / ('ab_frozen_' + uuid.uuid4().hex + '_test.go')\n    while virtual.exists() or virtual.is_symlink():\n        virtual = pathlib.Path.cwd() / ('ab_frozen_' + uuid.uuid4().hex + '_test.go')\n    overlay = private / 'overlay.json'\n    overlay.write_text(json.dumps({'Replace': {str(virtual): str(source)}}))\n    binary = private / 'observer'\n    result = subprocess.run(['go', 'test', '-overlay=' + str(overlay), '-c', '-o', str(binary), '.'], capture_output=True, text=True)\n    if result.returncode:\n        sys.stderr.write(result.stdout + result.stderr)\n        raise SystemExit(result.returncode)\n    output = private / 'observed.json'\n    env = dict(os.environ, AB_SCOPE=scope, AB_OUTPUT=str(output))\n    result = subprocess.run([str(binary), '-test.run=^TestABFrozenObservation$', '-test.timeout=40s'], env=env, capture_output=True, text=True)\n    if result.returncode:\n        sys.stderr.write(result.stdout + result.stderr)\n        raise SystemExit(result.returncode)\n    print(json.dumps(json.loads(output.read_text()), sort_keys=True))\n"
+          ],
+          "args": [
+            "existing"
+          ],
+          "format": "json",
+          "expected_exit": 0,
+          "expected": "{\"get\": \"body\\n\", \"get_status\": \"ok\", \"list_status\": \"ok\", \"listed\": true, \"missing\": \"disabled\", \"nested\": \"body\\n\", \"nested_status\": \"ok\", \"range\": \"body\\n\", \"range_status\": \"ok\", \"run\": \"checked\", \"run_status\": \"ok\"}"
+        }
+      ]
+    },
+    "evaluator_controls": {
+      "schema": "codex-ab.evaluator-controls.v1",
+      "cases": [
+        {
+          "id": "upstream-reference",
+          "role": "reference",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "single-query-fast-path": "pass",
+            "expression-semantics": "pass",
+            "shared-consumers": "pass",
+            "no-persistent-cache": "pass",
+            "tests": "pass"
+          }
+        },
+        {
+          "id": "pinned-baseline",
+          "role": "baseline",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "single-query-fast-path": "fail",
+            "expression-semantics": "pass",
+            "shared-consumers": "pass",
+            "no-persistent-cache": "pass",
+            "tests": "fail"
+          }
+        },
+        {
+          "id": "full-walk-acquisition",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "skill_context.go",
+              "before_sha256": "a5413a5f6f4f22ca34bd52ca2e69705e7f396a7a0da174f40e5a98ad011beba5",
+              "after_sha256": "d372dc20dabaec2054afb0452392d6027dbcde7970d87662773b68de46294b21",
+              "diff": "diff --git a/skill_context.go b/skill_context.go\n--- a/skill_context.go\n+++ b/skill_context.go\n@@ -337,7 +337,7 @@\n \t\treturn false, err\n \t}\n \tevaluator := newEnabledEvaluator(project)\n-\tevaluator.singleUse = true\n+\tevaluator.singleUse = false\n \treturn selection.enabled(ctx, evaluator, discovered.Name)\n }\n \n"
+            }
+          ],
+          "expected": {
+            "single-query-fast-path": "fail"
+          }
+        },
+        {
+          "id": "glob-short-circuit",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "selection.go",
+              "before_sha256": "a3956e44954cf9fbc5c03679c110428af7cd1b38219dd026022700bcd1ccdaf2",
+              "after_sha256": "3e165822e0aee9a5305fbe00292b5d64b53f82c364c2960f6454a5aa1d60483b",
+              "diff": "diff --git a/selection.go b/selection.go\n--- a/selection.go\n+++ b/selection.go\n@@ -475,7 +475,7 @@\n \t\t\t// r* can still undergo pathname expansion in the shell.\n \t\t\tswitch call.Args[0].Lit() {\n \t\t\tcase languageBuiltin:\n-\t\t\t\t_, e.evidence.shortCircuit = canonicalLanguage(call.Args[1].Lit())\n+\t\t\t\te.evidence.shortCircuit = true\n \t\t\tcase toolingBuiltin:\n \t\t\t\t_, e.evidence.shortCircuit = canonicalTool(call.Args[1].Lit())\n \t\t\t}\n"
+            }
+          ],
+          "expected": {
+            "expression-semantics": "fail"
+          }
+        },
+        {
+          "id": "lost-cancellation",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "skill_context.go",
+              "before_sha256": "a5413a5f6f4f22ca34bd52ca2e69705e7f396a7a0da174f40e5a98ad011beba5",
+              "after_sha256": "6fdf25fa1708cdfb9595d30d57e228e1bd39166dd3529f6e2764c50f335b6bb8",
+              "diff": "diff --git a/skill_context.go b/skill_context.go\n--- a/skill_context.go\n+++ b/skill_context.go\n@@ -42,6 +42,7 @@\n \tproject, target, lineRange string,\n \toutput io.Writer,\n ) error {\n+\tctx = context.Background()\n \tskill, relative, err := splitTarget(target)\n \tif err != nil {\n \t\treturn err\n"
+            }
+          ],
+          "expected": {
+            "shared-consumers": "fail"
+          }
+        },
+        {
+          "id": "durable-evidence-file",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "enabled_project_evidence.go",
+              "before_sha256": "4ed50a3c920ceb72a241fa618cd513a5a7168dc3f41138a1787bd32188bb2eb6",
+              "after_sha256": "6b3f42521e880d6131a6fed66f5730037ff0c76342f3ef946f7c779baa087a78",
+              "diff": "diff --git a/enabled_project_evidence.go b/enabled_project_evidence.go\n--- a/enabled_project_evidence.go\n+++ b/enabled_project_evidence.go\n@@ -72,6 +72,7 @@\n }\n \n func (index *projectEvidenceIndex) load(ctx context.Context, found func() bool) error {\n+\t_ = os.WriteFile(filepath.Join(index.root, \".ab-evidence-cache\"), []byte(\"cached\"), 0600)\n \ttype readRequest struct {\n \t\tdirectory string\n \t\trelative  []string\n"
+            }
+          ],
+          "expected": {
+            "no-persistent-cache": "fail"
+          }
+        },
+        {
+          "id": "missing-regression-tests",
+          "role": "negative",
+          "base": "reference",
+          "files": [
+            {
+              "path": "acquisition_evidence_test.go",
+              "source": null
+            }
+          ],
+          "expected": {
+            "tests": "fail"
+          }
+        },
+        {
+          "id": "bounded-worker-alternative",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "enabled_project_evidence.go",
+              "before_sha256": "4ed50a3c920ceb72a241fa618cd513a5a7168dc3f41138a1787bd32188bb2eb6",
+              "after_sha256": "c01291d647dda795f18d92faa33330f76097c2f2defcf9e62bdd6b20c95b2a24",
+              "diff": "diff --git a/enabled_project_evidence.go b/enabled_project_evidence.go\n--- a/enabled_project_evidence.go\n+++ b/enabled_project_evidence.go\n@@ -107,7 +107,7 @@\n \tvar workers sync.WaitGroup\n \t// Directory reads dominate exhaustive negative checks. Bound parallelism\n \t// so one list can overlap filesystem latency without unbounded goroutines.\n-\tfor range min(32, max(4, runtime.GOMAXPROCS(0)*2)) {\n+\tfor range min(8, max(4, runtime.GOMAXPROCS(0)*2)) {\n \t\tworkers.Go(func() {\n \t\t\tfor {\n \t\t\t\tselect {\n"
+            }
+          ],
+          "expected": {
+            "single-query-fast-path": "pass",
+            "expression-semantics": "pass",
+            "shared-consumers": "pass",
+            "no-persistent-cache": "pass",
+            "tests": "pass"
+          }
+        }
+      ]
+    }
   }
 }

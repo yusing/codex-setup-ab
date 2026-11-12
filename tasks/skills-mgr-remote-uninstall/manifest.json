@@ -41,7 +41,164 @@
       ],
       "command": "go test . -count=1"
     },
-    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact output wording, helper names, architecture, or patch shape. Candidate-authored tests may support but never redefine the criteria. A successful empty test selection is not a pass. Mark genuine evaluator wiring failures explicitly as HARNESS_ERROR and exit 125; do not relabel a candidate exception based on its error wording. Retained baseline tests, when reported, run the unchanged baseline test files against the candidate's production code; their failure is evidence about retained behavior or edited expectations, while a build failure there is unassessed. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness. The single upstream commit is frozen read-only under /reference: agent_commands_test.go TestAgentUninstall establishes each removal, recovery, rejection, scope, and other-project case; TestAgentCommandRejectsInvalidArguments and TestAgentNativeOnlyCannotBeManaged establish rejections; repository_cli_test.go establishes an install/uninstall round trip; completion_test.go and README.md establish consumer updates. Retaining or deleting the fetched content generation directory is an implementation choice, not a criterion. The reference reuses the existing interactive removal transaction; a separate duplicate removal path is a simplicity and approach concern, not by itself a criterion failure.",
-    "qualification": "not-run"
+    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact output wording, helper names, architecture, or patch shape. Candidate-authored tests may support but never redefine the criteria. A successful empty test selection is not a pass. Use supervisor evidence to classify evaluator wiring failures as unassessed; printed markers and candidate-chosen exit codes do not determine failure ownership. Retained baseline tests, when reported, run the unchanged baseline test files against the candidate's production code; their failure is evidence about retained behavior or edited expectations, while a build failure there is unassessed. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness. The single upstream commit is frozen read-only under /reference: agent_commands_test.go TestAgentUninstall establishes each removal, recovery, rejection, scope, and other-project case; TestAgentCommandRejectsInvalidArguments and TestAgentNativeOnlyCannotBeManaged establish rejections; repository_cli_test.go establishes an install/uninstall round trip; completion_test.go and README.md establish consumer updates. Retaining or deleting the fetched content generation directory is an implementation choice, not a criterion. The reference reuses the existing interactive removal transaction; a separate duplicate removal path is a simplicity and approach concern, not by itself a criterion failure. Frozen supervisor observations establish only the declared existing selection, serving, inspection, and rejection scope; root Go suite output remains a separate non-gating diagnostic. Frozen controls qualify each criterion against the pinned reference, baseline, targeted production mutants, and a guard-first alternative that intentionally uses different confirmation wording. Do not treat the model-free sample consumer checks as a complete oracle for cancellation, native ownership, candidate-authored test quality, documentation completeness, or live fish behavior; assess those prompt outcomes separately.",
+    "qualification": "not-run",
+    "evaluator_controls": {
+      "schema": "codex-ab.evaluator-controls.v1",
+      "cases": [
+        {
+          "id": "upstream-reference",
+          "role": "reference",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "uninstall-removal": "pass",
+            "recovery-states": "pass",
+            "ownership-rejections": "pass",
+            "scope-and-guidance": "pass",
+            "consumers-tests-docs": "pass"
+          }
+        },
+        {
+          "id": "pinned-baseline",
+          "role": "baseline",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "uninstall-removal": "fail",
+            "recovery-states": "fail",
+            "ownership-rejections": "pass",
+            "scope-and-guidance": "fail",
+            "consumers-tests-docs": "fail"
+          }
+        },
+        {
+          "id": "confirm-without-removing",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "af9174a703c71ee61a3f480e9510155d586828b1c3ac0d67e2ba292b10fea4fa",
+              "after_sha256": "1483b767e5749021cc86318732023cdba19412411ce33e65b760f969b12e2987",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -191,7 +191,9 @@\n \tif len(owners) != 0 || key == \"\" {\n \t\treturn fmt.Errorf(\"skill %q is not an installed remote skill; local and harness-owned skills cannot be uninstalled\", name)\n \t}\n-\tif _, err := m.uninstallRemote(ctx, project, name, key); err != nil {\n+\tif false {\n+\t\t_, err := m.uninstallRemote(ctx, project, name, key)\n+\t\tif err != nil { return err }\n \t\treturn err\n \t}\n \t_, err = fmt.Fprintf(out, \"Uninstalled %s\\n\", name)\n"
+            }
+          ],
+          "expected": {
+            "uninstall-removal": "fail"
+          }
+        },
+        {
+          "id": "load-broken-content",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "af9174a703c71ee61a3f480e9510155d586828b1c3ac0d67e2ba292b10fea4fa",
+              "after_sha256": "f601560f4d1a9134743c25792c9c67b85ad72d2aff233984cc186d7b090c067a",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -176,7 +176,7 @@\n \t}\n \t// Resolve metadata without loading content overrides: uninstall is also the\n \t// recovery path for missing content and malformed sidecars.\n-\trecords, err := m.remoteStore.recordsNamed(name)\n+\trecords, err := m.remoteStore.recordsForDiscoveryNamed(\"\", name)\n \tif err != nil {\n \t\treturn err\n \t}\n"
+            }
+          ],
+          "expected": {
+            "recovery-states": "fail"
+          }
+        },
+        {
+          "id": "ignore-local-owner",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "af9174a703c71ee61a3f480e9510155d586828b1c3ac0d67e2ba292b10fea4fa",
+              "after_sha256": "e7956e11db787464e6f5585888727c90c2deeea7cc89f61a90f01d52b0081731",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -188,7 +188,7 @@\n \tif err != nil {\n \t\treturn err\n \t}\n-\tif len(owners) != 0 || key == \"\" {\n+\tif len(owners) < 0 || key == \"\" {\n \t\treturn fmt.Errorf(\"skill %q is not an installed remote skill; local and harness-owned skills cannot be uninstalled\", name)\n \t}\n \tif _, err := m.uninstallRemote(ctx, project, name, key); err != nil {\n"
+            }
+          ],
+          "expected": {
+            "ownership-rejections": "fail"
+          }
+        },
+        {
+          "id": "uninstall-skips-scope-routing",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "af9174a703c71ee61a3f480e9510155d586828b1c3ac0d67e2ba292b10fea4fa",
+              "after_sha256": "508efbd110b038ebf3ec388882d7be75822014838f63c49c18c92bb96f651241",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -203,7 +203,7 @@\n \t\treturn err\n \t}\n \tcommand, rest := args[0], args[1:]\n-\tif command == \"set\" || command == \"edit\" || command == \"uninstall\" {\n+\tif command == \"set\" || command == \"edit\" {\n \t\tif len(rest) > 0 && rest[0] == \"-g\" {\n \t\t\tm.global = true\n \t\t\trest = rest[1:]\n"
+            }
+          ],
+          "expected": {
+            "scope-and-guidance": "fail"
+          }
+        },
+        {
+          "id": "missing-uninstall-help",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "main.go",
+              "before_sha256": "2ea8a3b6ea9109eadd6400945f3dade88e2af3d1ac252fa8e9fdae65b5494feb",
+              "after_sha256": "538768baf5aeec0c5d7138120aa015aa4041663755a9d28ad19189e8deeea3d4",
+              "diff": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -250,7 +250,6 @@\n \t{\"list\", \"list [--claude] [--grok] [--codex]\", \"Print enabled skill metadata as XML.\"},\n \t{\"sync\", \"sync\", \"Fetch globally listed remote skills and this project's enabled ones.\"},\n \t{\"install\", \"install [-g] [--exclude <pattern>]... <repo-address> [skill-name]\", \"Install a repository skill and enable it for this project, or globally with -g.\\n    --exclude leaves out matching files and directories on this and later fetches.\"},\n-\t{\"uninstall\", \"uninstall [-g] <skill>\", \"Uninstall a remote skill and remove its current selection and placeholders.\\n    Use -g for globally configured skills; local and harness-owned skills are not removed.\"},\n \t{\"get\", \"get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]\", \"Print an enabled skill or file, optionally limited to an inclusive 1-based line range.\\n    Lines refer to the served body after frontmatter removal and any remote patch.\\n    Examples: skills-mgr get example 1:120\\n              skills-mgr get example 121:240\"},\n \t{\"inspect\", \"inspect <skill>\", \"Print JSON owner, selection, fallback, patch, and body-health diagnostics.\"},\n \t{\"check\", \"check <target> [target...]\", \"Validate served bodies and a skill's listed references without running scripts.\"},\n"
+            }
+          ],
+          "expected": {
+            "consumers-tests-docs": "fail"
+          }
+        },
+        {
+          "id": "guard-first-removal",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "af9174a703c71ee61a3f480e9510155d586828b1c3ac0d67e2ba292b10fea4fa",
+              "after_sha256": "b22c91c9287d9aec3068882f55a1fc22a03c2acec687e9a88803343e48ca17c6",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -168,33 +168,19 @@\n }\n \n func (m *manager) uninstallContext(ctx context.Context, project, name string, out io.Writer) error {\n-\tif !validSkillName(name) {\n-\t\treturn fmt.Errorf(\"invalid skill name %q\", name)\n-\t}\n-\tif m.remoteStore == nil {\n-\t\treturn fmt.Errorf(\"remote skill store is unavailable\")\n-\t}\n-\t// Resolve metadata without loading content overrides: uninstall is also the\n-\t// recovery path for missing content and malformed sidecars.\n+\tif !validSkillName(name) || m.remoteStore == nil {\n+\t\treturn fmt.Errorf(\"invalid or unavailable remote skill %q\", name)\n+\t}\n \trecords, err := m.remoteStore.recordsNamed(name)\n-\tif err != nil {\n-\t\treturn err\n-\t}\n-\tkey := \"\"\n-\tif len(records) != 0 {\n-\t\tkey = records[0].ref().key()\n-\t}\n+\tif err != nil { return err }\n+\tif len(records) == 0 { return fmt.Errorf(\"no installed remote skill %q\", name) }\n+\tkey := records[0].ref().key()\n \towners, err := m.discoverSkillsNamed(project, key, name)\n-\tif err != nil {\n-\t\treturn err\n-\t}\n-\tif len(owners) != 0 || key == \"\" {\n-\t\treturn fmt.Errorf(\"skill %q is not an installed remote skill; local and harness-owned skills cannot be uninstalled\", name)\n-\t}\n-\tif _, err := m.uninstallRemote(ctx, project, name, key); err != nil {\n-\t\treturn err\n-\t}\n-\t_, err = fmt.Fprintf(out, \"Uninstalled %s\\n\", name)\n+\tif err != nil { return err }\n+\tif len(owners) > 0 { return fmt.Errorf(\"local or harness skill %q cannot be removed\", name) }\n+\t_, err = m.uninstallRemote(ctx, project, name, key)\n+\tif err != nil { return err }\n+\t_, err = fmt.Fprintf(out, \"Removed remote skill %s\\n\", name)\n \treturn err\n }\n \n"
+            }
+          ],
+          "expected": {
+            "uninstall-removal": "pass",
+            "recovery-states": "pass",
+            "ownership-rejections": "pass",
+            "scope-and-guidance": "pass",
+            "consumers-tests-docs": "pass"
+          }
+        }
+      ]
+    },
+    "existing_test_verification": {
+      "schema": "codex-ab.verification.v1",
+      "cases": [
+        {
+          "id": "existing-selection-serving",
+          "kind": "command",
+          "command": [
+            "python3",
+            "-I",
+            "-c",
+            "import hashlib\nimport json\nimport os\nimport pathlib\nimport shutil\nimport subprocess\nimport sys\nimport tempfile\n\nsource = pathlib.Path.cwd()\nrequest = json.load(sys.stdin)\nwith tempfile.TemporaryDirectory(prefix='uninstall-observer-') as temporary:\n    root = pathlib.Path(temporary)\n    binary = root / 'skills-mgr'\n    built = subprocess.run(['go', 'build', '-buildvcs=false', '-o', str(binary), '.'], capture_output=True, text=True)\n    if built.returncode:\n        sys.stderr.write(built.stdout + built.stderr)\n        sys.exit(built.returncode)\n\n    def write(path, text):\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(text)\n\n    def snapshot(*trees):\n        return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()\n                for tree in trees for path in tree.rglob('*') if path.is_file()}\n\n    def fixture(label, remote=True, global_scope=False):\n        home, project, other = [root / label / name for name in ('home', 'project', 'other')]\n        for directory in (home, project, other):\n            directory.mkdir(parents=True)\n        env = dict(os.environ, HOME=str(home), XDG_CACHE_HOME=str(home / 'cache'),\n                   CODEX_HOME=str(home / '.codex'), SKILLS_MGR_NO_REFRESH='1',\n                   GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null')\n        def run(*args, cwd=project):\n            return subprocess.run([str(binary), *args], cwd=cwd, env=env, capture_output=True, text=True)\n        content = '---\\nname: alpha\\ndescription: Alpha.\\n---\\nBody.\\n'\n        store = home / 'cache/skills-mgr/remote-skills'\n        key = hashlib.sha256(b'skills.sh\\x00owner/repo/alpha').hexdigest()\n        record = store / 'entries' / (key + '.json')\n        override = record.with_suffix('.override')\n        patch = home / '.skills-mgr/skills/.remote-patches' / (key + '.patch')\n        cached = store / 'content/fixture'\n        if remote:\n            write(cached / 'SKILL.md', content)\n            write(record, json.dumps(dict(schemaRevision=1, provider='skills.sh', id='owner/repo/alpha',\n                name='alpha', locator='owner/repo/alpha', fetchedAt='2026-11-13T00:00:00Z', content='content/fixture')))\n        else:\n            write(home / '.skills-mgr/skills/alpha/SKILL.md', content)\n        initial = run('set', *(['-g'] if global_scope else []), 'alpha', 'true')\n        if initial.returncode:\n            raise RuntimeError('fixture set failed: ' + initial.stderr)\n        if remote:\n            selection_path = (home / '.skills-mgr' if global_scope else project) / '.skills-mgr.json'\n            selection = json.loads(selection_path.read_text())\n            selection['skills']['alpha']['remote'] = dict(provider='skills.sh', id='owner/repo/alpha',\n                name='alpha', locator='owner/repo/alpha')\n            write(selection_path, json.dumps(selection))\n        write(other / '.skills-mgr.json', '{\"schema_revision\":3,\"skills\":{\"alpha\":{\"enabled\":true}}}\\n')\n        return home, project, other, run, record, override, patch, cached\n\n    results = []\n    for mode in request['modes']:\n        global_scope = mode in ('global', 'home', 'global-rejected')\n        h, p, other, run, record, override, patch, cached = fixture(mode, mode != 'existing', global_scope)\n        lock = (h / '.skills-mgr' if global_scope else p) / '.skills-mgr.json'\n        placeholder_root = h if global_scope else p\n        if mode == 'existing':\n            enabled = json.loads(lock.read_text())['skills']['alpha']['enabled']\n            got = run('get', 'alpha')\n            listed = run('list')\n            inspected = run('inspect', 'alpha')\n            detail = json.loads(inspected.stdout)['resolved']\n            disabled = run('set', 'alpha', 'false')\n            denied = run('get', 'alpha')\n            before = lock.read_bytes()\n            invalid = run('set', '../alpha', 'true')\n            results.append(dict(mode=mode, enabled=enabled, get_exit=got.returncode, body=got.stdout,\n                list_exit=listed.returncode, listed='alpha' in listed.stdout,\n                inspect_exit=inspected.returncode, layer=detail['selection']['layer'],\n                selected=detail['enabled'], health=detail['body_health'], disabled_exit=disabled.returncode,\n                disabled_get_exit=denied.returncode, disabled_body=denied.stdout,\n                invalid_exit=invalid.returncode, unchanged=lock.read_bytes() == before))\n            continue\n        if mode == 'disabled':\n            result = run('set', 'alpha', 'false')\n            if result.returncode: raise RuntimeError(result.stderr)\n        if mode == 'condition':\n            result = run('set', 'alpha', 'touch condition-ran')\n            if result.returncode: raise RuntimeError(result.stderr)\n        if mode in ('missing', 'missing-shadowed'):\n            shutil.rmtree(cached)\n        if mode == 'override': write(override, '{\"schemaRevision\":1}')\n        elif mode == 'override-directory': override.mkdir()\n        elif mode == 'enabled':\n            write(override, '{\"schemaRevision\":1,\"disableModelInvocation\":true}')\n            write(patch, 'invalid patch must not prevent removal\\n')\n        local = h / '.skills-mgr/skills/alpha/SKILL.md'\n        if mode in ('shadowed', 'missing-shadowed'): write(local, '---\\nname: alpha\\ndescription: Local.\\n---\\nLocal body.\\n')\n        before = snapshot(h, p, other)\n        other_before = (other / '.skills-mgr.json').read_bytes()\n        args = ['uninstall', *(['-g'] if mode == 'global' else []), 'alpha']\n        if mode == 'unknown': args = ['uninstall', 'absent']\n        if mode == 'invalid': args = ['uninstall', '../alpha']\n        if mode == 'extra': args = ['uninstall', 'alpha', 'extra']\n        if mode == 'no-argument': args = ['uninstall']\n        result = run(*args, cwd=h if mode == 'home' else p)\n        selection = json.loads(lock.read_text())['skills']\n        unchanged = snapshot(h, p, other) == before\n        condition_ran = (p / 'condition-ran').exists()\n        after_get = run('get', 'alpha', cwd=h if mode == 'home' else p)\n        results.append(dict(mode=mode, exit=result.returncode, confirmation=bool(result.stdout.strip()),\n            record=record.exists(), override=override.exists(), patch=patch.exists(), selected='alpha' in selection,\n            placeholders=[(placeholder_root / harness / 'skills/alpha/SKILL.md').exists() for harness in ('.agents', '.claude')],\n            other_unchanged=(other / '.skills-mgr.json').read_bytes() == other_before,\n            unchanged=unchanged,\n            local=local.read_text() if local.exists() else None,\n            condition_ran=condition_ran, served_exit=after_get.returncode,\n            global_guidance='uninstall -g' in result.stderr))\n    if request.get('consumers'):\n        help_result = subprocess.run([str(binary), 'help', 'uninstall'], capture_output=True, text=True)\n        fish = subprocess.run([str(binary), 'completion', 'fish'], capture_output=True, text=True)\n        readme = (source / 'README.md').read_text().lower()\n        results.append(dict(mode='consumers', help_exit=help_result.returncode,\n            help_uninstall='uninstall' in help_result.stdout, fish_exit=fish.returncode,\n            fish_uninstall='uninstall' in fish.stdout, fish_global='-s g' in fish.stdout,\n            readme_uninstall='uninstall' in readme, readme_global='global' in readme))\n    print(json.dumps(results))\n"
+          ],
+          "args": [],
+          "stdin": "{\"modes\": [\"existing\"]}",
+          "expected_exit": 0,
+          "format": "json",
+          "expected": "[{\"mode\": \"existing\", \"enabled\": true, \"get_exit\": 0, \"body\": \"Body.\\n\", \"list_exit\": 0, \"listed\": true, \"inspect_exit\": 0, \"layer\": \"project\", \"selected\": true, \"health\": \"ok\", \"disabled_exit\": 0, \"disabled_get_exit\": 1, \"disabled_body\": \"\", \"invalid_exit\": 1, \"unchanged\": true}]"
+        }
+      ]
+    }
   }
 }

@@ -11,12 +11,135 @@
   "criteria": {
     "schema": "codex-ab.criteria.v1",
     "criteria": [
-      {"id": "transfer-encoding-length", "description": "res.send does not generate Content-Length alongside a retained Transfer-Encoding header, for any transfer-coding value. Preserve status-specific header removal/replacement, including Content-Length: 0 after removing Transfer-Encoding for HTTP 205.", "required_interface": "Express res.send"},
-      {"id": "send-regressions", "description": "Body conversion, content type, ETag generation including with Transfer-Encoding, freshness, status-specific header removal, HEAD handling, and response completion retain existing behavior."}
+      {
+        "id": "transfer-encoding-length",
+        "description": "res.send does not generate Content-Length alongside a retained Transfer-Encoding header, for any transfer-coding value. Preserve status-specific header removal/replacement, including Content-Length: 0 after removing Transfer-Encoding for HTTP 205.",
+        "required_interface": "Express res.send"
+      },
+      {
+        "id": "send-regressions",
+        "description": "Body conversion, content type, ETag generation including with Transfer-Encoding, freshness, status-specific header removal, HEAD handling, and response completion retain existing behavior."
+      }
     ],
     "preparation": "if test -f /opt/task-deps/express-prepared; then bun install --offline --no-save; else bun install --no-save && touch /opt/task-deps/express-prepared; fi",
     "existing_tests": "bun x mocha --require test/support/env --reporter dot --check-leaks test/res.send.js",
-    "evaluator_guidance": "The dependency image contains the resolved Bun cache. Run bun install --offline --no-save in the candidate copy before invoking Express or Mocha; never use the network during grading. Inspect /reference/index.json and the relevant upstream patches. Commit 18e5985 establishes Transfer-Encoding/Content-Length behavior with chunked, compress, deflate, and gzip cases in test/res.send.js; 9a34acf fixes its ETag regression and adds the should-still-generate-an-ETag case. Both define the requested outcome. The frozen ancestry contains 18 commits, but unrelated QUERY support, dependency, CI, and documentation changes are context, not task requirements. Keep baseline behavior outside res.send's requested change. Assess focused regression tests and accept equivalent implementations and safe improvements without exact patch or file-boundary requirements. Reference evidence is evaluator-only. Wiring failures are HARNESS_ERROR/unassessed; retain source-only observations without executed coverage as unassessed.",
-    "qualification": "not-run"
+    "evaluator_guidance": "The dependency image contains the resolved Bun cache. Run bun install --offline --no-save in the candidate copy before invoking Express or Mocha; never use the network during grading. Inspect /reference/index.json and the relevant upstream patches. Commit 18e5985 establishes Transfer-Encoding/Content-Length behavior with chunked, compress, deflate, and gzip cases in test/res.send.js; 9a34acf fixes its ETag regression and adds the should-still-generate-an-ETag case. Both define the requested outcome. The frozen ancestry contains 18 commits, but unrelated QUERY support, dependency, CI, and documentation changes are context, not task requirements. Keep baseline behavior outside res.send's requested change. Assess focused regression tests and accept equivalent implementations and safe improvements without exact patch or file-boundary requirements. Reference evidence is evaluator-only. Supervisor-classified evaluator wiring failures remain unassessed; retain source-only observations without executed coverage as unassessed. Frozen existing observations use real Express res.send and ServerResponse header APIs with a recording transport sink; TCP framing is outside that scope. Controls target a chunked-only guard and the Transfer-Encoding ETag regression. Reference-based controls restore the baseline dependency specifications because unrelated ancestry dependency upgrades are not task requirements; candidate dependency preparation is unchanged.",
+    "qualification": "not-run",
+    "existing_test_verification": {
+      "schema": "codex-ab.verification.v1",
+      "cases": [
+        {
+          "id": "existing-send-observations",
+          "kind": "command",
+          "command": [
+            "bun",
+            "-e",
+            "const fs = require('node:fs');\nconst http = require('node:http');\nconst express = require(process.cwd());\nconst rows = JSON.parse(fs.readFileSync(0, 'utf8')).map(input => {\n  const app = express();\n  if (input.etag === false) app.disable('etag');\n  if (input.etag === 'strong') app.set('etag', 'strong');\n  if (input.etag === 'custom') app.set('etag', body => '\"custom-' + Buffer.byteLength(body) + '\"');\n  const req = Object.create(express.request);\n  req.method = input.method || 'GET'; req.headers = input.request_headers || {}; req.app = app;\n  const res = new http.ServerResponse(req);\n  Object.setPrototypeOf(res, express.response);\n  req.res = res; res.req = req; res.app = app;\n  if (input.status) res.status(input.status);\n  for (const [name, value] of Object.entries(input.headers || {})) res.set(name, value);\n  let body = '', ends = 0;\n  res.end = function(chunk, encoding) { ends++; body = chunk == null ? '' : Buffer.from(chunk, encoding).toString('hex'); return this; };\n  let value = input.body;\n  if (input.body_kind === 'buffer') value = Buffer.from(input.body);\n  if (input.body_kind === 'uint8') value = new Uint8Array(input.body);\n  const returned = res.send(value);\n  const observed = {id: input.id, status: res.statusCode, type: res.get('Content-Type') || null,\n    length: res.get('Content-Length') === undefined ? null : String(res.get('Content-Length')),\n    transfer: res.get('Transfer-Encoding') || null, etag: res.get('ETag') || null, body, ends, chain: returned === res};\n  return Object.fromEntries(['id', ...input.fields].map(key => [key, observed[key]]));\n});\nconsole.log(JSON.stringify(rows));\n"
+          ],
+          "args": [],
+          "stdin": "[{\"id\":\"text\",\"body\":\"hello\",\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"utf8\",\"body\":\"h\\u00e9\",\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"buffer\",\"body_kind\":\"buffer\",\"body\":[104,105],\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"json\",\"body\":{\"foo\":\"bar\"},\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"boolean\",\"body\":true,\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"number\",\"body\":1000,\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"null\",\"body\":null,\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"undefined\",\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"type\",\"body\":\"hey\",\"headers\":{\"Content-Type\":\"text/plain; charset=iso-8859-1\"},\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"manual-etag\",\"body\":\"hello\",\"headers\":{\"ETag\":\"\\\"manual\\\"\"},\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"etag-off\",\"body\":\"hello\",\"etag\":false,\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"etag-strong\",\"body\":\"hello\",\"etag\":\"strong\",\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"etag-custom\",\"body\":\"hello\",\"etag\":\"custom\",\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"head\",\"method\":\"HEAD\",\"body\":\"hello\",\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"fresh\",\"body\":\"hey\",\"headers\":{\"ETag\":\"\\\"manual\\\"\"},\"request_headers\":{\"if-none-match\":\"\\\"manual\\\"\"},\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"not-fresh-error\",\"status\":500,\"body\":\"hey\",\"headers\":{\"ETag\":\"\\\"manual\\\"\"},\"request_headers\":{\"if-none-match\":\"\\\"manual\\\"\"},\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"status-204\",\"status\":204,\"body\":\"foo\",\"headers\":{\"Transfer-Encoding\":\"chunked\"},\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"status-205\",\"status\":205,\"body\":\"foo\",\"headers\":{\"Transfer-Encoding\":\"chunked\"},\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"status-304\",\"status\":304,\"body\":\"foo\",\"headers\":{\"Transfer-Encoding\":\"chunked\"},\"fields\":[\"status\",\"type\",\"length\",\"transfer\",\"etag\",\"body\",\"ends\",\"chain\"]},{\"id\":\"transfer-etag\",\"body\":\"hello\",\"headers\":{\"Transfer-Encoding\":\"chunked\"},\"fields\":[\"etag\",\"body\",\"ends\",\"chain\"]}]",
+          "expected_exit": 0,
+          "format": "json",
+          "expected": "[{\"id\":\"text\",\"status\":200,\"type\":\"text/html; charset=utf-8\",\"length\":\"5\",\"transfer\":null,\"etag\":\"W/\\\"5-qvTGHdzF6KLavt4PO0gs2a6pQ00\\\"\",\"body\":\"68656c6c6f\",\"ends\":1,\"chain\":true},{\"id\":\"utf8\",\"status\":200,\"type\":\"text/html; charset=utf-8\",\"length\":\"3\",\"transfer\":null,\"etag\":\"W/\\\"3-llZREsZn62PmcrVsRAHQVB7q2g4\\\"\",\"body\":\"68c3a9\",\"ends\":1,\"chain\":true},{\"id\":\"buffer\",\"status\":200,\"type\":\"application/octet-stream\",\"length\":\"2\",\"transfer\":null,\"etag\":\"W/\\\"2-witfkXg0JglCjW9RssWvTAveakI\\\"\",\"body\":\"6869\",\"ends\":1,\"chain\":true},{\"id\":\"json\",\"status\":200,\"type\":\"application/json; charset=utf-8\",\"length\":\"13\",\"transfer\":null,\"etag\":\"W/\\\"d-pedE0BZFQNM7HX6mFsKPL6l+dUo\\\"\",\"body\":\"7b22666f6f223a22626172227d\",\"ends\":1,\"chain\":true},{\"id\":\"boolean\",\"status\":200,\"type\":\"application/json; charset=utf-8\",\"length\":\"4\",\"transfer\":null,\"etag\":\"W/\\\"4-X/5TO4MPCKAyY0ipFgr6/IraRNs\\\"\",\"body\":\"74727565\",\"ends\":1,\"chain\":true},{\"id\":\"number\",\"status\":200,\"type\":\"application/json; charset=utf-8\",\"length\":\"4\",\"transfer\":null,\"etag\":\"W/\\\"4-48u6iIP+dGxuNXg8lAS0vAx+6es\\\"\",\"body\":\"31303030\",\"ends\":1,\"chain\":true},{\"id\":\"null\",\"status\":200,\"type\":null,\"length\":\"0\",\"transfer\":null,\"etag\":\"W/\\\"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk\\\"\",\"body\":\"\",\"ends\":1,\"chain\":true},{\"id\":\"undefined\",\"status\":200,\"type\":null,\"length\":null,\"transfer\":null,\"etag\":null,\"body\":\"\",\"ends\":1,\"chain\":true},{\"id\":\"type\",\"status\":200,\"type\":\"text/plain; charset=utf-8\",\"length\":\"3\",\"transfer\":null,\"etag\":\"W/\\\"3-f1UKn0xEFzo3Zk2TjxNV8PkqR6c\\\"\",\"body\":\"686579\",\"ends\":1,\"chain\":true},{\"id\":\"manual-etag\",\"status\":200,\"type\":\"text/html; charset=utf-8\",\"length\":\"5\",\"transfer\":null,\"etag\":\"\\\"manual\\\"\",\"body\":\"68656c6c6f\",\"ends\":1,\"chain\":true},{\"id\":\"etag-off\",\"status\":200,\"type\":\"text/html; charset=utf-8\",\"length\":\"5\",\"transfer\":null,\"etag\":null,\"body\":\"68656c6c6f\",\"ends\":1,\"chain\":true},{\"id\":\"etag-strong\",\"status\":200,\"type\":\"text/html; charset=utf-8\",\"length\":\"5\",\"transfer\":null,\"etag\":\"\\\"5-qvTGHdzF6KLavt4PO0gs2a6pQ00\\\"\",\"body\":\"68656c6c6f\",\"ends\":1,\"chain\":true},{\"id\":\"etag-custom\",\"status\":200,\"type\":\"text/html; charset=utf-8\",\"length\":\"5\",\"transfer\":null,\"etag\":\"\\\"custom-5\\\"\",\"body\":\"68656c6c6f\",\"ends\":1,\"chain\":true},{\"id\":\"head\",\"status\":200,\"type\":\"text/html; charset=utf-8\",\"length\":\"5\",\"transfer\":null,\"etag\":\"W/\\\"5-qvTGHdzF6KLavt4PO0gs2a6pQ00\\\"\",\"body\":\"\",\"ends\":1,\"chain\":true},{\"id\":\"fresh\",\"status\":304,\"type\":null,\"length\":null,\"transfer\":null,\"etag\":\"\\\"manual\\\"\",\"body\":\"\",\"ends\":1,\"chain\":true},{\"id\":\"not-fresh-error\",\"status\":500,\"type\":\"text/html; charset=utf-8\",\"length\":\"3\",\"transfer\":null,\"etag\":\"\\\"manual\\\"\",\"body\":\"686579\",\"ends\":1,\"chain\":true},{\"id\":\"status-204\",\"status\":204,\"type\":null,\"length\":null,\"transfer\":null,\"etag\":\"W/\\\"3-C+7Hteo/D9vJXQ3UfzxbwnXaijM\\\"\",\"body\":\"\",\"ends\":1,\"chain\":true},{\"id\":\"status-205\",\"status\":205,\"type\":\"text/html; charset=utf-8\",\"length\":\"0\",\"transfer\":null,\"etag\":\"W/\\\"3-C+7Hteo/D9vJXQ3UfzxbwnXaijM\\\"\",\"body\":\"\",\"ends\":1,\"chain\":true},{\"id\":\"status-304\",\"status\":304,\"type\":null,\"length\":null,\"transfer\":null,\"etag\":\"W/\\\"3-C+7Hteo/D9vJXQ3UfzxbwnXaijM\\\"\",\"body\":\"\",\"ends\":1,\"chain\":true},{\"id\":\"transfer-etag\",\"etag\":\"W/\\\"5-qvTGHdzF6KLavt4PO0gs2a6pQ00\\\"\",\"body\":\"68656c6c6f\",\"ends\":1,\"chain\":true}]"
+        }
+      ]
+    },
+    "evaluator_controls": {
+      "schema": "codex-ab.evaluator-controls.v1",
+      "cases": [
+        {
+          "id": "upstream-reference",
+          "role": "reference",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "transfer-encoding-length": "pass",
+            "send-regressions": "pass"
+          },
+          "patches": [
+            {
+              "path": "package.json",
+              "before_sha256": "2268b9a6428c2cd52f7a4559183592d87b86793e7598a6882c8ced5f8f06fb22",
+              "after_sha256": "6972b3078d76831f97647343765d4b091ddfb508fc18418b37c108356d0d1d85",
+              "diff": "diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -33,7 +33,7 @@\n   ],\n   \"dependencies\": {\n     \"accepts\": \"^2.0.0\",\n-    \"body-parser\": \"^2.3.0\",\n+    \"body-parser\": \"^2.2.1\",\n     \"content-disposition\": \"^2.0.1\",\n     \"content-type\": \"^2.0.0\",\n     \"cookie\": \"^0.7.1\",\n@@ -69,11 +69,11 @@\n     \"ejs\": \"^3.1.10\",\n     \"eslint\": \"8.47.0\",\n     \"express-session\": \"^1.18.1\",\n-    \"hbs\": \"4.3.0\",\n+    \"hbs\": \"4.2.0\",\n     \"marked\": \"^15.0.3\",\n     \"method-override\": \"3.0.0\",\n     \"mocha\": \"^11.7.5\",\n-    \"morgan\": \"1.12.0\",\n+    \"morgan\": \"1.10.1\",\n     \"nyc\": \"^17.1.0\",\n     \"pbkdf2-password\": \"1.2.1\",\n     \"supertest\": \"^6.3.0\",\n"
+            }
+          ]
+        },
+        {
+          "id": "pinned-baseline",
+          "role": "baseline",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "transfer-encoding-length": "fail",
+            "send-regressions": "pass"
+          }
+        },
+        {
+          "id": "chunked-only-guard",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "transfer-encoding-length": "fail"
+          },
+          "patches": [
+            {
+              "path": "lib/response.js",
+              "before_sha256": "6e14c3faaf8ad85c183646ba87b3e8e78677727304d7797a947062663ef9aa37",
+              "after_sha256": "8356559085e54a337b8a7c112024b37146ac12484e340c94871de2692d16b2a2",
+              "diff": "diff --git a/lib/response.js b/lib/response.js\n--- a/lib/response.js\n+++ b/lib/response.js\n@@ -179,7 +179,7 @@\n \n     // Because Content-Length and Transfer-Encoding can't be present in the response headers together,\n     // Content-Length should be added only if there is no Transfer-Encoding header\n-    if (!this.get('Transfer-Encoding')) {\n+    if (this.get('Transfer-Encoding') !== 'chunked') {\n       this.set('Content-Length', len);\n     }\n   }\n"
+            },
+            {
+              "path": "package.json",
+              "before_sha256": "2268b9a6428c2cd52f7a4559183592d87b86793e7598a6882c8ced5f8f06fb22",
+              "after_sha256": "6972b3078d76831f97647343765d4b091ddfb508fc18418b37c108356d0d1d85",
+              "diff": "diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -33,7 +33,7 @@\n   ],\n   \"dependencies\": {\n     \"accepts\": \"^2.0.0\",\n-    \"body-parser\": \"^2.3.0\",\n+    \"body-parser\": \"^2.2.1\",\n     \"content-disposition\": \"^2.0.1\",\n     \"content-type\": \"^2.0.0\",\n     \"cookie\": \"^0.7.1\",\n@@ -69,11 +69,11 @@\n     \"ejs\": \"^3.1.10\",\n     \"eslint\": \"8.47.0\",\n     \"express-session\": \"^1.18.1\",\n-    \"hbs\": \"4.3.0\",\n+    \"hbs\": \"4.2.0\",\n     \"marked\": \"^15.0.3\",\n     \"method-override\": \"3.0.0\",\n     \"mocha\": \"^11.7.5\",\n-    \"morgan\": \"1.12.0\",\n+    \"morgan\": \"1.10.1\",\n     \"nyc\": \"^17.1.0\",\n     \"pbkdf2-password\": \"1.2.1\",\n     \"supertest\": \"^6.3.0\",\n"
+            }
+          ]
+        },
+        {
+          "id": "transfer-etag-regression",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "send-regressions": "fail"
+          },
+          "patches": [
+            {
+              "path": "lib/response.js",
+              "before_sha256": "6e14c3faaf8ad85c183646ba87b3e8e78677727304d7797a947062663ef9aa37",
+              "after_sha256": "faa171378e85e2f9474d7e6a5a54a2357b786c72f8d06eda7a533899d6ff1fc8",
+              "diff": "diff --git a/lib/response.js b/lib/response.js\n--- a/lib/response.js\n+++ b/lib/response.js\n@@ -163,7 +163,7 @@\n   var generateETag = !this.get('ETag') && typeof etagFn === 'function'\n \n   var len;\n-  if (chunk !== undefined) {\n+  if (chunk !== undefined && !this.get('Transfer-Encoding')) {\n     if (Buffer.isBuffer(chunk)) {\n       // get length of Buffer\n       len = chunk.length\n"
+            },
+            {
+              "path": "package.json",
+              "before_sha256": "2268b9a6428c2cd52f7a4559183592d87b86793e7598a6882c8ced5f8f06fb22",
+              "after_sha256": "6972b3078d76831f97647343765d4b091ddfb508fc18418b37c108356d0d1d85",
+              "diff": "diff --git a/package.json b/package.json\n--- a/package.json\n+++ b/package.json\n@@ -33,7 +33,7 @@\n   ],\n   \"dependencies\": {\n     \"accepts\": \"^2.0.0\",\n-    \"body-parser\": \"^2.3.0\",\n+    \"body-parser\": \"^2.2.1\",\n     \"content-disposition\": \"^2.0.1\",\n     \"content-type\": \"^2.0.0\",\n     \"cookie\": \"^0.7.1\",\n@@ -69,11 +69,11 @@\n     \"ejs\": \"^3.1.10\",\n     \"eslint\": \"8.47.0\",\n     \"express-session\": \"^1.18.1\",\n-    \"hbs\": \"4.3.0\",\n+    \"hbs\": \"4.2.0\",\n     \"marked\": \"^15.0.3\",\n     \"method-override\": \"3.0.0\",\n     \"mocha\": \"^11.7.5\",\n-    \"morgan\": \"1.12.0\",\n+    \"morgan\": \"1.10.1\",\n     \"nyc\": \"^17.1.0\",\n     \"pbkdf2-password\": \"1.2.1\",\n     \"supertest\": \"^6.3.0\",\n"
+            }
+          ]
+        },
+        {
+          "id": "native-header-guard",
+          "role": "alternative",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "transfer-encoding-length": "pass",
+            "send-regressions": "pass"
+          },
+          "patches": [
+            {
+              "path": "lib/response.js",
+              "before_sha256": "c19dd3c2fcf0288c2abea692f64f2712cb06774953cb78c32aa50ec4c0973ce8",
+              "after_sha256": "02998c9cf35d7ca9b483e86f318b0d87174fbe910b141e73b736368c543a8c89",
+              "diff": "diff --git a/lib/response.js b/lib/response.js\n--- a/lib/response.js\n+++ b/lib/response.js\n@@ -178,7 +178,7 @@\n       len = chunk.length\n     }\n \n-    this.set('Content-Length', len);\n+    if (!this.hasHeader('transfer-encoding')) this.set('Content-Length', len);\n   }\n \n   // populate ETag\n"
+            }
+          ]
+        }
+      ]
+    }
   }
 }

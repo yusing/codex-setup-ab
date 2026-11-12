@@ -56,7 +56,472 @@
     ],
     "preparation": "if test ! -x /opt/task-deps/python/bin/python; then python3 -m venv /opt/task-deps/python && /opt/task-deps/python/bin/pip install --no-cache-dir click==8.5.0 click-default-group==1.2.4 pluggy==1.6.0 python-dateutil==2.9.0.post0 sqlite-fts4==1.0.3 tabulate==0.10.0 pytest==9.1.1 hypothesis==6.168.1 cogapp==3.6.0 black==26.5.1 flake8==7.4.1 flake8-pyproject==1.2.4 mypy==2.3.1 types-python-dateutil==2.9.0.20260807; fi",
     "existing_tests": "PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 /opt/task-deps/python/bin/python -m pytest -p no:cacheprovider -q",
-    "evaluator_guidance": "Use /opt/task-deps/python/bin/python with PYTHONPATH=. and PYTHONDONTWRITEBYTECODE=1; invoke the CLI with python -m sqlite_utils. Dependencies are preinstalled; do not install packages. Candidate sources are read-only: disable pytest caching, put mypy/black caches and databases in temporary directories, and do not generate bytecode. Run the full candidate suite and configured black, flake8, mypy, and cog checks. Inspect API/CLI callers and tests before authoring executable checks. Assess the visible prompt outcomes and their meaningful interactions. The task derives from 19 upstream commits, frozen read-only under /reference. Inspect index.json, the relevant commit patches, and changes.patch to ground behavioral checks and the final assessment in actual upstream behavior. Accept equivalent designs and safe improvements; reference limitations are permitted, not mandatory rejection rules. For example, numeric equality may merge integer/real ANY values during extraction, and all-NULL rows need no lookup entry; do not require stronger storage-class preservation than the reference. Do not require exact SQL, parser internals, metadata-query counts, unchanged tests, or implementation-specific output structures absent from the prompt. Inspect changed tests for lost unaffected coverage. Candidate commits are a delivery requirement; these evaluator workspaces contain the final tree, not candidate history, so do not claim to verify commit correspondence here. Preserve source observations with insufficient executed coverage as unassessed. Evaluator wiring mistakes are HARNESS_ERROR/unassessed. Do not score journal resets, launcher identity, runtime, patch size, or commit messages as product correctness.",
-    "qualification": "not-run"
+    "evaluator_guidance": "Use /opt/task-deps/python/bin/python with PYTHONPATH=. and PYTHONDONTWRITEBYTECODE=1; invoke the CLI with python -m sqlite_utils. Dependencies are preinstalled; do not install packages. Candidate sources are read-only: disable pytest caching, put mypy/black caches and databases in temporary directories, and do not generate bytecode. Run the full candidate suite and configured black, flake8, mypy, and cog checks. Inspect API/CLI callers and tests before authoring executable checks. Assess the visible prompt outcomes and their meaningful interactions. The task derives from 19 upstream commits, frozen read-only under /reference. Inspect index.json, the relevant commit patches, and changes.patch to ground behavioral checks and the final assessment in actual upstream behavior. Accept equivalent designs and safe improvements; reference limitations are permitted, not mandatory rejection rules. For example, numeric equality may merge integer/real ANY values during extraction, and all-NULL rows need no lookup entry; do not require stronger storage-class preservation than the reference. Do not require exact SQL, parser internals, metadata-query counts, unchanged tests, or implementation-specific output structures absent from the prompt. Inspect changed tests for lost unaffected coverage. Candidate commits are a delivery requirement; these evaluator workspaces contain the final tree, not candidate history, so do not claim to verify commit correspondence here. Preserve source observations with insufficient executed coverage as unassessed. Evaluator wiring mistakes remain unassessed according to supervisor evidence, not child vocabulary. Do not score journal resets, launcher identity, runtime, patch size, or commit messages as product correctness. Frozen existing observations cover CRUD, rollback, foreign-key-safe transform, input formats, and CLI rows. Criterion controls target actual feature regressions and accept equivalent SQL identifier quoting and documentation wording. The tests/types/docs model-free probe checks limited API/CLI topics, runtime interfaces, and changelog artifact readability, not comprehensive test, type, or prose quality; assess the full criterion separately.",
+    "qualification": "not-run",
+    "existing_test_verification": {
+      "schema": "codex-ab.verification.v1",
+      "cases": [
+        {
+          "id": "retained-api-cli-input",
+          "kind": "command",
+          "command": [
+            "/opt/task-deps/python/bin/python",
+            "-I",
+            "-c",
+            "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\ndb=Database(memory=True)\nt=db.table('items').insert_all([{'id':1,'name':'one'},{'id':2,'name':'two'}],pk='id')\nt.update(1,{'name':'updated'})\ntry:\n    with db.atomic():\n        t.insert({'id':3,'name':'rolled back'})\n        raise ValueError('rollback')\nexcept ValueError:\n    pass\nformats=[]\nfor data,fmt in [(b'[{\"x\":1}]',None),(b'x,y\\n1,2\\n',Format.CSV),(b'x\\ty\\n1\\t2\\n',Format.TSV)]:\n    rows,used=rows_from_file(io.BytesIO(data),format=fmt)\n    formats.append(list(rows))\ndb.execute('PRAGMA foreign_keys=ON')\ndb.execute('CREATE TABLE child (item INTEGER REFERENCES items(id) ON DELETE CASCADE)')\ndb.execute('INSERT INTO child VALUES (1)')\nt.transform(rename={'name':'label'})\nwith tempfile.TemporaryDirectory() as tmp:\n    p=str(pathlib.Path(tmp)/'data.db')\n    disk=Database(p)\n    disk.table('items').insert({'id':1,'name':'one'})\n    cli_rows=json.loads(invoke(['rows',p,'items']))\nprint(json.dumps({'rows':list(t.rows),'child':list(db.table('child').rows),'foreign_keys':db.execute('PRAGMA foreign_keys').fetchone()[0],'formats':formats,'cli':cli_rows}))\n"
+          ],
+          "args": [],
+          "expected_exit": 0,
+          "format": "json",
+          "expected": "{\"rows\":[{\"id\":1,\"label\":\"updated\"},{\"id\":2,\"label\":\"two\"}],\"child\":[{\"item\":1}],\"foreign_keys\":1,\"formats\":[[{\"x\":1}],[{\"x\":\"1\",\"y\":\"2\"}],[{\"x\":\"1\",\"y\":\"2\"}]],\"cli\":[{\"id\":1,\"name\":\"one\"}]}"
+        }
+      ]
+    },
+    "evaluator_controls": {
+      "schema": "codex-ab.evaluator-controls.v1",
+      "cases": [
+        {
+          "id": "upstream-reference",
+          "role": "reference",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "views-and-transactions": "pass",
+            "checks-and-parser": "pass",
+            "check-transforms": "pass",
+            "comments-and-indexes": "pass",
+            "autoincrement-and-unique": "pass",
+            "any-types-and-cli": "pass",
+            "numeric-transforms": "pass",
+            "input-query-identifiers": "pass",
+            "tests-types-docs": "pass",
+            "integrated-upgrade": "pass"
+          }
+        },
+        {
+          "id": "pinned-baseline",
+          "role": "baseline",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "views-and-transactions": "fail",
+            "checks-and-parser": "fail",
+            "check-transforms": "fail",
+            "comments-and-indexes": "fail",
+            "autoincrement-and-unique": "fail",
+            "any-types-and-cli": "fail",
+            "numeric-transforms": "fail",
+            "input-query-identifiers": "fail",
+            "tests-types-docs": "fail",
+            "integrated-upgrade": "fail"
+          }
+        },
+        {
+          "id": "negative-views-and-transactions",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "dbcddfe34f8a7d188ddff30007aea2189ae05e7c92a01525b47b85c43e2ffff4",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3219,13 +3219,13 @@\n             legacy_alter_table_row and legacy_alter_table_row[0]\n         )\n         if keep_table:\n-            sqls.append(\"PRAGMA legacy_alter_table=ON;\")\n+            sqls.append(\"PRAGMA legacy_alter_table=OFF;\")\n             sqls.append(\n                 f\"ALTER TABLE {quote_identifier(self.name)} RENAME TO {quote_identifier(keep_table)};\"\n             )\n         else:\n             sqls.append(f\"DROP TABLE {quote_identifier(self.name)};\")\n-            sqls.append(\"PRAGMA legacy_alter_table=ON;\")\n+            sqls.append(\"PRAGMA legacy_alter_table=OFF;\")\n         sqls.append(\n             f\"ALTER TABLE {quote_identifier(new_table_name)} RENAME TO {quote_identifier(self.name)};\"\n         )\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "views-and-transactions": "fail"
+          }
+        },
+        {
+          "id": "negative-checks-and-parser",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "6d52dbd571e507898f7b64b2675e292aa978e3bcd29457678217a3bcc924a1c9",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -2373,7 +2373,7 @@\n         \"List of column-level and table-level CHECK constraints on this table.\"\n         if not self.exists() or self.virtual_table_using is not None:\n             return []\n-        return parse_checks(self.schema)\n+        return []\n \n     @property\n     def column_checks(self) -> dict[str, list[Check]]:\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "checks-and-parser": "fail"
+          }
+        },
+        {
+          "id": "negative-check-transforms",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "16ef48be8bc9ce5954b7c783b077685071bc68d4088c066540af65472cfc6dc2",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3086,7 +3086,7 @@\n                 foreign_keys=create_table_foreign_keys,\n                 column_order=column_order,\n                 strict=self.strict if strict is None else strict,\n-                _checks=create_table_checks,\n+                _checks=[],\n                 _column_comments=create_table_column_comments,\n                 _autoincrement=create_table_autoincrement,\n                 _uniques=create_table_uniques,\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "check-transforms": "fail"
+          }
+        },
+        {
+          "id": "negative-comments-and-indexes",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "c9f350cddd0ecb30425b1b3632c663044c534b0885289cee9b6a054d643b5219",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3087,7 +3087,7 @@\n                 column_order=column_order,\n                 strict=self.strict if strict is None else strict,\n                 _checks=create_table_checks,\n-                _column_comments=create_table_column_comments,\n+                _column_comments={},\n                 _autoincrement=create_table_autoincrement,\n                 _uniques=create_table_uniques,\n             ).strip()\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "comments-and-indexes": "fail"
+          }
+        },
+        {
+          "id": "negative-autoincrement-and-unique",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "a73b51f66bb7ca81bbd1052506f1b4f17bc6ce6fea64a6a427f3adaed1a10da9",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3234,7 +3234,7 @@\n                 \"ON\" if legacy_alter_table_was_on else \"OFF\"\n             )\n         )\n-        if autoincrement_sequence is not None:\n+        if False:\n             table_name_literal = self.db.quote(self.name)\n             sqls.extend(\n                 (\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "autoincrement-and-unique": "fail"
+          }
+        },
+        {
+          "id": "negative-any-types-and-cli",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/utils.py",
+              "before_sha256": "7d8a00c696bd5ea1128e135745ccbba2615c1bbb110c29454ad73f169798a64d",
+              "after_sha256": "c5048584ff34153bc58408fdc5a1348cdb279bfc9d3eea1461a9c7332f1d2817",
+              "diff": "diff --git a/sqlite_utils/utils.py b/sqlite_utils/utils.py\n--- a/sqlite_utils/utils.py\n+++ b/sqlite_utils/utils.py\n@@ -183,7 +183,7 @@\n     if \"REAL\" in column_type or \"FLOA\" in column_type or \"DOUB\" in column_type:\n         return float\n     if column_type == \"ANY\":\n-        return ANY\n+        return float\n     # Default is 'NUMERIC', which we currently also treat as float\n     return float\n \n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "any-types-and-cli": "fail"
+          }
+        },
+        {
+          "id": "negative-numeric-transforms",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "0ff0bda450778e2b1cd8b170ec9d0740c2fdf03cbd0ab648d529c043190d3f30",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3118,7 +3118,7 @@\n             old_cols.insert(0, \"rowid\")\n \n         def _copy_expr(col):\n-            if col in text_to_numeric_cols:\n+            if False:\n                 return \"NULLIF({}, '')\".format(quote_identifier(col))\n             return quote_identifier(col)\n \n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "numeric-transforms": "fail"
+          }
+        },
+        {
+          "id": "negative-input-query-identifiers",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "e0347c7f37a31473c08fae111a37ba903182fb92b32941cfaf35a68dd702f308",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -5536,7 +5536,7 @@\n         return binascii.unhexlify(to_decode)\n     upper = value.upper()\n     if upper == \"TRUE\":\n-        return True\n+        return value\n     if upper == \"FALSE\":\n         return False\n     if upper == \"NULL\":\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "input-query-identifiers": "fail"
+          }
+        },
+        {
+          "id": "negative-tests-types-docs",
+          "role": "negative",
+          "base": "reference",
+          "files": [
+            {
+              "path": "docs/changelog.rst",
+              "source": null
+            }
+          ],
+          "expected": {
+            "tests-types-docs": "fail"
+          }
+        },
+        {
+          "id": "negative-integrated-upgrade",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "dc6feb0f73a2da96518fa6122c4636793d08bb237f713dbae592605b06e24289",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3089,7 +3089,7 @@\n                 _checks=create_table_checks,\n                 _column_comments=create_table_column_comments,\n                 _autoincrement=create_table_autoincrement,\n-                _uniques=create_table_uniques,\n+                _uniques=[],\n             ).strip()\n         )\n \n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "integrated-upgrade": "fail"
+          }
+        },
+        {
+          "id": "alternative-views-and-transactions",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "f02f6a30c53ae340d5713429544edeab04199e72538b031a78e225e8d2912c3d",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3216,7 +3216,7 @@\n         # current value afterwards.\n         legacy_alter_table_row = self.db.execute(\"PRAGMA legacy_alter_table\").fetchone()\n         legacy_alter_table_was_on = bool(\n-            legacy_alter_table_row and legacy_alter_table_row[0]\n+            legacy_alter_table_row is not None and legacy_alter_table_row[0] != 0\n         )\n         if keep_table:\n             sqls.append(\"PRAGMA legacy_alter_table=ON;\")\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "views-and-transactions": "pass"
+          }
+        },
+        {
+          "id": "alternative-checks-and-parser",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "33e8bdaead50f38950afec3bb0a4c64596aa7364d491b06f97878ad5221a761e",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -2381,7 +2381,7 @@\n         checks: dict[str, list[Check]] = {}\n         for check in self.checks:\n             if check.column:\n-                checks.setdefault(check.column, []).append(check)\n+                checks[check.column] = [*checks.get(check.column, []), check]\n         return checks\n \n     @property\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "checks-and-parser": "pass"
+          }
+        },
+        {
+          "id": "alternative-check-transforms",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "a21b1844b8830a41dc3a7549bf48df246f42bf17f161c4450b6bed8b9655b89d",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -2857,7 +2857,7 @@\n                 resolve_casing(check.column, existing_columns) if check.column else \"\"\n             )\n             # A column-level constraint disappears with the column that owns it.\n-            if owner and owner in drop:\n+            if owner in drop:\n                 continue\n             for dropped_column in drop:\n                 if check_references_identifier(check.check, dropped_column):\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "check-transforms": "pass"
+          }
+        },
+        {
+          "id": "alternative-comments-and-indexes",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "24a7e8ad1a9573bd63d8d90af7109992e148941b33df7c3543e0e45c87eb20e6",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -2908,7 +2908,7 @@\n         for column, comments in existing_column_comments.items():\n             owner = resolve_casing(column, existing_columns)\n             if owner not in drop:\n-                create_table_column_comments[rename.get(owner) or owner] = comments\n+                create_table_column_comments[rename.get(owner, owner)] = comments\n \n         create_table_foreign_keys: list[ForeignKeyIndicator] = []\n \n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "comments-and-indexes": "pass"
+          }
+        },
+        {
+          "id": "alternative-autoincrement-and-unique",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "6a76647774004873d9d0cc65b63d58cd0a8ba7075c7ab52662ce84fb511aaf1f",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3238,7 +3238,7 @@\n             table_name_literal = self.db.quote(self.name)\n             sqls.extend(\n                 (\n-                    \"UPDATE sqlite_sequence SET seq = MAX(seq, {sequence}) \"\n+                    \"UPDATE sqlite_sequence SET seq = CASE WHEN seq < {sequence} THEN {sequence} ELSE seq END \"\n                     \"WHERE name = {table_name};\".format(\n                         sequence=autoincrement_sequence,\n                         table_name=table_name_literal,\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "autoincrement-and-unique": "pass"
+          }
+        },
+        {
+          "id": "alternative-any-types-and-cli",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/utils.py",
+              "before_sha256": "7d8a00c696bd5ea1128e135745ccbba2615c1bbb110c29454ad73f169798a64d",
+              "after_sha256": "9ec0017f16c58aabe336f246b50276774fb986a81d2ff69c5c53af8b0a511e1f",
+              "diff": "diff --git a/sqlite_utils/utils.py b/sqlite_utils/utils.py\n--- a/sqlite_utils/utils.py\n+++ b/sqlite_utils/utils.py\n@@ -182,7 +182,7 @@\n         return bytes\n     if \"REAL\" in column_type or \"FLOA\" in column_type or \"DOUB\" in column_type:\n         return float\n-    if column_type == \"ANY\":\n+    if column_type in (\"ANY\",):\n         return ANY\n     # Default is 'NUMERIC', which we currently also treat as float\n     return float\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "any-types-and-cli": "pass"
+          }
+        },
+        {
+          "id": "alternative-numeric-transforms",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "098243381f6561e857f0febfe2a87f022ed5505cdb20b7ba0372ef8fcaeb44c6",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3119,7 +3119,7 @@\n \n         def _copy_expr(col):\n             if col in text_to_numeric_cols:\n-                return \"NULLIF({}, '')\".format(quote_identifier(col))\n+                return \"CASE WHEN {0} = '' THEN NULL ELSE {0} END\".format(quote_identifier(col))\n             return quote_identifier(col)\n \n         copy_sql = \"INSERT INTO {} ({new_cols})\\n   SELECT {old_cols} FROM {};\".format(\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "numeric-transforms": "pass"
+          }
+        },
+        {
+          "id": "alternative-input-query-identifiers",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "69f1d7506ed05d7db6b724d067b8a01950a474d4f4dd55df621af0f844796f5b",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -5535,10 +5535,8 @@\n         to_decode = value[2:-1]\n         return binascii.unhexlify(to_decode)\n     upper = value.upper()\n-    if upper == \"TRUE\":\n-        return True\n-    if upper == \"FALSE\":\n-        return False\n+    if upper in (\"TRUE\", \"FALSE\"):\n+        return upper == \"TRUE\"\n     if upper == \"NULL\":\n         return None\n     # If it is a string containing a floating point number:\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "input-query-identifiers": "pass"
+          }
+        },
+        {
+          "id": "alternative-tests-types-docs",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "docs/python-api.rst",
+              "before_sha256": "447777bacd71d7d875e43796cb7737947577bc5a85953710682c887b9c7488df",
+              "after_sha256": "d33f6ac83aaa3cb5593a2d48f3957b68f5e13fdc3881c258fca5dd19eba4b659",
+              "diff": "diff --git a/docs/python-api.rst b/docs/python-api.rst\n--- a/docs/python-api.rst\n+++ b/docs/python-api.rst\n@@ -839,7 +839,7 @@\n         \"payload\": sqlite_utils.ANY,\n     }, pk=\"id\", strict=True)\n \n-An ``ANY`` column can store integers, floating point values, text, binary data or ``None``. In a ``STRICT`` table a text value such as ``\"000123\"`` remains text with its leading zeroes intact. SQLite also accepts ``ANY`` columns in ordinary non-``STRICT`` tables, but those columns apply numeric affinity and would store that same value as the integer ``123``.\n+An ``ANY`` column accepts integers, floating point values, text, binary data or ``None``. In a ``STRICT`` table a text value such as ``\"000123\"`` remains text with its leading zeroes intact. SQLite also accepts ``ANY`` columns in ordinary non-``STRICT`` tables, but those columns apply numeric affinity and would store that same value as the integer ``123``.\n \n .. note::\n     In the CLI: :ref:`sqlite-utils create-table <cli_create_table>`\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "tests-types-docs": "pass"
+          }
+        },
+        {
+          "id": "alternative-integrated-upgrade",
+          "role": "alternative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "098243381f6561e857f0febfe2a87f022ed5505cdb20b7ba0372ef8fcaeb44c6",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -3119,7 +3119,7 @@\n \n         def _copy_expr(col):\n             if col in text_to_numeric_cols:\n-                return \"NULLIF({}, '')\".format(quote_identifier(col))\n+                return \"CASE WHEN {0} = '' THEN NULL ELSE {0} END\".format(quote_identifier(col))\n             return quote_identifier(col)\n \n         copy_sql = \"INSERT INTO {} ({new_cols})\\n   SELECT {old_cols} FROM {};\".format(\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "integrated-upgrade": "pass"
+          }
+        },
+        {
+          "id": "alternative-generic-any-wording",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "docs/changelog.rst",
+              "before_sha256": "c47303da09dfb87b01329b909f45744975eba74c9f655998f86caad73b740744",
+              "after_sha256": "0ee19431d80d9d84a51ae73aa3fafa41f9cea4e1f842e04fc7328168caf14331",
+              "diff": "diff --git a/docs/changelog.rst b/docs/changelog.rst\n--- a/docs/changelog.rst\n+++ b/docs/changelog.rst\n@@ -12,7 +12,7 @@\n - ``table.transform()`` now preserves column-level and composite ``UNIQUE`` constraints, including constraint names, collations, sort order and ``ON CONFLICT`` behavior. Renaming columns updates those constraints, while dropping any constituent column removes the entire constraint. (:issue:`762`)\n - ``table.transform()`` now preserves ``AUTOINCREMENT`` primary keys and their sequence high-water marks. Previously a transform removed ``AUTOINCREMENT`` and could reuse deleted row IDs. (:issue:`602`)\n - New ``table.checks``, ``table.column_checks`` and ``table.table_checks`` introspection properties expose column-level and table-level ``CHECK`` constraints. (:issue:`834`)\n-- New ``sqlite_utils.ANY`` marker type for creating and introspecting SQLite ``ANY`` columns. The Python API and CLI can create, add and transform these columns, and ``table.transform()`` and ``table.extract()`` now preserve ``ANY`` columns and their values in ``STRICT`` tables. (:issue:`790`)\n+- New generic marker type for creating and introspecting SQLite ``ANY`` columns. The Python API and CLI can create, add and transform these columns, and ``table.transform()`` and ``table.extract()`` now preserve ``ANY`` columns and their values in ``STRICT`` tables. (:issue:`790`)\n - ``table.transform()`` now preserves ``CHECK`` constraints, including comments within their expressions. Renaming a column rewrites identifier references in checks without changing string literals or function names. Dropping a column drops a check owned by that column, and raises ``TransformError`` if a remaining check depends on it. (:issue:`762`)\n - ``table.transform()`` now preserves comments immediately before or after column definitions. These comments move with the column if it is renamed or reordered, and are removed if the column is dropped. (:issue:`762`)\n - ``table.transform(rename=...)`` now preserves explicit indexes on renamed columns by dropping and recreating those indexes against the new column names. Previously this raised a ``TransformError``. (:issue:`822`)\n"
+            }
+          ],
+          "expected": {
+            "tests-types-docs": "pass"
+          }
+        },
+        {
+          "id": "alternative-comments-brackets",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "712e24d5e996685a56b49099bf85a9d03ab0da81f15fb683bdabe00c240b48f3",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -98,6 +98,8 @@\n \n     Double quotes inside the identifier are escaped by doubling them.\n     \"\"\"\n+    if identifier == 'label':\n+        return '[' + identifier + ']'\n     return '\"{}\"'.format(identifier.replace('\"', '\"\"'))\n \n \n"
+            }
+          ],
+          "expected": {
+            "comments-and-indexes": "pass"
+          }
+        },
+        {
+          "id": "alternative-comments-backticks",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "3ad41f46fe8afd0bf8ce45d1c23d9e528f39e843280627bc5229d37ec2fab368",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -98,6 +98,8 @@\n \n     Double quotes inside the identifier are escaped by doubling them.\n     \"\"\"\n+    if identifier == 'label':\n+        return '`' + identifier + '`'\n     return '\"{}\"'.format(identifier.replace('\"', '\"\"'))\n \n \n"
+            }
+          ],
+          "expected": {
+            "comments-and-indexes": "pass"
+          }
+        },
+        {
+          "id": "alternative-comments-unquoted",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "sqlite_utils/db.py",
+              "before_sha256": "a28a7fb3100a17c8521932d1363963d7b3d842eb2f0def8ad1cbda526795cf7a",
+              "after_sha256": "79b912020a078f7161f82c4ba4fada0210ab84b488048b698095dd1d077af7e3",
+              "diff": "diff --git a/sqlite_utils/db.py b/sqlite_utils/db.py\n--- a/sqlite_utils/db.py\n+++ b/sqlite_utils/db.py\n@@ -98,6 +98,8 @@\n \n     Double quotes inside the identifier are escaped by doubling them.\n     \"\"\"\n+    if identifier == 'label':\n+        return identifier\n     return '\"{}\"'.format(identifier.replace('\"', '\"\"'))\n \n \n"
+            }
+          ],
+          "expected": {
+            "comments-and-indexes": "pass"
+          }
+        }
+      ]
+    }
   }
 }

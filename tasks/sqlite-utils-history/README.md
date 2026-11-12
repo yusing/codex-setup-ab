@@ -117,14 +117,66 @@ baseline suite establishes the starting environment. A successful reference
 suite establishes attainable upstream behavior under that environment; it
 does not prove judge quality or a treatment advantage.
 
+The frozen existing-behavior gate observes actual API insert/update/read,
+atomic rollback, a foreign-key-protected transform and restored foreign-key
+setting, JSON/CSV/TSV input, and CLI row output. The supervisor compares the
+returned row and setting values independently. This is a scoped retained-behavior
+gate, not an assertion that the entire pytest suite passed. The original full
+suite command remains a separate diagnostic.
+
+Every criterion has the actual pinned upstream reference, the unchanged baseline,
+a targeted incorrect source mutation, and a valid alternative source change.
+All mutations are small frozen patches with checked preimage and postimage hashes.
+The baseline is expected to fail each feature probe, while both baseline and
+reference pass the retained-behavior gate. The alternative controls use equivalent
+implementations, not a requirement to reproduce upstream syntax.
+
+The model-free observations and their controls have this scope:
+
+| Criterion | Observed behavior | Targeted negative | Valid alternative |
+| --- | --- | --- | --- |
+| `views-and-transactions` | Live view rows with and without backups; both initial legacy-alter settings restored | Disable legacy-alter mode during swap | Equivalent previous-setting predicate |
+| `checks-and-parser` | Named, quoted and commented CHECK expressions, literal choices including empty choices, owning columns and source spans | Omit introspected checks | Independently construct grouped column checks |
+| `check-transforms` | Enforce renamed checks; reject a dependent drop without changing schema/rows; remove an owned check on drop | Omit checks during recreation | Equivalent owned-column drop predicate |
+| `comments-and-indexes` | Move comments on rename/reorder; retain unique, NOCASE, descending index behavior | Lose column comments | Equivalent renamed-comment lookup; double-quoted, bracketed, backtick and unquoted identifiers |
+| `autoincrement-and-unique` | Deleted high-water ID is not reused; retain named composite UNIQUE, NOCASE, descending order and IGNORE conflict behavior; drop a constituent | Lose sequence high-water restoration | Equivalent SQL sequence maximum |
+| `any-types-and-cli` | API create/add/introspect/transform/extract; STRICT numeric-looking text and ordinary affinity; CLI create/add/transform | Misclassify ANY affinity | Equivalent ANY type dispatch |
+| `numeric-transforms` | API INTEGER/FLOAT/REAL and CLI INTEGER conversions; exact empty strings, whitespace, NULL and untouched text | Copy empty strings without NULL conversion | CASE expression instead of NULLIF |
+| `input-query-identifiers` | Row/search/CLI offset, blank input, safe and valid tokenizer values, quoted index rename, boolean/NULL defaults and bracketed dry-run identifiers | Leave TRUE defaults as text | Independent boolean default dispatch |
+| `tests-types-docs` | API/CLI topic smoke checks, a readable nonempty changelog artifact, automatic reference directives, exported ANY and Table runtime interfaces | Remove the required changelog artifact | Equivalent API wording; generic marker wording that still describes ANY behavior |
+| `integrated-upgrade` | STRICT ANY with CHECK/UNIQUE, numeric conversion, deleted high-water ID, a live view and backup, then extraction | Lose UNIQUE during recreation | Equivalent CASE-based numeric copying |
+
+These expectations derive from the numbered prompt outcomes and corresponding
+pinned commits in the provenance table. In particular, the tests/types/docs probe
+does **not** certify complete documentation, changelog topic completeness, type checking, meaningful test
+coverage, or all configured checks. Older SQLite compatibility, additional parser
+syntax and unsupported-transform protections also require adaptive checks and
+source review beyond these model-free examples. The full criteria remain binding.
+
+To repeat the offline supervisor and qualification test, supply the pinned source
+checkout and an image containing the manifest's pinned Python dependencies:
+
+```sh
+CODEX_AB_LIVE_DOCKER=1 CODEX_AB_SQLITE_UTILS_SOURCE=/path/to/sqlite-utils \
+  CODEX_AB_VERIFIER_IMAGE=your-prepared-image \
+  bun test sqlite-qualification.live.test.ts
+```
+
+The test makes no model requests. It executes ten feature probes against all four
+control roles, including additional valid wording and identifier-quoting neighbors,
+plus retained-behavior observations on baseline and reference,
+through the normal offline supervisor and qualification executor. A skipped live
+test does not establish runtime coverage. Fresh preparation freezes this contract;
+older retained runs do not acquire these observations or controls retroactively.
+
 On October 9, 2026, both the baseline and reference full suites passed offline
 using the pinned Python dependency environment from the earlier run. The
 reference had **1,488 passed and 16 skipped** tests and passed black, flake8,
 mypy, and cog checks. Sources were mounted read-only, Docker networking was
 disabled, and validation made no model requests. The skipped tests required
 optional environment capabilities. The manifest's `qualification: not-run`
-describes the adaptive-judge contract's lack of a prequalified hidden oracle;
-these upstream reference checks do not change that claim.
+does not prequalify newly authored adaptive checks. Each such check must qualify
+against the frozen controls; upstream suite results alone do not qualify it.
 
 Historical post-journal-reset claims require retained evidence of a successful
 root reset followed by continued root work. Task size and flags alone do not

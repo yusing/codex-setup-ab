@@ -42,7 +42,205 @@
     ],
     "preparation": "task_state=\"$(mktemp -d)\" && trap 'rm -rf \"$task_state\"' EXIT && export MEKUGI_TEST_CLAUDE_NATIVE=0 MEKUGI_TEST_WEBUI_BROWSER=0 XDG_STATE_HOME=\"$task_state/state\" XDG_RUNTIME_DIR=\"$task_state/runtime\" MEKUGI_RUNTIME_DIR=\"$task_state/mekugi\" && mkdir -p \"$XDG_STATE_HOME\" \"$XDG_RUNTIME_DIR\" \"$MEKUGI_RUNTIME_DIR\" && bun install --cwd backends/claude --frozen-lockfile && bun run --cwd backends/claude build && GOFLAGS=-mod=readonly make test RTK= TEST_PACKAGES='./modules/threadcontrol/... ./modules/activity/coordination ./apps/mekugi/internal/sessioncontrol ./apps/mekugi/internal/launch' TEST_PARALLEL=4 TEST_FLAGS='-count=1 -timeout=180s -p=2' TEST_RUN='^$'",
     "existing_tests": "task_state=\"$(mktemp -d)\" && trap 'rm -rf \"$task_state\"' EXIT && export MEKUGI_TEST_CLAUDE_NATIVE=0 MEKUGI_TEST_WEBUI_BROWSER=0 XDG_STATE_HOME=\"$task_state/state\" XDG_RUNTIME_DIR=\"$task_state/runtime\" MEKUGI_RUNTIME_DIR=\"$task_state/mekugi\" && mkdir -p \"$XDG_STATE_HOME\" \"$XDG_RUNTIME_DIR\" \"$MEKUGI_RUNTIME_DIR\" && GOFLAGS=-mod=readonly make test RTK= TEST_PACKAGES='./modules/threadcontrol/... ./modules/activity/coordination ./apps/mekugi/internal/sessioncontrol ./apps/mekugi/internal/launch' TEST_PARALLEL=4 TEST_FLAGS='-count=1 -timeout=180s -p=2' TEST_RUN='Wait|Compaction'",
-    "evaluator_guidance": "Use the modular workspace make test runner, not a root-module go test or historical router/plugin commands. Preparation uses pinned Go and Claude worker dependencies; do not upgrade SDKs or enable live model/E2E tests. Set isolated temporary XDG_STATE_HOME, XDG_RUNTIME_DIR, and MEKUGI_RUNTIME_DIR before tests. Inspect /reference/index.json and the selected patches: 495540d defines aggregate waits through Thread Control, launch/session delivery, coordination presentation, and TestWaitAllSettlesSelectedOutcomesTogether/TestWaitAllMessageTimeoutAndStoppedTargets. 97ea72b defines compaction checkpoints, native settlement gates, continuation/failure/supersession, and corresponding control, Session Control, and Claude launch tests. Owning contracts are modules/threadcontrol/SPEC.md, apps/mekugi/internal/sessioncontrol/SPEC.md, and backends/claude/SPEC.md. The frozen range contains nine commits; the other seven cover capture, browser previews, parent-input/reply presentation, inspection events, environment facts, and contributor guidance, and are not extra requirements. Require selected behavior at least as good as the reference while preserving baseline behavior. Accept equivalent designs and safe improvements without exact helper/architecture or patch requirements. Reference evidence is evaluator-only and candidate implementation must remain unchanged by checks. Wiring failures are HARNESS_ERROR/unassessed; preserve source-only observations without executed coverage as unassessed. Native Codex/Claude acceptance tests are opt-in; report their absence rather than invent executed coverage. Do not score launcher identity, elapsed time, or observed compaction count as product correctness.",
-    "qualification": "not-run"
+    "evaluator_guidance": "Use the modular workspace make test runner, not a root-module go test or historical router/plugin commands. Preparation uses pinned Go and Claude worker dependencies; do not upgrade SDKs or enable live model/E2E tests. Set isolated temporary XDG_STATE_HOME, XDG_RUNTIME_DIR, and MEKUGI_RUNTIME_DIR before tests. Inspect /reference/index.json and the selected patches: 495540d defines aggregate waits through Thread Control, launch/session delivery, coordination presentation, and TestWaitAllSettlesSelectedOutcomesTogether/TestWaitAllMessageTimeoutAndStoppedTargets. 97ea72b defines compaction checkpoints, native settlement gates, continuation/failure/supersession, and corresponding control, Session Control, and Claude launch tests. Owning contracts are modules/threadcontrol/SPEC.md, apps/mekugi/internal/sessioncontrol/SPEC.md, and backends/claude/SPEC.md. The frozen range contains nine commits; the other seven cover capture, browser previews, parent-input/reply presentation, inspection events, environment facts, and contributor guidance, and are not extra requirements. Require selected behavior at least as good as the reference while preserving baseline behavior. Accept equivalent designs and safe improvements without exact helper/architecture or patch requirements. Reference evidence is evaluator-only and candidate implementation must remain unchanged by checks. Supervisor-classified evaluator wiring failures remain unassessed; preserve source-only observations without executed coverage as unassessed. Native Codex/Claude acceptance tests are opt-in; report their absence rather than invent executed coverage. Do not score launcher identity, elapsed time, or observed compaction count as product correctness. Frozen existing observations record actual service state for authorization, message consumption, restored ownership, and default-any coordination. Model-free controls exercise service fixtures for aggregate waits, deadlines, compaction admission and settlement barriers. Integration/documentation and native-provider criteria retain their full scope; service fixtures alone do not certify contract prose or execution through real Codex/Claude providers.",
+    "qualification": "not-run",
+    "existing_test_verification": {
+      "schema": "codex-ab.verification.v1",
+      "cases": [
+        {
+          "id": "preserved-auth-message-consumption-and-restart",
+          "kind": "command",
+          "command": [
+            "python3",
+            "-I",
+            "-c",
+            "import json,os,pathlib,subprocess,sys,tempfile,uuid\nGO_SOURCE = 'package control\\nimport (\\n \"context\"\\n \"encoding/json\"\\n \"fmt\"\\n \"os\"\\n \"path\"\\n \"reflect\"\\n \"testing\"\\n \"time\"\\n \"github.com/yusing/mekugi/modules/sessionhistory/history\"\\n)\\nfunc frozenMust(t *testing.T, err error) { t.Helper(); if err != nil { t.Fatal(err) } }\\nfunc frozenID(thread, turn string) Identity { return Identity{Thread:thread,Session:thread+\"-session\",Turn:turn,Call:thread+\"-wait-call\",Item:thread+\"-exec\"} }\\nfunc frozenHost(t *testing.T,s *Service,id,turn string) { m,_:=s.Member(id); frozenMust(t,s.RequestStarted(t.Context(),Identity{Thread:id,Session:m.Session,Turn:turn},m.Parent==\"\")) }\\nfunc frozenFixture(t *testing.T)(*Service,history.Session) {\\n h,e:=history.NewService(RecordKinds()); frozenMust(t,e)\\n store,e:=h.Open(t.Context(),t.TempDir()); frozenMust(t,e)\\n session,e:=store.SelectSession(t.Context(),nil,history.Limits{Total:history.DefaultStorageBytes},\"root\"); frozenMust(t,e); t.Cleanup(session.Close)\\n s:=New(); m:=Member{Thread:\"root\",Session:\"root-session\",Task:\"/root\",Generation:1,Status:Working,AudienceAdmitted:true,Settings:Settings{Workspace:t.TempDir(),RuntimeRoots:[]string{\"/admitted\"}},Limits:Limits{MinWaitMS:5,MaxWaitMS:100}}\\n frozenMust(t,s.AdmitRoot(t.Context(),session,&m)); frozenHost(t,s,\"root\",\"rt\"); return s,session\\n}\\nfunc frozenChild(t *testing.T,s *Service,id string) {\\n caller:=frozenID(\"root\",\"rt\");caller.Call=\"spawn-\"+id; r,e:=s.ReserveSpawn(t.Context(),caller,SpawnRequest{Name:path.Base(id),Settings:Settings{Workspace:t.TempDir(),RuntimeRoots:[]string{\"/admitted\"}},Limits:Limits{MinWaitMS:5,MaxWaitMS:100},Message:\"Work.\"}); frozenMust(t,e)\\n for _,phase:=range []string{\"create\",\"assignment_input\",\"admit\",\"initial\"} { _,e=s.ClaimEffect(t.Context(),\"root\",r.ID); frozenMust(t,e); receipt:=Receipt{Phase:phase}; if phase==\"create\" { receipt.Thread=id;receipt.Session=id+\"-session\" }; if phase==\"initial\" {receipt.Turn=id+\"t\"}; frozenMust(t,s.EffectAcknowledged(t.Context(),\"root\",r.ID,receipt)) }; frozenHost(t,s,id,id+\"t\")\\n}\\nfunc frozenWait(t *testing.T,s *Service,id Identity,targets []string,mode string,timeout *int64,now time.Time,compact,standalone bool)(WaitResult,bool,error) {\\n method:=reflect.ValueOf(s).MethodByName(\"RegisterWait\"); if compact { method=reflect.ValueOf(s).MethodByName(\"RegisterCompaction\") }; if !method.IsValid() { return WaitResult{},false,nil }\\n args:=[]reflect.Value{reflect.ValueOf(context.Context(t.Context())),reflect.ValueOf(id),reflect.ValueOf(targets),reflect.ValueOf(false)}\\n // The baseline predates wait_mode. Adapt the interface, not case values.\\n if method.Type().NumIn()>=7 { args=append(args,reflect.ValueOf(mode).Convert(method.Type().In(4))) } else if mode==\"all\" { return WaitResult{},false,nil }\\n args=append(args,reflect.ValueOf(timeout),reflect.ValueOf(now)); if compact {args=append(args,reflect.ValueOf(standalone))}; out:=method.Call(args); var err error; if !out[1].IsNil(){err=out[1].Interface().(error)}; return out[0].Interface().(WaitResult),true,err\\n}\\nfunc frozenStop(t *testing.T,s *Service) { id:=frozenID(\"root\",\"rt\"); frozenMust(t,s.Execution(t.Context(),\"root\",\"rt\",id.Item,\"\",true)); stop,e:=s.ClaimLocalStop(t.Context(),\"root\",\"rt\",id.Item); frozenMust(t,e); if stop==nil {t.Fatal(\"missing local stop\")}; frozenMust(t,s.HostCompleted(t.Context(),\"root\",\"rt\",Completed,HostFailure{})) }\\nfunc frozenDeliver(t *testing.T,s *Service,id string) { tree,e:=s.Snapshot(\"root\"); frozenMust(t,e); for _,effect:=range tree.Effects { if effect.Caller==id && effect.Kind==\"final\" { claim,e:=s.ClaimEffect(t.Context(),id,effect.ID); frozenMust(t,e); if claim==nil {t.Fatal(\"missing final claim\")}; frozenMust(t,s.EffectAcknowledged(t.Context(),id,effect.ID,Receipt{})); return } }; t.Fatal(\"missing final\") }\\nfunc frozenMessage(t *testing.T,s *Service) { a,e:=s.PrepareAction(t.Context(),frozenID(\"a\",\"at\"),\"/root\",\"message\",\"progress\"); frozenMust(t,e); claim,e:=s.ClaimEffect(t.Context(),\"a\",a.ID); frozenMust(t,e); if claim==nil { t.Fatal(\"message blocked\") }; frozenMust(t,s.EffectAcknowledged(t.Context(),\"a\",a.ID,Receipt{})) }\\nfunc frozenEmit(value any) { b,e:=json.Marshal(value); if e!=nil {panic(e)}; fmt.Println(\"FROZEN_OBSERVATION \"+string(b)) }\\nfunc TestFrozenSessionObservation(t *testing.T) {\\n s,session:=frozenFixture(t); mode:=os.Getenv(\"CODEX_AB_SESSION_CASE\"); now:=time.Unix(100,0); id:=frozenID(\"root\",\"rt\")\\n if mode==\"existing\" || mode==\"integration-and-contracts\" {\\n  frozenChild(t,s,\"a\"); foreign:=id;foreign.Session=\"foreign\"; _,_,auth:=frozenWait(t,s,foreign,[]string{\"a\"},\"\",nil,now,false,false)\\n  wait,_,e:=frozenWait(t,s,id,[]string{\"a\"},\"\",nil,now,false,false); frozenMust(t,e); frozenStop(t,s); frozenMessage(t,s)\\n  wake,e:=s.PrepareWake(t.Context(),\"root\",now); frozenMust(t,e); if wake==nil {t.Fatal(\"message wake missing\")}; claim,e:=s.ClaimEffect(t.Context(),\"root\",wake.ID); frozenMust(t,e); if claim==nil || claim.Wake.Event==nil {t.Fatal(\"message observation missing\")}\\n  event:=claim.Wake.Event; frozenMust(t,s.EffectAcknowledged(t.Context(),\"root\",wake.ID,Receipt{Turn:\"rt2\"})); frozenHost(t,s,\"root\",\"rt2\")\\n  next:=frozenID(\"root\",\"rt2\"); next.Call=\"next-wait\";next.Item=\"next-exec\"; second,_,e:=frozenWait(t,s,next,[]string{\"a\"},\"\",nil,now,false,false); frozenMust(t,e)\\n  restored:=New(); frozenMust(t,restored.Restore(t.Context(),session)); root,_:=restored.Member(\"root\"); child,_:=restored.Member(\"a\")\\n  observed:=map[string]any{\"foreign_rejected\":auth!=nil,\"initial\":wait.State,\"message_kind\":event.Kind,\"message_source\":event.Source,\"message_text\":event.Message,\"after_consumption\":second.State,\"restored_root\":root.Status,\"restored_child\":child.Status,\"generation\":root.Generation}\\n  if mode==\"integration-and-contracts\" {\\n   s,session=frozenFixture(t); frozenChild(t,s,\"a\"); frozenChild(t,s,\"b\")\\n   _,supported,e:=frozenWait(t,s,id,[]string{\"a\",\"b\"},\"all\",nil,now,false,false); frozenMust(t,e); observed[\"aggregate_supported\"]=supported\\n   if !supported { frozenEmit(observed);return }; frozenStop(t,s)\\n   frozenMust(t,s.HostCompleted(t.Context(),\"a\",\"at\",Failed,HostFailure{})); frozenDeliver(t,s,\"a\")\\n   frozenMust(t,s.HostCompleted(t.Context(),\"b\",\"bt\",Interrupted,HostFailure{})); frozenDeliver(t,s,\"b\")\\n   aggregate,e:=s.PrepareWake(t.Context(),\"root\",now); frozenMust(t,e); if aggregate==nil {t.Fatal(\"integrated aggregate missing\")}; claimed,e:=s.ClaimEffect(t.Context(),\"root\",aggregate.ID); frozenMust(t,e)\\n   summaries:=func(result *WaitResult) []any { bytes,e:=json.Marshal(result);frozenMust(t,e); var parsed map[string]any;frozenMust(t,json.Unmarshal(bytes,&parsed)); rows:=[]any{}; for _,raw:=range parsed[\"events\"].([]any) { row:=raw.(map[string]any);rows=append(rows,map[string]any{\"source\":row[\"source\"],\"status\":row[\"status\"]}) };return rows }\\n   observed[\"aggregate_state\"]=claimed.Wake.State; observed[\"aggregate_events\"]=summaries(claimed.Wake)\\n   admitted,_:=s.Member(\"root\"); afterRestart:=New();frozenMust(t,afterRestart.AdmitRoot(t.Context(),session,admitted)); publication:=afterRestart.WaitPublication(\"root\")\\n   observed[\"restored_aggregate_events\"]=summaries(publication); encoded,e:=json.Marshal(publication);frozenMust(t,e);var published map[string]any;frozenMust(t,json.Unmarshal(encoded,&published)); observed[\"restored_wait_mode\"]=published[\"wait_mode\"]\\n  }\\n  frozenEmit(observed); return\\n }\\n if mode==\"aggregate-waits\" || mode==\"messages-and-deadlines\" {\\n  frozenChild(t,s,\"a\"); frozenChild(t,s,\"b\"); var timeout *int64; if mode==\"messages-and-deadlines\" { timeout=new(int64(10)) }\\n  wait,supported,e:=frozenWait(t,s,id,[]string{\"a\",\"b\"},\"all\",timeout,now,false,false); frozenMust(t,e); if !supported {frozenEmit(map[string]any{\"supported\":false});return}; frozenStop(t,s)\\n  frozenMust(t,s.HostCompleted(t.Context(),\"a\",\"at\",Failed,HostFailure{})); frozenDeliver(t,s,\"a\"); early,e:=s.PrepareWake(t.Context(),\"root\",now); frozenMust(t,e)\\n  if mode==\"messages-and-deadlines\" { wake,e:=s.PrepareWake(t.Context(),\"root\",now.Add(time.Second)); frozenMust(t,e); state:=\"missing\"; if wake!=nil { claim,e:=s.ClaimEffect(t.Context(),\"root\",wake.ID); frozenMust(t,e); state=claim.Wake.State }; frozenEmit(map[string]any{\"supported\":true,\"initial\":wait.State,\"early\":early!=nil,\"deadline_state\":state});return }\\n  frozenMust(t,s.HostCompleted(t.Context(),\"b\",\"bt\",Interrupted,HostFailure{})); pending,e:=s.PrepareWake(t.Context(),\"root\",now); frozenMust(t,e); frozenDeliver(t,s,\"b\"); wake,e:=s.PrepareWake(t.Context(),\"root\",now); frozenMust(t,e); if wake==nil {t.Fatal(\"aggregate missing\")}; claim,e:=s.ClaimEffect(t.Context(),\"root\",wake.ID); frozenMust(t,e); b,_:=json.Marshal(claim.Wake); var observed map[string]any; frozenMust(t,json.Unmarshal(b,&observed)); events:=observed[\"events\"].([]any); summaries:=[]any{};for _,raw:=range events {event:=raw.(map[string]any);summaries=append(summaries,map[string]any{\"source\":event[\"source\"],\"status\":event[\"status\"]})}; frozenEmit(map[string]any{\"supported\":true,\"initial\":wait.State,\"early\":early!=nil,\"pending_delivery\":pending!=nil,\"state\":claim.Wake.State,\"events\":summaries});return\\n }\\n standalone:=mode==\"checkpoint-admission\" || mode==\"native-settlement\" || mode==\"failure-and-supersession\"\\n if !standalone {frozenChild(t,s,\"a\")}\\n wait,supported,e:=frozenWait(t,s,id,[]string{\"a\"},\"\",nil,now,true,standalone); frozenMust(t,e); if !supported {frozenEmit(map[string]any{\"supported\":false});return}\\n frozenMust(t,s.Execution(t.Context(),\"root\",\"rt\",id.Item,\"cell:pending\",false)); local,e:=s.ClaimLocalStop(t.Context(),\"root\",\"rt\",id.Item); frozenMust(t,e)\\n frozenMust(t,s.Execution(t.Context(),\"root\",\"rt\",id.Item,\"\",true)); stop,e:=s.ClaimLocalStop(t.Context(),\"root\",\"rt\",id.Item); frozenMust(t,e); if stop==nil {t.Fatal(\"successful stop missing\")}\\n before,e:=s.ClaimEffect(t.Context(),\"root\",id.Call+\":compact\"); frozenMust(t,e); frozenMust(t,s.HostCompleted(t.Context(),\"root\",\"rt\",Completed,HostFailure{})); compact:=before; if compact==nil { compact,e=s.ClaimEffect(t.Context(),\"root\",id.Call+\":compact\"); frozenMust(t,e) }; if compact==nil {t.Fatal(\"settled compact missing\")}\\n if mode==\"failure-and-supersession\" { frozenMust(t,s.EffectAcknowledged(t.Context(),\"root\",compact.ID,Receipt{Uncertain:true,Error:\"lost acknowledgement\"})); retry,e:=s.ClaimEffect(t.Context(),\"root\",compact.ID); frozenMust(t,e); wake,e:=s.PrepareWake(t.Context(),\"root\",now); frozenMust(t,e); member,_:=s.Member(\"root\");frozenEmit(map[string]any{\"supported\":true,\"retry\":retry!=nil,\"wake\":wake!=nil,\"status\":member.Status});return }\\n if !standalone { a,e:=s.PrepareAction(t.Context(),frozenID(\"a\",\"at\"),\"/root\",\"message\",\"progress\");frozenMust(t,e); blocked,e:=s.ClaimEffect(t.Context(),\"a\",a.ID);frozenMust(t,e);early,e:=s.PrepareWake(t.Context(),\"root\",now);frozenMust(t,e);frozenMust(t,s.EffectAcknowledged(t.Context(),\"root\",compact.ID,Receipt{})); after,e:=s.ClaimEffect(t.Context(),\"a\",a.ID);frozenMust(t,e);frozenEmit(map[string]any{\"supported\":true,\"message_before\":blocked!=nil,\"wake_before\":early!=nil,\"message_after\":after!=nil});return }\\n frozenMust(t,s.EffectAcknowledged(t.Context(),\"root\",compact.ID,Receipt{})); wake,e:=s.PrepareWake(t.Context(),\"root\",now);frozenMust(t,e);again,e:=s.PrepareWake(t.Context(),\"root\",now);frozenMust(t,e); frozenEmit(map[string]any{\"supported\":true,\"initial\":wait.State,\"yielded_stop\":local!=nil,\"before_host_stop\":before!=nil,\"continuation\":wake!=nil,\"duplicate\":again!=nil})\\n}\\n'\nwith tempfile.TemporaryDirectory(prefix=\"codex-ab-session-observer-\") as temporary:\n    scratch=pathlib.Path(temporary)\n    source=scratch/\"probe_test.go\"; source.write_text(GO_SOURCE)\n    target=pathlib.Path.cwd()/\"modules/threadcontrol/control\"/f\"zz_frozen_observation_{uuid.uuid4().hex}_test.go\"\n    if target.exists() or target.is_symlink(): raise RuntimeError(\"observer overlay target already exists\")\n    overlay=scratch/\"overlay.json\"; overlay.write_text(json.dumps({\"Replace\":{str(target):str(source)}}))\n    environment=os.environ.copy()\n    environment.update(GOFLAGS=\"-mod=readonly\",CODEX_AB_SESSION_CASE=sys.argv[1],XDG_STATE_HOME=str(scratch/\"state\"),XDG_RUNTIME_DIR=str(scratch/\"runtime\"),MEKUGI_RUNTIME_DIR=str(scratch/\"mekugi\"),MEKUGI_TEST_CLAUDE_NATIVE=\"0\",MEKUGI_TEST_WEBUI_BROWSER=\"0\")\n    result=subprocess.run([\"go\",\"test\",\"-json\",\"-count=1\",\"-timeout=90s\",\"-overlay\",str(overlay),\"./modules/threadcontrol/control\",\"-run\",\"^TestFrozenSessionObservation$\"],env=environment,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)\n    values=[]\n    for line in result.stdout.splitlines():\n        try: row=json.loads(line)\n        except ValueError: continue\n        output=row.get(\"Output\",\"\")\n        if output.startswith(\"FROZEN_OBSERVATION \"): values.append(json.loads(output[len(\"FROZEN_OBSERVATION \"):]))\n    if result.returncode or len(values)!=1:\n        sys.stderr.write(result.stderr+result.stdout)\n        sys.exit(result.returncode or 1)\n    print(json.dumps(values[0],sort_keys=True))\n"
+          ],
+          "args": [
+            "existing"
+          ],
+          "expected": "{\"foreign_rejected\": true, \"initial\": \"waiting\", \"message_kind\": \"message\", \"message_source\": \"a\", \"message_text\": \"progress\", \"after_consumption\": \"waiting\", \"restored_root\": \"paused\", \"restored_child\": \"paused\", \"generation\": 1}",
+          "expected_exit": 0,
+          "format": "json"
+        }
+      ]
+    },
+    "evaluator_controls": {
+      "schema": "codex-ab.evaluator-controls.v1",
+      "cases": [
+        {
+          "id": "reference",
+          "role": "reference",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "aggregate-waits": "pass",
+            "messages-and-deadlines": "pass",
+            "checkpoint-admission": "pass",
+            "native-settlement": "pass",
+            "continuation-barrier": "pass",
+            "failure-and-supersession": "pass",
+            "integration-and-contracts": "pass"
+          }
+        },
+        {
+          "id": "unchanged-baseline",
+          "role": "baseline",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "aggregate-waits": "fail",
+            "messages-and-deadlines": "fail",
+            "checkpoint-admission": "fail",
+            "native-settlement": "fail",
+            "continuation-barrier": "fail",
+            "failure-and-supersession": "fail",
+            "integration-and-contracts": "fail"
+          }
+        },
+        {
+          "id": "equivalent-selection",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "modules/threadcontrol/control/waits.go",
+              "before_sha256": "96b2fd3f40d97ea73cf67afdb29e868b1263af8cb2e8f1769dc39b2dcccd1ed0",
+              "after_sha256": "60fd900a5d318b67357c0f5801ff906576e94ec09b38b37c27d0d2f659a1ce2a",
+              "diff": "diff --git a/modules/threadcontrol/control/waits.go b/modules/threadcontrol/control/waits.go\n--- a/modules/threadcontrol/control/waits.go\n+++ b/modules/threadcontrol/control/waits.go\n@@ -61,7 +61,7 @@\n \t\t\tif !strings.HasPrefix(member.Task, caller.Task+\"/\") {\n \t\t\t\treturn nil, fmt.Errorf(\"wait target %q is not an admitted descendant\", target)\n \t\t\t}\n-\t\t\tif !slices.Contains(selected, member.Thread) {\n+\t\t\tif slices.Index(selected, member.Thread) < 0 {\n \t\t\t\tselected = append(selected, member.Thread)\n \t\t\t}\n \t\t}\n"
+            }
+          ],
+          "expected": {
+            "aggregate-waits": "pass",
+            "messages-and-deadlines": "pass",
+            "checkpoint-admission": "pass",
+            "native-settlement": "pass",
+            "continuation-barrier": "pass",
+            "failure-and-supersession": "pass",
+            "integration-and-contracts": "pass"
+          }
+        },
+        {
+          "id": "broken-aggregate-waits",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "modules/threadcontrol/control/waits.go",
+              "before_sha256": "96b2fd3f40d97ea73cf67afdb29e868b1263af8cb2e8f1769dc39b2dcccd1ed0",
+              "after_sha256": "98ed3c71af38b484b0cbecd0ce7d8a5cfcaca389add2bba6dd23249c55e9150a",
+              "diff": "diff --git a/modules/threadcontrol/control/waits.go b/modules/threadcontrol/control/waits.go\n--- a/modules/threadcontrol/control/waits.go\n+++ b/modules/threadcontrol/control/waits.go\n@@ -119,7 +119,7 @@\n // arrive because its runtime was paused. Pending direct delivery keeps ordering.\n func (tree *Tree) selectWaitOutcome(wait *Wait) bool {\n \tif wait.Mode == WaitAll {\n-\t\treturn tree.selectAllWaitOutcomes(wait)\n+\t\treturn false\n \t}\n \tif event := selectedEvent(tree, wait); event != nil {\n \t\tevent.ClaimedBy = wait.ID\n"
+            }
+          ],
+          "expected": {
+            "aggregate-waits": "fail"
+          }
+        },
+        {
+          "id": "broken-messages-and-deadlines",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "modules/threadcontrol/control/waits.go",
+              "before_sha256": "96b2fd3f40d97ea73cf67afdb29e868b1263af8cb2e8f1769dc39b2dcccd1ed0",
+              "after_sha256": "391a7a23744809d6b23c390e29614fd3e887a022932a608bf1f141fa25bea1da",
+              "diff": "diff --git a/modules/threadcontrol/control/waits.go b/modules/threadcontrol/control/waits.go\n--- a/modules/threadcontrol/control/waits.go\n+++ b/modules/threadcontrol/control/waits.go\n@@ -263,7 +263,7 @@\n \t\t\tif effective < 0 || effective > int64((1<<63-1)/int64(time.Millisecond)) {\n \t\t\t\treturn errors.New(\"invalid captured host wait timeout bounds\")\n \t\t\t}\n-\t\t\twait.RequestedMS, wait.EffectiveMS, wait.Deadline = new(*timeout), new(effective), new(now.Add(time.Duration(effective)*time.Millisecond))\n+\t\t\twait.RequestedMS, wait.EffectiveMS = new(*timeout), new(effective)\n \t\t}\n \t\tif !compact && tree.selectWaitOutcome(wait) {\n \t\t\twait.State = \"completed\"\n"
+            }
+          ],
+          "expected": {
+            "messages-and-deadlines": "fail"
+          }
+        },
+        {
+          "id": "broken-checkpoint-admission",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "modules/threadcontrol/control/waits.go",
+              "before_sha256": "96b2fd3f40d97ea73cf67afdb29e868b1263af8cb2e8f1769dc39b2dcccd1ed0",
+              "after_sha256": "5e380b6ec6304f3ba00f6cc851572568dbe6e7805aeb18c633688b2a3ea3dcc5",
+              "diff": "diff --git a/modules/threadcontrol/control/waits.go b/modules/threadcontrol/control/waits.go\n--- a/modules/threadcontrol/control/waits.go\n+++ b/modules/threadcontrol/control/waits.go\n@@ -252,7 +252,7 @@\n \t\t}\n \t\twait := &Wait{Effect: Effect{ID: caller.Call, Caller: caller.Thread, Target: caller.Thread, Generation: member.Generation, Turn: caller.Turn, CallerTurn: caller.Turn, Kind: \"wake\", State: \"registered\"}, Item: caller.Item, Targets: selected, All: all, Mode: mode}\n \t\twait.Standalone = standalone\n-\t\tif compact {\n+\t\tif compact && !standalone {\n \t\t\twait.Compaction = &Effect{ID: caller.Call + \":compact\", Caller: caller.Thread, Target: caller.Thread, CallerTurn: caller.Turn, Generation: member.Generation, Kind: \"compact\", State: \"registered\"}\n \t\t}\n \t\tif timeout != nil {\n"
+            }
+          ],
+          "expected": {
+            "checkpoint-admission": "fail"
+          }
+        },
+        {
+          "id": "broken-native-settlement",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "modules/threadcontrol/control/waits.go",
+              "before_sha256": "96b2fd3f40d97ea73cf67afdb29e868b1263af8cb2e8f1769dc39b2dcccd1ed0",
+              "after_sha256": "50746f2afff8fe94875acb9e545df57e75a7fcbbe1cd8fa58015cfb299b6420b",
+              "diff": "diff --git a/modules/threadcontrol/control/waits.go b/modules/threadcontrol/control/waits.go\n--- a/modules/threadcontrol/control/waits.go\n+++ b/modules/threadcontrol/control/waits.go\n@@ -294,7 +294,7 @@\n \t\t\t}\n \t\t\twait.ResumeHandle = handle\n \t\t}\n-\t\tif succeeded {\n+\t\tif succeeded || handle != \"\" {\n \t\t\twait.Stop = \"eligible\"\n \t\t} else if handle == \"\" {\n \t\t\tcancelSubscription(tree, member)\n"
+            }
+          ],
+          "expected": {
+            "native-settlement": "fail"
+          }
+        },
+        {
+          "id": "broken-continuation-barrier",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "modules/threadcontrol/control/actions.go",
+              "before_sha256": "28ac7579c05458c1fc65fabc8c15ac80796dad2b3ca9dcead8e75c7f7f6e6dd7",
+              "after_sha256": "cabf4644ce254f563828d06cee43c6e3c71ab20dbb1c3521d3f8c7eeb4e92247",
+              "diff": "diff --git a/modules/threadcontrol/control/actions.go b/modules/threadcontrol/control/actions.go\n--- a/modules/threadcontrol/control/actions.go\n+++ b/modules/threadcontrol/control/actions.go\n@@ -212,6 +212,7 @@\n \t\treturn nil, errors.New(\"unknown effect kind\")\n \t}\n \teffect.State = \"dispatching\"\n+\tif effect.Kind == \"compact\" { effect.State = \"completed\" }\n \tif member != nil {\n \t\teffect.Turn = member.Turn\n \t\tif effect.Kind == \"human\" && !member.HostRunning {\n"
+            }
+          ],
+          "expected": {
+            "continuation-barrier": "fail"
+          }
+        },
+        {
+          "id": "broken-failure-and-supersession",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "modules/threadcontrol/control/actions.go",
+              "before_sha256": "28ac7579c05458c1fc65fabc8c15ac80796dad2b3ca9dcead8e75c7f7f6e6dd7",
+              "after_sha256": "5c3d05f5a1d383f5c74e95cf2ea2d6876ea2cae6aec4cf6bbe19d978274c8d6e",
+              "diff": "diff --git a/modules/threadcontrol/control/actions.go b/modules/threadcontrol/control/actions.go\n--- a/modules/threadcontrol/control/actions.go\n+++ b/modules/threadcontrol/control/actions.go\n@@ -123,7 +123,7 @@\n \tif effect == nil {\n \t\treturn nil, errors.New(\"unknown control intent\")\n \t}\n-\tif effect.State != \"pending\" && effect.State != \"queued\" {\n+\tif effect.State != \"pending\" && effect.State != \"queued\" && effect.State != \"uncertain\" {\n \t\treturn nil, unchanged\n \t}\n \tmember := tree.edit(effect.Target)\n"
+            }
+          ],
+          "expected": {
+            "failure-and-supersession": "fail"
+          }
+        },
+        {
+          "id": "broken-integration-and-contracts",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "modules/threadcontrol/control/store.go",
+              "before_sha256": "1dac6a601608b64ded052a8f74529333a7c59ab89c03a066fa84de9ca1a553cd",
+              "after_sha256": "4efa528749672531701a3b656f6431a7ac95feeb17b7256b1687eb7d91ee78a7",
+              "diff": "diff --git a/modules/threadcontrol/control/store.go b/modules/threadcontrol/control/store.go\n--- a/modules/threadcontrol/control/store.go\n+++ b/modules/threadcontrol/control/store.go\n@@ -268,7 +268,7 @@\n \n func admitted(tree *Tree, caller Identity) (*Member, error) {\n \tmember, ok := tree.Members[caller.Thread]\n-\tif !ok || caller.Session == \"\" || caller.Session != member.Session || caller.Turn == \"\" || caller.Turn != member.Turn || !member.HostRunning {\n+\tif !ok || caller.Session == \"\" || caller.Turn == \"\" || caller.Turn != member.Turn || !member.HostRunning {\n \t\treturn nil, errors.New(\"missing, stale or foreign thread-control caller\")\n \t}\n \treturn member, nil\n"
+            }
+          ],
+          "expected": {
+            "integration-and-contracts": "fail"
+          }
+        }
+      ]
+    }
   }
 }

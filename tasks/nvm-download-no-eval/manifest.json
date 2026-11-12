@@ -11,13 +11,140 @@
   "criteria": {
     "schema": "codex-ab.criteria.v1",
     "criteria": [
-      {"id": "literal-arguments", "description": "The wget path retains literal URLs and output paths containing spaces and shell metacharacters without reparsing shell syntax, for the installer's existing caller-supplied arguments. Option-like output operands are outside the required scope.", "required_interface": "install.sh nvm_download"},
-      {"id": "wget-translations", "description": "Preserve wget translations for progress, compression, failure, redirect, headers, silence, output and resume flags; consume the argument after -C as its value."},
-      {"id": "curl-posix", "description": "The curl path remains unchanged, argument translation uses POSIX-style shell constructs, and install.sh passes sh -n while retaining its existing Bash entry-point requirement."}
+      {
+        "id": "literal-arguments",
+        "description": "The wget path retains literal URLs and output paths containing spaces and shell metacharacters without reparsing shell syntax, for the installer's existing caller-supplied arguments. Option-like output operands are outside the required scope.",
+        "required_interface": "install.sh nvm_download"
+      },
+      {
+        "id": "wget-translations",
+        "description": "Preserve wget translations for progress, compression, failure, redirect, headers, silence, output and resume flags; consume the argument after -C as its value."
+      },
+      {
+        "id": "curl-posix",
+        "description": "The curl path remains unchanged, argument translation uses POSIX-style shell constructs, and install.sh passes sh -n while retaining its existing Bash entry-point requirement."
+      }
     ],
-    "evaluator_guidance": "Source install.sh with Bash because its entry guard requires Bash; use sh -n as a syntax check, not proof of strict POSIX runtime portability. Do not enable nounset before sourcing unless every existing entry-point variable is initialized. Inspect /reference/index.json and the b17550a patch, especially nvm_download_no_eval_injection and the unchanged curl branch. Use local fake curl/wget fixtures to check literal substitution syntax, spaced paths, ampersand URLs, flag translations, and resume-value consumption. The reference translates each argument independently and does not preserve output operands resembling flags such as --compressed or -s; those cases are outside required scope, though safe improvements are acceptable. This is an argument-handling robustness task, not a claim of an exploitable vulnerability. Assess focused regression tests without exact patch or file-boundary requirements. Reference evidence is evaluator-only. Wiring failures are HARNESS_ERROR/unassessed; retain source-only observations without executed coverage as unassessed.",
+    "evaluator_guidance": "Source install.sh with Bash because its entry guard requires Bash; use sh -n as a syntax check, not proof of strict POSIX runtime portability. Do not enable nounset before sourcing unless every existing entry-point variable is initialized. Inspect /reference/index.json and the b17550a patch, especially nvm_download_no_eval_injection and the unchanged curl branch. Use local fake curl/wget fixtures to check literal substitution syntax, spaced paths, ampersand URLs, flag translations, and resume-value consumption. The reference translates each argument independently and does not preserve output operands resembling flags such as --compressed or -s; those cases are outside required scope, though safe improvements are acceptable. This is an argument-handling robustness task, not a claim of an exploitable vulnerability. Assess focused regression tests without exact patch or file-boundary requirements. Reference evidence is evaluator-only. Supervisor-classified evaluator wiring failures remain unassessed; retain source-only observations without executed coverage as unassessed. Frozen existing observations cover nvm_source selection and overrides, not the entire installer suite. Controls include unsafe reparsing, leaked resume values, changed curl flags, and an independent positional-argument loop. Whole-installer POSIX runtime portability is not required.",
     "preparation": "sh -n install.sh",
     "existing_tests": "cd test/install_script && bash nvm_source",
-    "qualification": "not-run"
+    "qualification": "not-run",
+    "existing_test_verification": {
+      "schema": "codex-ab.verification.v1",
+      "cases": [
+        {
+          "id": "existing-nvm-source-observations",
+          "kind": "command",
+          "command": [
+            "python3",
+            "-I",
+            "-c",
+            "import json, os, pathlib, shutil, subprocess, sys, tempfile\nrequest = json.load(sys.stdin)\ninstaller = str(pathlib.Path(\"install.sh\").resolve())\nenvironment = dict(os.environ)\nfor key in (\"NVM_SOURCE\", \"NVM_INSTALL_GITHUB_REPO\", \"NVM_INSTALL_VERSION\", \"NVM_ENV\", \"ZSH_VERSION\", \"BASH_ENV\", \"ENV\"):\n    environment.pop(key, None)\nobservations = []\nfor case in request[\"cases\"]:\n    env = dict(environment)\n    env.update(case.get(\"env\", {}))\n    if request[\"operation\"] == \"source\":\n        result = subprocess.run([\"/bin/bash\", \"-c\", 'NVM_ENV=testing; . \"$1\" || exit; shift; nvm_source \"$@\"', \"observer\", installer, *case[\"args\"]], env=env, capture_output=True, text=True)\n        observations.append(dict(id=case[\"id\"], exit=result.returncode, stdout=result.stdout, stderr=bool(result.stderr)))\n        continue\n    with tempfile.TemporaryDirectory(prefix=\"nvm-observer-\") as temporary:\n        directory = pathlib.Path(temporary)\n        binary = directory / \"bin\"\n        binary.mkdir()\n        log = directory / \"argv\"\n        env.update(ARGV_LOG=str(log), FAKE_EXIT=str(case.get(\"exit\", 0)))\n        for name in ([\"curl\", \"wget\"] if case.get(\"route\") == \"curl\" else [\"wget\"]):\n            executable = binary / name\n            executable.write_text('#!/bin/sh\\nprintf \"%s\\\\0\" \"$@\" > \"$ARGV_LOG\"\\nexit \"${FAKE_EXIT:-0}\"\\n')\n            executable.chmod(0o755)\n        for name in (\"sed\", \"touch\"):\n            (binary / name).symlink_to(shutil.which(name))\n        if request[\"operation\"] == \"download\":\n            script = 'NVM_ENV=testing; . \"$1\" || exit; shift; PATH=\"$1\"; shift; export PATH; nvm_download \"$@\"'\n            command = [\"/bin/bash\", \"-c\", script, \"observer\", installer, str(binary), *case[\"args\"]]\n        elif request[\"operation\"] == \"posix\":\n            definitions = subprocess.run([\"/bin/bash\", \"-c\", 'NVM_ENV=testing; . \"$1\" || exit; declare -f nvm_download nvm_has_executable nvm_echo', \"observer\", installer], env=env, capture_output=True, text=True)\n            if definitions.returncode:\n                observations.append(dict(id=case[\"id\"], definition_exit=definitions.returncode))\n                continue\n            script = definitions.stdout + '\\nPATH=\"$1\"; shift; export PATH; nvm_download \"$@\"'\n            command = [\"/bin/sh\", \"-c\", script, \"observer\", str(binary), *case[\"args\"]]\n        else:\n            raise ValueError(\"unknown operation\")\n        result = subprocess.run(command, cwd=directory, env=env, capture_output=True, text=True)\n        argv = log.read_bytes().decode().split(\"\\0\")[:-1] if log.exists() else None\n        observations.append(dict(id=case[\"id\"], exit=result.returncode, argv=argv, proof=(directory / \"observer-proof\").exists(), stdout=result.stdout, stderr=bool(result.stderr)))\nprint(json.dumps(observations))\n"
+          ],
+          "args": [],
+          "stdin": "{\"operation\": \"source\", \"cases\": [{\"id\": \"default\", \"args\": [], \"env\": {}}, {\"id\": \"repo-default\", \"args\": [], \"env\": {\"NVM_INSTALL_GITHUB_REPO\": \"other-user/other-nvm\"}}, {\"id\": \"git\", \"args\": [\"git\"], \"env\": {}}, {\"id\": \"repo-git\", \"args\": [\"git\"], \"env\": {\"NVM_INSTALL_GITHUB_REPO\": \"other-user/other-nvm\"}}, {\"id\": \"script\", \"args\": [\"script\"], \"env\": {}}, {\"id\": \"repo-version-script\", \"args\": [\"script\"], \"env\": {\"NVM_INSTALL_GITHUB_REPO\": \"other-user/other-nvm\", \"NVM_INSTALL_VERSION\": \"v0.37.0\"}}, {\"id\": \"script-nvm-exec\", \"args\": [\"script-nvm-exec\"], \"env\": {}}, {\"id\": \"repo-version-script-nvm-exec\", \"args\": [\"script-nvm-exec\"], \"env\": {\"NVM_INSTALL_GITHUB_REPO\": \"other-user/other-nvm\", \"NVM_INSTALL_VERSION\": \"v0.37.0\"}}, {\"id\": \"script-nvm-bash-completion\", \"args\": [\"script-nvm-bash-completion\"], \"env\": {}}, {\"id\": \"repo-version-script-nvm-bash-completion\", \"args\": [\"script-nvm-bash-completion\"], \"env\": {\"NVM_INSTALL_GITHUB_REPO\": \"other-user/other-nvm\", \"NVM_INSTALL_VERSION\": \"v0.37.0\"}}, {\"id\": \"invalid\", \"args\": [\"anything\"], \"env\": {}}, {\"id\": \"custom-default\", \"args\": [], \"env\": {\"NVM_SOURCE\": \"my_location\"}}, {\"id\": \"custom-git\", \"args\": [\"git\"], \"env\": {\"NVM_SOURCE\": \"my_location\"}}, {\"id\": \"custom-script\", \"args\": [\"script\"], \"env\": {\"NVM_SOURCE\": \"my_location\"}}, {\"id\": \"custom-anything\", \"args\": [\"anything\"], \"env\": {\"NVM_SOURCE\": \"my_location\"}}]}",
+          "expected_exit": 0,
+          "format": "json",
+          "expected": "[{\"id\": \"default\", \"exit\": 0, \"stdout\": \"https://github.com/nvm-sh/nvm.git\\n\", \"stderr\": false}, {\"id\": \"repo-default\", \"exit\": 0, \"stdout\": \"https://github.com/other-user/other-nvm.git\\n\", \"stderr\": true}, {\"id\": \"git\", \"exit\": 0, \"stdout\": \"https://github.com/nvm-sh/nvm.git\\n\", \"stderr\": false}, {\"id\": \"repo-git\", \"exit\": 0, \"stdout\": \"https://github.com/other-user/other-nvm.git\\n\", \"stderr\": true}, {\"id\": \"script\", \"exit\": 0, \"stdout\": \"https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/nvm.sh\\n\", \"stderr\": false}, {\"id\": \"repo-version-script\", \"exit\": 0, \"stdout\": \"https://raw.githubusercontent.com/other-user/other-nvm/v0.37.0/nvm.sh\\n\", \"stderr\": true}, {\"id\": \"script-nvm-exec\", \"exit\": 0, \"stdout\": \"https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/nvm-exec\\n\", \"stderr\": false}, {\"id\": \"repo-version-script-nvm-exec\", \"exit\": 0, \"stdout\": \"https://raw.githubusercontent.com/other-user/other-nvm/v0.37.0/nvm-exec\\n\", \"stderr\": true}, {\"id\": \"script-nvm-bash-completion\", \"exit\": 0, \"stdout\": \"https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/bash_completion\\n\", \"stderr\": false}, {\"id\": \"repo-version-script-nvm-bash-completion\", \"exit\": 0, \"stdout\": \"https://raw.githubusercontent.com/other-user/other-nvm/v0.37.0/bash_completion\\n\", \"stderr\": true}, {\"id\": \"invalid\", \"exit\": 1, \"stdout\": \"\", \"stderr\": true}, {\"id\": \"custom-default\", \"exit\": 0, \"stdout\": \"my_location\\n\", \"stderr\": false}, {\"id\": \"custom-git\", \"exit\": 0, \"stdout\": \"my_location\\n\", \"stderr\": false}, {\"id\": \"custom-script\", \"exit\": 0, \"stdout\": \"my_location\\n\", \"stderr\": false}, {\"id\": \"custom-anything\", \"exit\": 0, \"stdout\": \"my_location\\n\", \"stderr\": false}]"
+        }
+      ]
+    },
+    "evaluator_controls": {
+      "schema": "codex-ab.evaluator-controls.v1",
+      "cases": [
+        {
+          "id": "upstream-reference",
+          "role": "reference",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "literal-arguments": "pass",
+            "wget-translations": "pass",
+            "curl-posix": "pass"
+          }
+        },
+        {
+          "id": "pinned-baseline",
+          "role": "baseline",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "literal-arguments": "fail",
+            "wget-translations": "fail",
+            "curl-posix": "pass"
+          }
+        },
+        {
+          "id": "unsafe-reparse",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "install.sh",
+              "before_sha256": "b5f8ba6dcc759c1c58c027f07e439bb18afb0a8f16525470364d401a9471eb54",
+              "after_sha256": "0c5f814be4ff190a1f7328ae2b709d7466b93f155755e425099f200199259b5f",
+              "diff": "diff --git a/install.sh b/install.sh\n--- a/install.sh\n+++ b/install.sh\n@@ -145,7 +145,7 @@\n       esac\n     done\n     shift \"${NVM_DOWNLOAD_WGET_COUNT}\"\n-    command wget \"$@\"\n+    eval command wget \"$*\"\n   fi\n }\n \n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "literal-arguments": "fail"
+          }
+        },
+        {
+          "id": "resume-value-leak",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "install.sh",
+              "before_sha256": "b5f8ba6dcc759c1c58c027f07e439bb18afb0a8f16525470364d401a9471eb54",
+              "after_sha256": "7660fc69c2b25d5b0aaf8f1050781f779db3d075b2a772bdd6bccf82acbb0388",
+              "diff": "diff --git a/install.sh b/install.sh\n--- a/install.sh\n+++ b/install.sh\n@@ -140,7 +140,7 @@\n         '-s') set -- \"$@\" '-q' ;;\n         '-sS') set -- \"$@\" '-nv' ;;\n         '-o') set -- \"$@\" '-O' ;;\n-        '-C') NVM_DOWNLOAD_WGET_SKIP=1; set -- \"$@\" '-c' ;;\n+        '-C') NVM_DOWNLOAD_WGET_SKIP=0; set -- \"$@\" '-c' ;;\n         *) set -- \"$@\" \"${NVM_DOWNLOAD_WGET_ARG}\" ;;\n       esac\n     done\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "wget-translations": "fail"
+          }
+        },
+        {
+          "id": "changed-curl-options",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "install.sh",
+              "before_sha256": "b5f8ba6dcc759c1c58c027f07e439bb18afb0a8f16525470364d401a9471eb54",
+              "after_sha256": "0c1582bdba93b3ef7da9479f4e689cd3b2bb563880a5078deb83bd9027bcefab",
+              "diff": "diff --git a/install.sh b/install.sh\n--- a/install.sh\n+++ b/install.sh\n@@ -118,7 +118,7 @@\n \n nvm_download() {\n   if nvm_has_executable \"curl\"; then\n-    command curl --fail --compressed -q \"$@\"\n+    command curl --fail -q \"$@\"\n   elif nvm_has_executable \"wget\"; then\n     # Emulate curl with wget\n     local NVM_DOWNLOAD_WGET_COUNT\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "curl-posix": "fail"
+          }
+        },
+        {
+          "id": "independent-positional-loop",
+          "role": "alternative",
+          "base": "baseline",
+          "patches": [
+            {
+              "path": "install.sh",
+              "before_sha256": "2ef7e8d4373c1ffd70daa55f919f629e98a619543ffc0a8d892d77a5247e50e4",
+              "after_sha256": "534d49eb67992f4f241013b3ba84c6206d90997b3f0a8a721bf73541582132cf",
+              "diff": "diff --git a/install.sh b/install.sh\n--- a/install.sh\n+++ b/install.sh\n@@ -120,18 +120,31 @@\n   if nvm_has_executable \"curl\"; then\n     command curl --fail --compressed -q \"$@\"\n   elif nvm_has_executable \"wget\"; then\n-    # Emulate curl with wget\n-    ARGS=$(nvm_echo \"$@\" | command sed -e 's/--progress-bar /--progress=bar /' \\\n-                            -e 's/--compressed //' \\\n-                            -e 's/--fail //' \\\n-                            -e 's/-L //' \\\n-                            -e 's/-I /--server-response /' \\\n-                            -e 's/-s /-q /' \\\n-                            -e 's/-sS /-nv /' \\\n-                            -e 's/-o /-O /' \\\n-                            -e 's/-C - /-c /')\n-    # shellcheck disable=SC2086\n-    eval command wget $ARGS\n+    # Translate one original operand at a time, retaining quoted argv at the tail.\n+    local remaining arg\n+    remaining=$#\n+    while [ \"$remaining\" -gt 0 ]; do\n+      arg=\"$1\"\n+      shift\n+      remaining=$((remaining - 1))\n+      case \"$arg\" in\n+        --progress-bar) set -- \"$@\" --progress=bar ;;\n+        --compressed|--fail|-L) : ;;\n+        -I) set -- \"$@\" --server-response ;;\n+        -s) set -- \"$@\" -q ;;\n+        -sS) set -- \"$@\" -nv ;;\n+        -o) set -- \"$@\" -O ;;\n+        -C)\n+          if [ \"$remaining\" -gt 0 ]; then\n+            shift\n+            remaining=$((remaining - 1))\n+          fi\n+          set -- \"$@\" -c\n+          ;;\n+        *) set -- \"$@\" \"$arg\" ;;\n+      esac\n+    done\n+    command wget \"$@\"\n   fi\n }\n \n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "literal-arguments": "pass",
+            "wget-translations": "pass",
+            "curl-posix": "pass"
+          }
+        }
+      ]
+    }
   }
 }

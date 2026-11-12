@@ -108,28 +108,80 @@ using Go 1.27.3 on Linux; the module requires Go 1.26. Tests ran from archived
 snapshots outside the source checkout. This establishes a usable baseline and
 attainable reference behavior in that local environment.
 
-The offline reference-sensitivity check archives the pinned source without
-modifying its checkout, runs its full root suite plus acceptance assertions in
-the isolated semantic executor, and tests five independent negative controls:
-accepting remote name edits, accepting invocation-policy edits, reparsing served
-bodies, omitting alias reference checks, and omitting local publication rollback.
-Each control must fail its intended assertion, not compilation or setup. The
-additional assertions cover an already accepted patch, retained serving and
-selection, both invocation policies, and deterministic destination obstruction.
+The manifest freezes independent observations for retained local behavior before
+implementation: `get` body/frontmatter stripping, a line range, reference reading,
+XML listing metadata and references, disabled-selection rejection with empty
+stdout, and checking that reads never execute the skill script. The supervisor
+compares the actual JSON observation with its private expected value. This is a
+scoped existing-behavior gate, not attestation of every test in the original
+`go test . -count=1` suite. That command remains a separate diagnostic.
 
-Run it with an existing offline dependency/compiler-cache image containing this
-task's pinned dependencies:
+Every criterion has four frozen control roles: the pinned upstream reference,
+the unchanged baseline with its declared outcome, a precise hashed source mutant,
+and a valid equivalent source alternative. Remote protected-field rejection has
+two independent mutants so accepting a name change and accepting an invocation
+policy change cannot mask one another. The alternatives retain the pinned
+reference behavior while using equivalent guards, value construction, rollback
+error handling, or help wording. They are source variants, not independent full
+solutions. Reference and baseline commits, the prompt, and criterion promises are
+unchanged.
+
+The model-free regression executes these controls through the normal offline
+semantic supervisor. Its evaluator-only observers record actual command output,
+served content, persisted state, and resource side effects, rather than treating
+a test runner's exit code or printed count as proof. Failed background refresh
+uses a package-local adapter to record the real failed refresh cycle and retry
+eligibility; its expected values still live outside the Go child.
+
+| Criterion | Executed observation and targeted regression |
+| --- | --- |
+| `repository-install` | Install an encoded slash-ref nested skill, read its resources/mode, reject invalid input without a selection change; drop the persisted explicit ref/path. |
+| `remote-recovery` | Restore an evicted generation with its accepted patch and selection; preserve patch/selection on a later fetch failure; incorrectly treat an evicted generation as fresh. |
+| `diagnostics` | Compare resolved and disabled owner reports with serving, selection layer, and body health; omit the resolved owner. |
+| `content-checks` | Leading Markdown horizontal rule and empty bodies under both invocation policies through all four manifest aliases; incorrectly reparse served Markdown. |
+| `content-resources` | Empty references, missing explicit targets, continued script-file reads without execution under both policies and all aliases; omit alias reference expansion. |
+| `layered-selection` | Global/project selection, a condition, inheritance, and home-directory global routing; reject `inherit` rather than restoring the global selection. |
+| `safe-edits` | Stale/empty rejection, deterministic publication obstruction with rollback, file replacement/rename, mode and placeholder retention; omit manifest rollback. |
+| `remote-edit-rejection` | Separately reject protected name/policy edits, empty bodies, and stale guards after an accepted patch, retaining fetched bytes, patch, selection, and serving; independently allow each protected edit. |
+| `remote-edit-success` | Serve an accepted local patch without changing fetched bytes and report its health/identity/policy; save original bytes instead of the replacement. |
+| `refresh-backoff` | Observe failure logging, immediate retry suppression, and later retry eligibility; fail to persist cycle completion. |
+| `compatibility-tests-docs` | Install, edit, check, disable/re-enable, sync, and serve the local patch, alongside retained serving/script execution and help advertising `run`/`sync`; remove the documented `run` entry. |
+
+The unchanged baseline fails each criterion observation, including the connected
+compatibility workflow and failed-refresh backoff. It passes the separate
+retained-serving gate. These outcomes come from the pinned source behavior, not an assumption
+that every baseline must fail.
+
+Run the model-free regression with an offline image containing the task's pinned
+Go modules and compiler cache, readable by the executor's unprivileged child:
 
 ```sh
-CODEX_AB_QUALIFY_SKILLS_MGR=1 \
+CODEX_AB_QUALIFY_SKILLS_MGR_AGENT_CLI=1 \
 CODEX_AB_SKILLS_MGR_SOURCE=/path/to/skills-mgr \
 CODEX_AB_QUALIFICATION_IMAGE=sha256:IMAGE_ID \
-bun test skills-mgr-qualification.live.test.ts
+bun test skills-mgr-agent-cli-qualification.live.test.ts
 ```
 
-This qualifies the fixed reference assertions, not adaptive judges. The test
-fixture is not installed in candidate workspaces or used as their hidden oracle.
-Adaptive judge coverage, candidate duration, and compaction frequency remain
-unmeasured; the manifest retains `qualification: "not-run"`. Reference passes and
-negative-control sensitivity do not establish judge quality or a launcher
-advantage. Changed reference pins require requalification before use.
+A successful run compares 49 supervisor records: retained observations on both
+snapshots, 45 criterion/control observations, and two observer-isolation controls.
+Evaluator-only Python observers use isolated interpreter mode so candidate-owned
+standard-library shadows cannot forge their output. The isolation regression
+reproduces the old import bypass with a forged JSON result and missing Go
+entrypoint, then verifies that the corrected observer rejects it. No model credentials or inference
+are used. The observers and source variants are evaluator-only and are not a
+hidden candidate oracle. The encoded-ref fixture uses a temporary local Git
+repository with URL rewriting, never the network during checks.
+
+This establishes sensitivity only for the listed scenarios and source variants.
+The full installation address matrix, native fallback alternatives, every trust
+boundary, interactive-editor behavior, comprehensive documentation/test quality,
+and adaptive judge quality are not certified by these observations. In particular,
+the compatibility criterion retains its full requirement; its small executed
+scenario does not certify the entire Go suite or reader documentation. Candidate
+duration, compaction frequency, and launcher advantage remain unmeasured. The
+manifest retains `qualification: "not-run"` because this regression does not
+prequalify a future adaptive judge's candidate-specific checks.
+
+Prepare fresh runs to capture the migrated contract. Older retained preparations
+keep their original criteria and observations and cannot acquire the new controls
+from an in-place manifest edit. Changed source pins require requalification.

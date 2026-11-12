@@ -225,14 +225,54 @@ each complete JSON batch from the supervisor. It executes the ordinary semantic
 assessment and qualification path against the reference, unchanged baseline,
 targeted source mutant, and an independent valid parser. CI installs the pack's
 pinned Python dependencies and fetches the exact upstream reference before this
-offline test. Other task packs require their own mapped controls and observations;
-this migration does not qualify them.
+offline test.
 
 ```sh
 CODEX_AB_LIVE_DOCKER=1 CODEX_AB_VERIFIER_IMAGE=codex-ab:model-free \
   CODEX_AB_FLASK_SOURCE=/path/to/pinned/flask \
   bun test flask-qualification.live.test.ts
 ```
+
+### Bundled task readiness
+
+Every bundled task manifest and the standalone skill-bundle criteria freeze
+existing-behavior observations and all four evaluator-control roles. The
+model-free readiness regression loads every checked-in contract and verifies
+both acceptance and rejection when observations or a required role are removed:
+
+```sh
+bun test task-pack.test.ts semantic-preflight.test.ts
+```
+
+These checks establish contract readiness, not runtime execution. Task-specific
+model-free tests exercise real source observations and controls using the normal
+offline supervisor. Prepare the pinned dependencies before running them; no
+model credentials or paid inference are required. Their commands, source pins,
+observation scope, and remaining limits are documented with each task:
+
+- [NVM download arguments](../tasks/nvm-download-no-eval/README.md)
+- [Gin context copying](../tasks/gin-context-copy/README.md)
+- [Express transfer encoding](../tasks/express-transfer-encoding/README.md)
+- [Flask address selection](../tasks/flask-ipv6-server-name/README.md)
+- [Skills manager agent commands](../tasks/skills-mgr-agent-cli/README.md)
+- [Skills manager remote uninstall](../tasks/skills-mgr-remote-uninstall/README.md)
+- [Skills manager conditional acquisition](../tasks/skills-mgr-get-short-circuit/README.md)
+- [Portable skill bundles](../tasks/skills-mgr-bundle/README.md)
+- [Mekugi coordination checkpoints](../tasks/session-retention/README.md)
+- [sqlite-utils upgrade](../tasks/sqlite-utils-history/README.md)
+
+The standalone bundle task has no upstream solution commit. Its reference and
+alternative controls are authored fixtures, not upstream reference evidence;
+the task still permits different archive formats and equivalent interfaces.
+Controls qualify only the behaviors exercised by each authored check. Composite
+test/documentation criteria and opt-in native-provider integration require their
+own assessment; neither printed suite results nor representative probes certify
+their entire scope. Skipped tests establish no runtime coverage.
+
+Prepared runs retain their original frozen contracts and hashes. Updating a
+bundled task does not migrate an existing run in place. Prepare a fresh run to
+use the new contract, and keep the old run as historical evidence. Editing its
+criteria or hashes would invalidate the frozen-input provenance.
 
 The source-judge live test uses the pinned Codex CLI and a local Responses mock
 inside a container with networking disabled. It inspects the tools actually

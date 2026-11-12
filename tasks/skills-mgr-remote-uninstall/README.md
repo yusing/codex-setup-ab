@@ -39,6 +39,37 @@ their behavior. See the [regression coverage map](../../doc/regression-coverage.
 The unchanged baseline test suite passes against the reference, so the manifest
 declares [retained baseline tests](../../doc/contract.md#task-derived-semantic-grading).
 
+## Frozen observations and model-free validation
+
+The existing-behavior gate builds the actual CLI and observes local selection,
+body serving, listing, inspection, disabled serving, and invalid-name rejection
+in disposable homes and projects. Expected JSON stays with the supervisor. The
+original root Go suite remains a separate diagnostic, not proof that independent
+observations cover the entire suite.
+
+Evaluator controls use the pinned reference and unchanged baseline, five focused
+production mutants, and a guard-first removal implementation with different
+confirmation wording. The model-free checks exercise removal and sidecars,
+broken installations, shadowing and invalid arguments, global/home scope,
+other-project preservation, and help/completion/documentation samples. They do
+not certify cancellation, every native owner, live fish completion, candidate
+test quality, or complete documentation; adaptive assessment still covers those
+prompt obligations.
+
+With Docker, the pinned source checkout, and an image containing its prepared Go
+dependencies and writable compiler cache:
+
+```sh
+CODEX_AB_LIVE_DOCKER=1 CODEX_AB_SKILLS_MGR_SOURCE=/path/to/skills-mgr \
+  CODEX_AB_LIVE_IMAGE=prepared-task-dependency-image \
+  bun test remote-uninstall.live.test.ts
+```
+
+This executes the normal supervisor and qualification path without model
+inference. Skipped live checks do not establish execution. A run prepared with
+an older contract keeps that frozen contract; prepare a new run after updating
+the pack rather than editing retained evidence.
+
 ## Launch
 
 Select **Skills manager remote uninstall** (task ID `skills-mgr-remote-uninstall`).

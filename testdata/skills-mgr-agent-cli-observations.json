@@ -1,0 +1,317 @@
+{
+  "repository-install": {
+    "install_exit": 0,
+    "invalid": {
+      "rejected": true,
+      "selection_preserved": true
+    },
+    "remote": {
+      "locator": "https://github.com/owner/repo/tree/feature%2Fskills/skills/alpha",
+      "name": "alpha",
+      "provider": "repository"
+    },
+    "resources": [
+      "Guide.\n",
+      true
+    ],
+    "served": {
+      "exit": 0,
+      "stdout": "Remote body.\n"
+    }
+  },
+  "remote-recovery": {
+    "edit_exit": 0,
+    "failed_recovery": {
+      "patch_preserved": true,
+      "rejected": true,
+      "selection_preserved": true
+    },
+    "install_exit": 0,
+    "missing": true,
+    "selection_preserved": true,
+    "served": {
+      "exit": 0,
+      "stdout": "Patched body.\n"
+    },
+    "sync_exit": 0
+  },
+  "diagnostics": {
+    "disabled": {
+      "enabled": [
+        false
+      ],
+      "exit": 0,
+      "resolved": null
+    },
+    "enabled": {
+      "alternatives": 0,
+      "body_health": "ok",
+      "exit": 0,
+      "layer": "project",
+      "resolved": "managed",
+      "served": {
+        "exit": 0,
+        "stdout": "First.\nSecond.\n"
+      }
+    }
+  },
+  "layered-selection": {
+    "condition_false": true,
+    "condition_true": {
+      "exit": 0,
+      "stdout": "First.\nSecond.\n"
+    },
+    "conditional": 0,
+    "disabled": 0,
+    "global": 0,
+    "home": 0,
+    "home_global_value": false,
+    "home_project_lock": false,
+    "inherit": 0,
+    "served_inherited": {
+      "exit": 0,
+      "stdout": "First.\nSecond.\n"
+    }
+  },
+  "safe-edits": {
+    "rejections": {
+      "empty": true,
+      "preserved": true,
+      "stale": true
+    },
+    "rename": {
+      "exit": 0,
+      "mode": "0o640",
+      "new_placeholder": true,
+      "old_placeholder": false,
+      "served": {
+        "exit": 0,
+        "stdout": "Changed.\n"
+      }
+    },
+    "rollback": {
+      "obstruction": "obstruction",
+      "preserved": true,
+      "rejected": true
+    }
+  },
+  "remote-edit-rejection": {
+    "accepted": {
+      "exit": 0,
+      "fetched_preserved": true,
+      "patch_exists": true,
+      "served": {
+        "exit": 0,
+        "stdout": "Accepted local body.\n"
+      }
+    },
+    "install_exit": 0,
+    "rejected": [
+      {
+        "field": "name",
+        "rejected": true,
+        "state_preserved": true
+      },
+      {
+        "field": "policy",
+        "rejected": true,
+        "state_preserved": true
+      },
+      {
+        "field": "empty",
+        "rejected": true,
+        "state_preserved": true
+      },
+      {
+        "field": "stale",
+        "rejected": true,
+        "state_preserved": true
+      }
+    ]
+  },
+  "remote-edit-success": {
+    "accepted": {
+      "exit": 0,
+      "fetched_preserved": true,
+      "patch_exists": true,
+      "served": {
+        "exit": 0,
+        "stdout": "Accepted local body.\n"
+      }
+    },
+    "inspection": {
+      "exit": 0,
+      "health": "ok",
+      "patch": true,
+      "policy": false,
+      "source": "repository"
+    },
+    "install_exit": 0
+  },
+  "refresh-backoff": {
+    "registry_failure_logged": true,
+    "retry_due": false,
+    "retry_due_after_interval": true,
+    "runner_error": false
+  },
+  "compatibility-tests-docs": {
+    "help": {
+      "exit": 0,
+      "run": true,
+      "sync": true
+    },
+    "script": {
+      "executed": true,
+      "exit": 0
+    },
+    "served": {
+      "exit": 0,
+      "stdout": "First.\nSecond.\n"
+    },
+    "workflow": {
+      "install_exit": 0,
+      "edit_exit": 0,
+      "check_exit": 0,
+      "disable_exit": 0,
+      "disabled": true,
+      "enable_exit": 0,
+      "sync_exit": 0,
+      "served": {
+        "exit": 0,
+        "stdout": "Integrated patch.\n"
+      }
+    }
+  },
+  "content-checks": [
+    {
+      "alias": "alpha",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": false
+    },
+    {
+      "alias": "alpha/SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": false
+    },
+    {
+      "alias": "alpha/./SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": false
+    },
+    {
+      "alias": "alpha/references/../SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": false
+    },
+    {
+      "alias": "alpha",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": true
+    },
+    {
+      "alias": "alpha/SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": true
+    },
+    {
+      "alias": "alpha/./SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": true
+    },
+    {
+      "alias": "alpha/references/../SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": true
+    }
+  ],
+  "content-resources": [
+    {
+      "alias": "alpha",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": false,
+      "continued": true,
+      "reported_missing": true,
+      "reported_reference": true,
+      "script_executed": false
+    },
+    {
+      "alias": "alpha/SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": false,
+      "continued": true,
+      "reported_missing": true,
+      "reported_reference": true,
+      "script_executed": false
+    },
+    {
+      "alias": "alpha/./SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": false,
+      "continued": true,
+      "reported_missing": true,
+      "reported_reference": true,
+      "script_executed": false
+    },
+    {
+      "alias": "alpha/references/../SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": false,
+      "continued": true,
+      "reported_missing": true,
+      "reported_reference": true,
+      "script_executed": false
+    },
+    {
+      "alias": "alpha",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": true,
+      "continued": true,
+      "reported_missing": true,
+      "reported_reference": true,
+      "script_executed": false
+    },
+    {
+      "alias": "alpha/SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": true,
+      "continued": true,
+      "reported_missing": true,
+      "reported_reference": true,
+      "script_executed": false
+    },
+    {
+      "alias": "alpha/./SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": true,
+      "continued": true,
+      "reported_missing": true,
+      "reported_reference": true,
+      "script_executed": false
+    },
+    {
+      "alias": "alpha/references/../SKILL.md",
+      "empty_rejected": true,
+      "healthy": 0,
+      "policy": true,
+      "continued": true,
+      "reported_missing": true,
+      "reported_reference": true,
+      "script_executed": false
+    }
+  ]
+}

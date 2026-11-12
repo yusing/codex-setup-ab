@@ -11,12 +11,116 @@
   "criteria": {
     "schema": "codex-ab.criteria.v1",
     "criteria": [
-      {"id": "copy-isolation", "description": "Copy preserves Errors and Accepted elements in independent slice backing storage, and preserves nil when unset.", "required_interface": "gin.Context.Copy with Errors and Accepted fields"},
-      {"id": "existing-copy-behavior", "description": "Writer state, request data, keys, parameters, handlers and paths retain the existing copy behavior."}
+      {
+        "id": "copy-isolation",
+        "description": "Copy preserves Errors and Accepted elements in independent slice backing storage, and preserves nil when unset.",
+        "required_interface": "gin.Context.Copy with Errors and Accepted fields"
+      },
+      {
+        "id": "existing-copy-behavior",
+        "description": "Writer state, request data, keys, parameters, handlers and paths retain the existing copy behavior."
+      }
     ],
     "preparation": "go mod download",
     "existing_tests": "go test . -run '^TestContextCopy' -count=1",
-    "evaluator_guidance": "Inspect /reference/index.json and the patch for 293ad7e to ground copy-isolation and retained-copy behavior in context.go and the TestContextCopy tests. Exercise content, nil preservation, and independent slice backing storage by replacing existing elements in a copied slice; pointed-to error objects need not be deep-cloned. Run the candidate's focused tests and assess its regression coverage. Accept equivalent implementations and safe improvements without exact patch or file-boundary requirements. The reference is evaluator-only; wiring failures are HARNESS_ERROR/unassessed, and source-only observations without executed coverage remain unassessed.",
-    "qualification": "not-run"
+    "evaluator_guidance": "Inspect /reference/index.json and the patch for 293ad7e to ground copy-isolation and retained-copy behavior in context.go and the TestContextCopy tests. Exercise content, nil preservation, and independent slice backing storage by replacing existing elements in a copied slice; pointed-to error objects need not be deep-cloned. Run the candidate's focused tests and assess its regression coverage. Accept equivalent implementations and safe improvements without exact patch or file-boundary requirements. The reference is evaluator-only; supervisor-classified evaluator wiring failures remain unassessed, and source-only observations without executed coverage remain unassessed. Frozen existing observations record real Context.Copy field identities, writer state, and mutation isolation. Controls include shallow slice aliases, a retained Params alias, and an append-based implementation. Go test summaries remain separate diagnostics, not independent completion evidence.",
+    "qualification": "not-run",
+    "existing_test_verification": {
+      "schema": "codex-ab.verification.v1",
+      "cases": [
+        {
+          "id": "existing-context-observations",
+          "kind": "command",
+          "command": [
+            "python3",
+            "-I",
+            "-c",
+            "import json, os, pathlib, subprocess, sys, tempfile, uuid\nsource = 'package gin\\nimport(\"encoding/json\";\"errors\";\"fmt\";\"net/http\";\"net/http/httptest\";\"testing\")\\nfunc TestFrozenContextObservation(t *testing.T) {\\n c,_:=CreateTestContext(httptest.NewRecorder())\\n c.Request,_=http.NewRequest(http.MethodPost,\"/hola\",nil)\\n c.index=2; c.handlers=HandlersChain{func(*Context){}}; c.fullPath=\"/hola\"\\n c.Set(\"foo\",\"bar\"); c.Params=Params{{Key:\"foo\",Value:\"bar\"}}\\n c.Writer.WriteHeader(202); _,_=c.Writer.WriteString(\"ok\")\\n cp:=c.Copy()\\n existing:=map[string]any{\"request_same\":cp.Request==c.Request,\"engine_same\":cp.engine==c.engine,\"writer_rebound\":cp.Writer==&cp.writermem,\"underlying_writer_nil\":cp.writermem.ResponseWriter==nil,\"writer_status\":cp.Writer.Status(),\"writer_size\":cp.Writer.Size(),\"writer_written\":cp.Writer.Written(),\"aborted\":cp.index==abortIndex,\"handlers_nil\":cp.handlers==nil,\"path\":cp.FullPath(),\"key\":cp.Keys[\"foo\"],\"params\":append(Params{},cp.Params...)}\\n cp.Set(\"foo\",\"changed\"); cp.Params[0].Value=\"changed\"\\n existing[\"original_key\"]=c.Keys[\"foo\"]; existing[\"original_param\"]=c.Params[0].Value\\n c2,_:=CreateTestContext(httptest.NewRecorder()); e1:=c2.Error(errors.New(\"first\")); e2:=c2.Error(errors.New(\"second\")); c2.SetAccepted(\"application/json\",\"text/html\")\\n copied:=c2.Copy()\\n messages:=[]string{}; for _,e:=range copied.Errors {messages=append(messages,e.Error())}\\n formats:=append([]string{},copied.Accepted...)\\n if len(copied.Errors)>0 {copied.Errors[0]=&Error{Err:errors.New(\"changed\"),Type:ErrorTypePrivate}}\\n if len(copied.Accepted)>0 {copied.Accepted[0]=\"text/plain\"}\\n c3,_:=CreateTestContext(httptest.NewRecorder()); nilcopy:=c3.Copy()\\n empty,_:=CreateTestContext(httptest.NewRecorder()); empty.Errors=make(errorMsgs,0); empty.Accepted=make([]string,0); emptycopy:=empty.Copy()\\n _=e1; _=e2\\n isolation:=map[string]any{\"errors\":messages,\"accepted\":formats,\"original_error\":c2.Errors[0].Error(),\"original_accepted\":c2.Accepted[0],\"nil_errors\":nilcopy.Errors==nil,\"nil_accepted\":nilcopy.Accepted==nil,\"empty_errors_len\":len(emptycopy.Errors),\"empty_accepted_len\":len(emptycopy.Accepted)}\\n data,_:=json.Marshal(map[string]any{\"existing\":existing,\"isolation\":isolation}); fmt.Printf(\"FROZEN_OBSERVATION:%s\\\\n\",data)\\n}\\n'\nwith tempfile.TemporaryDirectory(prefix='codex-ab-gin-observer-') as directory:\n    private = pathlib.Path(directory)\n    while True:\n        identity = uuid.uuid4().hex\n        virtual = pathlib.Path.cwd() / ('zz_codex_ab_observer_' + identity + '_test.go')\n        if not os.path.lexists(virtual): break\n    test_name = 'TestCodexABContextObservation' + identity\n    backing = private / 'observer_test.go'\n    backing.write_text(source.replace('TestFrozenContextObservation', test_name))\n    overlay = private / 'overlay.json'\n    overlay.write_text(json.dumps({'Replace': {str(virtual): str(backing)}}))\n    result = subprocess.run(['go','test','-overlay',str(overlay),'.', '-run', '^' + test_name + '$', '-count=1', '-v'], text=True, capture_output=True)\nif result.returncode:\n    sys.stderr.write(result.stdout + result.stderr)\n    sys.exit(result.returncode)\nrows = [line.removeprefix('FROZEN_OBSERVATION:') for line in result.stdout.splitlines() if line.startswith('FROZEN_OBSERVATION:')]\nif len(rows) != 1: raise RuntimeError('missing or repeated observation')\nprint(json.dumps(json.loads(rows[0])[json.load(sys.stdin)['scope']]))\n"
+          ],
+          "args": [],
+          "stdin": "{\"scope\":\"existing\"}",
+          "expected_exit": 0,
+          "format": "json",
+          "expected": "{\"request_same\":true,\"engine_same\":true,\"writer_rebound\":true,\"underlying_writer_nil\":true,\"writer_status\":202,\"writer_size\":2,\"writer_written\":true,\"aborted\":true,\"handlers_nil\":true,\"path\":\"/hola\",\"key\":\"bar\",\"params\":[{\"Key\":\"foo\",\"Value\":\"bar\"}],\"original_key\":\"bar\",\"original_param\":\"bar\"}"
+        }
+      ]
+    },
+    "evaluator_controls": {
+      "schema": "codex-ab.evaluator-controls.v1",
+      "cases": [
+        {
+          "id": "upstream-reference",
+          "role": "reference",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "copy-isolation": "pass",
+            "existing-copy-behavior": "pass"
+          }
+        },
+        {
+          "id": "pinned-baseline",
+          "role": "baseline",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "copy-isolation": "fail",
+            "existing-copy-behavior": "pass"
+          }
+        },
+        {
+          "id": "shallow-slice-alias",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "copy-isolation": "fail"
+          },
+          "patches": [
+            {
+              "path": "context.go",
+              "before_sha256": "83958bde675a4b11222ca9ff403672e0114d2222803801629329cf1d1246487c",
+              "after_sha256": "7f795e4fc9de7eecd05e2a221005df26d5ef29e009eb319766e9dd8b279a0edd",
+              "diff": "diff --git a/context.go b/context.go\n--- a/context.go\n+++ b/context.go\n@@ -142,13 +142,11 @@\n \tcopy(cp.Params, cParams)\n \n \tif c.Errors != nil {\n-\t\tcp.Errors = make(errorMsgs, len(c.Errors))\n-\t\tcopy(cp.Errors, c.Errors)\n+\t\tcp.Errors = c.Errors\n \t}\n \n \tif c.Accepted != nil {\n-\t\tcp.Accepted = make([]string, len(c.Accepted))\n-\t\tcopy(cp.Accepted, c.Accepted)\n+\t\tcp.Accepted = c.Accepted\n \t}\n \n \treturn &cp\n"
+            }
+          ]
+        },
+        {
+          "id": "existing-copy-alias",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "existing-copy-behavior": "fail"
+          },
+          "patches": [
+            {
+              "path": "context.go",
+              "before_sha256": "83958bde675a4b11222ca9ff403672e0114d2222803801629329cf1d1246487c",
+              "after_sha256": "d9f2bea64d4bd4fadb48df8c5921ac684b3817c03356f293ea14c495ba1e684e",
+              "diff": "diff --git a/context.go b/context.go\n--- a/context.go\n+++ b/context.go\n@@ -138,8 +138,7 @@\n \tc.mu.RUnlock()\n \n \tcParams := c.Params\n-\tcp.Params = make([]Param, len(cParams))\n-\tcopy(cp.Params, cParams)\n+\tcp.Params = cParams\n \n \tif c.Errors != nil {\n \t\tcp.Errors = make(errorMsgs, len(c.Errors))\n"
+            }
+          ]
+        },
+        {
+          "id": "append-based-copy",
+          "role": "alternative",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "copy-isolation": "pass",
+            "existing-copy-behavior": "pass"
+          },
+          "patches": [
+            {
+              "path": "context.go",
+              "before_sha256": "466f3a78cf5cd8a220ba94eb685e521c45f650be5658f9fe324b1260ba38a753",
+              "after_sha256": "5b75e62c09cc335f0d41d7b0631ded5262b1e36546e3ed5db8adf525dcf8c30b",
+              "diff": "diff --git a/context.go b/context.go\n--- a/context.go\n+++ b/context.go\n@@ -140,6 +140,13 @@\n \tcParams := c.Params\n \tcp.Params = make([]Param, len(cParams))\n \tcopy(cp.Params, cParams)\n+\n+\tif c.Errors != nil {\n+\t\tcp.Errors = append(errorMsgs{}, c.Errors...)\n+\t}\n+\tif c.Accepted != nil {\n+\t\tcp.Accepted = append([]string{}, c.Accepted...)\n+\t}\n \n \treturn &cp\n }\n"
+            }
+          ]
+        }
+      ]
+    }
   }
 }

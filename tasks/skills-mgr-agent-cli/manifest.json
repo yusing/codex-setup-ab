@@ -58,7 +58,466 @@
     ],
     "preparation": "go mod download",
     "existing_tests": "go test . -count=1",
-    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local Git fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. The 12 upstream commits are frozen read-only under /reference: inspect index.json, relevant commit patches, and changes.patch to ground checks in actual implementation, regression tests, and documentation. Installation/recovery evidence is in repository_install_test.go, repository_cli_test.go, and audit_remote_regression_test.go; agent_commands_test.go covers diagnostics, checks, selections, and edits; refresh_runner_test.go covers retry behavior. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact command names, flags, JSON fields, helper names, architecture, patch shape, or the historical README rewrite. Test meaningful end-to-end interactions, not just isolated helpers. Use local Git URL rewriting or equivalent fixtures for repository installation; failures in evaluator wiring are HARNESS_ERROR/unassessed. Do not make unrelated changes bundled in upstream commits into new requirements. Preserve source-only observations with insufficient executed coverage as unassessed. No hidden oracle is supplied. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness. Acceptance distinctions are explicit in the task and criterion descriptions. Preserve each named positive, negative, and retained-state observation; candidate-authored tests may support but never redefine them. Do not use effective metadata normalization as proof that a protected remote replacement was rejected or that the previous patch survived. The pinned agent_commands_test.go TestAgentEditRemotePatchAndStaleHealth establishes rejection for the new command, while skill_edit.go is a different interactive operation. TestAgentCheckManifestAliases establish body/reference checks through aliases. repository_cli_test.go establishes percent-encoded slash refs, not automatic resolution of unencoded branch boundaries. Do not skip publication-failure coverage merely because chmod-based permission fixtures are ineffective under the execution user; use a deterministic destination obstruction or leave the case unassessed. A successful empty test selection is not a pass. Mark genuine evaluator wiring failures explicitly as HARNESS_ERROR and exit 125; do not relabel a candidate exception based on its error wording. Ordinary behavioral failures are retained and cannot be replaced in a repair round.",
-    "qualification": "not-run"
+    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local Git fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. The 12 upstream commits are frozen read-only under /reference: inspect index.json, relevant commit patches, and changes.patch to ground checks in actual implementation, regression tests, and documentation. Installation/recovery evidence is in repository_install_test.go, repository_cli_test.go, and audit_remote_regression_test.go; agent_commands_test.go covers diagnostics, checks, selections, and edits; refresh_runner_test.go covers retry behavior. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact command names, flags, JSON fields, helper names, architecture, patch shape, or the historical README rewrite. Test meaningful end-to-end interactions, not just isolated helpers. Use local Git URL rewriting or equivalent fixtures for repository installation; failures in evaluator wiring are HARNESS_ERROR/unassessed. Do not make unrelated changes bundled in upstream commits into new requirements. Preserve source-only observations with insufficient executed coverage as unassessed. No hidden oracle is supplied. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness. Acceptance distinctions are explicit in the task and criterion descriptions. Preserve each named positive, negative, and retained-state observation; candidate-authored tests may support but never redefine them. Do not use effective metadata normalization as proof that a protected remote replacement was rejected or that the previous patch survived. The pinned agent_commands_test.go TestAgentEditRemotePatchAndStaleHealth establishes rejection for the new command, while skill_edit.go is a different interactive operation. TestAgentCheckManifestAliases establish body/reference checks through aliases. repository_cli_test.go establishes percent-encoded slash refs, not automatic resolution of unencoded branch boundaries. Do not skip publication-failure coverage merely because chmod-based permission fixtures are ineffective under the execution user; use a deterministic destination obstruction or leave the case unassessed. A successful empty test selection is not a pass. Use supervisor evidence to classify evaluator wiring failures as unassessed; printed markers and candidate-chosen exit codes do not determine failure ownership. Ordinary behavioral failures are retained and cannot be replaced in a repair round. Frozen existing observations cover actual retained get/list/range/reference and disabled-serving behavior without running referenced scripts. Frozen source controls qualify feature observations against the pinned baseline/reference, targeted production regressions, and valid alternatives. Deterministic failure fixtures and refresh state observations do not certify the complete existing Go suite, all native-harness integrations, or test/documentation quality.",
+    "qualification": "not-run",
+    "existing_test_verification": {
+      "schema": "codex-ab.verification.v1",
+      "cases": [
+        {
+          "id": "retained-local-serving-selection-resources",
+          "kind": "command",
+          "command": [
+            "python3",
+            "-I",
+            "-c",
+            "\"\"\"Evaluator-only public CLI observer. Expectations live outside this process.\"\"\"\nimport fcntl\nimport json\nimport os\nfrom pathlib import Path\nimport shutil\nimport subprocess\nimport sys\nimport tempfile\nimport xml.etree.ElementTree as ET\n\n\ndef manifest(name=\"alpha\", description=\"Alpha.\", body=\"First.\\nSecond.\\n\", policy=False):\n    return f\"---\\nname: {name}\\ndescription: {description}\\n\" + (\"disable-model-invocation: true\\n\" if policy else \"\") + \"---\\n\" + body\n\n\ndef write(path, text, mode=None):\n    path.parent.mkdir(parents=True, exist_ok=True)\n    path.write_text(text)\n    if mode is not None:\n        path.chmod(mode)\n\n\nwith tempfile.TemporaryDirectory(prefix=\"skills-agent-observe-\") as temporary:\n    root = Path(temporary)\n    binary = str(root / \"skills-mgr\")\n    subprocess.run([\"go\", \"build\", \"-buildvcs=false\", \"-o\", binary, \".\"], check=True, stdout=sys.stderr)\n    home, project = root / \"home\", root / \"project\"\n    home.mkdir()\n    project.mkdir()\n    cache = home / \"cache\" / \"skills-mgr\"\n    cache.mkdir(parents=True)\n    # Hold the documented background-refresh coordination lock, not a fake CLI.\n    refresh_lock = (cache / \"refresh.lock\").open(\"w\")\n    fcntl.flock(refresh_lock, fcntl.LOCK_EX)\n    env = dict({k: v for k, v in os.environ.items() if not k.startswith(\"GIT_\")}, HOME=str(home), XDG_CACHE_HOME=str(home / \"cache\"), CODEX_HOME=str(home / \".codex\"), GIT_CONFIG_NOSYSTEM=\"1\", GIT_CONFIG_GLOBAL=str(root / \"gitconfig\"), GIT_TERMINAL_PROMPT=\"0\")\n    for key in (\"CLAUDECODE\", \"GROK_CLI\", \"CODEX_THREAD_ID\"):\n        env.pop(key, None)\n    manager = home / \".skills-mgr\"\n    skill = manager / \"skills\" / \"alpha\" / \"SKILL.md\"\n    lock = project / \".skills-mgr.json\"\n    def selection(directory, skills):\n        write(directory / \".skills-mgr.json\", json.dumps({\"schema_revision\": 3, \"skills\": skills}))\n    def call(*args, data=None, cwd=project):\n        return subprocess.run([binary, *args], cwd=cwd, env=env, input=data, text=True, capture_output=True, timeout=15)\n    def body(target=\"alpha\"):\n        p = call(\"get\", target)\n        return {\"exit\": p.returncode, \"stdout\": p.stdout}\n    def inspect(name=\"alpha\"):\n        p = call(\"inspect\", name)\n        return p.returncode, json.loads(p.stdout) if p.stdout else {}\n    def read(path):\n        return path.read_text() if path.is_file() else None\n    def local():\n        write(skill, manifest(), 0o640)\n        write(skill.parent / \"references\" / \"guide.md\", \"Guide.\\n\")\n        write(skill.parent / \"scripts\" / \"marker.sh\", \"#!/bin/sh\\nprintf executed > '\" + str(root / \"executed\") + \"'\\n\", 0o755)\n        selection(project, {\"alpha\": {\"enabled\": True}})\n\n    case = \"existing\"\n    observed = {}\n    if case == \"existing\":\n        local()\n        observed[\"body\"] = body()\n        observed[\"range\"] = {\"exit\": (p := call(\"get\", \"alpha\", \"2:2\")).returncode, \"stdout\": p.stdout}\n        observed[\"resource\"] = body(\"alpha/references/guide.md\")\n        p = call(\"list\")\n        tree = ET.fromstring(p.stdout)\n        observed[\"list\"] = {\"exit\": p.returncode, \"alpha\": \"alpha\" in p.stdout, \"description\": \"Alpha.\" in p.stdout, \"reference\": \"guide.md\" in (tree.find(\"skill/references\").text or \"\")}\n        selection(project, {\"alpha\": {\"enabled\": False}})\n        p = call(\"get\", \"alpha\")\n        observed[\"disabled\"] = {\"rejected\": p.returncode != 0, \"stdout\": p.stdout}\n        observed[\"script_executed\"] = (root / \"executed\").exists()\n\n    print(json.dumps(observed, sort_keys=True))\n"
+          ],
+          "args": [],
+          "format": "json",
+          "expected_exit": 0,
+          "expected": "{\"body\":{\"exit\":0,\"stdout\":\"First.\\nSecond.\\n\"},\"disabled\":{\"rejected\":true,\"stdout\":\"\"},\"list\":{\"exit\":0,\"alpha\":true,\"description\":true,\"reference\":true},\"range\":{\"exit\":0,\"stdout\":\"Second.\\n\"},\"resource\":{\"exit\":0,\"stdout\":\"Guide.\\n\"},\"script_executed\":false}"
+        }
+      ]
+    },
+    "evaluator_controls": {
+      "schema": "codex-ab.evaluator-controls.v1",
+      "cases": [
+        {
+          "id": "reference",
+          "role": "reference",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "repository-install": "pass",
+            "remote-recovery": "pass",
+            "diagnostics": "pass",
+            "content-checks": "pass",
+            "content-resources": "pass",
+            "layered-selection": "pass",
+            "safe-edits": "pass",
+            "remote-edit-rejection": "pass",
+            "remote-edit-success": "pass",
+            "refresh-backoff": "pass",
+            "compatibility-tests-docs": "pass"
+          }
+        },
+        {
+          "id": "unchanged-baseline",
+          "role": "baseline",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "repository-install": "fail",
+            "remote-recovery": "fail",
+            "diagnostics": "fail",
+            "content-checks": "fail",
+            "content-resources": "fail",
+            "layered-selection": "fail",
+            "safe-edits": "fail",
+            "remote-edit-rejection": "fail",
+            "remote-edit-success": "fail",
+            "refresh-backoff": "fail",
+            "compatibility-tests-docs": "fail"
+          }
+        },
+        {
+          "id": "negative-repository-install",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "repository_install.go",
+              "before_sha256": "e935dfb4a522fade237118ce0c15046721d80783770fd3a1b109196b41347208",
+              "after_sha256": "882ed786658a334677bd3a2731a9f46431c2a14a4262c2403eb587f4dff046e4",
+              "diff": "diff --git a/repository_install.go b/repository_install.go\n--- a/repository_install.go\n+++ b/repository_install.go\n@@ -128,7 +128,7 @@\n \tfor index, part := range parts[3:] {\n \t\tescaped[index] = url.PathEscape(part)\n \t}\n-\tlocation.locator = base + \"/tree/\" + strings.Join(escaped, \"/\")\n+\tlocation.locator = base\n \treturn location, nil\n }\n \n"
+            }
+          ],
+          "expected": {
+            "repository-install": "fail"
+          }
+        },
+        {
+          "id": "alternative-repository-install",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "repository_install.go",
+              "before_sha256": "e935dfb4a522fade237118ce0c15046721d80783770fd3a1b109196b41347208",
+              "after_sha256": "9947f88ffd9cf152fa57fdf5399ba2d2fc93f40d218aa421e3976ffd3b68922a",
+              "diff": "diff --git a/repository_install.go b/repository_install.go\n--- a/repository_install.go\n+++ b/repository_install.go\n@@ -160,10 +160,9 @@\n \tfmt.Fprintln(progress, \"Discovering repository skills...\")\n \tvar candidates []string\n \tfor _, file := range tracked {\n-\t\tif filepath.Base(file) == skillManifestName &&\n-\t\t\t(location.path == \"\" || strings.HasPrefix(file, location.path+\"/\")) {\n-\t\t\tcandidates = append(candidates, file)\n-\t\t}\n+\t\tif filepath.Base(file) != skillManifestName { continue }\n+\t\tif location.path != \"\" && !strings.HasPrefix(file, location.path+\"/\") { continue }\n+\t\tcandidates = append(candidates, file)\n \t}\n \t// A supplied directory with its own manifest is a skill, not a collection.\n \tdirect := skillManifestName\n"
+            }
+          ],
+          "expected": {
+            "repository-install": "pass"
+          }
+        },
+        {
+          "id": "negative-remote-recovery",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "remote_record.go",
+              "before_sha256": "07ad62b465aeb39732cfe604761bef12147287925656771865f3a6731af98f10",
+              "after_sha256": "32ee24ef493408ca23cc34c973f66fba747209c1e6517349b5781da39d19f92d",
+              "diff": "diff --git a/remote_record.go b/remote_record.go\n--- a/remote_record.go\n+++ b/remote_record.go\n@@ -256,7 +256,7 @@\n \t\treturn false, nil\n \t}\n \tif _, err := s.contentRoot(record); errors.Is(err, errRemoteSkillContentMissing) {\n-\t\treturn false, nil\n+\t\treturn true, nil\n \t} else if err != nil {\n \t\treturn false, err\n \t}\n"
+            }
+          ],
+          "expected": {
+            "remote-recovery": "fail"
+          }
+        },
+        {
+          "id": "alternative-remote-recovery",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "remote_record.go",
+              "before_sha256": "07ad62b465aeb39732cfe604761bef12147287925656771865f3a6731af98f10",
+              "after_sha256": "a53913774897e2047f6a64dee054a2c75aecf351132267976e6f156e47ef0be4",
+              "diff": "diff --git a/remote_record.go b/remote_record.go\n--- a/remote_record.go\n+++ b/remote_record.go\n@@ -255,10 +255,7 @@\n \tif record.SchemaRevision == 0 {\n \t\treturn false, nil\n \t}\n-\tif _, err := s.contentRoot(record); errors.Is(err, errRemoteSkillContentMissing) {\n-\t\treturn false, nil\n-\t} else if err != nil {\n-\t\treturn false, err\n-\t}\n-\treturn record.fresh(now), nil\n-}\n+\t_, err := s.contentRoot(record)\n+\tif err != nil && !errors.Is(err, errRemoteSkillContentMissing) { return false, err }\n+\treturn err == nil && record.fresh(now), nil\n+}\n"
+            }
+          ],
+          "expected": {
+            "remote-recovery": "pass"
+          }
+        },
+        {
+          "id": "negative-diagnostics",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_inspect.go",
+              "before_sha256": "6211382b47d10c18e380553ebd6871eece34bf5e63ebf3a4d66076526ed788a9",
+              "after_sha256": "f9dc11e6348a69190fb4de27634a109e84123f0a5f71f84680dab5d78d3e3c04",
+              "diff": "diff --git a/agent_inspect.go b/agent_inspect.go\n--- a/agent_inspect.go\n+++ b/agent_inspect.go\n@@ -152,6 +152,7 @@\n \t\tif report.Resolved == nil && accessErr == nil && item.Enabled && !skill.ContentMissing {\n \t\t\tresolved := item\n \t\t\treport.Resolved = &resolved\n+\t\t\treport.Resolved = nil\n \t\t\treport.Fallback = isNativeSkill(skill) && len(report.Candidates) > 0\n \t\t} else {\n \t\t\treport.Candidates = append(report.Candidates, item)\n"
+            }
+          ],
+          "expected": {
+            "diagnostics": "fail"
+          }
+        },
+        {
+          "id": "alternative-diagnostics",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_inspect.go",
+              "before_sha256": "6211382b47d10c18e380553ebd6871eece34bf5e63ebf3a4d66076526ed788a9",
+              "after_sha256": "b7402ec79ea8e455ff31c7e8bde3fe70bc4b8ea08533b5c7627a414d1a7aa808",
+              "diff": "diff --git a/agent_inspect.go b/agent_inspect.go\n--- a/agent_inspect.go\n+++ b/agent_inspect.go\n@@ -150,8 +150,7 @@\n \t\t\titem.References = refs\n \t\t}\n \t\tif report.Resolved == nil && accessErr == nil && item.Enabled && !skill.ContentMissing {\n-\t\t\tresolved := item\n-\t\t\treport.Resolved = &resolved\n+\t\t\treport.Resolved = new(item)\n \t\t\treport.Fallback = isNativeSkill(skill) && len(report.Candidates) > 0\n \t\t} else {\n \t\t\treport.Candidates = append(report.Candidates, item)\n"
+            }
+          ],
+          "expected": {
+            "diagnostics": "pass"
+          }
+        },
+        {
+          "id": "negative-content-checks",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_inspect.go",
+              "before_sha256": "6211382b47d10c18e380553ebd6871eece34bf5e63ebf3a4d66076526ed788a9",
+              "after_sha256": "c25296d49c49e3ecc9019b9ca4230164d9031a29866dae0aeb1f233d71c9863f",
+              "diff": "diff --git a/agent_inspect.go b/agent_inspect.go\n--- a/agent_inspect.go\n+++ b/agent_inspect.go\n@@ -275,7 +275,7 @@\n \t\t\t// get already strips Markdown frontmatter, except the small metadata\n \t\t\t// header retained for user-invoked skill manifests. Do not parse a\n \t\t\t// legitimate leading Markdown horizontal rule a second time.\n-\t\t\tif isSkillManifest(relative) && skill.DisableModelInvocation {\n+\t\t\tif isSkillManifest(relative) {\n \t\t\t\terr = validateResourceBody(body.Bytes())\n \t\t\t}\n \t\t\tif err == nil && len(bytes.TrimSpace(body.Bytes())) == 0 {\n"
+            }
+          ],
+          "expected": {
+            "content-checks": "fail"
+          }
+        },
+        {
+          "id": "alternative-content-checks",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_inspect.go",
+              "before_sha256": "6211382b47d10c18e380553ebd6871eece34bf5e63ebf3a4d66076526ed788a9",
+              "after_sha256": "2272c8c0c289f68fb6e2a316dd15899821357dbdf5147618d9fe5f794ab56d53",
+              "diff": "diff --git a/agent_inspect.go b/agent_inspect.go\n--- a/agent_inspect.go\n+++ b/agent_inspect.go\n@@ -278,7 +278,7 @@\n \t\t\tif isSkillManifest(relative) && skill.DisableModelInvocation {\n \t\t\t\terr = validateResourceBody(body.Bytes())\n \t\t\t}\n-\t\t\tif err == nil && len(bytes.TrimSpace(body.Bytes())) == 0 {\n+\t\t\tif err == nil && bytes.Equal(bytes.TrimSpace(body.Bytes()), []byte{}) {\n \t\t\t\terr = fmt.Errorf(\"missing body or frontmatter-only placeholder\")\n \t\t\t}\n \t\t}\n"
+            }
+          ],
+          "expected": {
+            "content-checks": "pass"
+          }
+        },
+        {
+          "id": "negative-content-resources",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_inspect.go",
+              "before_sha256": "6211382b47d10c18e380553ebd6871eece34bf5e63ebf3a4d66076526ed788a9",
+              "after_sha256": "0b6426be8d10ad35e061220a8c69d0a5c3f731601115c390a13e06fa3a1a2955",
+              "diff": "diff --git a/agent_inspect.go b/agent_inspect.go\n--- a/agent_inspect.go\n+++ b/agent_inspect.go\n@@ -301,7 +301,7 @@\n \t\t\treturn err\n \t\t}\n \t\tname, relative, err := splitTarget(target)\n-\t\tif err != nil || !isSkillManifest(relative) {\n+\t\tif err != nil || relative != \"\" {\n \t\t\tcontinue\n \t\t}\n \t\tresult := resolve(name)\n"
+            }
+          ],
+          "expected": {
+            "content-resources": "fail"
+          }
+        },
+        {
+          "id": "alternative-content-resources",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_inspect.go",
+              "before_sha256": "6211382b47d10c18e380553ebd6871eece34bf5e63ebf3a4d66076526ed788a9",
+              "after_sha256": "f50e26449f9f103e85e045323e371ed697249e30611276081d35e53f5aeadb75",
+              "diff": "diff --git a/agent_inspect.go b/agent_inspect.go\n--- a/agent_inspect.go\n+++ b/agent_inspect.go\n@@ -301,9 +301,8 @@\n \t\t\treturn err\n \t\t}\n \t\tname, relative, err := splitTarget(target)\n-\t\tif err != nil || !isSkillManifest(relative) {\n-\t\t\tcontinue\n-\t\t}\n+\t\tif err != nil { continue }\n+\t\tif !isSkillManifest(relative) { continue }\n \t\tresult := resolve(name)\n \t\tif result.err != nil {\n \t\t\tcontinue\n"
+            }
+          ],
+          "expected": {
+            "content-resources": "pass"
+          }
+        },
+        {
+          "id": "negative-layered-selection",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "361fb97a10339548cbcf84b2d7e657e3c7b5589f712d085984b37a6ae6b9836f",
+              "after_sha256": "cb7abaf12b60ace0c72beb17f19f791c2c5e2908ecd06a52394fca072a96659f",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -23,6 +23,7 @@\n \tvar desired enabledValue\n \tswitch value {\n \tcase \"inherit\":\n+\t\treturn fmt.Errorf(\"inheritance unavailable\")\n \tcase \"true\", \"false\":\n \t\tdesired.Boolean = new(value == \"true\")\n \tdefault:\n"
+            }
+          ],
+          "expected": {
+            "layered-selection": "fail"
+          }
+        },
+        {
+          "id": "alternative-layered-selection",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "361fb97a10339548cbcf84b2d7e657e3c7b5589f712d085984b37a6ae6b9836f",
+              "after_sha256": "5786ad190a477d7aa46cb49a8feb717503649ac081c64f5c7f9f74064e6fb978",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -24,7 +24,8 @@\n \tswitch value {\n \tcase \"inherit\":\n \tcase \"true\", \"false\":\n-\t\tdesired.Boolean = new(value == \"true\")\n+\t\tselected := value == \"true\"\n+\t\tdesired = enabledValue{Boolean: &selected}\n \tdefault:\n \t\tif strings.TrimSpace(value) == \"\" {\n \t\t\treturn fmt.Errorf(\"selection condition is empty; use inherit to remove the override\")\n"
+            }
+          ],
+          "expected": {
+            "layered-selection": "pass"
+          }
+        },
+        {
+          "id": "negative-safe-edits",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "361fb97a10339548cbcf84b2d7e657e3c7b5589f712d085984b37a6ae6b9836f",
+              "after_sha256": "1cf0da2970ef75b041a69b67acdec4109b12bf518d661462527cbf636d6a183b",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -140,7 +140,7 @@\n \t\t\tif !bytes.Equal(current, contents) {\n \t\t\t\treturn errors.Join(err, fmt.Errorf(\"source changed during edit rollback\"))\n \t\t\t}\n-\t\t\treturn errors.Join(err, writeSkillManifest(skill.Path, original, info.Mode().Perm()))\n+\t\t\treturn err\n \t\t}\n \t}\n \t_, err = fmt.Fprintf(out, \"Updated %s\\n\", metadata.Name)\n"
+            }
+          ],
+          "expected": {
+            "safe-edits": "fail"
+          }
+        },
+        {
+          "id": "alternative-safe-edits",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "361fb97a10339548cbcf84b2d7e657e3c7b5589f712d085984b37a6ae6b9836f",
+              "after_sha256": "fa8441e55f84d62eb064a02d1b0cacaa3d4f09d78d8eaf7c6e645e3422a7f392",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -140,7 +140,8 @@\n \t\t\tif !bytes.Equal(current, contents) {\n \t\t\t\treturn errors.Join(err, fmt.Errorf(\"source changed during edit rollback\"))\n \t\t\t}\n-\t\t\treturn errors.Join(err, writeSkillManifest(skill.Path, original, info.Mode().Perm()))\n+\t\t\trollbackErr := writeSkillManifest(skill.Path, original, info.Mode().Perm())\n+\t\t\treturn errors.Join(rollbackErr, err)\n \t\t}\n \t}\n \t_, err = fmt.Fprintf(out, \"Updated %s\\n\", metadata.Name)\n"
+            }
+          ],
+          "expected": {
+            "safe-edits": "pass"
+          }
+        },
+        {
+          "id": "negative-remote-edit-rejection",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "361fb97a10339548cbcf84b2d7e657e3c7b5589f712d085984b37a6ae6b9836f",
+              "after_sha256": "1e74a9bd9efda439ec75793dfe592f1f3b40086a31129f78c16b49a9139e6a27",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -98,7 +98,7 @@\n \t\t\treturn err\n \t\t}\n \t\toldMetadata, _ := skillFromFrontmatter(oldFrontmatter)\n-\t\tif metadata.Name != skill.Name || metadata.DisableModelInvocation != oldMetadata.DisableModelInvocation {\n+\t\tif metadata.DisableModelInvocation != oldMetadata.DisableModelInvocation {\n \t\t\treturn fmt.Errorf(\"remote identity and invocation metadata are not changed by content edits\")\n \t\t}\n \t\tref, err := m.persistedRemoteRef(skill.RemoteKey, skill.Name)\n"
+            }
+          ],
+          "expected": {
+            "remote-edit-rejection": "fail"
+          }
+        },
+        {
+          "id": "alternative-remote-edit-rejection",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "361fb97a10339548cbcf84b2d7e657e3c7b5589f712d085984b37a6ae6b9836f",
+              "after_sha256": "7645fe2ed63409a84a04337fd4b3fd9c04e4a24534df2212a53b5df2ac744463",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -98,7 +98,7 @@\n \t\t\treturn err\n \t\t}\n \t\toldMetadata, _ := skillFromFrontmatter(oldFrontmatter)\n-\t\tif metadata.Name != skill.Name || metadata.DisableModelInvocation != oldMetadata.DisableModelInvocation {\n+\t\tif !(metadata.Name == skill.Name && metadata.DisableModelInvocation == oldMetadata.DisableModelInvocation) {\n \t\t\treturn fmt.Errorf(\"remote identity and invocation metadata are not changed by content edits\")\n \t\t}\n \t\tref, err := m.persistedRemoteRef(skill.RemoteKey, skill.Name)\n"
+            }
+          ],
+          "expected": {
+            "remote-edit-rejection": "pass"
+          }
+        },
+        {
+          "id": "negative-remote-edit-success",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "361fb97a10339548cbcf84b2d7e657e3c7b5589f712d085984b37a6ae6b9836f",
+              "after_sha256": "80186005d5a29f1cbd2f400f3457ef59935c5e89019ca0e969d2957c2234db0b",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -105,7 +105,7 @@\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n-\t\tif err := m.remoteStore.savePatch(ctx, ref, skill.Path, digest, contents); err != nil {\n+\t\tif err := m.remoteStore.savePatch(ctx, ref, skill.Path, digest, original); err != nil {\n \t\t\treturn err\n \t\t}\n \t} else {\n"
+            }
+          ],
+          "expected": {
+            "remote-edit-success": "fail"
+          }
+        },
+        {
+          "id": "alternative-remote-edit-success",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "361fb97a10339548cbcf84b2d7e657e3c7b5589f712d085984b37a6ae6b9836f",
+              "after_sha256": "9e127b5bfe061361b36ece28ff098b6f6f6c082e9179d3e2bc1214f18808d925",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -105,9 +105,8 @@\n \t\tif err != nil {\n \t\t\treturn err\n \t\t}\n-\t\tif err := m.remoteStore.savePatch(ctx, ref, skill.Path, digest, contents); err != nil {\n-\t\t\treturn err\n-\t\t}\n+\t\tpatchErr := m.remoteStore.savePatch(ctx, ref, skill.Path, digest, contents)\n+\t\tif patchErr != nil { return patchErr }\n \t} else {\n \t\tif metadata.Name != name {\n \t\t\towners, err := m.discoverSkillsNamed(project, \"\", metadata.Name)\n"
+            }
+          ],
+          "expected": {
+            "remote-edit-success": "pass"
+          }
+        },
+        {
+          "id": "negative-refresh-backoff",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "refresh_runner.go",
+              "before_sha256": "4a12500bbaca82c8281588b31023ca3cfbb51851d5a2aaed47a37349f767b366",
+              "after_sha256": "8d20a9b7a6f25e58e59d2b4d4a7ca54fcad9a0d5ef0a5d6d33ca2f5f76ca588c",
+              "diff": "diff --git a/refresh_runner.go b/refresh_runner.go\n--- a/refresh_runner.go\n+++ b/refresh_runner.go\n@@ -258,7 +258,7 @@\n \tif ctx.Err() != nil {\n \t\treturn nil\n \t}\n-\tif err := recordRefreshCompleted(manager.paths.refreshCompleted); err != nil {\n+\tif err := recordRefreshCompleted(\"\"); err != nil {\n \t\tlogger.Error(\"record refresh completion\", \"err\", err)\n \t}\n \treturn nil\n"
+            }
+          ],
+          "expected": {
+            "refresh-backoff": "fail"
+          }
+        },
+        {
+          "id": "alternative-refresh-backoff",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "refresh_runner.go",
+              "before_sha256": "4a12500bbaca82c8281588b31023ca3cfbb51851d5a2aaed47a37349f767b366",
+              "after_sha256": "b60fe005649119e76e10c5dbcb6bf03ce5c664f498e476126a536fb4d55876b9",
+              "diff": "diff --git a/refresh_runner.go b/refresh_runner.go\n--- a/refresh_runner.go\n+++ b/refresh_runner.go\n@@ -292,7 +292,7 @@\n }\n \n func recordRefreshCompleted(path string) error {\n-\treturn recordRefreshCompletedAt(path, time.Now().UTC())\n+\treturn recordRefreshCompletedAt(path, time.Now())\n }\n \n func recordRefreshCompletedAt(path string, at time.Time) error {\n"
+            }
+          ],
+          "expected": {
+            "refresh-backoff": "pass"
+          }
+        },
+        {
+          "id": "negative-compatibility-tests-docs",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "main.go",
+              "before_sha256": "f529327bae390e5fd85ec796047286b9ad9bfef41aaa85a0c7d2e35003659afa",
+              "after_sha256": "e68368e0502b4fb2e4e7641c646a974a0d8a0f695f9b391c17c2d6ee1cbfd49d",
+              "diff": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -110,7 +110,7 @@\n   skills-mgr edit [-g] <skill> --file <path|-> [--expect-sha256 <digest>]\n     Replace a complete SKILL.md, preserving remote ownership with a local patch.\n \n-  skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]\n+  skills-mgr exec [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]\n     Run a script from an enabled skill, forwarding arguments.\n `)\n \t\treturn err\n"
+            }
+          ],
+          "expected": {
+            "compatibility-tests-docs": "fail"
+          }
+        },
+        {
+          "id": "alternative-compatibility-tests-docs",
+          "role": "alternative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "main.go",
+              "before_sha256": "f529327bae390e5fd85ec796047286b9ad9bfef41aaa85a0c7d2e35003659afa",
+              "after_sha256": "07e1c1be7f0560e4f60d03ff85744428a4e0f1760d91955fe54d724ded7bf814",
+              "diff": "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -111,7 +111,7 @@\n     Replace a complete SKILL.md, preserving remote ownership with a local patch.\n \n   skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]\n-    Run a script from an enabled skill, forwarding arguments.\n+    Execute a selected skill script and forward its arguments.\n `)\n \t\treturn err\n \tcase args[0] == \"inspect\" || args[0] == \"check\" || args[0] == \"set\" || args[0] == \"edit\":\n"
+            },
+            {
+              "path": "skills_test.go",
+              "before_sha256": "0aa0ecce311e1a321d15b46c86213615a376afda24797206a06f5a2648d5db68",
+              "after_sha256": "fb1150f2107225840de528896eb39280ca8ec68057588d0de9553bacf40c0b96",
+              "diff": "diff --git a/skills_test.go b/skills_test.go\n--- a/skills_test.go\n+++ b/skills_test.go\n@@ -2469,7 +2469,7 @@\n     Replace a complete SKILL.md, preserving remote ownership with a local patch.\n \n   skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]\n-    Run a script from an enabled skill, forwarding arguments.\n+    Execute a selected skill script and forward its arguments.\n `)\n \n \t\t\tif err := run([]string{command, \"get\"}); err == nil || err.Error() != \"usage: skills-mgr help\" {\n"
+            }
+          ],
+          "expected": {
+            "compatibility-tests-docs": "pass"
+          }
+        },
+        {
+          "id": "negative-remote-invocation-change",
+          "role": "negative",
+          "base": "reference",
+          "files": [],
+          "patches": [
+            {
+              "path": "agent_mutation.go",
+              "before_sha256": "361fb97a10339548cbcf84b2d7e657e3c7b5589f712d085984b37a6ae6b9836f",
+              "after_sha256": "46b8cdd5180b31c0b1e2456606a1eecd614d7c8a6635bb761f8beabf97ad85fe",
+              "diff": "diff --git a/agent_mutation.go b/agent_mutation.go\n--- a/agent_mutation.go\n+++ b/agent_mutation.go\n@@ -98,7 +98,7 @@\n \t\t\treturn err\n \t\t}\n \t\toldMetadata, _ := skillFromFrontmatter(oldFrontmatter)\n-\t\tif metadata.Name != skill.Name || metadata.DisableModelInvocation != oldMetadata.DisableModelInvocation {\n+\t\tif metadata.Name != skill.Name || (false && metadata.DisableModelInvocation != oldMetadata.DisableModelInvocation) {\n \t\t\treturn fmt.Errorf(\"remote identity and invocation metadata are not changed by content edits\")\n \t\t}\n \t\tref, err := m.persistedRemoteRef(skill.RemoteKey, skill.Name)\n"
+            }
+          ],
+          "expected": {
+            "remote-edit-rejection": "fail"
+          }
+        }
+      ]
+    }
   }
 }

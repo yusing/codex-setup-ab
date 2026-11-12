@@ -1,0 +1,156 @@
+{
+  "retained-api-cli-input": {
+    "id": "retained-api-cli-input",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\ndb=Database(memory=True)\nt=db.table('items').insert_all([{'id':1,'name':'one'},{'id':2,'name':'two'}],pk='id')\nt.update(1,{'name':'updated'})\ntry:\n    with db.atomic():\n        t.insert({'id':3,'name':'rolled back'})\n        raise ValueError('rollback')\nexcept ValueError:\n    pass\nformats=[]\nfor data,fmt in [(b'[{\"x\":1}]',None),(b'x,y\\n1,2\\n',Format.CSV),(b'x\\ty\\n1\\t2\\n',Format.TSV)]:\n    rows,used=rows_from_file(io.BytesIO(data),format=fmt)\n    formats.append(list(rows))\ndb.execute('PRAGMA foreign_keys=ON')\ndb.execute('CREATE TABLE child (item INTEGER REFERENCES items(id) ON DELETE CASCADE)')\ndb.execute('INSERT INTO child VALUES (1)')\nt.transform(rename={'name':'label'})\nwith tempfile.TemporaryDirectory() as tmp:\n    p=str(pathlib.Path(tmp)/'data.db')\n    disk=Database(p)\n    disk.table('items').insert({'id':1,'name':'one'})\n    cli_rows=json.loads(invoke(['rows',p,'items']))\nprint(json.dumps({'rows':list(t.rows),'child':list(db.table('child').rows),'foreign_keys':db.execute('PRAGMA foreign_keys').fetchone()[0],'formats':formats,'cli':cli_rows}))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "{\"rows\":[{\"id\":1,\"label\":\"updated\"},{\"id\":2,\"label\":\"two\"}],\"child\":[{\"item\":1}],\"foreign_keys\":1,\"formats\":[[{\"x\":1}],[{\"x\":\"1\",\"y\":\"2\"}],[{\"x\":\"1\",\"y\":\"2\"}]],\"cli\":[{\"id\":1,\"name\":\"one\"}]}"
+  },
+  "views-and-transactions": {
+    "id": "views-and-transactions",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\nobserved=[]\nfor keep in (False,True):\n    for legacy in (0,1):\n        db=Database(memory=True)\n        db.execute('PRAGMA legacy_alter_table='+str(legacy))\n        t=db.table('items').insert({'id':1,'name':'one'},pk='id')\n        db.execute('CREATE VIEW current_items AS SELECT id,name FROM items')\n        t.transform(types={'name':str},keep_table='backup' if keep else None)\n        t.insert({'id':2,'name':'two'})\n        observed.append({'rows':list(db.view('current_items').rows),'legacy':db.execute('PRAGMA legacy_alter_table').fetchone()[0],'backup':list(db.table('backup').rows) if keep else None})\nprint(json.dumps(observed))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "[{\"rows\":[{\"id\":1,\"name\":\"one\"},{\"id\":2,\"name\":\"two\"}],\"legacy\":0,\"backup\":null},{\"rows\":[{\"id\":1,\"name\":\"one\"},{\"id\":2,\"name\":\"two\"}],\"legacy\":1,\"backup\":null},{\"rows\":[{\"id\":1,\"name\":\"one\"},{\"id\":2,\"name\":\"two\"}],\"legacy\":0,\"backup\":[{\"id\":1,\"name\":\"one\"}]},{\"rows\":[{\"id\":1,\"name\":\"one\"},{\"id\":2,\"name\":\"two\"}],\"legacy\":1,\"backup\":[{\"id\":1,\"name\":\"one\"}]}]"
+  },
+  "checks-and-parser": {
+    "id": "checks-and-parser",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\ndb=Database(memory=True)\ndb.execute(\"\"\"CREATE TABLE choices (\n \"kind\" TEXT CONSTRAINT picked CHECK (\"kind\" IN ('a', 2, NULL)),\n empty TEXT CHECK(empty IN ()),\n score INTEGER CHECK(score IN (1,2) OR score > 5),\n CHECK(length(\"kind\") > 0 /* inside */)\n)\"\"\")\nt=db.table('choices')\nrows=[]\nfor c in t.checks:\n    rows.append({'expression':c.check,'name':c.name,'column':c.column,'choices':c.options,'span':t.schema[c.start:c.end]==c.sql and bool(c.sql)})\nprint(json.dumps({'checks':rows,'columns':sorted(t.column_checks),'tables':len(t.table_checks)}))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "{\"checks\":[{\"expression\":\"\\\"kind\\\" IN ('a', 2, NULL)\",\"name\":\"picked\",\"column\":\"kind\",\"choices\":[\"a\",2,null],\"span\":true},{\"expression\":\"empty IN ()\",\"name\":\"\",\"column\":\"empty\",\"choices\":[],\"span\":true},{\"expression\":\"score IN (1,2) OR score > 5\",\"name\":\"\",\"column\":\"score\",\"choices\":null,\"span\":true},{\"expression\":\"length(\\\"kind\\\") > 0 /* inside */\",\"name\":\"\",\"column\":\"\",\"choices\":null,\"span\":true}],\"columns\":[\"empty\",\"kind\",\"score\"],\"tables\":1}"
+  },
+  "check-transforms": {
+    "id": "check-transforms",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\ndb=Database(memory=True)\ndb.execute('CREATE TABLE scores (score INTEGER CHECK(score>0), ceiling INTEGER, CHECK(score<=ceiling))')\nt=db.table('scores').insert({'score':2,'ceiling':3})\nt.transform(rename={'score':'value'})\nviolations=[rejected(lambda:t.insert({'value':0,'ceiling':3})),rejected(lambda:t.insert({'value':5,'ceiling':3}))]\nbefore=t.schema\ntry:\n    t.transform(drop={'ceiling'})\n    drop='accepted'\nexcept TransformError:\n    drop='TransformError'\ndb.execute('CREATE TABLE owned (a INTEGER CHECK(a>0), b TEXT)')\ndb.table('owned').insert({'a':1,'b':'kept'}).transform(drop={'a'})\nprint(json.dumps({'violations':violations,'drop':drop,'unchanged':t.schema==before,'rows':list(t.rows),'owned':list(db.table('owned').rows)}))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "{\"violations\":[\"IntegrityError\",\"IntegrityError\"],\"drop\":\"TransformError\",\"unchanged\":true,\"rows\":[{\"value\":2,\"ceiling\":3}],\"owned\":[{\"b\":\"kept\"}]}"
+  },
+  "comments-and-indexes": {
+    "id": "comments-and-indexes",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\ndb=Database(memory=True)\ndb.execute('CREATE TABLE people (id INTEGER PRIMARY KEY, /* display */ name TEXT /* suffix */, age INTEGER)')\ndb.execute('CREATE UNIQUE INDEX names ON people(name COLLATE NOCASE DESC)')\nt=db.table('people').insert({'id':1,'name':'Cleo','age':5})\nt.transform(rename={'name':'label'},column_order=['age','name','id'])\ns=t.schema\nimport re\ncolumn_definition=re.search(r'(?i)(?:\"label\"|\\[label\\]|`label`|\\blabel\\b)\\s+TEXT\\b',s)\ncolumn_start=column_definition.start() if column_definition else -1\nindexed=[[c.name,c.coll,c.desc] for i in t.xindexes if i.name=='names' for c in i.columns if c.key]\nprint(json.dumps({'columns':list(t.columns_dict),'before':column_start>=0 and '/* display */' in s and s.index('/* display */')<column_start,'after':column_start>=0 and '/* suffix */' in s and s.index('/* suffix */')>column_start,'index':indexed,'duplicate':rejected(lambda:t.insert({'id':2,'label':'CLEO','age':9})),'rows':list(t.rows)}))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "{\"columns\":[\"age\",\"label\",\"id\"],\"before\":true,\"after\":true,\"index\":[[\"label\",\"NOCASE\",1]],\"duplicate\":\"IntegrityError\",\"rows\":[{\"age\":5,\"label\":\"Cleo\",\"id\":1}]}"
+  },
+  "autoincrement-and-unique": {
+    "id": "autoincrement-and-unique",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\ndb=Database(memory=True)\ndb.execute('CREATE TABLE entries (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT)')\nt=db.table('entries').insert_all([{'id':1,'value':'one'},{'id':9,'value':'deleted'}])\nt.delete(9)\nt.transform(rename={'value':'label'})\nt.insert({'label':'next'})\ndb.execute('CREATE TABLE membership (account INTEGER, email TEXT, note TEXT, CONSTRAINT membership_key UNIQUE(account DESC,email COLLATE NOCASE) ON CONFLICT IGNORE)')\nu=db.table('membership').insert({'account':1,'email':'one@test','note':'kept'})\nu.transform(rename={'account':'organization'})\nu.insert({'organization':1,'email':'ONE@test','note':'ignored'})\nnamed='membership_key' in u.schema\nindexes=[[c.name,c.coll,c.desc] for i in u.xindexes for c in i.columns if c.key]\nu.transform(drop={'email'})\nu.insert({'organization':1,'note':'allowed'})\nprint(json.dumps({'entries':list(t.rows),'named':named,'index':indexes,'after_drop':list(u.rows)}))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "{\"entries\":[{\"id\":1,\"label\":\"one\"},{\"id\":10,\"label\":\"next\"}],\"named\":true,\"index\":[[\"organization\",\"BINARY\",1],[\"email\",\"NOCASE\",0]],\"after_drop\":[{\"organization\":1,\"note\":\"kept\"},{\"organization\":1,\"note\":\"allowed\"}]}"
+  },
+  "any-types-and-cli": {
+    "id": "any-types-and-cli",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\nANY=sqlite_utils.ANY\ndb=Database(memory=True)\nt=db.table('items').create({'id':int,'data':ANY},pk='id',strict=True)\nt.add_column('extra',ANY)\nt.insert_all([{'id':1,'data':'000123'},{'id':2,'data':3.5},{'id':3,'data':None}])\nt.transform(rename={'extra':'other'})\nmarker=t.columns_dict['data'] is ANY and t.columns_dict['other'] is ANY\nt.extract('data',table='lookup')\nlookup=list(db.query('SELECT typeof(data) AS type,data FROM lookup ORDER BY id'))\nordinary=db.table('ordinary').create({'data':ANY}).insert({'data':'000123'})\nwith tempfile.TemporaryDirectory() as tmp:\n    p=str(pathlib.Path(tmp)/'cli.db')\n    invoke(['create-table',p,'cli_items','id','integer','data','any','--strict'])\n    disk=Database(p)\n    disk.table('cli_items').insert({'id':1,'data':'000123'})\n    invoke(['add-column',p,'cli_items','extra','any'])\n    invoke(['transform',p,'cli_items','--type','extra','any'])\n    cli_result={'strict':disk.table('cli_items').strict,'types':[v.__name__ for v in disk.table('cli_items').columns_dict.values()],'rows':list(disk.table('cli_items').rows)}\nprint(json.dumps({'marker':marker,'lookup_strict':db.table('lookup').strict,'lookup':lookup,'ordinary':list(ordinary.rows),'cli':cli_result}))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "{\"marker\":true,\"lookup_strict\":true,\"lookup\":[{\"type\":\"text\",\"data\":\"000123\"},{\"type\":\"real\",\"data\":3.5}],\"ordinary\":[{\"data\":123}],\"cli\":{\"strict\":true,\"types\":[\"int\",\"ANY\",\"ANY\"],\"rows\":[{\"id\":1,\"data\":\"000123\",\"extra\":null}]}}"
+  },
+  "numeric-transforms": {
+    "id": "numeric-transforms",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\nresults=[]\nfor target in (int,float,'REAL'):\n    db=Database(memory=True)\n    t=db.table('values').insert_all([{'value':'','unchanged':''},{'value':'42','unchanged':'42'},{'value':' ','unchanged':' '},{'value':None,'unchanged':None}])\n    t.transform(types={'value':target})\n    results.append(list(t.rows))\nwith tempfile.TemporaryDirectory() as tmp:\n    p=str(pathlib.Path(tmp)/'cli.db')\n    disk=Database(p)\n    disk.table('values').insert_all([{'value':''},{'value':'42'}])\n    invoke(['transform',p,'values','--type','value','integer'])\n    results.append(list(disk.table('values').rows))\nprint(json.dumps(results))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "[[{\"value\":null,\"unchanged\":\"\"},{\"value\":42,\"unchanged\":\"42\"},{\"value\":\" \",\"unchanged\":\" \"},{\"value\":null,\"unchanged\":null}],[{\"value\":null,\"unchanged\":\"\"},{\"value\":42,\"unchanged\":\"42\"},{\"value\":\" \",\"unchanged\":\" \"},{\"value\":null,\"unchanged\":null}],[{\"value\":null,\"unchanged\":\"\"},{\"value\":42,\"unchanged\":\"42\"},{\"value\":\" \",\"unchanged\":\" \"},{\"value\":null,\"unchanged\":null}],[{\"value\":null},{\"value\":42}]]"
+  },
+  "input-query-identifiers": {
+    "id": "input-query-identifiers",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\ndb=Database(memory=True)\nt=db.table('items').insert_all([{'id':1,'text':'biting'},{'id':2,'text':'biting'},{'id':3,'text':'other'}],pk='id')\noffset=list(t.rows_where(offset=1,order_by='id'))\nt.enable_fts(['text'],tokenize='porter')\nsearch=[r['id'] for r in t.search('bite',offset=1,order_by='id')]\ntry:\n    db.table('unsafe').insert({'text':'hello'}).enable_fts(['text'],tokenize=\"porter'); CREATE TABLE injected(x); --\")\nexcept Exception:\n    pass\nempty=[list(rows_from_file(io.BytesIO(data))[0]) for data in (b'',b' \\n\\t')]\ndb.execute(\"CREATE TABLE defaults(a DEFAULT TRUE,b DEFAULT FALSE,c DEFAULT NULL,d DEFAULT 42,e DEFAULT 'TRUE')\")\ndefaults=db.table('defaults').default_values\ndb.execute('CREATE TABLE \"quote\"\"table\" (\"quote\"\"column\" TEXT)')\nq=db.table('quote\"table').insert({'quote\"column':'x'})\nq.create_index(['quote\"column'],index_name='quote\"index')\nidx=[i.name for i in q.indexes]\nq.transform(rename={'quote\"column':'renamed'})\nwith tempfile.TemporaryDirectory() as tmp:\n    p=str(pathlib.Path(tmp)/'cli.db')\n    disk=Database(p)\n    disk.table('items').insert_all([{'id':1},{'id':2}])\n    cli_offset=json.loads(invoke(['rows',p,'items','--offset','1']))\n    disk.table('ta]ble').insert({'co]l':'one'})\n    preview=invoke(['convert',p,'ta]ble','co]l','value.upper()','--dry-run'])\n    dry={'original':'one' in preview,'converted':'ONE' in preview,'rows':list(disk.table('ta]ble').rows)}\nprint(json.dumps({'offset':offset,'search':search,'injected':db.table('injected').exists(),'empty':empty,'defaults':defaults,'indexes':idx,'renamed':list(q.rows),'cli_offset':cli_offset,'dry':dry}))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "{\"offset\":[{\"id\":2,\"text\":\"biting\"},{\"id\":3,\"text\":\"other\"}],\"search\":[2],\"injected\":false,\"empty\":[[],[]],\"defaults\":{\"a\":true,\"b\":false,\"c\":null,\"d\":42,\"e\":\"TRUE\"},\"indexes\":[\"quote\\\"index\"],\"renamed\":[{\"renamed\":\"x\"}],\"cli_offset\":[{\"id\":2}],\"dry\":{\"original\":true,\"converted\":true,\"rows\":[{\"co]l\":\"one\"}]}}"
+  },
+  "tests-types-docs": {
+    "id": "tests-types-docs",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\napi=pathlib.Path('docs/python-api.rst').read_text()\ncli_doc=pathlib.Path('docs/cli.rst').read_text()\nchangelog=pathlib.Path('docs/changelog.rst').read_text().split('4.0')[0]\nreference=pathlib.Path('docs/reference.rst').read_text()\nprint(json.dumps({'api':{word:word in api for word in ('sqlite_utils.ANY','table_checks','TransformError')},'cli_any':'``ANY``' in cli_doc,'changelog_readable':bool(changelog.strip()),'reference':{word:word in reference for word in ('.. autoclass:: sqlite_utils.db.Table',':members:')},'types':{'ANY':sqlite_utils.ANY.__name__,'table':type(Database(memory=True).table('t')).__name__}}))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "{\"api\":{\"sqlite_utils.ANY\":true,\"table_checks\":true,\"TransformError\":true},\"cli_any\":true,\"reference\":{\".. autoclass:: sqlite_utils.db.Table\":true,\":members:\":true},\"types\":{\"ANY\":\"ANY\",\"table\":\"Table\"},\"changelog_readable\":true}"
+  },
+  "integrated-upgrade": {
+    "id": "integrated-upgrade",
+    "kind": "command",
+    "command": [
+      "/opt/task-deps/python/bin/python",
+      "-I",
+      "-c",
+      "import io, json, pathlib, sqlite3, sys, tempfile\nsys.path.insert(0, str(pathlib.Path.cwd()))\nimport sqlite_utils\nfrom sqlite_utils import Database\nfrom sqlite_utils.db import TransformError, TransactionError\nfrom sqlite_utils.utils import rows_from_file, Format\nfrom sqlite_utils.cli import cli\nfrom click.testing import CliRunner\n\ndef invoke(args, input=None):\n    result = CliRunner().invoke(cli, args, input=input)\n    if result.exit_code:\n        raise RuntimeError(result.output) from result.exception\n    return result.output\n\ndef rejected(action):\n    try:\n        action()\n    except sqlite3.IntegrityError:\n        return 'IntegrityError'\n    return 'accepted'\n\n\ndb=Database(memory=True)\ndb.execute('CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT,payload ANY, score TEXT CHECK(length(score)>=0), label TEXT UNIQUE) STRICT')\nt=db.table('items').insert_all([{'id':1,'payload':'000123','score':'','label':'one'},{'id':9,'payload':3.5,'score':'42','label':'deleted'}])\nt.delete(9)\ndb.execute('CREATE VIEW live AS SELECT id,payload FROM items')\nt.transform(types={'score':int},rename={'label':'name'},keep_table='backup')\nt.insert({'payload':'000456','score':4,'name':'two'})\nview=list(db.view('live').rows)\nbackup=list(db.table('backup').rows)\nduplicate=rejected(lambda:t.insert({'payload':'x','score':1,'name':'one'}))\nt.extract('payload',table='payload_values')\nprint(json.dumps({'view':view,'backup':backup,'duplicate':duplicate,'rows':list(t.rows),'strict':t.strict,'lookup_strict':db.table('payload_values').strict,'lookup':list(db.table('payload_values').rows)}))\n"
+    ],
+    "args": [],
+    "expected_exit": 0,
+    "format": "json",
+    "expected": "{\"view\":[{\"id\":1,\"payload\":\"000123\"},{\"id\":10,\"payload\":\"000456\"}],\"backup\":[{\"id\":1,\"payload\":\"000123\",\"score\":\"\",\"label\":\"one\"}],\"duplicate\":\"IntegrityError\",\"rows\":[{\"id\":1,\"score\":null,\"name\":\"one\",\"payload_values_id\":1},{\"id\":10,\"score\":4,\"name\":\"two\",\"payload_values_id\":2}],\"strict\":true,\"lookup_strict\":true,\"lookup\":[{\"id\":1,\"payload\":\"000123\"},{\"id\":2,\"payload\":\"000456\"}]}"
+  }
+}

@@ -1,0 +1,36 @@
+package main
+
+import (
+    "encoding/json"
+    "net/http"
+    "net/http/httptest"
+    "os"
+    "reflect"
+    "strings"
+    "testing"
+    "time"
+)
+
+// This adapter records real refresh side effects, not a test-runner pass flag.
+func TestFrozenAgentRefreshObservation(t *testing.T) {
+    m := newTestManager(t)
+    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+        http.Error(w, `{"error":"unavailable","message":"try later"}`, http.StatusServiceUnavailable)
+    }))
+    defer server.Close()
+    m.remote = &remoteRegistry{baseURL: server.URL, cachePath: m.paths.remoteRegistry, client: server.Client()}
+    logger, logs := testLogger()
+    err := runRefreshRunner(t.Context(), m, logger)
+    // The storage field was renamed between the two pinned snapshots.
+    p := reflect.ValueOf(m.paths).FieldByName("refreshCompleted")
+    if !p.IsValid() { p = reflect.ValueOf(m.paths).FieldByName("refreshSuccess") }
+    observed := map[string]any{
+        "runner_error": err != nil,
+        "registry_failure_logged": strings.Contains(logs.String(), "registry cache refresh failed"),
+        "retry_due": refreshSpawnDue(p.String(), time.Now()),
+        "retry_due_after_interval": refreshSpawnDue(p.String(), time.Now().Add(remoteRefreshInterval)),
+    }
+    data, err := json.Marshal(observed)
+    if err != nil { t.Fatal(err) }
+    if err := os.WriteFile(os.Getenv("FROZEN_REFRESH_RESULT"), data, 0600); err != nil { t.Fatal(err) }
+}
