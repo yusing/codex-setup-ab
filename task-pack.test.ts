@@ -76,9 +76,25 @@ test("skills manager workflow pins its pre-install base and evaluator-only refer
   expect(pack.contract.allowed_paths).toBeUndefined();
   expect(Object.keys(pack.snapshot.files).sort()).toEqual(["manifest.json", "task.md"]);
   expect(pack.contract.criteria.map(criterion => criterion.id)).toEqual([
-    "repository-install", "remote-recovery", "diagnostics", "content-checks",
-    "layered-selection", "safe-edits", "refresh-backoff", "compatibility-tests-docs",
+    "repository-install", "remote-recovery", "diagnostics", "content-checks", "content-resources",
+    "layered-selection", "safe-edits", "remote-edit-rejection", "remote-edit-success", "refresh-backoff", "compatibility-tests-docs",
   ]);
+});
+
+test("skills manager regression packs pin single upstream fixes and retain baseline tests", async () => {
+  for (const [id, base, solution, criteria] of [
+    ["skills-mgr-remote-uninstall", "3d3d1f565a19e181f22c90e5899729de0e928eda", "d129bb05c4b2e6b1a3c004f2ab1898deadec0b60",
+      ["uninstall-removal", "recovery-states", "ownership-rejections", "scope-and-guidance", "consumers-tests-docs"]],
+    ["skills-mgr-get-short-circuit", "3412cedfbfc15973b76803dd8754b71bba345391", "3d3d1f565a19e181f22c90e5899729de0e928eda",
+      ["single-query-fast-path", "expression-semantics", "shared-consumers", "no-persistent-cache", "tests"]],
+  ] as const) {
+    const pack = await loadTaskPack(join(import.meta.dir, "tasks", id, "manifest.json"));
+    expect(pack.manifest.id).toBe(id);
+    expect(pack.manifest.source).toEqual({ repository: "https://github.com/yusing/skills-mgr.git", base_commit: base, forbidden_commit: solution, reference_commit: solution });
+    expect(pack.contract.criteria.map(criterion => criterion.id)).toEqual([...criteria]);
+    expect(pack.contract.retained_tests).toEqual({ patterns: ["*_test.go"], command: "go test . -count=1" });
+    expect(pack.contract.qualification).toBe("not-run");
+  }
 });
 
 test("checked-in standalone criteria bind their task prompts", async () => {

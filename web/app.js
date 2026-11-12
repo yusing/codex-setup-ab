@@ -475,7 +475,9 @@ function gradeChip(result, criteria) {
   const semantic = obj(grade.semantic);
   const required = obj(obj(criteria).contract).criteria;
   // An assessed failure settles the grade even when other checks remain unassessed.
-  const failed = grade.passed === false && Object.values(semantic).flat().some((item) => obj(item).status === "fail");
+  // Retained baseline tests are non-gating evidence and cannot settle a grade.
+  const failed = grade.passed === false && Object.entries(semantic).some(([key, items]) => !key.endsWith("-retained")
+    && (Array.isArray(items) ? items : []).some((item) => obj(item).status === "fail"));
   const covered = Array.isArray(required) && [1, 2].every((pass) => {
     const assessed = semantic["pass-" + pass], existing = semantic["pass-" + pass + "-existing"];
     return Array.isArray(assessed) && assessed.length === required.length
@@ -535,9 +537,11 @@ function verdictSummary(report, state, labels, complete) {
       const score = obj(passes.find((pass) => pass.pass === number)?.scores[arm]);
       const total = score.weighted_total;
       const existing = obj((obj(semantic)[key + "-existing"] || [])[0]).status;
+      const retained = obj((obj(semantic)[key + "-retained"] || [])[0]).status;
       return "<li><strong>Pass " + number + "</strong> " + esc(criteriaCount(Array.isArray(semantic[key]) ? semantic[key] : []))
         + (typeof total === "number" ? " · score " + esc(metric(total, 1)) + "/100 (" + esc(scoreRubricLabel(score, report.scoring)) + ")" : "")
-        + (existing && existing !== "pass" ? " · existing tests " + esc(words(existing)) : "") + "</li>";
+        + (existing && existing !== "pass" ? " · existing tests " + esc(words(existing)) : "")
+        + (retained && retained !== "pass" ? " · retained baseline tests " + esc(words(retained)) : "") + "</li>";
     });
     return '<article class="verdict-card ' + side + '"><h4>' + esc(labels[arm]) + "</h4>" + gradeChip({ grade: armGrade(report, state, arm) }, report.criteria ?? state.criteria)
       + (lines.length ? "<ul>" + lines.join("") + "</ul>" : '<p class="hint">No criterion results recorded.</p>') + "</article>";

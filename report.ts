@@ -127,7 +127,8 @@ function resultHasAllChecks(result: ArmResult | undefined, criteria?: RunState["
 function resultIsDecided(result: ArmResult | undefined, criteria?: RunState["criteria"]): boolean {
   if (resultHasAllChecks(result, criteria)) return true;
   if (!criteria || !result?.grade || result.grade.evaluator_error || result.grade.passed !== false) return false;
-  return Object.values(result.grade.semantic ?? {}).some(items => items.some(item => item.status === "fail"));
+  // Retained baseline tests are non-gating evidence; they cannot settle a grade.
+  return Object.entries(result.grade.semantic ?? {}).some(([key, items]) => !key.endsWith("-retained") && items.some(item => item.status === "fail"));
 }
 
 function number(value: number | null | undefined, digits = 0): string {
@@ -337,7 +338,7 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
         rejectedSourceAssessment = { pass, error: state.judge.error, response: await readJudgeResponse(runDir, pass) };
       } catch { /* A failed process or malformed response may have no readable assessment. */ }
     }
-    const semanticPassOrder = ["pass-1-existing", "pass-1", "pass-2-existing", "pass-2"];
+    const semanticPassOrder = ["pass-1-existing", "pass-1-retained", "pass-1", "pass-2-existing", "pass-2-retained", "pass-2"];
     const semanticRows = ARMS.flatMap(arm => Object.entries(state.results?.[arm]?.grade?.semantic ?? {})
       .sort(([left], [right]) => semanticPassOrder.indexOf(left) - semanticPassOrder.indexOf(right))
       .flatMap(([pass, criteria]) =>

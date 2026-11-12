@@ -2,6 +2,7 @@ import { candidateIds, type CandidateId } from "./types";
 import { join } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { writeState } from "./state";
+import { checked } from "./process";
 import { executeSemanticCheck, validateSemanticChecks, type CriteriaContract, type CriterionEvidence, type SemanticCheck } from "./semantic";
 import { armLabels, presentationLabel } from "./arm-labels";
 import type { ArmName, RunState } from "./types";
@@ -11,7 +12,7 @@ import type { HistoricalPass } from "./evaluation";
 type Candidate = CandidateId;
 
 
-/** Repair rounds pass the criteria each candidate may resubmit; earlier passes are not repairable. */
+/** Only missing coverage or explicitly broken harnesses may be repaired. */
 export function semanticHarnessSchema(contract: CriteriaContract, repairable?: Record<Candidate, string[]>, candidates = candidateIds(2)): object {
   const criterionIds = contract.criteria.map(criterion => criterion.id);
   const check = (allowed: string[]) => ({
@@ -54,6 +55,8 @@ export interface SemanticAssessmentEvidence {
   candidates: Record<Candidate, CriterionEvidence[]>;
   history: Record<Candidate, CriterionEvidence[]>;
   existing_tests: Record<Candidate, CriterionEvidence>;
+  /** Present only for contracts declaring retained baseline tests. */
+  retained_tests?: Record<Candidate, CriterionEvidence>;
 }
 
 
@@ -68,7 +71,7 @@ export function semanticPromptEvidence(evidence: SemanticAssessmentEvidence): Se
   const concise = (item: CriterionEvidence, candidate: Candidate): CriterionEvidence => ({
     ...item,
     ...(item.check ? { check: { ...item.check, files: item.check.files.map(file => ({ ...file,
-      source: `Full source retained in /evidence/${item.criterion === "__existing_tests" ? "existing" : "round-*"}/${candidate}/${item.criterion}/harness.json (files[].source for ${file.path}).`,
+      source: `Full source retained in /evidence/${item.criterion === "__existing_tests" ? "existing" : item.criterion === "__retained_tests" ? "retained" : "round-*"}/${candidate}/${item.criterion}/harness.json (files[].source for ${file.path}).`,
     })) } } : {}),
     ...(item.execution ? { execution: { ...item.execution, stdout: outputPreview(item.execution.stdout), stderr: outputPreview(item.execution.stderr) } } : {}),
   });
@@ -76,6 +79,7 @@ export function semanticPromptEvidence(evidence: SemanticAssessmentEvidence): Se
     candidates: Object.fromEntries(candidates.map(id => [id, evidence.candidates[id].map(item => concise(item, id))])) as SemanticAssessmentEvidence["candidates"],
     history: Object.fromEntries(candidates.map(id => [id, evidence.history[id].map(item => concise(item, id))])) as SemanticAssessmentEvidence["history"],
     existing_tests: Object.fromEntries(candidates.map(id => [id, concise(evidence.existing_tests[id], id)])) as SemanticAssessmentEvidence["existing_tests"],
+    ...(evidence.retained_tests ? { retained_tests: Object.fromEntries(candidates.map(id => [id, concise(evidence.retained_tests![id], id)])) as Record<Candidate, CriterionEvidence> } : {}),
   };
 }
 export async function prepareSemanticAssessment(options: {
@@ -97,9 +101,9 @@ export async function prepareSemanticAssessment(options: {
   const evidence: SemanticAssessmentEvidence = { candidates: Object.fromEntries(candidates.map(id => [id, []])), existing_tests: {} as Record<Candidate, CriterionEvidence>,
     history: Object.fromEntries(candidates.map(id => [id, []])) };
   const persistState = options.persistState ?? (() => writeState(runDir, state));
-  const execute = async (id: Candidate, check: SemanticCheck, suffix: string) => {
+  const execute = async (id: Candidate, check: SemanticCheck, suffix: string, retained?: { patterns: string[]; baseline: string }) => {
     const arm = order[candidates.indexOf(id)]!;
-    const result = await executeSemanticCheck({ runDir, state,
+    const result = await executeSemanticCheck({ runDir, state, retained,
       candidate: join(runDir, "evaluator", arm),
       output: join(root, suffix, id, check.criterion),
       name: `codex-ab-${state.id}-semantic-${pass}-${suffix}-${id}-${check.criterion}`,
@@ -116,6 +120,23 @@ export async function prepareSemanticAssessment(options: {
       rationale: "Predetermined relevant existing tests, executed in an isolated evaluator.",
     }, "existing");
   }
+  if (contract.retained_tests) {
+    const { patterns, command } = contract.retained_tests;
+    const baseline = join(root, "baseline");
+    if (!await readFile(join(baseline, ".complete"), "utf8").then(() => true, () => false)) {
+      await mkdir(baseline, { recursive: true, mode: 0o700 });
+      await checked(["git", "--git-dir", join(runDir, "seed.git"), "archive", "--format=tar", "-o", join(root, "baseline.tar"), state.source.base_commit]);
+      await checked(["tar", "-xf", join(root, "baseline.tar"), "-C", baseline]);
+      await writeFile(join(baseline, ".complete"), "");
+    }
+    evidence.retained_tests = {} as Record<Candidate, CriterionEvidence>;
+    for (const id of candidates) {
+      const check: SemanticCheck = { criterion: "__retained_tests", files: [], command: ["sh", "-lc", command],
+        rationale: "Unchanged baseline test files pass against the candidate's production code." };
+      const saved = options.reuseSaved ? await readFile(join(root, "retained", id, "__retained_tests", "evidence.json"), "utf8").catch(() => null) : null;
+      evidence.retained_tests[id] = saved !== null ? JSON.parse(saved) as CriterionEvidence : await execute(id, check, "retained", { patterns, baseline });
+    }
+  }
   let first = 1;
   for (const round of options.reuseSaved ? [2, 1] : []) {
     const saved = await readFile(join(root, `round-${round}.json`), "utf8").catch(() => null);
@@ -127,7 +148,8 @@ export async function prepareSemanticAssessment(options: {
   const passed = () => candidates.every(id => evidence.candidates[id].every(item => item.status === "pass"));
   for (let round = first; round <= 2 && !(round > 1 && passed()); round++) {
     const repairable = round === 1 ? undefined : Object.fromEntries(candidates.map(id => [id,
-      evidence.candidates[id].filter(item => item.status !== "pass").map(item => item.criterion)])) as Record<Candidate, string[]>;
+      evidence.candidates[id].filter(item => item.status === "unassessed").map(item => item.criterion)])) as Record<Candidate, string[]>;
+    if (repairable && !Object.values(repairable).some(items => items.length)) break;
     const prompt = `${options.historical ? `Historical evaluation reuse: /evidence/historical.json contains the final historical tests, results, scores, and assessments selected for each fresh candidate.
 Start from those tests and assessments, not a new test design. Inspect the fresh implementation and amend interface calls, imports, fixtures, names, and other wiring so the checks exercise it.
 Preserve the same behavioral outcomes, assertions, edge cases, and failure conditions. Do not weaken requirements, discard a failing behavior, or add stricter requirements. In each check rationale explain the historical behavior retained and the implementation-specific adaptation. Where a prior criterion has no executable check, use its historical assessment and the fixed criterion to supply coverage, and explicitly identify that gap.
@@ -143,7 +165,8 @@ Before writing checks, inspect the actual entry point and relevant existing test
 An evaluator-owned setup mistake that prevents the target behavior from running, such as a wrong interpreter, invented entry point, or missing harness-only dependency, is a broken harness. Catch it, print a line beginning with HARNESS_ERROR:, and exit 125.
 A candidate error reached through the documented supported setup is behavioral evidence, even when it occurs during initialization; preserve its ordinary nonzero exit. Use assertion failures only after the criterion is exercised.
 Include exactly the fixed contract criteria in final assessments. Existing tests are separate evidence and must not be added as a criterion.
-If the previous harness was broken, return only checks whose earlier status was fail or unassessed and whose wiring you can show was wrong. Repair interpreter, setup, and target reachability without weakening the contract; leave real behavioral failures intact. Missing coverage remains unassessed.
+${contract.retained_tests ? "Retained baseline tests ran the unchanged baseline test files against each candidate's production code, replacing the candidate's own matching files. A failure there is evidence that retained behavior regressed or that the candidate edited expectations the task did not change; a build failure is unassessed. They are separate evidence, not a criterion.\n" : ""}
+If the previous harness was broken, return only checks whose earlier status was unassessed and whose wiring you can show was wrong. Failed behavioral checks are frozen, not eligible for replacement. Repair interpreter, setup, and target reachability without weakening assertions; leave real behavioral failures intact. Missing coverage remains unassessed.
 Round: ${round}.${repairable ? ` Criteria eligible for repair, by candidate: ${JSON.stringify(repairable)}.` : ""} Fixed contract: ${JSON.stringify(contract)}
 Evaluator guidance fixed before any candidate ran: ${contract.evaluator_guidance ?? "No task-specific evaluator guidance was supplied."}
 Existing and earlier executed evidence: ${JSON.stringify(semanticPromptEvidence(evidence))}`;
@@ -154,7 +177,7 @@ Existing and earlier executed evidence: ${JSON.stringify(semanticPromptEvidence(
       const results = new Map(evidence.candidates[id].map(item => [item.criterion, item]));
       for (const check of checks) {
         if (repairable && !repairable[id].includes(check.criterion)) {
-          process.stderr.write(`[grade] semantic pass ${pass}, ${displayCandidate(id)}, round-${round}, ${check.criterion}: ignored repair of a successful check\n`);
+          process.stderr.write(`[grade] semantic pass ${pass}, ${displayCandidate(id)}, round-${round}, ${check.criterion}: ignored replacement of settled behavioral evidence\n`);
           continue;
         }
         results.set(check.criterion, await execute(id, check, `round-${round}`));

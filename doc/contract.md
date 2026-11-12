@@ -305,6 +305,7 @@ Use `prepare --criteria FILE` to supply the required task-derived evaluation con
   ],
   "preparation": "command that prepares the pinned baseline dependencies",
   "existing_tests": "command that runs the relevant existing tests",
+  "retained_tests": {"patterns": ["*_test.go"], "command": "optional baseline test command"},
   "evaluator_guidance": "optional fixed runtime/setup guidance for adaptive harnesses",
   "qualification": "not-run"
 }
@@ -325,14 +326,18 @@ candidate source. Sol then reviews the source together with the executed evidenc
 scores, per-criterion decisions, issues, and winner for that pass. The runner rejects harness files
 that overwrite candidate files and detects changes to original files.
 
-A judge may repair a broken harness once per pass, including a failed check whose wiring was wrong.
-Repairs are limited to each candidate's failed or unassessed criteria; a resubmitted check for an
-earlier pass is ignored, and the passing evidence stands.
+A judge may repair an explicitly broken harness or missing coverage once per pass.
+Repairs are limited to each candidate's unassessed criteria; resubmitted passing or
+failing behavioral checks are ignored and their evidence stands. If there are no
+unassessed criteria, no repair-model request is made. A final source assessment can
+identify a wrongly wired ordinary failure as unassessed, but cannot replace its
+assertions with a passing check in that run.
 Harnesses must use the runtime required by the inspected entry point. Evaluator-owned setup mistakes,
 such as a wrong interpreter, invented entry point, or missing harness-only dependency, must be
-reported as `HARNESS_ERROR`; candidate errors reached through documented supported setup remain
+reported on a line beginning `HARNESS_ERROR:` and exit 125; candidate errors reached through documented supported setup remain
 behavioral evidence. Ordinary assertion failures are reserved for checks that reached the target
-behavior.
+behavior. An exception raised by the evaluator's own check wrapper, outside the check command, is
+reported the same way and is unassessed.
 Earlier evidence remains available to the final assessment; real behavior failures must not be
 weakened into passes. Different names and test wiring are allowed; different required outcomes are
 not. Compilation or setup failures caused by assumed names, runtimes, or entry points remain
@@ -342,7 +347,23 @@ An executed failure must be supported by a failed check for that same criterion.
 passed or could not assess the behavior, the failure label becomes unassessed and retains the
 judge's observation. Failures from other criteria remain separate evidence. Passing requires executed evidence plus the judge's assessment that the
 check actually covers the criterion. Both passes, disagreements, source, commands, outputs and
-repair attempts are retained.
+repair attempts are retained. Exception wording alone does not identify the faulty
+owner. An explicit harness-error marker remains unassessed even if a shell swallows
+its nonzero exit. Known empty test-suite reports also remain unassessed. This is not
+a proof that arbitrary zero-exit programs exercised the criterion; the source
+assessment must still verify relevant assertions. Detected candidate-file mutations
+report changed paths with before/after hashes or modes (up to 100 paths, with the
+total count), rather than an undiagnosable generic failure.
+
+`retained_tests` is optional. Each pass then also runs its command in a scratch copy of every
+candidate in which files matching the patterns (shell-style, where `*` also matches `/`, never
+inside `.git`) are replaced by the baseline commit's matching files; the candidate's own matching
+files are removed first. Declare it only when the baseline files pass unchanged against the
+reference endpoint. A failure is evidence that retained behavior regressed or that the candidate
+edited expectations the task did not require changing. A Go build failure there is unassessed,
+because candidates may legitimately refactor internal interfaces. The result is shown to the
+judge, recorded as `pass-N-retained`, and reported, but it is not a criterion and does not change
+the existing-test gate, eligibility, or a decided grade.
 
 Prewritten hidden tests are no longer supported. Supply behavioral criteria, not evaluator source. Semantic assessment requires every configured arm and cannot restart a started assessment.
 

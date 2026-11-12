@@ -1365,13 +1365,13 @@ test("completed semantic check time and artifacts survive a later author failure
   expect(captured.execution.elapsed_ms).toBeGreaterThan(0);
 });
 
-/** Wrap a fake Docker so candidate 2's round-1 fixture check fails in every pass. */
-async function failingFirstCandidate2Check(fakePath: string, name: string): Promise<string> {
+/** Wrap a fake Docker so candidate 2's round-1 evaluator wiring is broken in every pass. */
+async function brokenFirstCandidate2Check(fakePath: string, name: string): Promise<string> {
   const docker = join(root, name);
   await file(docker, `#!/bin/sh
 last=; for argument in "$@"; do last="$argument"; done
 '${fakePath}' "$@" || exit
-case "$1:$last" in start:*-semantic-?-round-1-candidate-2-fixture) echo 'assertion failed' >&2; exit 1 ;; esac
+case "$1:$last" in start:*-semantic-?-round-1-candidate-2-fixture) echo 'HARNESS_ERROR: wrong fixture adapter' >&2; exit 125 ;; esac
 `, 0o755);
   return docker;
 }
@@ -1386,8 +1386,8 @@ test("harness repair keeps a successful check when the judge resubmits it", asyn
   const auth = join(root, "repair-auth.json"); await file(auth, "{}\n", 0o600);
   const fake = await fakeOwnedDocker(0);
   const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
-  // Only candidate 2's first check fails, so round 2 may repair it but not candidate 1's pass.
-  const docker = await failingFirstCandidate2Check(fake.path, "repair-docker");
+  // Only candidate 2's wiring is broken, so round 2 may repair it but not candidate 1's pass.
+  const docker = await brokenFirstCandidate2Check(fake.path, "repair-docker");
   const check = { criterion: "fixture", files: [], command: ["true"], rationale: "Fixture behavior checked." };
   const asked: { stage: string; prompt: string; schema: any }[] = [];
   const evidence = await prepareSemanticAssessment({ runDir: run, state, contract: state.criteria!.contract, pass: 1,
@@ -1402,7 +1402,7 @@ test("harness repair keeps a successful check when the judge resubmits it", asyn
   expect(evidence.candidates["candidate-1"][0]?.status).toBe("pass");
   expect(evidence.candidates["candidate-2"][0]?.status).toBe("pass");
   expect(evidence.history["candidate-1"].map(item => item.criterion)).toEqual(["__existing_tests", "fixture"]);
-  expect(evidence.history["candidate-2"].map(item => item.status)).toEqual(["pass", "fail", "pass"]);
+  expect(evidence.history["candidate-2"].map(item => item.status)).toEqual(["pass", "unassessed", "pass"]);
 });
 
 test("prepare makes base-only independent clones and an audited secret-free snapshot", async () => {
@@ -2582,7 +2582,7 @@ test("judge recovery replays a saved repair that resubmitted a successful check"
   const auth = join(root, "recover-repair-auth.json");
   await file(auth, "{}\n", 0o600);
   const fake = await fakeOwnedDocker(0);
-  const docker = await failingFirstCandidate2Check(fake.path, "recover-repair-docker");
+  const docker = await brokenFirstCandidate2Check(fake.path, "recover-repair-docker");
   await runBenchmark({ runDir: run, authFile: auth, dockerBin: docker });
   // Rewind to the pre-fix failure: pass 1 threw on its saved round-2 plan before executing it,
   // which canceled pass 2's repair stage. Completed round-1 evidence and harness responses remain.

@@ -42,7 +42,7 @@ cacheTest("real pinned baseline shares an image cache without per-run copies or 
     for (const name of ["noop", "first", "second", "executable"]) {
       const command = name === "noop" ? 'test "$GOCACHE" = /opt/task-deps/go-build && test ! -e /tmp/go-build' :
         name === "executable" ? 'go run -x ./cache-reuse/main.go > /tmp/first.out 2>/tmp/first.trace && go run -x ./cache-reuse/main.go > /tmp/second.out 2>/tmp/second.trace && test "$(cat /tmp/second.out)" = reused && ! grep -E "/pkg/tool/[^ ]+/link " /tmp/second.trace && go clean -cache' :
-        'test ! -e "$GOCACHE/cross-check-write" && test ! -e "$BUN_INSTALL_CACHE_DIR/cross-check-write" && go test -run "^$" .'
+        'test ! -e "$GOCACHE/cross-check-write" && test ! -e "$BUN_INSTALL_CACHE_DIR/cross-check-write" && go test -c -o /tmp/cache-check.test .'
         + (name === "first" ? ' && printf poison > "$GOCACHE/cross-check-write" && printf poison > "$BUN_INSTALL_CACHE_DIR/cross-check-write"' : "");
       const evidence = await executeSemanticCheck({ runDir: root, state, candidate,
         output: join(root, "evidence", name), name: `task-evaluator-cache-${process.pid}-${name}`, docker: "docker",
@@ -71,7 +71,7 @@ cacheTest("real pinned baseline shares an image cache without per-run copies or 
       try {
         const evidence = await executeSemanticCheck({ runDir: root, state: { ...state, evaluator_cache_image: { ...state.evaluator_cache_image!, image_id: aged.snapshotImageId! } },
           candidate, output: join(root, "evidence", "aged"), name: `task-cache-aged-check-${process.pid}`, docker: "docker",
-          check: { criterion: "baseline", rationale: "An aged seed keeps payloads shared while repeated native Go compilation succeeds.", files: [], command: ["sh", "-c", 'go test -run "^$" . && go test -run "^$" .'] } });
+          check: { criterion: "baseline", rationale: "An aged seed keeps payloads shared while repeated native Go compilation succeeds.", files: [], command: ["sh", "-c", 'go test -c -o /tmp/cache-check.test . && go test -c -o /tmp/cache-check.test .'] } });
         expect(evidence.status).toBe("pass");
         expect(privateBytes).toBeLessThan(50_000_000);
       } finally { capture.mockRestore(); }
@@ -105,14 +105,25 @@ liveTest("isolated checks accept equivalent names, find defects and reject broke
     }
     const candidate = join(root, "renamed");
     for (const [name, source] of [
-      ["harness", "require('./invented-module.cjs')"],
+      ["harness", "try { require('./invented-module.cjs') } catch(e) { console.error('HARNESS_ERROR: invented evaluator module'); process.exit(125) }"],
       ["mutation", "require('fs').writeFileSync('math.cjs', 'exports.combine = () => 5')"],
+      ["mode-mutation", "require('fs').chmodSync('math.cjs', 0o777)"],
+      ["swallowed", "console.error('HARNESS_ERROR: shell swallowed a wiring failure')"],
+      ["empty", "console.log('Ran 0 tests in 0.01s')"],
+      // A file path below a candidate file makes the evaluator's own wrapper raise.
+      ["wrapper-crash", "console.log('unreachable')"],
       ["isolation", `const fs=require('fs'),assert=require('node:assert/strict');assert.equal(fs.existsSync('/home/ubuntu/.codex/auth.json'),false);assert.equal(fs.existsSync('/var/run/docker.sock'),false);assert.deepEqual(fs.readdirSync('/sys/class/net'),['lo']);`],
     ]) {
       const evidence = await executeSemanticCheck({ runDir: root, state, candidate, output: join(root, "output", name!),
         name: `codex-ab-semantic-${process.pid}-${name}`, docker: "docker",
-        check: { criterion: "sum", rationale: "Harness contract.", files: [{ path: "extra.cjs", source: source! }], command: ["node", "extra.cjs"] } });
+        check: { criterion: "sum", rationale: "Harness contract.", files: [{ path: name === "wrapper-crash" ? "math.cjs/extra.cjs" : "extra.cjs", source: source! }], command: ["node", "extra.cjs"] } });
       expect(evidence.status).toBe(name === "isolation" ? "pass" : "unassessed");
+      if (name === "wrapper-crash") expect(evidence.execution?.stderr).toContain("HARNESS_ERROR: evaluator wrapper raised FileExistsError");
+      if (name === "mutation" || name === "mode-mutation") {
+        expect(evidence.execution?.stderr).toContain('"path": "math.cjs"');
+        expect(evidence.execution?.stderr).toContain('"before":');
+        expect(evidence.execution?.stderr).toContain('"after":');
+      }
     }
     expect(await readFile(join(candidate, "math.cjs"), "utf8")).toBe("exports.combine = (a, b) => a + b;\n");
   } finally {

@@ -13,7 +13,7 @@
     "criteria": [
       {
         "id": "repository-install",
-        "description": "Install selected root or nested skills from HTTPS repositories, owner/repo shorthand, and GitHub tree or SKILL.md URLs, including slash-containing branches. Explain ambiguity and reject invalid addresses without selection changes. Preserve resources and executable scripts, and enable the installed skill in the chosen layer."
+        "description": "Install selected root or nested skills from HTTPS repositories, owner/repo shorthand, and GitHub tree or SKILL.md URLs, including slash-containing branches. Explain ambiguity and reject invalid addresses without selection changes. Preserve resources and executable scripts, and enable the installed skill in the chosen layer. Slash-containing branch names in GitHub URLs use percent-encoded slashes (for example feature%2Fskills); automatic branch-boundary discovery for an unencoded slash is not required. Verify the normalized locator and later sync preserve the explicit ref and selected path."
       },
       {
         "id": "remote-recovery",
@@ -25,7 +25,11 @@
       },
       {
         "id": "content-checks",
-        "description": "Check served bodies, listed Markdown references, and explicitly named resources without executing scripts. Reject unreadable, empty, frontmatter-only, or patch-failed content; report per-target results and return failure when checks fail."
+        "description": "Check served bodies without reparsing their Markdown as manifest frontmatter. A valid body beginning with a horizontal rule passes. Empty or frontmatter-only manifests and failed patches fail, under both normal and disable-model-invocation policies. Test the same result through supported manifest aliases, including normalized ./ and ../ segments within the skill root."
+      },
+      {
+        "id": "content-resources",
+        "description": "Resolve listed Markdown references through every supported manifest alias and reject an empty or unreadable referenced file even when the main body is valid, under both invocation policies. Check explicitly named resources, including scripts, by reading without execution. Report each target, continue after a missing target, and return failure if any target fails."
       },
       {
         "id": "layered-selection",
@@ -33,7 +37,15 @@
       },
       {
         "id": "safe-edits",
-        "description": "Accept complete manifests from files or stdin with optional digest-based stale-edit protection. Validate before publication and preserve prior state on rejection or failed publication. Preserve local modes and update selection/placeholder identities on rename. Remote edits use local patches without changing fetched content, remote identity, or invocation metadata. Scope does not switch content ownership."
+        "description": "For local complete-manifest replacement from file or stdin, validate before publication, reject stale digest guards and malformed/empty manifests, retain file modes, and update selection/placeholder identities on rename. A valid rename that cannot publish its destination selection preserves the prior manifest and selection. Management scope must not switch content ownership."
+      },
+      {
+        "id": "remote-edit-rejection",
+        "description": "The new noninteractive complete-manifest replacement rejects remote name/identity changes and disable-model-invocation changes, rather than accepting and normalizing them later. Test each protected field separately with a previously accepted local patch present. Rejection preserves fetched bytes, the prior patch, selection, and effective serving. Empty/invalid manifests and stale digest guards likewise publish nothing. The older interactive editing path is not the rejection oracle."
+      },
+      {
+        "id": "remote-edit-success",
+        "description": "A valid remote body/description replacement succeeds as a local patch, leaves fetched content unchanged, retains remote identity and invocation policy, and is observed through normal serving and diagnostics. Retain old interactive editing behavior outside the new replacement operation; do not impose the new rejection policy on that separate consumer."
       },
       {
         "id": "refresh-backoff",
@@ -46,7 +58,7 @@
     ],
     "preparation": "go mod download",
     "existing_tests": "go test . -count=1",
-    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local Git fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. The 12 upstream commits are frozen read-only under /reference: inspect index.json, relevant commit patches, and changes.patch to ground checks in actual implementation, regression tests, and documentation. Installation/recovery evidence is in repository_install_test.go, repository_cli_test.go, and audit_remote_regression_test.go; agent_commands_test.go covers diagnostics, checks, selections, and edits; refresh_runner_test.go covers retry behavior. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact command names, flags, JSON fields, helper names, architecture, patch shape, or the historical README rewrite. Test meaningful end-to-end interactions, not just isolated helpers. Use local Git URL rewriting or equivalent fixtures for repository installation; failures in evaluator wiring are HARNESS_ERROR/unassessed. Do not make unrelated changes bundled in upstream commits into new requirements. Preserve source-only observations with insufficient executed coverage as unassessed. No hidden oracle is supplied. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness.",
+    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local Git fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. The 12 upstream commits are frozen read-only under /reference: inspect index.json, relevant commit patches, and changes.patch to ground checks in actual implementation, regression tests, and documentation. Installation/recovery evidence is in repository_install_test.go, repository_cli_test.go, and audit_remote_regression_test.go; agent_commands_test.go covers diagnostics, checks, selections, and edits; refresh_runner_test.go covers retry behavior. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact command names, flags, JSON fields, helper names, architecture, patch shape, or the historical README rewrite. Test meaningful end-to-end interactions, not just isolated helpers. Use local Git URL rewriting or equivalent fixtures for repository installation; failures in evaluator wiring are HARNESS_ERROR/unassessed. Do not make unrelated changes bundled in upstream commits into new requirements. Preserve source-only observations with insufficient executed coverage as unassessed. No hidden oracle is supplied. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness. Acceptance distinctions are explicit in the task and criterion descriptions. Preserve each named positive, negative, and retained-state observation; candidate-authored tests may support but never redefine them. Do not use effective metadata normalization as proof that a protected remote replacement was rejected or that the previous patch survived. The pinned agent_commands_test.go TestAgentEditRemotePatchAndStaleHealth establishes rejection for the new command, while skill_edit.go is a different interactive operation. TestAgentCheckManifestAliases establish body/reference checks through aliases. repository_cli_test.go establishes percent-encoded slash refs, not automatic resolution of unencoded branch boundaries. Do not skip publication-failure coverage merely because chmod-based permission fixtures are ineffective under the execution user; use a deterministic destination obstruction or leave the case unassessed. A successful empty test selection is not a pass. Mark genuine evaluator wiring failures explicitly as HARNESS_ERROR and exit 125; do not relabel a candidate exception based on its error wording. Ordinary behavioral failures are retained and cannot be replaced in a repair round.",
     "qualification": "not-run"
   }
 }

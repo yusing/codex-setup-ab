@@ -31,6 +31,8 @@ export function taskCatalog() {
   return [
     { id: "nvm-download-no-eval", title: "NVM download arguments", source: process.env.CODEX_AB_SOURCE_DIR ?? join(tmpdir(), "codex-ab-nvm-source"), timeout: 1800, effort: "medium", pack: "tasks/nvm-download-no-eval/manifest.json", repository: "https://github.com/nvm-sh/nvm.git" },
     { id: "skills-mgr-agent-cli", title: "Skills manager repository-to-agent workflow", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-agent-cli/manifest.json" },
+    { id: "skills-mgr-remote-uninstall", title: "Skills manager remote uninstall", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-remote-uninstall/manifest.json" },
+    { id: "skills-mgr-get-short-circuit", title: "Skills manager fast conditional acquisition", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-get-short-circuit/manifest.json" },
     { id: "session-retention", title: "Mekugi coordination checkpoints", source: process.env.CODEX_AB_MEKUGI_SOURCE ?? join(userRoot, "projects/mekugi"), timeout: 3600, effort: "xhigh", pack: "tasks/session-retention/manifest.json" },
     { id: "sqlite-utils-history", title: "sqlite-utils multi-commit upgrade", source: process.env.CODEX_AB_SQLITE_UTILS_SOURCE ?? join(tmpdir(), "codex-ab-sqlite-utils-source"), timeout: 3300, effort: "xhigh", pack: "tasks/sqlite-utils-history/manifest.json",
       repository: "https://github.com/simonw/sqlite-utils.git", compactLimit: 200000, preset: "stock-mekugi" },

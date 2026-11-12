@@ -131,6 +131,7 @@ available to agents. See the [CLI guide](doc/cli.md) and [contract](doc/contract
 - [Contract](doc/contract.md): isolation, criteria schema, judging, accounting, and failure behavior.
 - [CLI guide](doc/cli.md): manual builds, repeated comparisons, task packs, suites, and control reuse.
 - [sqlite-utils multi-commit upgrade](tasks/sqlite-utils-history/README.md): a post-cutoff, 19-commit brownfield task for quality and requirement retention.
+- [Regression coverage map](doc/regression-coverage.md): which agent failure classes the task packs and checks can and cannot detect.
 
 Started runs and trial sets do not restart or resume. Cancellation preserves available
 evidence; prepare a fresh pair for another attempt. Limited judge recovery is documented

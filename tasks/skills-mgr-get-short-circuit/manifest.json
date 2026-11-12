@@ -1,0 +1,46 @@
+{
+  "schema": "codex-ab.task-pack.v1",
+  "id": "skills-mgr-get-short-circuit",
+  "source": {
+    "repository": "https://github.com/yusing/skills-mgr.git",
+    "base_commit": "3412cedfbfc15973b76803dd8754b71bba345391",
+    "forbidden_commit": "3d3d1f565a19e181f22c90e5899729de0e928eda",
+    "reference_commit": "3d3d1f565a19e181f22c90e5899729de0e928eda"
+  },
+  "prompt": "task.md",
+  "criteria": {
+    "schema": "codex-ab.criteria.v1",
+    "criteria": [
+      {
+        "id": "single-query-fast-path",
+        "description": "For get and run of a skill whose selection is a single known language or tooling query (for example lang rust, lang ts, tooling shadowtree, tooling k8s) and whose evidence exists near the project root, acquisition no longer walks unrelated parts of the project: it is materially faster than a full walk on a large tree, or demonstrably avoids visiting unrelated descendants (for example an unreadable or irregular entry deep in an unrelated directory that makes a complete scan fail). Output is byte-identical to the baseline."
+      },
+      {
+        "id": "expression-semantics",
+        "description": "Enabled decisions, output, and exit status are unchanged from the baseline for expressions outside that fast path, including compound (lang rust && true), dynamic command names, assignment prefixes, redirections, glob-like arguments subject to pathname expansion (lang r*, tooling shadow*), and other builtins such as has_dependency; such expressions still observe complete project evidence. Missing evidence still disables the skill."
+      },
+      {
+        "id": "shared-consumers",
+        "description": "list and other consumers that evaluate many skills against one project keep complete, consistent evidence and their baseline results; nested evidence, files added or removed between calls, and cancellation behave as before (a canceled acquisition returns the cancellation error)."
+      },
+      {
+        "id": "no-persistent-cache",
+        "description": "The change adds no persistent or on-disk cache or other durable state; each acquisition observes the project's current files."
+      },
+      {
+        "id": "tests",
+        "description": "The root Go suite passes, and the candidate's tests distinguish the fast path from expressions that must keep complete evaluation; they would fail against the baseline traversal or against an implementation that short-circuits glob-like or compound expressions."
+      }
+    ],
+    "preparation": "go mod download",
+    "existing_tests": "go test . -count=1",
+    "retained_tests": {
+      "patterns": [
+        "*_test.go"
+      ],
+      "command": "go test . -count=1"
+    },
+    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact output wording, helper names, architecture, or patch shape. Candidate-authored tests may support but never redefine the criteria. A successful empty test selection is not a pass. Mark genuine evaluator wiring failures explicitly as HARNESS_ERROR and exit 125; do not relabel a candidate exception based on its error wording. Retained baseline tests, when reported, run the unchanged baseline test files against the candidate's production code; their failure is evidence about retained behavior or edited expectations, while a build failure there is unassessed. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness. The single upstream commit is frozen read-only under /reference: acquisition_evidence_test.go establishes the fast path (TestAcquisitionShortCircuitsSingleEvidenceQuery uses an unrelated .gitignore directory that makes a complete scan fail), retained complete evaluation for other expressions (TestAcquisitionKeepsCompleteEvidenceForOtherExpressions), and nested evidence and edits. The reference stops traversal only for an isolated known-name query and keeps complete snapshots for shared evaluators; equivalent designs that preserve every baseline decision are acceptable. Measure timing only with generous margins on a synthetic tree; prefer deterministic observations of avoided traversal.",
+    "qualification": "not-run"
+  }
+}

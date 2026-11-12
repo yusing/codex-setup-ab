@@ -202,8 +202,12 @@ supported and explicitly reports missing source provenance.
 ## Portable task packs
 
 Portable packs include [nvm download](../tasks/nvm-download-no-eval/manifest.json),
-[Gin context copy](../tasks/gin-context-copy/manifest.json), and
-[skills manager repository-to-agent workflow](../tasks/skills-mgr-agent-cli/README.md). Each pins its upstream base and
+[Gin context copy](../tasks/gin-context-copy/manifest.json),
+[skills manager repository-to-agent workflow](../tasks/skills-mgr-agent-cli/README.md),
+[remote uninstall](../tasks/skills-mgr-remote-uninstall/README.md), and
+[fast conditional acquisition](../tasks/skills-mgr-get-short-circuit/README.md). The
+[regression coverage map](regression-coverage.md) relates them to recurring agent
+failure classes and lists what they cannot observe. Each pins its upstream base and
 excluded solution commit, evaluator reference endpoint, dependency preparation,
 and behavioral criteria. These tasks permit relevant regression tests and
 documentation alongside implementation changes, without synthetic single-file boundaries.
@@ -265,9 +269,11 @@ Cutoffs verified October 29, 2026 for [`gpt-6-astra`](https://developers.openai.
 and [`gpt-6.1-sol`](https://developers.openai.com/api/docs/models/gpt-6.1-sol) are
 April 30, 2026. Every baseline above is later than both cutoffs. Verify other
 models, including Grok, separately before claiming a post-cutoff comparison.
-The [skills manager](../tasks/skills-mgr-agent-cli/README.md) and
+The [skills manager](../tasks/skills-mgr-agent-cli/README.md),
+[remote uninstall](../tasks/skills-mgr-remote-uninstall/README.md),
+[fast conditional acquisition](../tasks/skills-mgr-get-short-circuit/README.md), and
 [sqlite-utils](../tasks/sqlite-utils-history/README.md) packs record their own
-multi-commit provenance and cutoff evidence.
+provenance and cutoff evidence.
 
 Express freezes 18 ancestry commits to reach its ETag correction; only the two
 named fixes define new requirements. Mekugi freezes nine commits with two

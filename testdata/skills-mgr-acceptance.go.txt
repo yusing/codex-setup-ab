@@ -1,0 +1,89 @@
+package main
+
+import (
+    "bytes"
+    "os"
+    "path/filepath"
+    "strings"
+    "testing"
+)
+
+func TestAcceptanceHorizontalRuleAliases(t *testing.T) {
+    for _, target := range []string{"alpha", "alpha/SKILL.md", "alpha/./SKILL.md", "alpha/references/../SKILL.md"} {
+        for _, policy := range []bool{false, true} {
+            m := newTestManager(t)
+            project := t.TempDir()
+            content := skillFile("alpha", "Alpha.", "---\n# Actual instructions\nUse this skill.\n")
+            if policy { content = strings.Replace(content, "description: Alpha.", "description: Alpha.\ndisable-model-invocation: true", 1) }
+            writeFile(t, filepath.Join(m.paths.managedSkills, "alpha", "SKILL.md"), content)
+            writeFile(t, filepath.Join(m.paths.managedSkills, "alpha", "references", "guide.md"), "Guide.\n")
+            agentTestSaveLock(t, project, testLock(map[string]bool{"alpha": true}, nil, nil))
+            if _, _, err := agentTestCommand(t, m, project, "", "check", target); err != nil { t.Fatalf("horizontal rule alias %s policy=%v: %v", target, policy, err) }
+        }
+    }
+}
+
+func TestAcceptanceRemotePatchRetention(t *testing.T) {
+    for _, field := range []string{"name", "invocation", "empty", "stale"} {
+        t.Run(field, func(t *testing.T) {
+            m := newTestManager(t)
+            project := t.TempDir()
+            ref := remoteSkillRef{Provider: skillsShProvider, ID: "owner/repo/alpha", Name: "alpha", Locator: "owner/repo/alpha"}
+            original := skillFile("alpha", "Remote.", "Remote instructions.\n")
+            provider := &staticRemoteProvider{files: []remoteSkillFile{{Path: "SKILL.md", Contents: []byte(original)}}}
+            record, err := m.remoteStore.ensure(t.Context(), ref, provider)
+            if err != nil { t.Fatal(err) }
+            root, err := m.remoteStore.contentRoot(record)
+            if err != nil { t.Fatal(err) }
+            agentTestSaveLock(t, project, testLock(map[string]bool{"alpha": true}, nil, map[string]remoteSkillRef{"alpha": ref}))
+            accepted := skillFile("alpha", "Accepted.", "Accepted local body.\n")
+            if _, _, err := agentTestCommand(t, m, project, accepted, "edit", "alpha", "--file", "-"); err != nil { t.Fatal(err) }
+            patch, err := os.ReadFile(m.remoteStore.patchPath(ref))
+            if err != nil { t.Fatal(err) }
+            selection, err := os.ReadFile(filepath.Join(project, lockName))
+            if err != nil { t.Fatal(err) }
+            var before bytes.Buffer
+            if err := m.getContext(t.Context(), project, "alpha", "", &before); err != nil { t.Fatal(err) }
+            if !strings.HasPrefix(before.String(), "Accepted local body.\n") { t.Fatal("valid replacement not served") }
+            replacement := accepted
+            args := []string{"edit", "alpha", "--file", "-"}
+            switch field {
+            case "name": replacement = strings.Replace(accepted, "name: alpha", "name: renamed", 1)
+            case "invocation": replacement = strings.Replace(accepted, "description: Accepted.", "description: Accepted.\ndisable-model-invocation: true", 1)
+            case "empty": replacement = skillFile("alpha", "Accepted.", "")
+            case "stale": args = append(args, "--expect-sha256", strings.Repeat("0", 64))
+            }
+            if _, _, err := agentTestCommand(t, m, project, replacement, args...); err == nil { t.Fatalf("ACCEPTANCE_REJECTION: %s accepted", field) }
+            assertFile(t, filepath.Join(root, "SKILL.md"), original)
+            assertFile(t, m.remoteStore.patchPath(ref), string(patch))
+            assertFile(t, filepath.Join(project, lockName), string(selection))
+            var after bytes.Buffer
+            if err := m.getContext(t.Context(), project, "alpha", "", &after); err != nil { t.Fatal(err) }
+            if after.String() != before.String() { t.Fatalf("ACCEPTANCE_RETENTION: %s changed serving", field) }
+        })
+    }
+}
+
+func TestAcceptanceLocalPublicationRollback(t *testing.T) {
+    m := newTestManager(t)
+    project := t.TempDir()
+    path := filepath.Join(m.paths.managedSkills, "alpha", "SKILL.md")
+    original := skillFile("alpha", "Alpha.", "Original instructions.\n")
+    writeFile(t, path, original)
+    if _, _, err := agentTestCommand(t, m, project, "", "set", "alpha", "true"); err != nil { t.Fatal(err) }
+    selection, err := os.ReadFile(filepath.Join(project, lockName))
+    if err != nil { t.Fatal(err) }
+    // A regular file obstructs destination publication even for uid 0. No chmod
+    // permission assumption and no invalid replacement or selection conflict.
+    obstruction := filepath.Join(project, ".agents", "skills", "beta")
+    writeFile(t, obstruction, "obstruction")
+    if _, _, err := agentTestCommand(t, m, project, skillFile("beta", "Renamed.", "New instructions.\n"), "edit", "alpha", "--file", "-"); err == nil { t.Fatal("obstructed publication succeeded") }
+    actual, err := os.ReadFile(path)
+    if err != nil { t.Fatal(err) }
+    if string(actual) != original { t.Fatal("ACCEPTANCE_ROLLBACK: manifest changed") }
+    assertFile(t, filepath.Join(project, lockName), string(selection))
+    assertFile(t, obstruction, "obstruction")
+    var served bytes.Buffer
+    if err := m.getContext(t.Context(), project, "alpha", "", &served); err != nil { t.Fatal(err) }
+    if !strings.HasPrefix(served.String(), "Original instructions.\n") { t.Fatal("rollback changed effective serving") }
+}

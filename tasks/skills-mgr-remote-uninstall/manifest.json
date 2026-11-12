@@ -1,0 +1,47 @@
+{
+  "schema": "codex-ab.task-pack.v1",
+  "id": "skills-mgr-remote-uninstall",
+  "source": {
+    "repository": "https://github.com/yusing/skills-mgr.git",
+    "base_commit": "3d3d1f565a19e181f22c90e5899729de0e928eda",
+    "forbidden_commit": "d129bb05c4b2e6b1a3c004f2ab1898deadec0b60",
+    "reference_commit": "d129bb05c4b2e6b1a3c004f2ab1898deadec0b60"
+  },
+  "prompt": "task.md",
+  "criteria": {
+    "schema": "codex-ab.criteria.v1",
+    "criteria": [
+      {
+        "id": "uninstall-removal",
+        "description": "A noninteractive uninstall of an enabled remote skill removes the installed remote record, its local patch/override sidecars, its selection entry in the active layer, and its managed placeholders, with the same result as the existing interactive uninstall in that scope, and prints a confirmation. Afterwards the skill is no longer served or listed in that layer. Verify through the command, not only internal helpers.",
+        "required_interface": "skills-mgr uninstall [-g] <skill>"
+      },
+      {
+        "id": "recovery-states",
+        "description": "Uninstall succeeds for a disabled remote skill, a remote skill with a conditional selection without executing that condition, a remote skill whose cached content is missing, and a remote skill whose override sidecar is malformed or unreadable (for example invalid JSON or a directory in its place). Each removal leaves no selection, placeholder, or override behind."
+      },
+      {
+        "id": "ownership-rejections",
+        "description": "Local and harness-owned skills are never deleted: native-only skills, and a local skill shadowing a remote skill of the same name, are rejected without changing the local files or the remote installation. Unknown names, invalid or path-like names, wrong argument counts, and an already-canceled operation are rejected with no output or state change."
+      },
+      {
+        "id": "scope-and-guidance",
+        "description": "-g and running from the user's home directory use the global layer, consistent with the existing management commands. A project-scope uninstall of a globally configured remote skill is refused without changes and its error names the noninteractive global uninstall instead of directing the user to the interactive UI. Other projects' selection files remain byte-identical after any uninstall."
+      },
+      {
+        "id": "consumers-tests-docs",
+        "description": "Usage/help lists the command, the fish completion script offers uninstall with -g and completes installed remote skill names, and the README describes the command, recovery cases, global scope, and that local or harness-owned skills are never deleted. Existing interactive, installation, selection, and serving behavior is preserved; the root Go suite passes and the candidate's tests exercise the command and its rejection cases."
+      }
+    ],
+    "preparation": "go mod download",
+    "existing_tests": "go test . -count=1",
+    "retained_tests": {
+      "patterns": [
+        "*_test.go"
+      ],
+      "command": "go test . -count=1"
+    },
+    "evaluator_guidance": "Assess the visible prompt outcomes through each candidate's actual interface using isolated temporary home/project roots and local fixtures. Dependencies are prepared beforehand; do not install packages or contact registries. Require behavior at least as good as the reference for the requested scope and retain unaffected baseline behavior. Accept equivalent interfaces, designs, and safe improvements; do not require exact output wording, helper names, architecture, or patch shape. Candidate-authored tests may support but never redefine the criteria. A successful empty test selection is not a pass. Mark genuine evaluator wiring failures explicitly as HARNESS_ERROR and exit 125; do not relabel a candidate exception based on its error wording. Retained baseline tests, when reported, run the unchanged baseline test files against the candidate's production code; their failure is evidence about retained behavior or edited expectations, while a build failure there is unassessed. Do not score launcher identity, duration, compaction, patch size, or commit messages as product correctness. The single upstream commit is frozen read-only under /reference: agent_commands_test.go TestAgentUninstall establishes each removal, recovery, rejection, scope, and other-project case; TestAgentCommandRejectsInvalidArguments and TestAgentNativeOnlyCannotBeManaged establish rejections; repository_cli_test.go establishes an install/uninstall round trip; completion_test.go and README.md establish consumer updates. Retaining or deleting the fetched content generation directory is an implementation choice, not a criterion. The reference reuses the existing interactive removal transaction; a separate duplicate removal path is a simplicity and approach concern, not by itself a criterion failure.",
+    "qualification": "not-run"
+  }
+}

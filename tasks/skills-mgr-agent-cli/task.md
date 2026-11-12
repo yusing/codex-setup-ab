@@ -9,6 +9,8 @@ names, output formats, and implementation design are yours.
 - Install a selected skill from an HTTPS Git repository, an `owner/repo`
   shorthand, or a GitHub tree or SKILL.md URL. Support repository-root and
   nested skills, explicit skill selection, and branch names containing slashes.
+  In GitHub URLs, slash-containing refs use percent-encoded slashes, such as
+  `feature%2Fskills`; resolving unencoded branch boundaries is not required.
   Explain ambiguous choices and reject invalid addresses without changing the
   selection. Preserve the skill's resources and executable scripts.
 - Enable installed skills for the project or globally. Persist the normalized
@@ -27,8 +29,11 @@ names, output formats, and implementation design are yours.
 - Check served skill bodies and their Markdown references, rejecting unreadable,
   empty, or frontmatter-only content and failed remote patches. Also accept
   explicitly named resources, including scripts, for reading without executing
-  them. Report individual successes and failures and fail the command when a
-  check fails.
+  them. A served body beginning with a Markdown horizontal rule remains valid.
+  Manifest aliases, including normalized relative segments inside the skill,
+  must check the same body and references under both invocation policies.
+  Report individual successes and failures, continue after a failed target,
+  and fail the command when any check fails.
 - Set Boolean or conditional selections and remove overrides to restore
   inheritance. Preserve project-over-global precedence and native harness
   ownership. Create manager state on the first global write. Running from the
@@ -39,8 +44,13 @@ names, output formats, and implementation design are yours.
   and preserve prior state on rejection or failed publication. Local edits retain
   file modes and update selection and placeholder identities after a rename.
   Remote edits retain fetched content unchanged, store local patches, and preserve
-  remote identity and invocation metadata. Management scope must not select a
-  different content owner.
+  remote identity and invocation metadata: the new replacement command must
+  reject attempts to change either protected field, not accept them and normalize
+  them later. A rejection must preserve an already accepted patch, selections,
+  fetched bytes, and effective serving. Valid body/description edits still work.
+  Retain the separate existing interactive editor behavior. Management scope must
+  not select a different content owner. A valid local rename that cannot publish
+  its destination selection must leave the original manifest and selection intact.
 - A failed background refresh must observe the normal retry interval instead of
   immediately respawning on subsequent commands.
 

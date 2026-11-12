@@ -37,7 +37,7 @@ are acceptable.
 | `3d70c7f` | Treat the user's home directory as the global layer | `layered-selection` |
 | `8c4eedf` | Avoid immediately respawning failed background refreshes | `refresh-backoff` |
 | `9ee73a1` | Support consistent serving and mutation transactions | `safe-edits`, `compatibility-tests-docs` |
-| `3d287a1` | Add non-interactive inspection, checks, selection, and safe editing | `diagnostics`, `content-checks`, `layered-selection`, `safe-edits` |
+| `3d287a1` | Add non-interactive inspection, checks, selection, and safe editing | `diagnostics`, `content-checks`, `content-resources`, `layered-selection`, `safe-edits`, `remote-edit-rejection`, `remote-edit-success` |
 | `5bc6b3d` | Document the agent-management workflow | `compatibility-tests-docs` |
 | `4d73a98` | Distinguish resolved ownership from alternative candidates | `diagnostics` |
 
@@ -84,6 +84,22 @@ Existing defaults remain a 7200-second candidate limit and `xhigh` reasoning
 available. Compaction is Codex-owned; the time limit guarantees neither a long
 run nor a compaction event. Record observed resets separately from workload intent.
 
+## Acceptance boundaries
+
+The visible task and criterion descriptions fix the same observable outcomes for
+every evaluator. The new noninteractive remote replacement rejects identity and
+invocation-policy edits before publication, including when a valid patch already
+exists. Effective metadata normalization is not rejection. The separate existing
+interactive editor retains its own contract. Valid served Markdown horizontal
+rules and reference checks work through supported manifest aliases. GitHub refs
+containing slashes use percent-encoded slashes; automatic resolution of unencoded
+branch boundaries is not required. These distinctions come from the pinned
+reference tests, not candidate-authored expectations.
+
+Changed task/criteria hashes require fresh implementation trials. Older scores
+remain evidence for their captured task and oracle, not repetitions under this
+clarified contract.
+
 ## Validation and limits
 
 Dependency preparation uses `go mod download`; the existing-test gate is
@@ -92,7 +108,28 @@ using Go 1.27.3 on Linux; the module requires Go 1.26. Tests ran from archived
 snapshots outside the source checkout. This establishes a usable baseline and
 attainable reference behavior in that local environment.
 
-No Docker or paid-inference run has qualified this replacement task. Adaptive
-judge coverage, candidate duration, and compaction frequency remain unmeasured;
-the manifest retains `qualification: "not-run"`. Upstream test passes do not
-establish judge quality or a launcher advantage.
+The offline reference-sensitivity check archives the pinned source without
+modifying its checkout, runs its full root suite plus acceptance assertions in
+the isolated semantic executor, and tests five independent negative controls:
+accepting remote name edits, accepting invocation-policy edits, reparsing served
+bodies, omitting alias reference checks, and omitting local publication rollback.
+Each control must fail its intended assertion, not compilation or setup. The
+additional assertions cover an already accepted patch, retained serving and
+selection, both invocation policies, and deterministic destination obstruction.
+
+Run it with an existing offline dependency/compiler-cache image containing this
+task's pinned dependencies:
+
+```sh
+CODEX_AB_QUALIFY_SKILLS_MGR=1 \
+CODEX_AB_SKILLS_MGR_SOURCE=/path/to/skills-mgr \
+CODEX_AB_QUALIFICATION_IMAGE=sha256:IMAGE_ID \
+bun test skills-mgr-qualification.live.test.ts
+```
+
+This qualifies the fixed reference assertions, not adaptive judges. The test
+fixture is not installed in candidate workspaces or used as their hidden oracle.
+Adaptive judge coverage, candidate duration, and compaction frequency remain
+unmeasured; the manifest retains `qualification: "not-run"`. Reference passes and
+negative-control sensitivity do not establish judge quality or a launcher
+advantage. Changed reference pins require requalification before use.

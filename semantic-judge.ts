@@ -272,7 +272,7 @@ Executed evidence summary (complete files are under /evidence): ${JSON.stringify
 Return the required JSON schema with scores, quality_aspects, evidence, issues, winner, rationale and per-candidate criteria.
 Write the rationale for an operator deciding which implementation is better, in at most three short sentences (about 80 words). Lead with the decisive implementation difference and explain how it produces the observed behavior, contrasting candidates by anonymous ID. Explain why candidates are flawed or effectively equivalent when no quality winner is supported. When the cause is uncertain, state what is observed and what remains unknown. Keep scores, test-command inventories, eligibility rules and repeated pass counts in their structured fields rather than repeating them in the rationale.
 Use evidence for at most three decisive supporting observations. Issue details should connect the implementation cause to its user-visible consequence in one or two sentences. Retain every material issue in the issues field and criterion decisions in criteria. Token/request usage and workflow causes are assessed separately from recorded telemetry, so do not infer them from source quality.
-Each candidate must have exactly one criteria entry for every fixed criterion, using only those criterion IDs. Do not add the existing-test result as a criterion.`;
+Each candidate must have exactly one criteria entry for every fixed criterion, using only those criterion IDs. Do not add the existing-test result as a criterion.${contract.retained_tests ? " Retained baseline tests ran unchanged baseline test files against each candidate's production code: weigh a failure there as evidence of regressed retained behavior or edited expectations in the related criteria, issues, and test quality, treat a build failure there as unassessed, and do not add it as a criterion or eligibility gate." : ""}`;
       const value = await ask("assessment", prompt, schema);
       if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid semantic assessment");
       const { criteria: rawCriteria, ...scores } = value as Record<string, unknown>;
@@ -289,6 +289,7 @@ Each candidate must have exactly one criteria entry for every fixed criterion, u
         const grade = state.results![arm]!.grade!;
         grade.semantic ??= {};
         grade.semantic[`pass-${pass}-existing`] = [evidence.existing_tests[id]];
+        if (evidence.retained_tests) grade.semantic[`pass-${pass}-retained`] = [evidence.retained_tests[id]];
         grade.semantic[`pass-${pass}`] = criteria[id];
       }
       const combined = seeds ? mergeHistoricalPass(judged, fullOrder, state, historical) : judged;
