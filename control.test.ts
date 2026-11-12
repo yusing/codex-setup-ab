@@ -10,6 +10,8 @@ import { meterRollouts, type PricingSnapshot } from "./usage";
 import type { ArmResult, RunState } from "./types";
 import { sha256, writeState } from "./state";
 import { dependencyKey } from "./dependencies";
+import { ROLLOUT_SCHEMA, rolloutIdentity } from "./rollout-evidence";
+import { createFixedFixture } from "./test-support/fixed-verifier";
 
 const directories: string[] = [];
 
@@ -98,6 +100,13 @@ async function publishedControl(paired = false) {
   const targetRun = join(directory, "target-run");
   const bundle = join(sourceRun, "reports/bundle");
   const source = state("published-control");
+  const captured = await createFixedFixture(); directories.push(captured.root);
+  const candidateManifest = JSON.parse(await readFile(captured.candidateManifestPath, "utf8"));
+  const capturedPatch = await readFile(captured.patchPath, "utf8");
+  source.source.base_commit = candidateManifest.base_commit; source.source.base_tree = candidateManifest.base_tree;
+  source.results!.stock!.head_after_agent = candidateManifest.base_commit;
+  source.results!.stock!.capture_identity = { status: "verified", manifest_path: "artifacts/stock/candidate-manifest.json",
+    tree: candidateManifest.captured_tree, patch_sha256: candidateManifest.patch_sha256 };
   if (paired) {
     source.arms.stock.repository = "sessions/source/repo";
     source.arm_attempts!.stock!.codex_home = "sessions/source/home/ubuntu/.codex";
@@ -114,22 +123,64 @@ async function publishedControl(paired = false) {
   }
   const rolloutPath = join(sessions, "rollout.jsonl");
   await writeFile(rolloutPath, rollout);
-  await writeFile(join(sourceRun, source.results!.stock!.patch_path), "diff --git a/file b/file\n");
+  await writeFile(join(sourceRun, source.results!.stock!.patch_path), capturedPatch);
+  await writeFile(join(sourceRun, source.results!.stock!.capture_identity!.manifest_path), JSON.stringify(candidateManifest));
   await writeFile(join(sourceRun, source.results!.stock!.stdout_path), "captured stdout\n");
   await writeFile(join(sourceRun, source.results!.stock!.stderr_path), "captured stderr\n");
   await writeState(sourceRun, source);
   await writeFile(join(bundle, "run.json"), await readFile(join(sourceRun, "run.json")));
-  await writeFile(join(bundle, "stock-changes.patch"), "diff --git a/file b/file\n");
-  await writeFile(join(bundle, "rollout-files.json"), JSON.stringify({ stock: [{ path: "rollout.jsonl", sha256: await sha256(rolloutPath) }] }));
+  await writeFile(join(bundle, "stock-changes.patch"), capturedPatch);
+  await writeFile(join(bundle, "stock-candidate-manifest.json"), JSON.stringify(candidateManifest));
+  await writeFile(join(bundle, "rollout-files.json"), JSON.stringify({ schema: ROLLOUT_SCHEMA,
+    arms: { stock: await rolloutIdentity(join(sourceRun, source.arm_attempts!.stock!.codex_home)) } }));
   const measured = await meterRollouts(join(sourceRun, source.arm_attempts!.stock!.codex_home), pricing);
   await writeFile(join(bundle, "report.json"), JSON.stringify({
-    validity: "valid", arms: { stock: { usage: { complete: measured.complete, totals: measured.totals } } },
+    validity: "valid", arms: { stock: { usage: measured } },
   }));
   await writeBundleManifest(bundle);
   const bundleSha256 = await sha256(join(bundle, "MANIFEST.sha256"));
   const treatment = state("treatment-run");
+  treatment.source = structuredClone(source.source);
   treatment.arms.stock.repository = "sessions/destination/repo";
-  return { directory, sourceRun, targetRun, bundle, bundleSha256, rolloutPath, source, treatment };
+  return { directory, sourceRun, targetRun, bundle, bundleSha256, rolloutPath, source, treatment, measured, capturedPatch };
+}
+
+async function publishFixture(runDir: string, source: RunState, usages: Record<string, unknown>) {
+  for (const [path, value] of [[source.snapshot_manifest, "{}"], [source.runtime_tools.current_setup_files, "{}"],
+    [source.task.path, "task"], ["reports/report.md", "original report retained unchanged"],
+    ["reports/report.json", JSON.stringify({ validity: "valid", arms: Object.fromEntries(Object.entries(usages).map(([arm, usage]) => [arm, { usage }])) })]]) {
+    await mkdir(dirname(join(runDir, path!)), { recursive: true });
+    await writeFile(join(runDir, path!), value!);
+  }
+  source.current_snapshot.manifest_sha256 = await sha256(join(runDir, source.snapshot_manifest));
+  source.runtime_tools.current_setup_files_sha256 = await sha256(join(runDir, source.runtime_tools.current_setup_files));
+  source.task.sha256 = await sha256(join(runDir, source.task.path));
+  await writeState(runDir, source);
+  const bundle = await collectBundle(runDir);
+  await writeBundleManifest(bundle);
+  return bundle;
+}
+
+async function archivedControl(archivedOnly = false) {
+  const f = await publishedControl();
+  const home = join(f.sourceRun, f.source.arm_attempts!.stock!.codex_home);
+  const events = (id: string, input: number) => [
+    { type: "session_meta", payload: { id } },
+    { type: "turn_context", payload: { model: "gpt-6-astra" } },
+    { type: "token_usage_record", payload: { response_id: id, usage: { input_tokens: input, cached_input_tokens: 0,
+      cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: input } } },
+  ].map(event => JSON.stringify(event)).join("\n") + "\n";
+  if (archivedOnly) await rm(join(home, "sessions"), { recursive: true });
+  else await writeFile(f.rolloutPath, events("active", 100));
+  await mkdir(join(home, "archived_sessions"));
+  await writeFile(join(home, "archived_sessions/archived.jsonl"), events("archive", 200));
+  f.source.pricing = structuredClone(pricing);
+  (f.source.pricing as PricingSnapshot).models["gpt-6-astra"]!.prompt = 0.001;
+  f.treatment.pricing = structuredClone(f.source.pricing);
+  const measured = await meterRollouts(home, f.source.pricing as PricingSnapshot);
+  await publishFixture(f.sourceRun, f.source, { stock: measured });
+  f.treatment.task.sha256 = f.source.task.sha256;
+  return { ...f, home, measured };
 }
 
 test("control identity includes task, execution, tool, setup, and resource controls", () => {
@@ -200,7 +251,7 @@ test.each([false, true])("importControl carries a verified stock result into a m
     stderr_sha256: await sha256(join(fixture.targetRun, "artifacts/stock/codex.stderr")),
   });
   expect(await readFile(join(fixture.targetRun, "artifacts/stock/changes.patch"), "utf8"))
-    .toBe("diff --git a/file b/file\n");
+    .toBe(fixture.capturedPatch);
   expect(await readFile(join(fixture.targetRun, dirname(fixture.treatment.arms.stock.repository), "home/ubuntu/.codex/sessions/rollout.jsonl"), "utf8"))
     .toBe(rollout);
 });
@@ -261,29 +312,171 @@ test("general arm import rejects mismatched, invalid, missing, or altered publis
   }
 });
 
+test.each(["fresh", "reuse"] as const)("generic %s imports reject fixed-mode source publications before copying", async mode => {
+  const f = await publishedControl();
+  f.source.fixed_verifier = { mode: "fixed-verifier", config_path: "evaluator/fixed-inputs/config.json",
+    config_sha256: "f".repeat(64), task_directory: "evaluator/fixed-inputs/task", prompt_path: "instruction.md" };
+  await writeState(f.sourceRun, f.source);
+  await writeFile(join(f.bundle, "run.json"), await readFile(join(f.sourceRun, "run.json")));
+  await writeBundleManifest(f.bundle);
+  f.treatment.evaluation = { mode };
+  const before = structuredClone(f.treatment);
+  await expect(importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]))
+    .rejects.toThrow("fixed-verifier imports and evaluation reuse are not yet supported");
+  await expect(importControl(f.targetRun, f.treatment, f.sourceRun, await sha256(join(f.bundle, "MANIFEST.sha256"))))
+    .rejects.toThrow("fixed-verifier imports and evaluation reuse are not yet supported");
+  expect(f.treatment).toEqual(before);
+  expect(await Bun.file(join(f.targetRun, "artifacts/current/changes.patch")).exists()).toBe(false);
+  expect(await Bun.file(join(f.targetRun, "artifacts/stock/changes.patch")).exists()).toBe(false);
+});
+
 test("general arm import can select a retained imported arm without its original source directory", async () => {
   const f = await publishedControl();
   const imported = await importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]);
   f.treatment.results = imported;
   f.treatment.selected_arms = ["current"];
-  await writeState(f.targetRun, f.treatment);
-  const bundle = join(f.targetRun, "reports/bundle");
-  await mkdir(bundle, { recursive: true });
-  for (const [from, to] of [["run.json", "run.json"], ["artifacts/current/changes.patch", "current-changes.patch"]]) {
-    await writeFile(join(bundle, to), await readFile(join(f.targetRun, from)));
-  }
-  const retainedState = join(f.treatment.imported_arms!.current!.directory, "run.json");
-  await mkdir(dirname(join(bundle, retainedState)), { recursive: true });
-  await writeFile(join(bundle, retainedState), await readFile(join(f.targetRun, retainedState)));
-  await writeFile(join(bundle, "report.json"), JSON.stringify({ validity: "valid" }));
-  await writeFile(join(bundle, "rollout-files.json"), JSON.stringify({ current: [{ path: "rollout.jsonl", sha256: await sha256(f.rolloutPath) }] }));
-  await writeBundleManifest(bundle);
+  await publishFixture(f.targetRun, f.treatment, { current: f.measured });
   await rm(f.sourceRun, { recursive: true });
   const target = join(f.directory, "second-target");
   const state2 = state("second-target");
+  state2.source = structuredClone(f.treatment.source); state2.task.sha256 = f.treatment.task.sha256;
   const again = await importArms(target, state2, [{ target_arm: "stock", run_dir: f.targetRun, arm: "current" }]);
   expect(again.stock?.grade).toBeUndefined();
   expect(await readFile(join(target, state2.arm_attempts!.stock!.codex_home, "sessions/rollout.jsonl"), "utf8")).toBe(rollout);
+});
+
+test("an active-only legacy manifest cannot silently discard archived usage", async () => {
+  const f = await publishedControl();
+  const home = join(f.sourceRun, f.source.arm_attempts!.stock!.codex_home);
+  await mkdir(join(home, "archived_sessions"));
+  await writeFile(join(home, "archived_sessions/archived.jsonl"), rollout.replaceAll("control-thread", "archived-thread").replaceAll("response-1", "response-2"));
+  const measured = await meterRollouts(home, pricing);
+  await writeFile(join(f.bundle, "rollout-files.json"), JSON.stringify({ stock: [{ path: "rollout.jsonl", sha256: await sha256(f.rolloutPath) }] }));
+  await writeFile(join(f.bundle, "report.json"), JSON.stringify({ validity: "valid", arms: { stock: { usage: measured } } }));
+  await writeBundleManifest(f.bundle);
+  await expect(importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]))
+    .rejects.toThrow("archived");
+});
+
+test.each([false, true])("v2 publication and import preserve active and archived totals (archived only: %s)", async archivedOnly => {
+  const f = await archivedControl(archivedOnly);
+  const manifest = JSON.parse(await readFile(join(f.bundle, "rollout-files.json"), "utf8"));
+  expect(manifest).toEqual({ schema: ROLLOUT_SCHEMA, arms: { stock: await rolloutIdentity(f.home) } });
+  f.treatment.evaluation = { mode: "fresh" };
+  // Changed current pricing is distinct from verification under the source snapshot.
+  (f.treatment.pricing as PricingSnapshot).models["gpt-6-astra"]!.prompt = 0.002;
+  const imported = await importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]);
+  const copiedHome = join(f.targetRun, f.treatment.arm_attempts!.current!.codex_home);
+  const originalPrices = await meterRollouts(copiedHome, f.source.pricing as PricingSnapshot);
+  expect(originalPrices.totals.input_tokens).toBe(archivedOnly ? 200 : 300);
+  expect(originalPrices.totals.estimated_api_usd).toBeCloseTo(archivedOnly ? 0.2 : 0.3);
+  const provenance = JSON.parse(await readFile(join(f.targetRun, f.treatment.imported_arms!.current!.directory, "accounting-verification.json"), "utf8"));
+  expect(provenance).toMatchObject({ status: "verified", repriced: true,
+    source_usage: { totals: originalPrices.totals }, remetered_original: { totals: originalPrices.totals } });
+  expect(provenance.source_usage.request_coverage).toBe("unverified");
+  expect(await readFile(join(f.bundle, "report.md"), "utf8")).toBe("original report retained unchanged");
+  expect(imported.current?.grade).toBeUndefined();
+});
+
+test.each(["missing", "changed", "measurement"])("v2 import rejects %s archive evidence or published totals", async fault => {
+  const f = await archivedControl();
+  if (fault === "missing") await rm(join(f.home, "archived_sessions/archived.jsonl"));
+  if (fault === "changed") await writeFile(join(f.home, "archived_sessions/archived.jsonl"), "{}\n");
+  if (fault === "measurement") {
+    const report = JSON.parse(await readFile(join(f.bundle, "report.json"), "utf8"));
+    report.arms.stock.usage.totals.input_tokens = 100;
+    await writeFile(join(f.bundle, "report.json"), JSON.stringify(report));
+    await writeBundleManifest(f.bundle);
+  }
+  await expect(importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]))
+    .rejects.toThrow(fault === "measurement" ? "published measurement" : "rollout");
+  expect(f.treatment.imported_arms).toBeUndefined();
+});
+
+test("v2 nested imports retain both session namespaces without the original source", async () => {
+  const f = await archivedControl();
+  f.treatment.results = await importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]);
+  f.treatment.selected_arms = ["current"];
+  await publishFixture(f.targetRun, f.treatment, { current: f.measured });
+  await rm(f.sourceRun, { recursive: true });
+  const target = join(f.directory, "next-import");
+  const next = state("next-import");
+  next.source = structuredClone(f.treatment.source);
+  next.task.sha256 = f.treatment.task.sha256;
+  next.pricing = f.treatment.pricing;
+  await importArms(target, next, [{ target_arm: "stock", run_dir: f.targetRun, arm: "current" }]);
+  const again = await meterRollouts(join(target, next.arm_attempts!.stock!.codex_home), next.pricing as PricingSnapshot);
+  expect(again.totals).toEqual(f.measured.totals);
+  expect((await rolloutIdentity(join(target, next.arm_attempts!.stock!.codex_home))).map(file => file.path))
+    .toEqual(["archived_sessions/archived.jsonl", "sessions/rollout.jsonl"]);
+});
+
+test("historical evaluation reuse preserves archived accounting and frozen grades", async () => {
+  const f = await archivedControl();
+  const contract: CriteriaContract = { schema: "codex-ab.criteria.v1", task_sha256: f.source.task.sha256,
+    criteria: [{ id: "fixture", description: "Required fixture behavior." }], preparation: "true", existing_tests: "true", qualification: "not-run" };
+  const criteriaPath = "evaluator/criteria.json";
+  await mkdir(join(f.sourceRun, "evaluator"), { recursive: true });
+  await writeFile(join(f.sourceRun, criteriaPath), JSON.stringify(contract));
+  f.source.criteria = { path: criteriaPath, sha256: await sha256(join(f.sourceRun, criteriaPath)), contract };
+  f.treatment.criteria = structuredClone(f.source.criteria);
+  const evidence = { criterion: "fixture", status: "fail" as const, basis: "executed" as const, reasoning: "Retained behavioral failure." };
+  f.source.results!.stock!.grade!.semantic = { "pass-1-existing": [{ ...evidence, criterion: "existing-tests", status: "pass" }],
+    "pass-2-existing": [{ ...evidence, criterion: "existing-tests", status: "pass" }] };
+  f.source.results!.stock!.grade!.passed = false;
+  f.source.judge = { status: "complete", started_at: f.source.created_at, model: "gpt-6.1-sol", reasoning_effort: "high",
+    winner: "none", usage_homes: [], passes: [1, 2].map(pass => ({ pass: pass as 1 | 2, presentation: ["stock"],
+      scores: { "candidate-1": { correctness: 1, completeness: 1, maintainability: 1, test_quality: 1, weighted_total: 1 } },
+      criteria: { "candidate-1": [evidence] }, issues: [], evidence: [], rationale: "Retained fixture assessment.", winner: "none" })) };
+  await publishFixture(f.sourceRun, f.source, { stock: f.measured });
+  f.treatment.evaluation = { mode: "reuse", baselines: { stock: "current" } };
+  const result = await importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]);
+  expect(result.current?.grade).toEqual(f.source.results!.stock!.grade);
+  const measured = await meterRollouts(join(f.targetRun, f.treatment.arm_attempts!.current!.codex_home), f.source.pricing as PricingSnapshot);
+  expect(measured.totals).toEqual(f.measured.totals);
+});
+
+test("results reevaluation imports every arm with archived accounting before new grading", async () => {
+  const f = await archivedControl();
+  f.source.results!.current = { ...f.source.results!.stock!, arm: "current", anonymous_id: "candidate-2" };
+  f.source.arm_attempts!.current = { ...f.source.arm_attempts!.stock! };
+  f.source.selected_arms = ["stock", "current"];
+  await publishFixture(f.sourceRun, f.source, { stock: f.measured, current: f.measured });
+  f.treatment.evaluation = { mode: "fresh" };
+  const result = await importArms(f.targetRun, f.treatment, ["stock", "current"].map(arm => ({
+    target_arm: arm, run_dir: f.sourceRun, arm,
+  })), "reevaluation");
+  for (const arm of ["stock", "current"]) {
+    expect(result[arm]?.grade).toBeUndefined();
+    const measured = await meterRollouts(join(f.targetRun, f.treatment.arm_attempts![arm]!.codex_home), f.source.pricing as PricingSnapshot);
+    expect(measured.totals).toEqual(f.measured.totals);
+  }
+});
+
+test.each(["measurement", "capture"])("imports reject missing current %s provenance", async missing => {
+  const f = await publishedControl();
+  if (missing === "measurement") await writeFile(join(f.bundle, "report.json"), JSON.stringify({ validity: "valid",
+    arms: { stock: { usage: { complete: true, totals: f.measured.totals } } } }));
+  else {
+    delete f.source.results!.stock!.capture_identity;
+    await writeState(f.sourceRun, f.source);
+    await writeFile(join(f.bundle, "run.json"), await readFile(join(f.sourceRun, "run.json")));
+  }
+  await writeBundleManifest(f.bundle);
+  await expect(importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: f.sourceRun, arm: "stock" }]))
+    .rejects.toThrow(missing === "measurement" ? "accounting provenance" : "capture provenance");
+  await expect(importControl(f.targetRun, f.treatment, f.sourceRun, await sha256(join(f.bundle, "MANIFEST.sha256"))))
+    .rejects.toThrow(missing === "measurement" ? "accounting provenance" : "capture provenance");
+  expect(f.treatment.imported_arms).toBeUndefined();
+  expect(await Bun.file(join(f.targetRun, "artifacts/stock/changes.patch")).exists()).toBe(false);
+});
+
+test("control entry point preserves v2 active and archived evidence", async () => {
+  const f = await archivedControl();
+  await importControl(f.targetRun, f.treatment, f.sourceRun, await sha256(join(f.bundle, "MANIFEST.sha256")));
+  const copiedHome = join(f.targetRun, dirname(f.treatment.arms.stock.repository), "home/ubuntu/.codex");
+  expect((await meterRollouts(copiedHome, f.source.pricing as PricingSnapshot)).totals).toEqual(f.measured.totals);
+  expect((await rolloutIdentity(copiedHome)).map(file => file.path)).toEqual(["archived_sessions/archived.jsonl", "sessions/rollout.jsonl"]);
 });
 
 test("bundle and repeated arm import retain sanitized runtime families without adjacent private files", async () => {
@@ -298,7 +491,7 @@ test("bundle and repeated arm import retain sanitized runtime families without a
   ] });
   for (const [path, value] of [
     [f.source.snapshot_manifest, "{}"], [f.source.runtime_tools.current_setup_files, "{}"], [f.source.task.path, "task"],
-    ["reports/report.md", "report"], ["reports/report.json", JSON.stringify({ validity: "valid" })],
+    ["reports/report.md", "report"], ["reports/report.json", JSON.stringify({ validity: "valid", arms: { stock: { usage: f.measured } } })],
     [exports.capture, "sanitized root\n"], [child, "sanitized child\n"],
     [exports.metrics, family], [exports.validator.path, "# validator"], [exports.reader.path, "# reader"],
     ["arms/stock/exports/capture.jsonl.runtimes/child/reads.jsonl", "private AX evidence"],
@@ -333,7 +526,7 @@ test("bundle and repeated arm import retain sanitized runtime families without a
   f.treatment.current_snapshot.manifest_sha256 = f.source.current_snapshot.manifest_sha256;
   f.treatment.runtime_tools.current_setup_files_sha256 = f.source.runtime_tools.current_setup_files_sha256;
   await mkdir(join(f.targetRun, "reports"), { recursive: true });
-  await writeFile(join(f.targetRun, "reports/report.json"), JSON.stringify({ validity: "valid" }));
+  await writeFile(join(f.targetRun, "reports/report.json"), JSON.stringify({ validity: "valid", arms: { current: { usage: f.measured } } }));
   await writeFile(join(f.targetRun, "reports/report.md"), "report");
   await writeState(f.targetRun, f.treatment);
   const targetBundle = await collectBundle(f.targetRun);
@@ -341,6 +534,7 @@ test("bundle and repeated arm import retain sanitized runtime families without a
   expect(await readFile(join(targetBundle, retained.directory, child), "utf8")).toBe("sanitized child\n");
   await rm(f.sourceRun, { recursive: true });
   const next = state("family-reimport");
+  next.source = structuredClone(f.treatment.source);
   next.task.sha256 = f.treatment.task.sha256;
   const nextRoot = join(f.directory, "reimport");
   await importArms(nextRoot, next, [{ target_arm: "stock", run_dir: f.targetRun, arm: "current" }]);

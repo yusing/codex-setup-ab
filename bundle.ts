@@ -3,6 +3,9 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { readState, sha256, writeState } from "./state";
 import type { ArmName } from "./types";
 import { mekugiRuntimeCaptures } from "./mekugi";
+import { ROLLOUT_SCHEMA, rolloutIdentity, rolloutPaths } from "./rollout-evidence";
+import { verifyFixedInputs } from "./fixed-workflow";
+import { fixedTreeIdentity, validateFixedVerifierConfig, type FixedVerifierResult } from "./fixed-verifier";
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue {
@@ -84,10 +87,25 @@ function within(root: string, path: string): string {
   return full;
 }
 
+async function verifyFixedAttempt(directory: string, expected: FixedVerifierResult, supplemental: boolean): Promise<void> {
+  const retained = JSON.parse(await readFile(join(directory, "result.json"), "utf8"));
+  if (JSON.stringify(retained) !== JSON.stringify(expected)) throw new Error("retained fixed verifier result differs from run state");
+  if (!supplemental) return;
+  const config = validateFixedVerifierConfig(JSON.parse(await readFile(join(directory, "inputs/config.json"), "utf8")));
+  if (JSON.stringify(config) !== JSON.stringify(expected.config)) throw new Error("supplemental fixed verifier configuration changed");
+  const task = join(directory, "inputs/task");
+  if ((await fixedTreeIdentity(task)).sha256 !== config.task.tree_sha256
+    || (await fixedTreeIdentity(join(task, config.verifier.path))).sha256 !== config.verifier.tree_sha256) {
+    throw new Error("supplemental fixed verifier task differs from pinned configuration");
+  }
+}
+
 /** Copies only benchmark-owned evidence, never private homes, auth, or raw prompts. */
 export async function collectBundle(runDirectory: string): Promise<string> {
   const runDir = resolve(runDirectory);
   const state = await readState(runDir);
+  // Validate source pins before publication; a new bundle must never bless drift.
+  const fixedInputs = state.fixed_verifier ? await verifyFixedInputs(runDir, state) : undefined;
   const destination = join(runDir, "reports/bundle");
   await mkdir(destination, { recursive: true, mode: 0o700 });
   const write = async (name: string, value: unknown) =>
@@ -168,7 +186,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   for (const [arm, imported] of Object.entries(state.imported_arms ?? {})) {
     for (const file of imported.files) {
       // Private session bytes stay outside the portable bundle, as for fresh arms.
-      if (file.path.includes("/sessions/") || file.path === state.results?.[arm]?.stdout_path
+      if (file.path.includes("/sessions/") || file.path.includes("/archived_sessions/") || file.path === state.results?.[arm]?.stdout_path
         || file.path === state.results?.[arm]?.stderr_path) continue;
       const target = file.path;
       await mkdir(dirname(join(destination, target)), { recursive: true });
@@ -195,6 +213,25 @@ export async function collectBundle(runDirectory: string): Promise<string> {
       }
     }
   }
+  if (state.fixed_verifier && fixedInputs) {
+    await copy(state.fixed_verifier.config_path, "fixed-verifier-config.json");
+    await cp(join(runDir, state.fixed_verifier.task_directory), join(destination, "fixed-task"), { recursive: true, verbatimSymlinks: true });
+    if (await sha256(join(destination, "fixed-verifier-config.json")) !== state.fixed_verifier.config_sha256
+      || (await fixedTreeIdentity(join(destination, "fixed-task"))).sha256 !== fixedInputs.config.task.tree_sha256) {
+      throw new Error("published fixed verifier inputs differ from their pinned configuration");
+    }
+    await verifyFixedInputs(runDir, state);
+  }
+  for (const [arm, attempts] of Object.entries(state.fixed_verifiers ?? {})) {
+    for (const [index, attempt] of attempts.entries()) {
+      const target = join(destination, "fixed-verifiers", arm, String(index + 1));
+      const source = dirname(within(runDir, attempt.result_path));
+      await verifyFixedAttempt(source, attempt.result, !state.fixed_verifier);
+      await mkdir(dirname(target), { recursive: true });
+      await cp(source, target, { recursive: true, verbatimSymlinks: true });
+      await verifyFixedAttempt(target, attempt.result, !state.fixed_verifier);
+    }
+  }
   const sessions: Partial<Record<ArmName, SessionAudit[]>> = {};
   const rolloutFiles: Partial<Record<ArmName, Array<{ path: string; sha256: string }>>> = {};
   const integrity: Array<{ path: string; sha256: string; expected_sha256: string; matches: boolean }> = [];
@@ -208,6 +245,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     ...(state.upstream_reference?.files.map(file => [file.path, file.sha256]) ?? []),
     ...Object.values(state.results ?? {}).flatMap(result => result?.recovery?.files.map(file => [file.path, file.sha256]) ?? []),
     ...(state.criteria ? [[state.criteria.path, state.criteria.sha256]] : []),
+    ...(state.fixed_verifier ? [[state.fixed_verifier.config_path, state.fixed_verifier.config_sha256]] : []),
     ...(state.imported_control ? [["evaluator/imported-control/MANIFEST.sha256", state.imported_control.bundle_sha256]] : []),
     ...(state.imported_control ? [["artifacts/stock/codex.jsonl", state.imported_control.stdout_sha256],
       ["artifacts/stock/codex.stderr", state.imported_control.stderr_sha256]] : []),
@@ -233,12 +271,13 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   for (const arm of state.selected_arms ?? []) {
     const result = state.results?.[arm];
     if (result && !result.collection_error) await copy(result.patch_path, `${arm}-changes.patch`);
-    const home = state.arm_attempts?.[arm]?.codex_home;
-    const directory = home ? join(within(runDir, home), "sessions") : undefined;
+    if (result?.capture_identity) await copy(result.capture_identity.manifest_path, `${arm}-candidate-manifest.json`);
+    const home = state.arm_attempts?.[arm]?.codex_home ?? (result ? join(dirname(state.arms[arm].repository), "home/ubuntu/.codex") : undefined);
+    const directory = home ? within(runDir, home) : undefined;
     sessions[arm] = [];
     if (!directory) continue;
     let files: string[];
-    try { files = await regularFiles(directory); }
+    try { files = await rolloutPaths(directory); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       continue;
@@ -246,9 +285,9 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     for (const file of files.filter(path => path.endsWith(".jsonl"))) {
       sessions[arm]!.push(auditSession(await readFile(file, "utf8")));
     }
-    rolloutFiles[arm] = await Promise.all(files.map(async file => ({ path: relative(directory, file), sha256: await sha256(file) })));
+    rolloutFiles[arm] = await rolloutIdentity(directory);
   }
-  await write("rollout-files.json", rolloutFiles);
+  await write("rollout-files.json", { schema: ROLLOUT_SCHEMA, arms: rolloutFiles });
   const audit = Object.fromEntries(Object.entries(sessions).map(([arm, entries]) => [arm, (entries ?? []).map(session => {
     const names = session.calls.flatMap(call => [call.name.split(".").at(-1)!, ...call.nested_tools]);
     return {

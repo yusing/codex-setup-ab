@@ -7,6 +7,6 @@
     "noEmit": true,
     "types": ["bun-types"]
   },
-  "include": ["*.ts", "scripts/*.ts"],
+  "include": ["*.ts", "scripts/*.ts", "test-support/offline-network.ts", "test-support/pricing.ts"],
   "exclude": ["**/*.test.ts"]
 }

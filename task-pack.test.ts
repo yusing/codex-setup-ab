@@ -3,6 +3,26 @@ import { mkdtemp, cp, readFile, writeFile, rm, symlink } from "node:fs/promises"
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadTaskPack } from "./task-pack";
+import { flaskQualificationChecks } from "./test-support/flask-qualification";
+
+test("Flask IPv6 pack freezes real source controls and meaningful independent observations", async () => {
+  const pack = await loadTaskPack(join(import.meta.dir, "tasks/flask-ipv6-server-name/manifest.json"));
+  const controls = pack.contract.evaluator_controls!.cases;
+  expect(controls.map(control => [control.role, control.base, control.expected["ipv6-server-name"], control.expected["existing-address-selection"]])).toEqual([
+    ["reference", "reference", "pass", "pass"], ["baseline", "baseline", "fail", "pass"],
+    ["negative", "reference", "fail", "fail"], ["alternative", "baseline", "pass", "pass"],
+  ]);
+  expect(controls.every(control => control.files.length === 0)).toBe(true);
+  expect(controls.flatMap(control => control.patches ?? []).map(patch => patch.path)).toEqual(["src/flask/app.py", "src/flask/app.py"]);
+  const checks = flaskQualificationChecks(pack.contract);
+  const observations = checks.map(check => check.verification!.cases[0]!);
+  expect(observations.map(probe => probe.kind === "command" ? JSON.parse(probe.stdin!).length : 0)).toEqual([7, 13]);
+  expect(observations.every(probe => probe.kind === "command" && probe.command.includes("-I") && probe.command.at(-1)!.includes("app.run("))).toBe(true);
+  expect(pack.contract.existing_test_verification!.cases).toHaveLength(1);
+  expect(pack.contract.qualification).toBe("not-run");
+  const dependencies = (await readFile(join(import.meta.dir, "tasks/flask-ipv6-server-name/requirements.txt"), "utf8")).trim().split("\n");
+  expect(dependencies.every(pin => pack.contract.preparation.includes(pin))).toBe(true);
+});
 
 test("portable fixes pin evaluator references and allow relevant regression tests", async () => {
   for (const id of ["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding", "nvm-download-no-eval"]) {

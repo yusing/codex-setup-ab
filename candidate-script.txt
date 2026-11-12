@@ -1,77 +1,150 @@
-// Embedded as source text in the compiled CLI and executed only inside Docker.
-// Never run Git on an agent-controlled checkout on the host: Git configuration
-// can execute fsmonitor hooks, filters and other arbitrary commands.
-import { lstat, readdir, realpath, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+// Trusted collector. Embedded in the CLI; production execution is offline in Docker.
+// Candidate Git config, attributes, hooks, index and filters never select captured bytes.
+import { chmod, lstat, mkdir, mkdtemp, open, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
 interface CandidateSpec {
-  mode: "verify" | "capture";
-  baseline: boolean;
-  discardDependencies?: string[];
-  clean: boolean;
-  base: string;
-  tree: string;
-  forbidden: string;
-  icons: boolean;
+  mode: "verify" | "capture"; baseline: boolean; clean: boolean;
+  base: string; tree: string; forbidden: string; icons: boolean;
   submodules: Array<{ path: string; sha: string }>;
+  discardDependencies?: string[];
+  workspace?: string; seed?: string; destination?: string;
 }
-
+type Entry = { path: string; mode: "100644" | "100755" | "120000"; sha256: string; size: number };
 const spec = JSON.parse(process.argv[1]) as CandidateSpec;
-async function git(args: string[], repository = "/workspace", allowFailure = false): Promise<string> {
-  const child = Bun.spawn(["git", "-C", repository, ...args], { stdout: "pipe", stderr: "pipe" });
-  const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-  if (code !== 0 && !allowFailure) throw new Error(`git ${args[0]} failed: ${stderr}`);
-  return code === 0 ? stdout : "";
+const workspace = spec.workspace ?? "/workspace", seed = spec.seed ?? "/seed.git", output = spec.destination ?? "/capture";
+const scratch = await mkdtemp(join(tmpdir(), "trusted-capture-"));
+const trusted = join(scratch, "trusted.git");
+const hash = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+const env = { PATH: process.env.PATH!, HOME: scratch, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
+  GIT_NO_REPLACE_OBJECTS: "1", GIT_OPTIONAL_LOCKS: "0" };
+async function git(args: string[], repository = trusted, input?: Uint8Array | string, allowFailure = false): Promise<Uint8Array> {
+  const child = Bun.spawn(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.attributesFile=/dev/null",
+    "-c", "diff.external=", "--git-dir", repository, ...args], { env, stdin: input === undefined ? "ignore" : "pipe", stdout: "pipe", stderr: "pipe" });
+  if (input !== undefined) { child.stdin.write(input); child.stdin.end(); }
+  const [code, bytes, error] = await Promise.all([child.exited, new Response(child.stdout).bytes(), new Response(child.stderr).text()]);
+  if (code !== 0 && !allowFailure) throw new Error(`trusted git ${args[0]} failed: ${error}`);
+  return code === 0 ? bytes : new Uint8Array();
 }
-
-async function exists(path: string): Promise<boolean> {
-  try { await lstat(path); return true; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+const text = (bytes: Uint8Array) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+async function exists(path: string) { try { await lstat(path); return true; } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; throw e; } }
+async function regular(path: string): Promise<Uint8Array> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try { if (!(await file.stat()).isFile()) throw new Error(`not a regular file: ${path}`); return await file.readFile(); } finally { await file.close(); }
 }
-
-const head = (await git(["rev-parse", "HEAD"])).trim();
-if ((await git(["rev-parse", `${spec.base}^{tree}`])).trim() !== spec.tree
-  || (spec.baseline && head !== spec.base)) throw new Error("immutable baseline identity changed");
-if ((await git(["cat-file", "-t", spec.forbidden], "/workspace", true)).trim() === "commit") throw new Error("forbidden solution is present");
-if ((await git(["remote"])).trim()) throw new Error("root repository retained a remote");
-if (await exists("/workspace/.git/objects/info/alternates")) throw new Error("repository uses object alternates");
-if (((await git(["worktree", "list", "--porcelain"])).match(/^worktree /gm) ?? []).length !== 1) throw new Error("repository has linked worktrees");
-if (spec.clean && (await git(["status", "--porcelain", "--untracked-files=all"])).trim()) throw new Error("immutable baseline changed");
-if (spec.icons) {
-  const webui = await git(["submodule", "status", "--", "webui"]);
-  if (!webui.startsWith("-") || (await git(["config", "--get", "submodule.webui.url"], "/workspace", true)).trim()
-    || (await exists("/workspace/webui") && (await readdir("/workspace/webui")).length)) throw new Error("webui must remain uninitialized and empty");
+async function metadataTree(path: string): Promise<void> {
+  const st = await lstat(path);
+  if (!st.isDirectory() && !st.isFile()) throw new Error(`unsupported Git metadata entry: ${path}`);
+  if (st.isDirectory()) for (const name of await readdir(path)) await metadataTree(join(path, name));
 }
-for (const sub of spec.submodules) {
-  const repository = join("/workspace", sub.path);
-  const link = (await git(["ls-tree", "HEAD", "--", sub.path])).trim();
-  if ((await git(["rev-parse", "HEAD"], repository)).trim() !== sub.sha
-    || !link.startsWith(`160000 commit ${sub.sha}\t`)
-    || !(await git(["submodule", "status", "--", sub.path])).startsWith(` ${sub.sha} ${sub.path}`)
-    || (await git(["status", "--porcelain", "--untracked-files=all"], repository)).trim()
-    || (await git(["diff", "HEAD", "--", sub.path])).trim()
-    || (await git(["remote"], repository)).trim()
-    || await exists(join(repository, ".git/objects/info/alternates"))) throw new Error(`submodule ${sub.path} is not clean, exact, and remote-free`);
-}
-if (spec.mode === "capture") {
-  const tracked = await git(["diff", "--name-only", "-z", spec.base]);
-  const untracked = await git(["ls-files", "--others", "--exclude-standard", "-z"]);
-  const changedFiles = [...new Set([...tracked.split("\0"), ...untracked.split("\0")].filter(Boolean))].sort();
-  await git(["add", "--intent-to-add", "--all", "--", "."]);
-  // All file opens remain inside the container, including hostile symlink targets.
-  const patch = Bun.spawn(["git", "-C", "/workspace", "diff", "--binary", spec.base], { stdout: Bun.file("/capture/changes.patch"), stderr: "pipe" });
-  const [code, stderr] = await Promise.all([patch.exited, new Response(patch.stderr).text()]);
-  if (code !== 0) throw new Error(`patch capture failed: ${stderr}`);
-  await writeFile("/capture/result.json", JSON.stringify({ changed_files: changedFiles, head_after_agent: head }));
-  const discarded: string[] = [];
-  for (const path of spec.discardDependencies ?? []) {
-    const target = resolve("/workspace", path);
-    if (!target.startsWith("/workspace/") || !path.endsWith("node_modules/")) continue;
-    if (!(await exists(target)) || !(await lstat(target)).isDirectory() || await realpath(target) !== target) continue;
-    if (await git(["ls-files", "-z", "--", path])) continue;
-    await rm(target, { recursive: true });
-    discarded.push(path);
+// Read objects and refs through fresh, harness-owned metadata. Never point --git-dir
+// at candidate .git, and never read its index or execute its configuration.
+async function sanitizedMetadata(repository: string): Promise<string> {
+  const original = join(repository, ".git");
+  if (!(await lstat(original)).isDirectory()) throw new Error("candidate Git directory must be a real directory");
+  for (const suffix of ["commondir", "gitdir", "objects/info/alternates", "worktrees"])
+    if (await exists(join(original, suffix))) throw new Error(`unsupported candidate Git linkage: ${suffix}`);
+  for (const suffix of ["objects", "refs"]) await metadataTree(join(original, suffix));
+  const config = join(original, "config");
+  await regular(config);
+  const configText = text(await git(["config", "--no-includes", "--file", config, "--list"], trusted));
+  if (/^(remote\.|include(?:if)?\.)/m.test(configText)) throw new Error("root repository retained a remote or included configuration");
+  const destination = await mkdtemp(join(scratch, "metadata-"));
+  await git(["init", "--bare", destination]);
+  await writeFile(join(destination, "HEAD"), await regular(join(original, "HEAD")));
+  async function refs(source: string, target: string) {
+    await mkdir(target, { recursive: true });
+    for (const name of await readdir(source)) {
+      const from = join(source, name), to = join(target, name);
+      if ((await lstat(from)).isDirectory()) await refs(from, to); else await writeFile(to, await regular(from));
+    }
   }
-  await writeFile("/capture/discarded-dependencies.json", JSON.stringify(discarded));
-
+  await refs(join(original, "refs"), join(destination, "refs"));
+  for (const name of ["packed-refs", "shallow", "index"]) if (await exists(join(original, name))) await writeFile(join(destination, name), await regular(join(original, name)));
+  // The target was recursively checked; no candidate process runs during capture.
+  await rm(join(destination, "objects"), { recursive: true });
+  await symlink(join(original, "objects"), join(destination, "objects"));
+  return destination;
 }
+async function entries(repository: string, excluded: Set<string>, destination?: string): Promise<Entry[]> {
+  const result: Entry[] = [];
+  async function walk(directory: string, prefix: string) {
+    for (const rawName of await readdir(directory, { encoding: "buffer" })) {
+      const name = text(rawName), path = prefix + name;
+      if (name.toLowerCase() === ".git" || excluded.has(path + "/")) continue;
+      const from = join(directory, name), to = destination && join(destination, path), st = await lstat(from);
+      if (st.isDirectory()) { if (to) await mkdir(to, { recursive: true }); await walk(from, path + "/"); continue; }
+      if (!st.isSymbolicLink() && !st.isFile()) throw new Error(`unsupported candidate file type: ${path}`);
+      const bytes = st.isSymbolicLink() ? await readlink(from, { encoding: "buffer" }) : await regular(from);
+      const mode = st.isSymbolicLink() ? "120000" : st.mode & 0o111 ? "100755" : "100644";
+      result.push({ path, mode, sha256: hash(bytes), size: bytes.byteLength });
+      if (to) { await mkdir(dirname(to), { recursive: true }); if (mode === "120000") await symlink(Buffer.from(bytes), to); else { await writeFile(to, bytes, { flag: "wx" }); await chmod(to, mode === "100755" ? 0o755 : 0o644); } }
+    }
+  }
+  await walk(repository, "");
+  return result.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+}
+type TreeEntry = { mode: string; oid: string; path: string };
+async function treeEntries(repository: string, revision: string): Promise<TreeEntry[]> {
+  return text(await git(["ls-tree", "-rz", revision], repository)).split("\0").filter(Boolean).map(line => {
+    const tab = line.indexOf("\t"), [mode, , oid] = line.slice(0, tab).split(" ");
+    return { mode: mode!, oid: oid!, path: line.slice(tab + 1) };
+  });
+}
+try {
+  await git(["clone", "--bare", "--no-local", "--no-hardlinks", seed, trusted]);
+  if (text(await git(["rev-parse", `${spec.base}^{tree}`])).trim() !== spec.tree) throw new Error("trusted baseline identity changed");
+  const candidateGit = await sanitizedMetadata(workspace);
+  const head = text(await git(["rev-parse", "HEAD"], candidateGit)).trim();
+  if (!/^[0-9a-f]{40}$/.test(head) || text(await git(["rev-parse", `${spec.base}^{tree}`], candidateGit)).trim() !== spec.tree || spec.baseline && head !== spec.base) throw new Error("immutable baseline identity changed");
+  if (text(await git(["cat-file", "-t", spec.forbidden], candidateGit, undefined, true)).trim() === "commit") throw new Error("forbidden solution is present");
+  const baseline = await treeEntries(trusted, spec.base);
+  // The isolated index is used only to *include* staged source under otherwise
+  // excluded dependency directories. It cannot hide or substitute any file bytes.
+  const explicitlyTracked = text(await git(["ls-files", "-z"], candidateGit)).split("\0").filter(Boolean);
+  const excluded = new Set<string>();
+  for (const path of spec.discardDependencies ?? []) {
+    if (!path.endsWith("node_modules/") || path.startsWith("/") || path.split("/").includes("..") || baseline.some(entry => entry.path === path.slice(0, -1) || entry.path.startsWith(path)) || explicitlyTracked.some(file => file.startsWith(path))) continue;
+    const target = join(workspace, path);
+    if (await exists(target) && (await lstat(target)).isDirectory()) excluded.add(path);
+  }
+  const snapshot = join(scratch, "tree"); await mkdir(snapshot);
+  const captured = await entries(workspace, excluded, snapshot);
+  if (spec.icons && captured.some(item => item.path.startsWith("webui/"))) throw new Error("webui must remain uninitialized and empty");
+  for (const sub of spec.submodules) {
+    const repository = join(workspace, sub.path), metadata = await sanitizedMetadata(repository);
+    if (text(await git(["rev-parse", "HEAD"], metadata)).trim() !== sub.sha || !baseline.some(item => item.path === sub.path && item.mode === "160000" && item.oid === sub.sha)) throw new Error(`submodule ${sub.path} identity changed`);
+    const expected = await treeEntries(metadata, sub.sha), actual = captured.filter(entry => entry.path.startsWith(sub.path + "/"));
+    if (expected.length !== actual.length) throw new Error(`submodule ${sub.path} contents changed`);
+    for (const item of expected) {
+      const observed = actual.find(entry => entry.path === sub.path + "/" + item.path);
+      if (!observed || observed.mode !== item.mode || observed.sha256 !== hash(await git(["cat-file", "blob", item.oid], metadata))) throw new Error(`submodule ${sub.path} contents changed`);
+    }
+  }
+  await git(["read-tree", "--empty"]);
+  const index: string[] = [];
+  for (const item of captured) {
+    if (spec.submodules.some(sub => item.path.startsWith(sub.path + "/"))) continue;
+    const path = join(snapshot, item.path), bytes = item.mode === "120000" ? await readlink(path, { encoding: "buffer" }) : await regular(path);
+    const oid = text(await git(["hash-object", "-w", "--no-filters", "--stdin"], trusted, bytes)).trim();
+    index.push(`${item.mode} ${oid}\t${item.path}\0`);
+  }
+  for (const item of baseline.filter(entry => entry.mode === "160000")) index.push(`${item.mode} ${item.oid}\t${item.path}\0`);
+  await git(["update-index", "-z", "--index-info"], trusted, index.join(""));
+  const capturedTree = text(await git(["write-tree"])).trim();
+  const changedFiles = text(await git(["diff-tree", "--no-commit-id", "--no-renames", "--name-only", "-r", "-z", spec.base, capturedTree])).split("\0").filter(Boolean).sort();
+  if (spec.clean && changedFiles.length) throw new Error("immutable baseline changed");
+  if (spec.mode === "capture") {
+    if ((await readdir(output)).length) throw new Error("capture destination must be new and empty");
+    const patch = await git(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--binary", "--full-index", spec.base, capturedTree]);
+    await writeFile(join(output, "changes.patch"), patch, { flag: "wx" });
+    const manifest = { schema: "codex-ab.candidate-manifest.v1", base_commit: spec.base, base_tree: spec.tree,
+      captured_tree: capturedTree, excluded_directories: [...excluded].sort(), files: captured, changed_files: changedFiles, patch_sha256: hash(patch) };
+    await writeFile(join(output, "candidate-manifest.json"), JSON.stringify(manifest, null, 2) + "\n", { flag: "wx" });
+    await writeFile(join(output, "result.json"), JSON.stringify({ changed_files: changedFiles, head_after_agent: head }), { flag: "wx" });
+    // The candidate mount is read-only. Reproducible caches are excluded, never deleted here.
+    await writeFile(join(output, "discarded-dependencies.json"), "[]\n", { flag: "wx" });
+  }
+} finally { await rm(scratch, { recursive: true, force: true }); }

@@ -34,6 +34,8 @@ export const armNames = (state: Pick<RunState, "arms">): ArmName[] => Object.key
 export const candidateIds = (count: number): CandidateId[] => Array.from({ length: count }, (_, index) => `candidate-${index + 1}` as const);
 
 export interface CommandEvidence {
+  /** Trusted offline supervisor record; never reconstructed from candidate output. */
+  verifier?: import("./semantic-protocol").VerifierRecord;
   validation_error?: string;
   command: string;
   started_at: string;
@@ -71,9 +73,11 @@ export interface ArmResult {
   changed_files: string[];
   head_after_agent: string;
   collection_error?: string;
+  capture_identity?: { status: "verified"; manifest_path: string; tree: string; patch_sha256: string };
   lifecycle_error?: string;
   home_image_id?: string;
   grade?: {
+    fixed?: import("./fixed-verifier").FixedVerifierResult;
     preparation: CommandEvidence;
     evaluator_error?: string;
     supplemental_infrastructure_error?: string;
@@ -106,6 +110,10 @@ export interface RunState {
   runtime_plugin_image?: { key: string; image_id: string };
   runtime_homes?: Record<string, { key: string; image_id: string }>;
   comparison?: Comparison;
+  experiment?: import("./factorial").GuidanceLauncherExperiment;
+  network_policy?: { schema: "codex-ab.network-policy.v1"; candidate: "online-unrestricted"; closed_book: false; arm_connectivity: "separate-docker-networks"; evaluator: "offline"; judge: "provider-network-source-reader" };
+  fixed_verifier?: { mode: "fixed-verifier"; config_path: string; config_sha256: string; task_directory: string; prompt_path: string };
+  fixed_verifiers?: Record<ArmName, Array<{ result_path: string; result: import("./fixed-verifier").FixedVerifierResult }>>;
   auto_compact_limit?: number;
   arm_order?: ArmOrder;
   trial?: { set_id: string; index: number; controls_sha256: string; plan_sha256: string };

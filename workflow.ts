@@ -8,6 +8,8 @@ import { assertRecoverableJudge, judgeRunUnlocked } from "./judge";
 import { prepareReportUnlocked } from "./report";
 import { collectBundle, finalizeBundle } from "./bundle";
 import { armExecutionSucceeded, readState, withRunLock, writeState } from "./state";
+import { runFixedVerifiersUnlocked } from "./fixed-workflow";
+import { verifyAdaptiveContract } from "./semantic-preflight";
 
 /** The lock covers execution and finishing, including paid source assessment. */
 async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: boolean }, mode: "run" | "finish" | "reevaluate"): Promise<void> {
@@ -21,6 +23,9 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
   try {
     const initial = await readState(runDir);
     if (mode !== "finish" && (initial.status !== "prepared" || initial.finishing)) throw new Error("prepare a new run instead of resuming or restarting it");
+    // A multi-arm benchmark will buy adaptive judging after candidate execution.
+    // Reject a known-unqualifiable task before any candidate setup or inference.
+    if (mode === "run" && !initial.fixed_verifier && !options.arm && armNames(initial).length > 1) verifyAdaptiveContract(initial);
     if (mode === "finish") {
       if (initial.status !== "complete" || initial.finishing?.status !== "failed"
         || !(initial.selected_arms ?? armNames(initial)).every(arm => armExecutionSucceeded(initial.results?.[arm]))) throw new Error("finish requires complete execution with failed finishing");
@@ -74,11 +79,14 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
     await writeState(runDir, state);
     let finishingFailure: unknown;
     try {
-      if (!failure && !controller.signal.aborted && state.status === "complete" && (state.selected_arms?.length ?? 0) >= 2 && (!state.judge || options.recoverJudge)) {
+      if (!failure && !controller.signal.aborted && state.status === "complete" && state.fixed_verifier) {
+        process.stderr.write("[finish] running pinned original verifiers offline; adaptive source judges are separate\n");
+        await runFixedVerifiersUnlocked(runDir, options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker", controller.signal);
+      } else if (!failure && !controller.signal.aborted && state.status === "complete" && (state.selected_arms?.length ?? 0) >= 2 && (!state.judge || options.recoverJudge)) {
         process.stderr.write(options.recoverJudge
           ? "[finish] revalidating completed judge stages and continuing incomplete ones\n"
           : state.evaluation?.mode === "reuse" ? "[finish] retaining imported evaluations; adapting historical tests and assessing fresh candidates\n"
-          : "[finish] starting independent reversed-order source assessment passes in parallel\n");
+          : "[finish] starting reversed-order source assessment bias checks in parallel\n");
         await judgeRunUnlocked(runDir, options.authFile, options.dockerBin, controller.signal, options.recoverJudge);
       }
     } catch (error) {

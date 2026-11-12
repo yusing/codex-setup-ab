@@ -13,6 +13,15 @@ async function isAbsent(name: string): Promise<boolean> {
   return result.exitCode !== 0 && /no such (object|container)/i.test(result.stderr);
 }
 
+async function waitUntilRunning(name: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const state = await exec([docker, "container", "inspect", "--format", "{{.State.Running}}", name]);
+    if (state.exitCode === 0 && state.stdout.trim() === "true") return;
+    await Bun.sleep(50);
+  }
+  throw new Error(`fixture container did not reach running state: ${name}`);
+}
+
 liveTest("live Docker ordinary command returns and disappears", async () => {
   const name = unique("success");
   const result = await runOwnedContainer({ docker, name, createArgs: [image, "sh", "-lc", "printf harmless"] });
@@ -29,8 +38,13 @@ liveTest("live Docker preserves a nonzero container command exit", async () => {
 liveTest("live Docker cancellation stops and removes running sleep", async () => {
   const name = unique("cancel"); const controller = new AbortController();
   const result = runOwnedContainer({ docker, name, signal: controller.signal, createArgs: [image, "sh", "-lc", "trap '' TERM; while :; do sleep 1; done"] });
-  await Bun.sleep(250); controller.abort();
-  expect((await result).canceled).toBe(true);
+  // Observe early creation failure while polling, then await owned cleanup on
+  // both the success path and a running-state timeout.
+  void result.catch(() => {});
+  try {
+    await waitUntilRunning(name); controller.abort();
+    expect((await result).canceled).toBe(true);
+  } finally { controller.abort(); await result.catch(() => {}); }
   expect(await isAbsent(name)).toBe(true);
 });
 
@@ -42,6 +56,6 @@ liveTest("live Docker timeout stops and removes running sleep", async () => {
 
 liveTest("live Docker pre-aborted launch creates no container", async () => {
   const name = unique("preabort"); const controller = new AbortController(); controller.abort();
-  expect(runOwnedContainer({ docker, name, signal: controller.signal, createArgs: [image, "sh", "-lc", "echo model-command"] })).rejects.toThrow("canceled before creation");
+  await expect(runOwnedContainer({ docker, name, signal: controller.signal, createArgs: [image, "sh", "-lc", "echo model-command"] })).rejects.toThrow("canceled before creation");
   expect(await isAbsent(name)).toBe(true);
 });

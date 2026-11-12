@@ -6,6 +6,8 @@ import { loadTaskPack } from "./task-pack";
 import { prepareTrials, readTrialSet, reportTrials, runTrials, summarize } from "./trials";
 import { sha256, withRunLock } from "./state";
 import type { ArmName } from "./types";
+import { attemptIsScored, classifyAttempt, reliabilityMarkdown, reliabilityReport, type ReliabilityAttempt } from "./reliability";
+import { pairedUncertaintyByCohort, uncertaintyMarkdown, type PairedObservation } from "./uncertainty";
 
 type SuiteComparison = "stock-current";
 type Schedule = "concurrent" | "alternating";
@@ -20,11 +22,13 @@ interface SuiteState {
 }
 interface PairReport {
   measurement_complete: boolean;
-  arms: Record<ArmName, { result?: { agent_elapsed_ms: number; grade?: { passed: boolean } } | null;
+  reliability?: { attempts: ReliabilityAttempt[] };
+  arms: Record<ArmName, { result?: { agent_elapsed_ms: number; recovery?: unknown; grade?: { passed: boolean } } | null;
     usage?: { complete: boolean; totals: { estimated_api_usd: number | null } } | null }>;
 }
 interface TrialReport { trial_set: { controls: { task_pack?: { id?: string } } };
-  pairs: Array<{ eligible: boolean; report: PairReport | null }> }
+  reliability: ReturnType<typeof reliabilityReport>;
+  pairs: Array<{ trial: { run_id: string }; eligible: boolean; report: PairReport | null }> }
 
 const cleanName = (value: string): boolean => /^[a-z0-9][a-z0-9-]*$/.test(value);
 function localAsset(directory: string, path: string): string {
@@ -107,12 +111,15 @@ export async function prepareSuite(options: {
 function value(pair: PairReport, arm: ArmName, metric: "agent_seconds" | "estimated_api_usd"): number | null {
   const item = pair.arms[arm];
   if (!item) return null;
-  return metric === "agent_seconds" ? item.result ? item.result.agent_elapsed_ms / 1000 : null
-    : item.usage?.complete ? item.usage.totals.estimated_api_usd : null;
+  return metric === "agent_seconds" ? item.result && !item.result.recovery ? item.result.agent_elapsed_ms / 1000 : null
+    : pair.reliability?.attempts.find(attempt => attempt.arm === arm)?.cost_eligible === true
+      ? item.usage?.totals.estimated_api_usd ?? null : null;
 }
 async function reportSuiteUnlocked(directory: string, state: SuiteState): Promise<string> {
   const rows: Array<{ task: string; setup: SuiteSet["setup"]; planned: number; measured: number; both_pass: number;
     values: Record<ArmName, Record<"agent_seconds" | "estimated_api_usd", number[]>>; report: string }> = [];
+  const attempts: ReliabilityAttempt[] = [];
+  const observations: Record<string, PairedObservation[]> = { pass_rate: [], joint_success_agent_seconds: [], joint_success_estimated_api_usd: [] };
   for (const set of state.sets) {
     const trialDir = join(directory, set.trial_set);
     const trial = await readTrialSet(trialDir);
@@ -120,7 +127,24 @@ async function reportSuiteUnlocked(directory: string, state: SuiteState): Promis
     const report = JSON.parse(await readFile(join(dirname(reportPath), "report.json"), "utf8")) as TrialReport;
     if (trial.controls.task_pack?.id !== set.task || report.trial_set.controls.task_pack?.id !== set.task) throw new Error("suite task or setup identity changed");
     const measured = report.pairs.filter(pair => pair.eligible && pair.report?.measurement_complete);
-    const passing = measured.map(pair => pair.report!).filter(pair => pair.arms.stock.result?.grade?.passed && pair.arms.current.result?.grade?.passed);
+    const passing = measured.map(pair => pair.report!).filter(pair => ["stock", "current"].every(arm => {
+      const attempt = pair.reliability?.attempts.find(item => item.arm === arm);
+      return !!attempt && classifyAttempt(attempt) === "pass";
+    }));
+    attempts.push(...report.reliability.attempts);
+    for (const pair of report.pairs) {
+      const a = report.reliability.attempts.find(item => item.attempt_id === pair.trial.run_id && item.arm === "stock")!;
+      const b = report.reliability.attempts.find(item => item.attempt_id === pair.trial.run_id && item.arm === "current")!;
+      const joint = pair.eligible && pair.report?.measurement_complete && classifyAttempt(a) === "pass" && classifyAttempt(b) === "pass";
+      for (const metric of Object.keys(observations)) {
+        const measure = (arm: string, attempt: ReliabilityAttempt): number | null => metric === "pass_rate"
+          ? attemptIsScored(attempt) ? classifyAttempt(attempt) === "pass" ? 1 : 0 : null
+          : !joint || !pair.report ? null : metric === "joint_success_estimated_api_usd"
+            ? attempt.cost_eligible ? value(pair.report, arm, "estimated_api_usd") : null : value(pair.report, arm, "agent_seconds");
+        observations[metric]!.push({ task_id: a.task_id, attempt_id: pair.trial.run_id, source: "fresh", schedule: trial.schedule,
+          baseline: measure("stock", a), treatment: measure("current", b) });
+      }
+    }
     const values = { stock: { agent_seconds: [], estimated_api_usd: [] }, current: { agent_seconds: [], estimated_api_usd: [] } } as
       Record<ArmName, Record<"agent_seconds" | "estimated_api_usd", number[]>>;
     for (const pair of passing) for (const metric of ["agent_seconds", "estimated_api_usd"] as const) {
@@ -143,10 +167,12 @@ async function reportSuiteUnlocked(directory: string, state: SuiteState): Promis
         ? [item[metric as "agent_seconds" | "estimated_api_usd"]!] : []))]))]));
   const format = (item: number | null): string => item === null ? "unknown" : item.toFixed(4);
   const destination = await mkdtemp(join(directory, "report-"));
-  const summary = { schema: "codex-ab.suite-report.v1", suite: state, rows, effects, macro, generated_at: new Date().toISOString() };
+  const reliability = reliabilityReport(attempts);
+  const uncertainty = Object.fromEntries(Object.entries(observations).map(([metric, values]) => [metric, pairedUncertaintyByCohort(values)]));
+  const summary = { schema: "codex-ab.suite-report.v2", suite: state, rows, effects, macro, reliability, uncertainty, generated_at: new Date().toISOString() };
   const markdown = `# Cross-task benchmark suite\n\nComparison: ${state.comparison}. Schedule: ${state.schedule}. Status: ${state.status}. These are descriptive results, not a causal or significance claim. Every row reports one task with the stock/current setup comparison. Only complete valid pairs whose **both** candidates passed contribute to speed and cost effects. Missing or failed measurements are never zero-filled.\n\n| Task | Setup | Planned pairs | Measured pairs | Both passed | B-A agent seconds | B-A estimated USD |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n${rows.map((row, index) => `| ${row.task} | ${row.setup} | ${row.planned} | ${row.measured} | ${row.both_pass} | ${format(effects[index]!.agent_seconds)} | ${format(effects[index]!.estimated_api_usd)} |`).join("\n")}\n\n## Equal-task macro effects\n\nEach eligible task has equal weight, regardless of repetitions.\n\n| Setup | Eligible tasks, time | Mean B-A seconds | Eligible tasks, cost | Mean B-A USD |\n| --- | ---: | ---: | ---: | ---: |\n${Object.entries(macro.agent_seconds).map(([setup, time]) => `| ${setup} | ${time.n} | ${format(time.mean)} | ${macro.estimated_api_usd[setup]?.n ?? 0} | ${format(macro.estimated_api_usd[setup]?.mean ?? null)} |`).join("\n")}\n\n## Per-task evidence\n\n${rows.map(row => `- ${row.task}, ${row.setup}: ${row.report}`).join("\n")}\n\nEstimates are public-list API equivalents, not invoices.\n`;
   await writeFile(join(destination, "report.json"), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 });
-  await writeFile(join(destination, "report.md"), markdown, { mode: 0o600 });
+  await writeFile(join(destination, "report.md"), `${markdown}\n${reliabilityMarkdown(reliability)}\n${uncertaintyMarkdown(uncertainty)}`, { mode: 0o600 });
   return join(destination, "report.md");
 }
 

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { appendFile, chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -276,11 +277,11 @@ test.each([
   { name: "missing semantic pass", status: "pass", missingPass: true, exitCode: 0, passed: false, label: "Not graded" },
   { name: "missing criterion coverage", status: "pass", missingCriterion: true, exitCode: 0, passed: false, label: "Not graded" },
   { name: "executed failure with another pass unassessed", status: "fail", exitCode: -1, passed: false, label: "Failed" },
-  { name: "source-only failure with another pass unassessed", status: "fail", basis: "source-only", exitCode: -1, passed: false, label: "Failed" },
-  { name: "completed preparation failure", status: "pass", exitCode: 0, preparationExit: 1, passed: false, label: "Failed" },
+  { name: "source-only failure with another pass unassessed", status: "fail", basis: "source-only", exitCode: -1, passed: false, label: "Not graded" },
+  { name: "completed preparation failure", status: "pass", exitCode: 0, preparationExit: 1, passed: false, label: "Not graded" },
   { name: "completed passing grade", status: "pass", exitCode: 0, passed: true, label: "Passed" },
   { name: "evaluator error", status: "fail", exitCode: 0, passed: false, evaluatorError: "Infrastructure failed", label: "Not graded" },
-])("behavioral grade displays $label for $name before and after reporting", async scenario => {
+])("behavioral grade uses verified report evidence for $name", async scenario => {
   const directory = await pair();
   const command = (exitCode: number) => ({ command: "check", exit_code: exitCode });
   const assessed = { criterion: "behavior", status: "pass", basis: "executed", reasoning: "Executed check" };
@@ -308,8 +309,13 @@ test.each([
     const input = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
     return { input, html: runInNewContext(source + "\nresultContent(input)", { input }) };
   };
-  expect((await render()).html).toContain('<tr><th>Behavioral grade</th><td class="metric a">' + chip + "</td>");
-  await file(join(directory, "reports/report.json"), JSON.stringify({ criteria, arms: { stock: { result } } }));
+  // Raw grade flags and old row counts cannot authorize a UI pass before reporting.
+  expect((await render()).html).toContain('<tr><th>Behavioral grade</th><td class="metric a"><span class="status-chip unassessed">Not graded</span></td>');
+  await file(join(directory, "reports/report.json"), JSON.stringify({ schema: "codex-ab.pair-report.v2", criteria,
+    arms: { stock: { result } }, evidence_dimensions: { stock: {
+      behavior: scenario.label === "Passed" ? "pass" : scenario.label === "Failed" ? "fail" : "unassessed",
+      evaluation_validity: scenario.label === "Not graded" ? "unassessed" : "valid",
+    } } }));
   const reported = await render();
   expect(reported.html).toContain('<tr><th>Behavioral grade</th><td class="metric a">' + chip + "</td>");
   expect(reported.html).toContain('<article class="verdict-card a"><h4>' + reported.input.arm_labels.stock + "</h4>" + chip);
@@ -367,6 +373,24 @@ test("source assessments replace numbered identities using each pass's presentat
   expect(rendered).toContain("<summary>Technical report</summary>");
   expect(rendered).not.toMatch(/<summary>(Criterion evidence and grading|Source assessments and judge reasoning|Time, token and cost differences|Usage details and pricing provenance|Diagnostics and workflow evidence)/);
   expect(input.report).toEqual(report);
+});
+
+test("evidence view distinguishes unavailable preference comparisons and original verifier results", async () => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const report = { evaluator_mode: "fixed-verifier", evidence_dimensions: { stock: { capture: { status: "verified" },
+    behavior: "pass", evaluation_validity: "valid" } }, quality_selection: { policy: "holistic-judge-preference", passes: [
+      { pass: 1, weighted_score_leaders: [], holistic_judge_preference: "stock", disagreement: false, preference_comparison_available: false },
+    ] }, fixed_verifier_results: { stock: [{ result: { config: { dataset: { name: "local-fixture", version: "1" }, task: { id: "tiny-task" } },
+      execution_status: "completed", behavioral_result: "pass", evaluation_validity: "valid", reward: 1 } }] } };
+  const input = { entry: { kind: "pair" }, state: { status: "complete" }, arm_labels: { stock: "Direct" }, report };
+  const html: string = runInNewContext(source + "\nresultContent(input)", { input });
+  expect(html).toContain('<td>Direct</td><td>Unavailable</td>');
+  expect(html).toContain("Original fixed verifier");
+  expect(html).toContain("local-fixture 1 / tiny-task");
+  expect(html).toContain("upstream trust boundary");
+  expect(html).toContain('<span class="status-chip pass">Passed</span>');
+  const invalid = { ...input, report: { ...report, evidence_dimensions: { stock: { behavior: "pass", evaluation_validity: "invalid" } } } };
+  expect(runInNewContext(source + "\nresultContent(input)", { input: invalid })).not.toContain('<span class="status-chip pass">Passed</span>');
 });
 
 test("qualitative aspects display per-pass candidate mappings, legacy gaps and escaped evidence", async () => {
@@ -894,21 +918,30 @@ test("SSE updates selected trial children as their evidence changes", async () =
 
 test("explicit and wildcard hosts permit same-origin access while retaining request protections", async () => {
   const directory = await pair();
-  for (const [host, address] of [["127.0.0.2", "127.0.0.2"], ["0.0.0.0", "127.0.0.1"], ["::1", "[::1]"]]) {
-    await workbench.shutdown();
-    workbench = serveWorkbench(0, host);
-    origin = `http://${address}:${workbench.server.port}`;
-    expect((await fetch(origin)).status).toBe(200);
-    token = (await (await fetch(origin + "/api/config")).json()).token;
-    const body = JSON.stringify({ directory });
-    expect((await fetch(origin + "/api/attach", {
-      method: "POST", headers: { origin, "Content-Type": "application/json", "x-codex-ab-token": token }, body,
-    })).status).toBe(200);
-    for (const headers of [{ origin: "https://untrusted.example" }, { host: "untrusted.example" }, { "sec-fetch-site": "cross-site" }]) {
-      expect((await fetch(origin + "/api/config", { headers })).status).toBe(403);
+  // This fixture exercises local binding and Host/Origin validation, independent
+  // of the machine's real interfaces or permission to enumerate them.
+  const interfaces = spyOn(os, "networkInterfaces").mockReturnValue({ lo: [
+    { address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: true, cidr: "127.0.0.1/8" },
+    { address: "127.0.0.2", netmask: "255.0.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: true, cidr: "127.0.0.2/8" },
+    { address: "::1", netmask: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", family: "IPv6", mac: "00:00:00:00:00:00", internal: true, cidr: "::1/128", scopeid: 0 },
+  ] });
+  try {
+    for (const [host, address] of [["127.0.0.2", "127.0.0.2"], ["0.0.0.0", "127.0.0.1"], ["::1", "[::1]"]]) {
+      await workbench.shutdown();
+      workbench = serveWorkbench(0, host);
+      origin = `http://${address}:${workbench.server.port}`;
+      expect((await fetch(origin)).status).toBe(200);
+      token = (await (await fetch(origin + "/api/config")).json()).token;
+      const body = JSON.stringify({ directory });
+      expect((await fetch(origin + "/api/attach", {
+        method: "POST", headers: { origin, "Content-Type": "application/json", "x-codex-ab-token": token }, body,
+      })).status).toBe(200);
+      for (const headers of [{ origin: "https://untrusted.example" }, { host: "untrusted.example" }, { "sec-fetch-site": "cross-site" }]) {
+        expect((await fetch(origin + "/api/config", { headers })).status).toBe(403);
+      }
+      expect((await fetch(origin + "/api/attach", { method: "POST", body })).status).toBe(403);
     }
-    expect((await fetch(origin + "/api/attach", { method: "POST", body })).status).toBe(403);
-  }
+  } finally { interfaces.mockRestore(); }
 });
 
 test("invalid launch inputs fail before creating a job, and paid consent is fresh per start", async () => {

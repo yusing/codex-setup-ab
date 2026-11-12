@@ -11,12 +11,99 @@
   "criteria": {
     "schema": "codex-ab.criteria.v1",
     "criteria": [
-      {"id": "ipv6-server-name", "description": "Flask.run parses bracketed IPv6 SERVER_NAME with and without an explicit port, keeping the IPv6 host intact.", "required_interface": "Flask.run and SERVER_NAME"},
-      {"id": "existing-address-selection", "description": "DNS and IPv4 addresses, host/port defaults and explicit overrides including port zero, debug behavior, and server cleanup retain their supported behavior. URL-parser hostname normalization and validation are permitted."}
+      {
+        "id": "ipv6-server-name",
+        "description": "Flask.run parses bracketed IPv6 SERVER_NAME with and without an explicit port, keeping the IPv6 host intact.",
+        "required_interface": "Flask.run and SERVER_NAME"
+      },
+      {
+        "id": "existing-address-selection",
+        "description": "DNS and IPv4 addresses, host/port defaults and explicit overrides including port zero, debug behavior, and server cleanup retain their supported behavior. URL-parser hostname normalization and validation are permitted."
+      }
     ],
-    "preparation": "if test ! -x /opt/task-deps/python/bin/pytest; then python3 -m venv /opt/task-deps/python && /opt/task-deps/python/bin/pip install 'blinker>=1.9.0' 'click>=8.1.3' 'itsdangerous>=2.2.0' 'jinja2>=3.1.2' 'markupsafe>=2.1.1' 'werkzeug>=3.1.0' asgiref pytest python-dotenv; fi",
+    "preparation": "if test ! -x /opt/task-deps/python/bin/pytest; then python3 -m venv /opt/task-deps/python && /opt/task-deps/python/bin/pip install 'Werkzeug==3.1.3' 'Jinja2==3.1.6' 'MarkupSafe==3.0.3' 'itsdangerous==2.2.0' 'blinker==1.9.0' 'click==8.3.1' 'pytest==8.4.2' 'python-dotenv==1.2.1' 'asgiref==3.10.0' 'iniconfig==2.3.1' 'packaging==26.3' 'pluggy==1.7.0' 'pygments==2.21.0'; fi",
     "existing_tests": "PYTHONPATH=src /opt/task-deps/python/bin/python -m pytest -p no:cacheprovider -q tests/test_basic.py -k 'test_run_from_config or test_run_server_port or test_run_defaults'",
-    "evaluator_guidance": "Use /opt/task-deps/python/bin/python with PYTHONPATH=src and PYTHONDONTWRITEBYTECODE=1. Pytest must use -p no:cacheprovider because candidate files are read-only. Dependencies are preinstalled; do not install packages during offline checks. Inspect /reference/index.json and the 7203fea patch: Flask.run, its host/port documentation, and test_run_from_config, test_run_server_port, and test_run_defaults establish the outcomes. Exercise bracketed IPv6 with and without ports, existing defaults/overrides including zero, debug behavior, and cleanup through a mocked run_simple. The reference uses URL parsing, which lowercases DNS hostnames and changes validation for malformed inputs; do not require byte-identical parsing for every former input. Accept equivalent designs and safe improvements, assess relevant regression tests, and preserve unaffected behavior. Reference evidence is evaluator-only. Wiring failures are HARNESS_ERROR/unassessed; retain source-only observations without executed coverage as unassessed.",
-    "qualification": "not-run"
+    "evaluator_guidance": "Use /opt/task-deps/python/bin/python with isolated Python and explicitly add the candidate src directory when importing Flask. Dependencies are preinstalled; do not install packages during offline checks. The pinned reference 7203feabf723edae0286ae5dc64fec8ac4c91735 changes Flask.run and test_run_from_config. Write supervisor-owned assertions over observed host, port, options, application identity, and cleanup from real Flask.run with werkzeug.serving.run_simple mocked only to record its arguments. Cover bracketed IPv6 with and without ports, including configured and explicit zero; preserve DNS/IPv4 defaults and overrides, debug/options, and cleanup after normal return or a server exception. The reference uses URL parsing; hostname normalization and malformed-input validation differences are permitted. Frozen controls include the actual upstream reference, untouched baseline, a source mutant that breaks IPv6 and configured port zero, and an independent bracket parser applied to the baseline. Qualify every adaptive check against those controls. The original scoped pytest command is retained separately as a non-gating diagnostic; independent supervisor assertions over actual Flask behavior establish the existing-behavior gate. Printed counts and exit zero alone cannot establish completion; source-only observations remain unassessed. Reference and control code are evaluator-only. Inspect the retained /reference/index.json and reference patches for the original supported behavior.",
+    "qualification": "not-run",
+    "evaluator_controls": {
+      "schema": "codex-ab.evaluator-controls.v1",
+      "cases": [
+        {
+          "id": "upstream-reference",
+          "role": "reference",
+          "base": "reference",
+          "files": [],
+          "expected": {
+            "ipv6-server-name": "pass",
+            "existing-address-selection": "pass"
+          }
+        },
+        {
+          "id": "pinned-baseline",
+          "role": "baseline",
+          "base": "baseline",
+          "files": [],
+          "expected": {
+            "ipv6-server-name": "fail",
+            "existing-address-selection": "pass"
+          }
+        },
+        {
+          "id": "ipv6-and-zero-regression",
+          "role": "negative",
+          "base": "reference",
+          "patches": [
+            {
+              "path": "src/flask/app.py",
+              "before_sha256": "fdcffafdf4614b57f3f2a7f1e0ac945d639bfe19f742b8bf46deeb29b9837a84",
+              "after_sha256": "9ac6aecacf9e72f67fde9ffb72e45e0e4ba232216f25f83ea4f1fd98ff702bfc",
+              "diff": "diff --git a/src/flask/app.py b/src/flask/app.py\n--- a/src/flask/app.py\n+++ b/src/flask/app.py\n@@ -724,6 +724,8 @@\n         if server_name:\n             server_url = urlsplit(f\"//{server_name}\")\n             sn_host = server_url.hostname\n+            if sn_host and \":\" in sn_host:\n+                sn_host = sn_host.partition(\":\")[0] or \"127.0.0.1\"\n             sn_port = server_url.port\n \n         if not host:\n@@ -734,7 +736,7 @@\n \n         if port or port == 0:\n             port = int(port)\n-        elif sn_port is not None:\n+        elif sn_port:\n             port = sn_port\n         else:\n             port = 5000\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "ipv6-server-name": "fail",
+            "existing-address-selection": "fail"
+          }
+        },
+        {
+          "id": "independent-bracket-parser",
+          "role": "alternative",
+          "base": "baseline",
+          "patches": [
+            {
+              "path": "src/flask/app.py",
+              "before_sha256": "ed0ad667fc7ac326a7bdc317532d943af1dc3d8a9ad9f80a0a51f7fd9e8d3ca7",
+              "after_sha256": "26b74fbeafd283dec8a5cff5eba6942127a9367952138414c114cd50d71adec1",
+              "diff": "diff --git a/src/flask/app.py b/src/flask/app.py\n--- a/src/flask/app.py\n+++ b/src/flask/app.py\n@@ -721,7 +721,18 @@\n         sn_host = sn_port = None\n \n         if server_name:\n-            sn_host, _, sn_port = server_name.partition(\":\")\n+            if server_name.startswith(\"[\"):\n+                closing = server_name.find(\"]\")\n+                if closing < 0:\n+                    raise ValueError(\"Unclosed IPv6 address\")\n+                sn_host = server_name[1:closing]\n+                suffix = server_name[closing + 1:]\n+                if suffix:\n+                    if not suffix.startswith(\":\"):\n+                        raise ValueError(\"Invalid IPv6 port separator\")\n+                    sn_port = suffix[1:]\n+            else:\n+                sn_host, _, sn_port = server_name.partition(\":\")\n \n         if not host:\n             if sn_host:\n"
+            }
+          ],
+          "files": [],
+          "expected": {
+            "ipv6-server-name": "pass",
+            "existing-address-selection": "pass"
+          }
+        }
+      ]
+    },
+    "existing_test_verification": {
+      "schema": "codex-ab.verification.v1",
+      "cases": [
+        {
+          "id": "existing-flask-observations",
+          "kind": "command",
+          "command": [
+            "/opt/task-deps/python/bin/python",
+            "-I",
+            "-c",
+            "import json, os, pathlib, sys\nsys.path.insert(0, str(pathlib.Path.cwd() / \"src\"))\nimport flask\nimport flask.cli\nimport werkzeug.serving\nos.environ.pop(\"FLASK_RUN_FROM_CLI\", None)\nos.environ.pop(\"FLASK_DEBUG\", None)\nflask.cli.show_server_banner = lambda *args, **kwargs: None\nobservations = []\nfor case in json.load(sys.stdin):\n    app = flask.Flask(\"frozen_server_observer\")\n    app.config[\"SERVER_NAME\"] = case.get(\"server_name\")\n    app.debug = case.get(\"initial_debug\", False)\n    app._got_first_request = True\n    observed = {\"id\": case[\"id\"]}\n    def observe(host, port, application, **options):\n        observed.update(host=host, port=port, debug=app.debug, options=options, same_application=application is app)\n        if case.get(\"server_error\"):\n            raise RuntimeError(\"frozen-server-error\")\n    werkzeug.serving.run_simple = observe\n    try:\n        app.run(host=case.get(\"host\"), port=case.get(\"port\"), debug=case.get(\"debug\"), load_dotenv=False, **case.get(\"options\", {}))\n    except Exception as error:\n        observed[\"error\"] = {\"type\": type(error).__name__, \"message\": str(error)}\n    observed[\"cleaned_up\"] = app._got_first_request is False\n    observations.append(observed)\nprint(json.dumps(observations, sort_keys=True))\n"
+          ],
+          "stdin": "[{\"id\":\"default\"},{\"id\":\"dns\",\"server_name\":\"example.test\"},{\"id\":\"dns-port\",\"server_name\":\"example.test:8080\"},{\"id\":\"ipv4\",\"server_name\":\"127.0.0.2:7080\"},{\"id\":\"host-override\",\"server_name\":\"example.test:8080\",\"host\":\"localhost\"},{\"id\":\"port-override\",\"server_name\":\"example.test:8080\",\"port\":80},{\"id\":\"both-overrides\",\"server_name\":\"example.test:8080\",\"host\":\"localhost\",\"port\":80},{\"id\":\"explicit-zero\",\"server_name\":\"example.test:8080\",\"port\":0},{\"id\":\"configured-zero\",\"server_name\":\"localhost:0\"},{\"id\":\"debug-on\",\"debug\":true},{\"id\":\"debug-off-override\",\"initial_debug\":true,\"debug\":false},{\"id\":\"explicit-server-options\",\"debug\":true,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":false}},{\"id\":\"cleanup-after-error\",\"server_error\":true}]",
+          "expected_exit": 0,
+          "format": "json",
+          "expected": "[{\"id\":\"default\",\"host\":\"127.0.0.1\",\"port\":5000,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"dns\",\"host\":\"example.test\",\"port\":5000,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"dns-port\",\"host\":\"example.test\",\"port\":8080,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"ipv4\",\"host\":\"127.0.0.2\",\"port\":7080,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"host-override\",\"host\":\"localhost\",\"port\":8080,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"port-override\",\"host\":\"example.test\",\"port\":80,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"both-overrides\",\"host\":\"localhost\",\"port\":80,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"explicit-zero\",\"host\":\"example.test\",\"port\":0,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"configured-zero\",\"host\":\"localhost\",\"port\":0,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"debug-on\",\"host\":\"127.0.0.1\",\"port\":5000,\"debug\":true,\"options\":{\"use_reloader\":true,\"use_debugger\":true,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"debug-off-override\",\"host\":\"127.0.0.1\",\"port\":5000,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"explicit-server-options\",\"host\":\"127.0.0.1\",\"port\":5000,\"debug\":true,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":false},\"same_application\":true,\"cleaned_up\":true},{\"id\":\"cleanup-after-error\",\"host\":\"127.0.0.1\",\"port\":5000,\"debug\":false,\"options\":{\"use_reloader\":false,\"use_debugger\":false,\"threaded\":true},\"same_application\":true,\"cleaned_up\":true,\"error\":{\"type\":\"RuntimeError\",\"message\":\"frozen-server-error\"}}]"
+        }
+      ]
+    }
   }
 }

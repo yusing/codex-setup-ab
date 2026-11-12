@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { prepare, verifyPreparedInputs, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
+import { prepare as prepareInputs, verifyPreparedInputs, verifySubmodules, initializeSubmodules, verifyRepositoryIsolation, verifyGodoxyIdentity, GODOXY_ICONS } from "./prepare";
 import { finishBenchmark, reevaluateBenchmark, runBenchmark } from "./workflow";
 import { importArms } from "./control";
 import { prepareReevaluation } from "./reevaluate";
@@ -26,6 +26,9 @@ import { buildReport } from "./report";
 import { embeddedFallbackPricing, type PricingSnapshot } from "./usage";
 import { readToolStoreManifest } from "./snapshot";
 import { miseToolMounts } from "./isolation";
+import candidateCollector from "./candidate-script.txt" with { type: "text" };
+import { JUDGE_DISABLED_FEATURES } from "./judge-boundary";
+import { fixturePricing } from "./test-support/pricing";
 
 let root: string;
 let source: string;
@@ -39,6 +42,15 @@ let codexHash: string;
 let codeModeHostHash: string;
 const originalPath = process.env.PATH;
 let brewPrefix: string;
+const fixtureVerification = { schema: "codex-ab.verification.v1" as const, cases: [
+  { id: "fixture", kind: "command" as const, command: ["printf", "fixture"], stdin: "", expected_exit: 0, format: "text" as const, expected: "fixture" },
+] };
+const fixtureRepair = { defect: "fixture adapter was deliberately broken", retained_inputs: ["fixture input"], retained_assertions: ["fixture output"],
+  retained_edge_cases: ["same frozen cases"], retained_failure_conditions: ["wrong fixture output"] };
+// These model-free controls exercise orchestration, not the task's real behavior.
+const fixtureControls = { schema: "codex-ab.evaluator-controls.v1" as const, cases: ["reference", "baseline", "negative", "alternative"].map(role => ({
+  id: role, role, base: "baseline", files: [], expected: { fixture: ["baseline", "negative"].includes(role) ? "fail" : "pass" },
+})) };
 
 async function file(path: string, content = "fixture\n", mode?: number): Promise<void> {
   await mkdir(join(path, ".."), { recursive: true });
@@ -129,12 +141,20 @@ beforeAll(async () => {
   await file(task, "Make the fixture better.\n");
   await file(fixtureCriteria, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
     criteria: [{ id: "fixture", description: "Make the fixture better." }],
-    preparation: "true", existing_tests: "true", qualification: "not-run" }));
+    preparation: "true", existing_tests: "true", existing_test_verification: fixtureVerification, evaluator_controls: fixtureControls, qualification: "not-run" }));
   home = await fixtureHome();
 });
 
 afterAll(async () => { process.env.PATH = originalPath; await rm(root, { recursive: true, force: true }); });
 beforeEach(() => { process.env.PATH = `${brewPrefix}/bin:${originalPath}`; });
+
+async function prepare(options: Parameters<typeof prepareInputs>[0]): Promise<string> {
+  const run = await prepareInputs(options);
+  const state = await readState(run);
+  state.pricing = fixturePricing();
+  await writeState(run, state);
+  return run;
+}
 
 async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi" = "codex", currentHome = home): Promise<string> {
   return prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
@@ -547,7 +567,10 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   for (const attempt of judged.judge!.attempts!) {
     const mounted = join(fake.stateDir, `codex-ab-${state.id}-judge-${attempt.pass}-${attempt.stage}-${attempt.attempt}.config.toml`);
     expect(Bun.TOML.parse(await readFile(mounted, "utf8"))).toEqual({ model: "gpt-6.1-sol", model_reasoning_effort: "high",
-      service_tier: "fast", approval_policy: "never", sandbox_mode: "danger-full-access", projects: { "/workspace": { trust_level: "trusted" } } });
+      service_tier: "fast", approval_policy: "never", sandbox_mode: "read-only", web_search: "disabled",
+      features: Object.fromEntries(JUDGE_DISABLED_FEATURES.map(feature => [feature, false])),
+      mcp_servers: { source_reader: { command: "node", args: ["/reader/reader.mjs"], required: true, enabled_tools: ["list_files", "read_file", "write_check_plan"] } },
+      projects: { "/workspace": { trust_level: "trusted" } } });
   }
   expect(await Promise.all([a, b].map(snapshot => readFile(join(snapshot, ".codex/config.toml"), "utf8")))).toEqual(candidateConfigs);
   await bundles.collectBundle(run);
@@ -1121,7 +1144,7 @@ test("task-pack CLI freezes pinned controls without exposing checks to either ar
     schema: "codex-ab.task-pack.v1", id: "fixture-pack", prompt: "task.md",
     source: { repository: "https://example.test/fixture.git", base_commit: base, forbidden_commit: future, reference_commit: future },
     criteria: { schema: "codex-ab.criteria.v1", criteria: [{ id: "fixture", description: "Improve the fixture" }],
-      preparation: "true", existing_tests: "true", qualification: "not-run" },
+      preparation: "true", existing_tests: "true", existing_test_verification: fixtureVerification, evaluator_controls: fixtureControls, qualification: "not-run" },
   }));
   let stdout = "";
   const capture = spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
@@ -1193,7 +1216,7 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   const criteriaPath = join(root, "criteria.json");
   await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
     criteria: [{ id: "fixture", description: "Make the fixture better." }],
-    preparation: "true", existing_tests: "true", qualification: "not-run" }));
+    preparation: "true", existing_tests: "true", existing_test_verification: fixtureVerification, evaluator_controls: fixtureControls, qualification: "not-run" }));
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath, outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
   const state = await readState(run);
@@ -1228,7 +1251,11 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   expect(evaluatorLaunches.every(line => line.includes("--network none") && !line.includes("auth.json") && !line.includes("docker.sock"))).toBe(true);
   expect(evaluatorLaunches.every(line => line.includes("XDG_STATE_HOME=/tmp/state") &&
     line.includes("XDG_CONFIG_HOME=/tmp/config") && line.includes("MEKUGI_RUNTIME_DIR=/tmp/runtime"))).toBe(true);
-  expect(judgeLaunches.every(line => line.includes('sandbox_mode="danger-full-access"') && line.includes('service_tier="fast"'))).toBe(true);
+  expect(judgeLaunches.every(line => line.includes('sandbox_mode="read-only"') && line.includes('service_tier="fast"'))).toBe(true);
+  for (const pass of [1, 2]) for (const stage of ["harness-1", "assessment"]) {
+    const config = await readFile(join(fake.stateDir, `codex-ab-${state.id}-judge-${pass}-${stage}-1.config.toml`), "utf8");
+    for (const feature of JUDGE_DISABLED_FEATURES) expect(config).toContain(`${feature} = false`);
+  }
   expect(done.judge?.service_tier).toBe("fast");
   expect(done.judge?.attempts?.every(attempt => attempt.service_tier === "fast")).toBe(true);
   expect(evaluatorLaunches.every(line => !line.includes(":/build-cache") && !line.includes("GOCACHE=/tmp/go-build"))).toBe(true);
@@ -1283,6 +1310,9 @@ test("judge executable-check failures use operator-facing stage names", async ()
 });
 test.each(["missing", "malformed", "symlink"])("harness plan artifacts reject %s files before checks execute", async fault => {
   const run = await prepared();
+  const state = await readState(run);
+  state.pricing = { fetched_at: "fixture", source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, state);
   const auth = join(root, `artifact-${fault}-auth.json`); await file(auth, "{}\n", 0o600);
   const fake = await fakeOwnedDocker(0);
   const action = fault === "missing" ? 'rm "$harness/checks.json"' : fault === "malformed"
@@ -1335,7 +1365,7 @@ test("semantic file boundaries reject unrelated changes", async () => {
   const criteriaPath = join(root, "boundary-criteria.json");
   await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
     criteria: [{ id: "fixture", description: "Make the fixture better." }], allowed_paths: ["internal/router/router.go"],
-    preparation: "true", existing_tests: "true", qualification: "not-run" }));
+    preparation: "true", existing_tests: "true", existing_test_verification: fixtureVerification, evaluator_controls: fixtureControls, qualification: "not-run" }));
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath, outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
   const state = await readState(run);
@@ -1352,7 +1382,7 @@ test("completed semantic check time and artifacts survive a later author failure
   const criteriaPath = join(root, "timing-criteria.json");
   await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
     criteria: [{ id: "fixture", description: "Make the fixture better." }],
-    preparation: "true", existing_tests: "true", qualification: "not-run" }));
+    preparation: "true", existing_tests: "true", existing_test_verification: fixtureVerification, evaluator_controls: fixtureControls, qualification: "not-run" }));
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath, outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
   const auth = join(root, "timing-auth.json"); await file(auth, "{}\n", 0o600);
@@ -1361,8 +1391,10 @@ test("completed semantic check time and artifacts survive a later author failure
   await expect(prepareSemanticAssessment({ runDir: run, state, contract: state.criteria!.contract, pass: 1,
     order: ["stock", "current"], docker: fake.path, ask: async () => { throw new Error("author unavailable"); } })).rejects.toThrow("author unavailable");
   const captured = JSON.parse(await readFile(join(run, "evaluator/semantic/pass-1/existing/candidate-1/__existing_tests/evidence.json"), "utf8"));
-  expect((await readState(run)).results!.stock!.grade!.elapsed_ms).toBe(captured.execution.elapsed_ms);
+  const diagnostic = await Bun.file(join(run, "evaluator/semantic/pass-1/existing-command/candidate-1/__existing_test_command/evidence.json")).json();
+  expect((await readState(run)).results!.stock!.grade!.elapsed_ms).toBe(captured.execution.elapsed_ms + diagnostic.execution.elapsed_ms);
   expect(captured.execution.elapsed_ms).toBeGreaterThan(0);
+  expect(diagnostic.execution.elapsed_ms).toBeGreaterThan(0);
 });
 
 /** Wrap a fake Docker so candidate 2's round-1 evaluator wiring is broken in every pass. */
@@ -1371,7 +1403,14 @@ async function brokenFirstCandidate2Check(fakePath: string, name: string): Promi
   await file(docker, `#!/bin/sh
 last=; for argument in "$@"; do last="$argument"; done
 '${fakePath}' "$@" || exit
-case "$1:$last" in start:*-semantic-?-round-1-candidate-2-fixture) echo 'HARNESS_ERROR: wrong fixture adapter' >&2; exit 125 ;; esac
+case "$1:$last" in start:*-semantic-?-round-1-candidate-2-fixture)
+  output=$(cat '${fakePath}.state/'$last.verifier-results)
+  python3 - "$output/result.json" <<'PYFIX'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); r=json.loads(p.read_text()); r.update(status='evaluator_wiring',completed=0,cases=[],detail='Wrong fixture adapter'); p.write_text(json.dumps(r))
+PYFIX
+  exit 0 ;;
+esac
 `, 0o755);
   return docker;
 }
@@ -1380,7 +1419,7 @@ test("harness repair keeps a successful check when the judge resubmits it", asyn
   const criteriaPath = join(root, "repair-criteria.json");
   await file(criteriaPath, JSON.stringify({ schema: "codex-ab.criteria.v1", task_sha256: await sha256(task),
     criteria: [{ id: "fixture", description: "Make the fixture better." }],
-    preparation: "true", existing_tests: "true", qualification: "not-run" }));
+    preparation: "true", existing_tests: "true", existing_test_verification: fixtureVerification, evaluator_controls: fixtureControls, qualification: "not-run" }));
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath, outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
   const auth = join(root, "repair-auth.json"); await file(auth, "{}\n", 0o600);
@@ -1388,7 +1427,7 @@ test("harness repair keeps a successful check when the judge resubmits it", asyn
   const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
   // Only candidate 2's wiring is broken, so round 2 may repair it but not candidate 1's pass.
   const docker = await brokenFirstCandidate2Check(fake.path, "repair-docker");
-  const check = { criterion: "fixture", files: [], command: ["true"], rationale: "Fixture behavior checked." };
+  const check = { criterion: "fixture", files: [], command: ["true"], rationale: "Fixture behavior checked.", verification: fixtureVerification, repair: fixtureRepair };
   const asked: { stage: string; prompt: string; schema: any }[] = [];
   const evidence = await prepareSemanticAssessment({ runDir: run, state, contract: state.criteria!.contract, pass: 1,
     order: ["stock", "current"], docker, ask: async (stage, prompt, schema) => {
@@ -1401,8 +1440,8 @@ test("harness repair keeps a successful check when the judge resubmits it", asyn
   expect(asked[1]!.schema.properties["candidate-2"].items.properties.criterion.enum).toEqual(["fixture"]);
   expect(evidence.candidates["candidate-1"][0]?.status).toBe("pass");
   expect(evidence.candidates["candidate-2"][0]?.status).toBe("pass");
-  expect(evidence.history["candidate-1"].map(item => item.criterion)).toEqual(["__existing_tests", "fixture"]);
-  expect(evidence.history["candidate-2"].map(item => item.status)).toEqual(["pass", "unassessed", "pass"]);
+  expect(evidence.history["candidate-1"].map(item => item.criterion)).toEqual(["__existing_test_command", "__existing_tests", "fixture"]);
+  expect(evidence.history["candidate-2"].map(item => item.status)).toEqual(["unassessed", "pass", "unassessed", "pass"]);
 });
 
 test("prepare makes base-only independent clones and an audited secret-free snapshot", async () => {
@@ -1487,6 +1526,18 @@ async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHo
   const log = `${path}.log`;
   const stateDir = `${path}.state`;
   await file(`${path}.patch`, candidatePatch);
+  await file(`${path}.collector.txt`, candidateCollector);
+  await file(`${path}.capture.ts`, `
+const [capture, repository, seed] = process.argv.slice(2);
+const patch = ${JSON.stringify(`${path}.patch`)};
+if (await Bun.file(patch).size) {
+  const applied = Bun.spawn(["git", "-C", repository, "apply", "--binary", patch], {stdout:"inherit",stderr:"inherit"});
+  if (await applied.exited) process.exit(1);
+}
+const spec = {mode:"capture",baseline:false,clean:false,base:${JSON.stringify(base)},tree:${JSON.stringify((await checked(["git", "-C", source, "rev-parse", `${base}^{tree}`])).stdout.trim())},forbidden:"f".repeat(40),icons:false,submodules:[],workspace:repository,seed,destination:capture};
+const child = Bun.spawn([process.execPath,"-e",await Bun.file(${JSON.stringify(`${path}.collector.txt`)}).text(),JSON.stringify(spec)],{stdout:"inherit",stderr:"inherit"});
+process.exit(await child.exited);
+`);
   const candidates = Array.from({ length: candidateCount }, (_, index) => `candidate-${index + 1}`);
   const judgeAssessment = (omit?: "criteria" | "quality_aspects") => JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({
     scores: Object.fromEntries(candidates.map(id => [id, { correctness: 5, simplicity: 5, completeness: 5, performance: 5, maintainability: 5, approach: 5, test_quality: 5 }])),
@@ -1498,7 +1549,7 @@ async function fakeOwnedDocker(sleepSeconds: number, failWarm = false, missingHo
   const validAssessment = judgeAssessment();
   const invalidResponse = judgeAssessment(invalidAssessment?.omit);
   const harnessPlan = JSON.stringify(Object.fromEntries(candidates.map(id => [id,
-    [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked." }]])));
+    [{ criterion: "fixture", files: [{ path: "extra.cjs", source: "if (1 !== 1) process.exit(1)" }], command: ["node", "extra.cjs"], rationale: "Fixture behavior checked.", verification: fixtureVerification, repair: fixtureRepair }]])));
   await file(path, `#!/bin/sh
 set -u
 mkdir -p '${stateDir}'
@@ -1535,9 +1586,14 @@ case "$operation" in
       if [ "$previous" = --name ]; then name="$argument"; fi
       case "$argument" in
         *:/capture) printf '%s' "\${argument%:/capture}" >'${stateDir}/'$name.capture ;;
+        *:/workspace:ro) printf '%s' "\${argument%:/workspace:ro}" >'${stateDir}/'$name.repository ;;
+        *:/seed.git:ro) printf '%s' "\${argument%:/seed.git:ro}" >'${stateDir}/'$name.seed ;;
         *:/home/ubuntu) setup="\${argument%:/home/ubuntu}" ;;
         *:/runtime-state/codex) setup="\${argument%:/runtime-state/codex}"; setup="\${setup%/.codex}" ;;
         *:/harness) printf '%s' "\${argument%:/harness}" >'${stateDir}/'$name.harness ;;
+        *:/harness.json:ro) printf '%s' "\${argument%:/harness.json:ro}" >'${stateDir}/'$name.semantic-harness ;;
+        *:/verifier-results:rw) printf '%s' "\${argument%:/verifier-results:rw}" >'${stateDir}/'$name.verifier-results ;;
+        *:/candidate:ro) printf '%s' "\${argument%:/candidate:ro}" >'${stateDir}/'$name.semantic-candidate ;;
       esac
       previous="$argument"
     done
@@ -1582,10 +1638,10 @@ case "$operation" in
       *-warm) ${failWarm ? "echo prewarm-failed >&2; status=9" : ":"} ;;
       *-capture)
         capture=$(cat '${stateDir}/'$name.capture)
-        cp '${path}.patch' "$capture/changes.patch"
-        printf '%s' '{"changed_files":[],"head_after_agent":"${base}"}' >"$capture/result.json"
+        bun '${path}.capture.ts' "$capture" "$(cat '${stateDir}/'$name.repository)" "$(cat '${stateDir}/'$name.seed)" || status=1
         rm -f '${stateDir}/'$name.capture
         ;;
+      *-reader-probe-*) printf '%s\\n' '${JUDGE_DISABLED_FEATURES.map(key => `${key} stable false`).join("\n")}' ;;
       *-judge-*-harness-*)
         cat >'${stateDir}/'$name.prompt
         sleep 0.1
@@ -1594,6 +1650,17 @@ case "$operation" in
         mkfifo "$harness/draft.pipe"
         printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ plan_file: "checks.json" }) } })}'
         ${failHarnessPass ? `case "$name" in *-judge-${failHarnessPass}-harness-*) status=9 ;; esac` : ":"}
+        ;;
+      *-semantic-*|*-qualification-*)
+        python3 - "$(cat '${stateDir}/'$name.semantic-harness)" "$(cat '${stateDir}/'$name.verifier-results)" "$(cat '${stateDir}/'$name.semantic-candidate)" <<'PY'
+import json,pathlib,sys
+h=json.load(open(sys.argv[1])); cases=h.get('verification',{}).get('cases',[])
+failed=any(('/qualification/'+role+'/candidate') in sys.argv[3] for role in ['baseline','negative'])
+record=dict(schema='codex-ab.verifier-result.v1',check_sha256=h['check_sha256'],status=('assertion_failure' if failed else 'passed') if cases else 'incomplete',
+  expected=len(cases),completed=len(cases),detail='Model-free fake supervisor fixture',
+  cases=[dict(id=item['id'],status='fail' if failed else 'pass',exit_code=1 if failed else 0,stdout='',stderr='') for item in cases])
+(pathlib.Path(sys.argv[2])/'result.json').write_text(json.dumps(record))
+PY
         ;;
       *-judge-*-assessment-*)
         cat >'${stateDir}/'$name.prompt
@@ -1927,6 +1994,9 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
 
 test("current-only execution launches Mekugi and finishes without a stock agent or judge", async () => {
   const run = await prepared(30, "mekugi");
+  const initial = await readState(run);
+  initial.pricing = { fetched_at: "fixture", source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
+  await writeState(run, initial);
   const auth = join(root, "current-only-auth.json"); await file(auth, "{}\n", 0o600);
   const fake = await fakeOwnedDocker(0);
   await runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path, arm: "current" });
@@ -2794,7 +2864,7 @@ test("reevaluation independently rejudges every retained arm without implementat
   await file(join(pack, "manifest.json"), JSON.stringify({ schema: "codex-ab.task-pack.v1", id: "reevaluation-fixture", prompt: "task.md",
     source: { repository: "https://example.test/fixture.git", base_commit: base, forbidden_commit: future, reference_commit: future },
     criteria: { schema: "codex-ab.criteria.v1", criteria: [{ id: "fixture", description: "Make the fixture better." }],
-      preparation: "true", existing_tests: "true", qualification: "not-run" } }));
+      preparation: "true", existing_tests: "true", existing_test_verification: fixtureVerification, evaluator_controls: fixtureControls, qualification: "not-run" } }));
   const sourceRun = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, taskPackPath: join(pack, "manifest.json"),
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
     comparison: "custom", arms: [{ launcher: "codex", setup_commit: "stock" }, { launcher: "mekugi", setup_commit: revision }, { launcher: "codex", setup_commit: revision }],

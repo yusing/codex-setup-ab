@@ -16,6 +16,9 @@ export async function prepareReevaluation(sourceDirectory: string, outputParent 
   }
   process.stderr.write(`[reevaluate] validating sealed source ${sourceDir}\n`);
   const source = await readState(sourceDir);
+  if (source.fixed_verifier || Object.values(source.results ?? {}).some(result => result?.grade?.fixed)) {
+    throw new Error("fixed-verifier source reevaluation is not yet supported; use verify-fixed to retain a separate verifier attempt");
+  }
   const arms = armNames(source);
   const bundle = join(sourceDir, "reports/bundle");
   const bundleHash = await sha256(join(bundle, "MANIFEST.sha256"));

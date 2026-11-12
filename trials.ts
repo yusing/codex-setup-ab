@@ -5,10 +5,14 @@ import { tmpdir } from "node:os";
 import { verifyBundleManifest, writeBundleManifest } from "./bundle";
 import { preflightRunUnlocked } from "./runner";
 import { verifyPreparedInputs } from "./prepare";
+import { verifyFixedInputs } from "./fixed-workflow";
 import { runBenchmarkUnlocked } from "./workflow";
 import { fetchPricing, type MeteredRollouts } from "./usage";
 import { readState, sha256, withRunLock, writeState } from "./state";
 import type { ArmName, ArmOrder, ArmResult, RunState } from "./types";
+import { attemptIsScored, classifyAttempt, reliabilityMarkdown, reliabilityReport, unavailableAttempt, type ReliabilityAttempt } from "./reliability";
+import { pairedUncertaintyByCohort, uncertaintyMarkdown, type PairedObservation } from "./uncertainty";
+import { GUIDANCE_LAUNCHER_CELLS, guidanceLauncherEffects, verifyGuidanceLauncherExperiment, type FactorialObservation } from "./factorial";
 
 type Schedule = "concurrent" | "alternating";
 interface Trial {
@@ -42,13 +46,16 @@ interface PairReport {
   setup: { arm_order: ArmOrder; trial: RunState["trial"] };
   arms: Record<ArmName, { result: ArmResult | null; usage: MeteredRollouts | null }>;
   judge?: { usage?: MeteredRollouts } | null;
+  reliability?: { schema: "codex-ab.reliability.v1"; attempts: ReliabilityAttempt[] };
 }
 
 /** Pin experimental inputs, not run-local paths, timestamps, attempts or results. */
 export function trialControls(state: RunState) {
+  verifyGuidanceLauncherExperiment(state);
   return {
     profile: state.profile, source: state.source, submodules: state.submodules,
     task: state.task, task_pack: state.task_pack, criteria: state.criteria,
+    ...(state.fixed_verifier ? { fixed_verifier: state.fixed_verifier } : {}),
     upstream_reference: state.upstream_reference,
     auto_compact_limit: state.auto_compact_limit,
     comparison: state.comparison ?? "stock-current", execution: state.execution,
@@ -56,6 +63,7 @@ export function trialControls(state: RunState) {
     setup_revisions: state.setup_revisions,
     ...(state.arm_settings ? { arm_settings: state.arm_settings } : {}),
     ...(state.arm_configurations ? { arm_configurations: state.arm_configurations } : {}),
+    ...(state.experiment ? { experiment: state.experiment } : {}),
     current_snapshot: state.current_snapshot, snapshot_manifest: state.snapshot_manifest,
     runtime_tools: state.runtime_tools, operator: state.operator, arms: state.arms,
     protected_runtime: state.protected_runtime, mekugi_flags: state.mekugi_flags,
@@ -85,6 +93,8 @@ export async function readTrialSet(directory: string): Promise<TrialSet> {
     if (trial.index !== index || trial.run_dir !== `runs/${index}` || trial.run_id !== `${set.id}-${index}`
       || trial.order !== armOrder(set.schedule, index)) throw new Error("trial-set plan changed");
   }
+  if (set.controls.experiment && (set.controls.experiment.plan.repetitions !== set.trials.length
+    || set.controls.experiment.plan.schedule !== set.schedule)) throw new Error("four-cell repetitions or schedule changed");
   return set;
 }
 function assertMembership(set: TrialSet, trial: Trial, state: RunState): void {
@@ -93,7 +103,7 @@ function assertMembership(set: TrialSet, trial: Trial, state: RunState): void {
     || state.trial.controls_sha256 !== set.controls_sha256 || state.trial.plan_sha256 !== set.plan_sha256) throw new Error("trial controls or membership changed");
 }
 function assertFresh(state: RunState): void {
-  if (state.planned_imports?.length || state.imported_arms) throw new Error("Historical arm imports cannot be repeated as fresh trials");
+  if (state.planned_imports?.length || state.imported_arms || state.imported_control) throw new Error("Historical arm imports cannot be repeated as fresh trials");
   if (state.status !== "prepared" || state.results || state.arm_attempts || state.finishing || state.judge) {
     throw new Error("trial preparation/execution requires a fresh prepared pair");
   }
@@ -109,6 +119,8 @@ export async function prepareTrials(options: {
   return withRunLock(prototype, async () => {
     const initial = await readState(prototype);
     assertFresh(initial);
+    if (initial.experiment && (initial.experiment.plan.repetitions !== options.count || initial.experiment.plan.schedule !== schedule))
+      throw new Error("four-cell repetitions or schedule differ from the recorded plan");
     if (initial.trial) throw new Error("use a standalone prepared pair as the trial prototype");
     await preflightRunUnlocked(prototype, options.dockerBin);
     const state = await readState(prototype);
@@ -146,6 +158,7 @@ export async function prepareTrials(options: {
           arm_order: trial.order, trial: { set_id: set.id, index: trial.index, controls_sha256: set.controls_sha256, plan_sha256: set.plan_sha256 } };
         await writeState(target, fresh);
         await verifyPreparedInputs(target, fresh);
+        if (fresh.fixed_verifier) await verifyFixedInputs(target, fresh);
         process.stderr.write(`[trials] prepared pair ${trial.index}/${set.trials.length} (${trial.order})\n`);
       }
       set.status = "prepared";
@@ -249,6 +262,7 @@ function measurement(report: PairReport, arm: ArmName, metric: Metric): number |
   // This aggregate measures native controller time, not recovered container duration.
   if (metric === "agent_seconds") return item.result && !item.result.recovery ? item.result.agent_elapsed_ms / 1000 : null;
   if (metric === "grader_seconds") return item.result?.grade ? item.result.grade.elapsed_ms / 1000 : null;
+  if (metric === "estimated_api_usd" && !report.reliability?.attempts.find(attempt => attempt.arm === arm)?.cost_eligible) return null;
   return item.usage?.totals[metric] ?? null;
 }
 export function aggregatePairs(reports: PairReport[], baseline: ArmName = "stock", treatment: ArmName = "current") {
@@ -292,6 +306,7 @@ async function reportTrialsUnlocked(directory: string, set: TrialSet): Promise<s
         || JSON.stringify(report.setup.trial) !== JSON.stringify(state.trial)) throw new Error("pair report identity mismatch");
       if (trial.status !== "complete" || state.status !== "complete" || state.finishing?.status !== "complete"
         || state.invalidity_reasons?.length || report.measurement_complete !== true) reason = "incomplete or invalid paired measurement";
+      if (report.reliability?.schema !== "codex-ab.reliability.v1") reason = "verified scored-attempt evidence is unavailable";
       if (report.comparison_exclusion) reason = report.comparison_exclusion;
     } catch (error) { reason = String(error); report = null; markdown = "No verified pair report is available; retained evidence is under trials/."; }
     rows.push({ trial, eligible: reason === null, reason, report });
@@ -299,15 +314,71 @@ async function reportTrialsUnlocked(directory: string, set: TrialSet): Promise<s
   }
   const eligible = rows.filter(row => row.eligible).map(row => row.report!);
   const arms = Object.keys(set.controls.arms ?? { stock: {}, current: {} });
+  const verifiedPass = (report: PairReport | null, arm: ArmName) => {
+    const attempt = report?.reliability?.attempts.find(item => item.arm === arm);
+    return !!attempt && classifyAttempt(attempt) === "pass";
+  };
   const baselineComparisons = Object.fromEntries(arms.slice(1).map(arm => [arm, aggregatePairs(eligible, arms[0]!, arm)]));
+  const jointSuccessComparisons = Object.fromEntries(arms.slice(1).map(arm => [arm, aggregatePairs(
+    eligible.filter(report => verifiedPass(report, arms[0]!) && verifiedPass(report, arm)), arms[0]!, arm)]));
+  const taskId = set.controls.task_pack ? `${set.controls.task_pack.id}@${set.controls.task_pack.sha256}`
+    : set.controls.task?.sha256 ? `${set.controls.source?.base_commit ?? "unknown-base"}:${set.controls.task.sha256}` : `unknown-task:${set.controls_sha256}`;
+  const attempts = rows.flatMap(row => arms.map(arm => {
+    const retained = row.report?.reliability?.schema === "codex-ab.reliability.v1"
+      ? row.report.reliability.attempts.filter(item => item.arm === arm) : [];
+    if (retained.length > 1) throw new Error("duplicate retained reliability arm");
+    if (retained[0]) {
+      if (retained[0].source !== "fresh" || retained[0].schedule !== set.schedule
+        && retained[0].schedule !== row.trial.order) throw new Error("trial reliability source or schedule changed");
+      return { ...retained[0], task_id: taskId, attempt_id: row.trial.run_id, schedule: set.schedule };
+    }
+    return unavailableAttempt({ attempt_id: row.trial.run_id, task_id: taskId, arm, schedule: set.schedule,
+      not_started: row.trial.status === "prepared", legacy: !!row.report });
+  }));
+  const reliability = reliabilityReport(attempts);
+  const observations: Record<string, PairedObservation[]> = {};
+  for (const arm of arms.slice(1)) {
+    const baseline = arms[0]!;
+    for (const metric of ["pass_rate", "joint_success_agent_seconds", "joint_success_estimated_api_usd"] as const) {
+      observations[`${arm}_minus_${baseline}.${metric}`] = rows.map(row => {
+        const a = attempts.find(item => item.attempt_id === row.trial.run_id && item.arm === baseline)!;
+        const b = attempts.find(item => item.attempt_id === row.trial.run_id && item.arm === arm)!;
+        const joint = row.eligible && verifiedPass(row.report, baseline) && verifiedPass(row.report, arm);
+        const measure = (name: string, attempt: ReliabilityAttempt): number | null => metric === "pass_rate"
+          ? attemptIsScored(attempt) ? classifyAttempt(attempt) === "pass" ? 1 : 0 : null
+          : !joint || !row.report ? null : metric === "joint_success_estimated_api_usd"
+            ? attempt.cost_eligible ? measurement(row.report, name, "estimated_api_usd") : null
+            : measurement(row.report, name, "agent_seconds");
+        return { task_id: taskId, attempt_id: row.trial.run_id, source: "fresh", schedule: set.schedule,
+          baseline: measure(baseline, a), treatment: measure(arm, b) };
+      });
+    }
+  }
+  const uncertainty = Object.fromEntries(Object.entries(observations).map(([key, values]) => [key, pairedUncertaintyByCohort(values)]));
+  const factorial = set.controls.experiment ? Object.fromEntries(["pass_rate", "joint_success_agent_seconds", "joint_success_estimated_api_usd"].map(metric => {
+    const values: FactorialObservation[] = rows.map(row => {
+      const joint = row.eligible && Object.values(GUIDANCE_LAUNCHER_CELLS).every(cell => verifiedPass(row.report, cell.arm));
+      return { task_id: taskId, attempt_id: row.trial.run_id, source: "fresh", schedule: set.schedule,
+        cells: Object.fromEntries(Object.entries(GUIDANCE_LAUNCHER_CELLS).map(([cell, { arm }]) => {
+          const attempt = attempts.find(item => item.attempt_id === row.trial.run_id && item.arm === arm)!;
+          const value = metric === "pass_rate" ? attemptIsScored(attempt) ? classifyAttempt(attempt) === "pass" ? 1 : 0 : null
+            : !joint || !row.report ? null : metric === "joint_success_estimated_api_usd"
+              ? attempt.cost_eligible ? measurement(row.report, arm, "estimated_api_usd") : null
+              : measurement(row.report, arm, "agent_seconds");
+          return [cell, value];
+        })) as FactorialObservation["cells"] };
+    });
+    return [metric, guidanceLauncherEffects(values)];
+  })) : null;
   const judgeValues = rows.flatMap(row => {
     const usage = row.report?.judge?.usage;
     return usage?.complete && finite(usage.totals.estimated_api_usd) ? [usage.totals.estimated_api_usd] : [];
   });
   const winners = Object.fromEntries([...arms, "tie", "none"].map(winner => [winner, eligible.filter(report => report.winner === winner).length]));
-  const result = { schema: "codex-ab.trial-report.v1", generated_at: new Date().toISOString(), trial_set: set,
+  const result = { schema: "codex-ab.trial-report.v2", generated_at: new Date().toISOString(), trial_set: set,
     planned_pairs: set.trials.length, eligible_pairs: eligible.length, winners, current_minus_stock: baselineComparisons.current,
     baseline_arm: arms[0], baseline_comparisons: baselineComparisons, arm_labels: armLabels(set.controls),
+    joint_success_comparisons: jointSuccessComparisons, reliability, uncertainty, factorial,
     judge_estimated_api_usd: { ...summarize(judgeValues), total: judgeValues.length ? judgeValues.reduce((a, b) => a + b, 0) : null },
     pairs: rows };
   const display = (value: number | null): string => value === null ? "unavailable" : String(Number(value.toFixed(6)));
@@ -330,11 +401,27 @@ percent differences additionally omit zero A baselines. Differences are B minus 
 Judge costs below are separate from arm costs. Pair checks, usage, timing, pricing and source
 judgments are included inline after the summary; machine evidence is retained under trials/.
 
+${reliabilityMarkdown(reliability, labels)}
+
+${uncertaintyMarkdown(uncertainty)}
+
+${factorial ? `## Guidance and launcher interaction\n\nCells: A minimal/direct, B minimal/Mekugi, C current/direct, D current/Mekugi. The retained plan pins shared controls. Each metric reports B-A, C-A, D-C and (D-C)-(B-A), with its own matched coverage.\n\n${Object.entries(factorial).map(([metric, effect]) => uncertaintyMarkdown(Object.fromEntries(Object.entries(effect).filter(([key]) => key.endsWith("_A") || key.endsWith("_C")).map(([key, value]) => [`${metric}.${key}`, value])) as Parameters<typeof uncertaintyMarkdown>[0])).join("\n")}` : ""}
+
+## All valid paired measurements
+
 ${Object.entries(baselineComparisons).map(([arm, values]) => `## ${labels[arm]} minus ${labels[arms[0]!]}
 
 | Metric | paired n | mean baseline | mean setup | mean difference | median difference | sample SD | percent n | mean % |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 ${Object.entries(values).map(([key, value]) => `| ${key} | ${value.difference.n} | ${display(value.stock.mean)} | ${display(value.current.mean)} | ${display(value.difference.mean)} | ${display(value.difference.median)} | ${display(value.difference.sample_sd)} | ${value.percent.n} | ${display(value.percent.mean)} |`).join("\n")}`).join("\n\n")}
+
+## Joint-success comparisons
+
+Only complete valid pairs where both compared candidates passed contribute. The scored-attempt view above can rank setups differently because it includes failed attempts.
+
+| Comparison | Agent-time pairs | Mean seconds difference | Cost pairs | Mean USD difference |
+| --- | ---: | ---: | ---: | ---: |
+${Object.entries(jointSuccessComparisons).map(([arm, values]) => `| ${labels[arm]} minus ${labels[arms[0]!]} | ${values.agent_seconds.difference.n} | ${display(values.agent_seconds.difference.mean)} | ${values.estimated_api_usd.difference.n} | ${display(values.estimated_api_usd.difference.mean)} |`).join("\n")}
 
 Eligible-run winners: ${Object.entries(winners).map(([arm, count]) => `${labels[arm] ?? arm}: ${count}`).join(", ")}. This count is descriptive, not an aggregate winner claim.
 

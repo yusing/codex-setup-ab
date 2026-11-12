@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { sessionDiagnostics } from "./diagnostics";
 import {
   applyMekugiProviderUsage,
+  costRankingEligible,
   embeddedFallbackPricing,
   fetchPricing,
   meterGrokHome,
@@ -489,6 +490,82 @@ test("meterGrokHome marks an unpriced session incomplete", async () => {
   expect(result.warnings.join("\n")).toContain("no API price for Grok model unknown-grok");
 });
 
+test.each([-20, 0.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN])("rejects invalid Grok counters (%s) instead of producing a complete cost", async outputTokens => {
+  const home = await mkdtemp(join(tmpdir(), "codex-ab-invalid-grok-"));
+  temporaryHomes.push(home);
+  await mkdir(join(home, "sessions/one"), { recursive: true });
+  await writeFile(join(home, "sessions/one/usage.json"), JSON.stringify({ sessionId: "one", session: {
+    inputTokens: 100, cachedReadTokens: 0, cacheCreationTokens: 0, outputTokens, reasoningTokens: 0,
+    totalTokens: 100 + outputTokens, modelCalls: 1, primaryModelId: "test-model",
+  } }));
+  const result = await meterGrokHome(home, pricing({ "test-model": rate() }));
+  expect(result.complete).toBe(false);
+  expect(result.totals.estimated_api_usd).toBeNull();
+  expect(result.agents).toHaveLength(0);
+});
+
+test("a failed provider attempt with missing usage remains unknown", () => {
+  const metered = { complete: true, warnings: [], sessions: [], agents: [],
+    totals: { ...usage(), command_seconds: 0, estimated_api_usd: 0 } } as MeteredRollouts;
+  const before = structuredClone(metered);
+  expect(applyMekugiProviderUsage(metered, { exchanges: [{ sequence: 1, request_kind: "turn", thread_id: "root",
+    provider_attempts: [{ model: "test-model", status: "failed" }] }] })).toContain("without complete usage");
+  expect(metered).toEqual(before);
+});
+
+test("usage observation, request coverage, and pricing precision stay distinct", async () => {
+  const home = await homeWith({ "observed.jsonl": [meta("observed"), model("test-model"),
+    record("observed", "only-retained-request", usage({ input_tokens: 100, total_tokens: 100 }))] });
+  const observed = await meterRollouts(home, pricing({ "test-model": rate() }));
+  expect(observed).toMatchObject({ measurement_schema: "codex-ab.usage.v2", observation_validity: "valid",
+    request_coverage: "unverified", pricing_precision: "per-request" });
+  expect(costRankingEligible(observed)).toBe(false);
+  const unpriced = await meterRollouts(home, pricing({}));
+  expect(unpriced.observation_validity).toBe("valid");
+  expect(unpriced.pricing_precision).toBe("unavailable");
+  const empty = await homeWith({ "zero.jsonl": [meta("zero"), model("test-model"), record("zero", "zero-request", usage())] });
+  const zero = await meterRollouts(empty, pricing({ "test-model": rate() }));
+  expect(zero.observation_validity).toBe("valid");
+  expect(zero.totals.estimated_api_usd).toBe(0);
+  expect(costRankingEligible(zero)).toBe(false);
+  const absent = await homeWith({ "absent.jsonl": [meta("absent"), model("test-model")] });
+  const missing = await meterRollouts(absent, pricing({ "test-model": rate() }));
+  expect(missing.observation_validity).toBe("unavailable");
+  expect(missing.totals.estimated_api_usd).toBeNull();
+});
+
+test("cumulative-only estimates remain approximate around a long-context threshold", async () => {
+  const home = await homeWith({ "aggregate.jsonl": [meta("aggregate"), model("test-model"),
+    { type: "event_msg", payload: { type: "token_count", info: {
+      total_token_usage: usage({ input_tokens: 300_000, total_tokens: 300_000 }),
+    } } }] });
+  const result = await meterRollouts(home, pricing({ "test-model": rate({ overrides: [{ min_prompt_tokens: 272_000, prompt: 0.002 }] }) }));
+  expect(result.pricing_precision).toBe("approximate");
+  expect(result.totals.estimated_api_usd).toBe(600);
+  expect(costRankingEligible({ ...result, request_coverage: "verified" })).toBe(false);
+});
+
+test("delegated cumulative counters are not added to child or request records", async () => {
+  const aggregate = usage({ input_tokens: 300, total_tokens: 300 });
+  const home = await homeWith({
+    "parent.jsonl": [meta("parent"), model("test-model"), { type: "event_msg", payload: { type: "token_count", info: { total_token_usage: aggregate } } }],
+    "child.jsonl": [meta("child", "parent"), model("test-model"), record("child", "child-request", usage({ input_tokens: 200, total_tokens: 200 }))],
+  });
+  const result = await meterRollouts(home, pricing({ "test-model": rate() }));
+  expect(result.totals.input_tokens).toBe(200);
+  expect(result.totals.estimated_api_usd).toBeNull();
+  expect(result.request_coverage).toBe("partial");
+  expect(result.unreconciled_cumulative).toEqual([{ thread_id: "parent", model: "test-model", usage: aggregate }]);
+});
+
+test.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1, Infinity, NaN])("rejects invalid Codex scalar counters (%s)", async input => {
+  const home = await homeWith({ "invalid.jsonl": [meta("invalid"), model("test-model"),
+    record("invalid", "request", usage({ input_tokens: input, total_tokens: input }))] });
+  const result = await meterRollouts(home, pricing({ "test-model": rate() }));
+  expect(result.observation_validity).toBe("unavailable");
+  expect(result.totals.estimated_api_usd).toBeNull();
+});
+
 test("explicit exclusions remove deduplicated requests and commands without cumulative fallback", async () => {
   const consumed = usage({ input_tokens: 100, output_tokens: 10, total_tokens: 110 });
   const home = await homeWith({
@@ -518,7 +595,7 @@ test("explicit exclusions remove deduplicated requests and commands without cumu
 
 describe("applyMekugiProviderUsage", () => {
   const attempt = (input: number, cached: number, output: number, model = "gpt-6-sol") => ({
-    model, status: "completed", usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, reasoning_tokens: 1 },
+    model, status: "completed", usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output, reasoning_tokens: Math.min(output, 1) },
   });
   const rollout = (): MeteredRollouts => ({
     complete: true, warnings: [],
@@ -538,16 +615,16 @@ describe("applyMekugiProviderUsage", () => {
       { sequence: 1, request_kind: "prewarm", thread_id: "root", provider_attempts: [attempt(90, 0, 0)] },
       { sequence: 2, request_kind: "turn", thread_id: "root", provider_attempts: [attempt(100, 0, 10)] },
       { sequence: 3, request_kind: "turn", thread_id: "root", provider_attempts: [attempt(180, 100, 5), attempt(200, 180, 20)] },
-      { sequence: 4, request_kind: "turn", thread_id: "root", provider_attempts: [{ model: "gpt-6-sol", status: "failed" }] },
+      { sequence: 4, request_kind: "turn", thread_id: "root", provider_attempts: [{ ...attempt(0, 0, 0), status: "failed" }] },
     ] })).toBeNull();
     expect(metered.agents).toHaveLength(1);
     expect(metered.agents[0]).toMatchObject({
-      method: "mekugi_capture.provider_attempts", request_count: 3, mean_input_tokens: 160, max_input_tokens: 200,
+      method: "mekugi_capture.provider_attempts", request_count: 4, mean_input_tokens: 120, max_input_tokens: 200,
       usage: usage({ input_tokens: 480, cached_input_tokens: 280, output_tokens: 35, reasoning_output_tokens: 3, total_tokens: 515 }),
     });
     expect(metered.totals).toMatchObject({ input_tokens: 480, total_tokens: 515, command_seconds: 1.5 });
     expect(metered.codex_visible_requests).toEqual({ root: 2 });
-    expect(metered.warnings.at(-1)).toContain("3 validated provider attempts, excluding prewarm; the Codex rollout recorded 2 requests and 300 input tokens");
+    expect(metered.warnings.at(-1)).toContain("4 validated provider attempts, excluding prewarm; the Codex rollout recorded 2 requests and 300 input tokens");
   });
 
   test("meters every runtime atomically while retaining local journal identities and unknown global ordering", () => {
@@ -632,6 +709,23 @@ describe("applyMekugiProviderUsage", () => {
     expect(metered.agents[0]?.estimated_api_usd).toBeCloseTo(0.578);
     expect(metered.totals.estimated_api_usd).toBeCloseTo(0.578);
     expect(metered.totals.command_seconds).toBe(1.5);
+  });
+
+  test("only externally validated complete capture establishes rankable request coverage", () => {
+    const metrics = { exchanges: [{ sequence: 1, request_kind: "turn", thread_id: "root", provider_attempts: [attempt(0, 0, 0)] }] };
+    const prices = pricing({ "gpt-6-sol": rate() });
+    const raw = rollout();
+    expect(applyMekugiProviderUsage(raw, metrics, prices)).toBeNull();
+    expect(raw.request_coverage).toBe("unverified");
+    expect(costRankingEligible(raw)).toBe(false);
+    const validated = rollout();
+    expect(applyMekugiProviderUsage(validated, metrics, prices, true)).toBeNull();
+    expect(validated.request_coverage).toBe("verified");
+    expect(validated.totals.estimated_api_usd).toBe(0);
+    expect(costRankingEligible(validated)).toBe(true);
+    expect(costRankingEligible({ ...validated, measurement_schema: undefined })).toBe(false);
+    const empty = { ...rollout(), agents: [], sessions: [] };
+    expect(applyMekugiProviderUsage(empty, { exchanges: [] }, prices, true)).toContain("zero usage is not established");
   });
 
   test("keeps rollout usage when capture and rollout disagree or usage is incomplete", () => {

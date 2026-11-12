@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { checkOutcome, retainedOutcome, validateCriteria, validateSemanticChecks } from "./semantic";
@@ -7,12 +7,38 @@ import { readFile } from "node:fs/promises";
 import { checked } from "./process";
 import { criterionAssessmentSchema, prepareSemanticAssessment, semanticHarnessSchema, semanticPromptEvidence, validateCriterionAssessments } from "./semantic-assessment";
 import type { CommandEvidence, RunState } from "./types";
+import { semanticCheckHash, type VerifierRecord } from "./semantic-protocol";
+
+const verification = { schema: "codex-ab.verification.v1" as const, cases: [
+  { id: "sum", kind: "command" as const, command: ["printf", "5"], stdin: "", expected_exit: 0, format: "text" as const, expected: "5" },
+] };
+const repair = { defect: "incorrect fixture adapter", retained_inputs: ["2, 3"], retained_assertions: ["sum equals 5"], retained_edge_cases: ["original case set"], retained_failure_conditions: ["wrong sum"] };
+async function supervisorFixture(options: containers.OwnedContainerOptions, status: VerifierRecord["status"]): Promise<void> {
+  const source = options.createArgs.find(arg => arg.endsWith(":/harness.json:ro"))!.slice(0, -":/harness.json:ro".length);
+  const output = options.createArgs.find(arg => arg.endsWith(":/verifier-results:rw"))!.slice(0, -":/verifier-results:rw".length);
+  const harness = JSON.parse(await readFile(source, "utf8"));
+  const cases = harness.verification?.cases ?? [];
+  await writeFile(join(output, "result.json"), JSON.stringify({
+    schema: "codex-ab.verifier-result.v1", check_sha256: harness.check_sha256,
+    status: status === "passed" && !cases.length ? "incomplete" : status,
+    expected: cases.length, completed: ["passed", "assertion_failure", "candidate_error"].includes(status) ? cases.length : 0,
+    detail: "Fixture supervisor evidence", cases: ["passed", "assertion_failure", "candidate_error"].includes(status)
+      ? cases.map((item: any) => ({ id: item.id, status: status === "passed" ? "pass" : "fail", exit_code: status === "passed" ? 0 : 1, stdout: "", stderr: "" })) : [],
+  }));
+}
+
 import * as containers from "./container";
+import * as qualification from "./semantic-qualification";
+const qualificationFixture = () => spyOn(qualification, "qualifySemanticCheck").mockImplementation(async options => ({
+  schema: "codex-ab.evaluator-qualification.v1", status: "qualified", scope: [options.check.criterion],
+  check_sha256: semanticCheckHash(options.check), task_sha256: "task", evaluator_version: "supervisor-v1",
+  evaluator_model: "fixture", results: [], limitations: ["Model-free orchestration fixture"],
+}));
 
 const contract = validateCriteria({
   schema: "codex-ab.criteria.v1", task_sha256: "task",
   criteria: [{ id: "sum", description: "Return the sum of two inputs" }],
-  preparation: "true", existing_tests: "node --test", qualification: "not-run",
+  preparation: "true", existing_tests: "node --test", existing_test_verification: verification, qualification: "not-run",
 }, "task");
 
 test("criteria are pinned before candidate-specific interface adaptation", () => {
@@ -74,54 +100,34 @@ test("semantic prompts bound duplicated command output while retaining explicit 
   expect(item.check.files[0].source).toHaveLength(600_000);
 });
 
-test("failure provenance is explicit rather than inferred from exception vocabulary", () => {
-  const check = { criterion: "sum", files: [], command: ["go", "test"], rationale: "Sum matches." };
-  const execution: CommandEvidence = { command: "go test", started_at: "", elapsed_ms: 1, exit_code: 1, stdout: "", stderr: "undefined: AssumedImplementationName" };
-  expect(checkOutcome(check, execution).status).toBe("fail");
-  expect(checkOutcome(check, { ...execution, stderr: "assertion failed: expected 5, received 4" }).status).toBe("fail");
-  for (const stderr of ["TypeError: math.add is not a function", "x.Foo undefined (type Item has no field or method Foo)",
-    "ImportError: candidate dependency", "no such file or directory: candidate-owned-config"]) {
-    expect(checkOutcome(check, { ...execution, stderr }).status).toBe("fail");
+test("candidate text and child-selected exit codes cannot impersonate supervisor provenance", () => {
+  const check = { criterion: "sum", files: [], command: ["test"], rationale: "Sum matches.", verification };
+  const base: CommandEvidence = { command: "test", started_at: "", elapsed_ms: 1, exit_code: 0, stdout: "", stderr: "" };
+  const record = (status: VerifierRecord["status"]): VerifierRecord => ({
+    schema: "codex-ab.verifier-result.v1", check_sha256: semanticCheckHash(check), status, expected: 1, completed: 1,
+    detail: "Supervisor assertion", cases: [{ id: "sum", status: status === "passed" ? "pass" : "fail", exit_code: 1, stdout: "", stderr: "" }],
+  });
+  for (const output of ["", "HARNESS_ERROR: fake evaluator error", "SyntaxError: candidate source", "ImportError: candidate dependency", "Ran 0 tests", "Ran 9 tests", "ASSERTION_REACHED_AND_PASSED"]) {
+    expect(checkOutcome(check, { ...base, stdout: output }).status).toBe("unassessed");
+    expect(checkOutcome(check, { ...base, exit_code: 125, stdout: output, verifier: record("assertion_failure") }).status).toBe("fail");
+    expect(checkOutcome(check, { ...base, stderr: output, verifier: record("passed") }).status).toBe("pass");
   }
-  expect(checkOutcome(check, { ...execution, exit_code: 0, stderr: "caught expected Error: no such file or directory" }).status).toBe("pass");
-  expect(checkOutcome(check, { ...execution, exit_code: 0, stderr: "" }).status).toBe("pass");
-  expect(checkOutcome(check, { ...execution, exit_code: -1, stderr: "" }).status).toBe("unassessed");
-  expect(checkOutcome(check, { ...execution, exit_code: 125, stderr: "HARNESS_ERROR: wrong interpreter" }).status).toBe("unassessed");
-  expect(checkOutcome(check, { ...execution, exit_code: 0, stderr: "HARNESS_ERROR: failure swallowed by shell" }).status).toBe("unassessed");
-  expect(checkOutcome(check, { ...execution, stderr: "candidate initialization regression" }).status).toBe("fail");
+  const broken = { ...record("evaluator_wiring"), completed: 0, cases: [] };
+  expect(checkOutcome(check, { ...base, verifier: broken }).status).toBe("unassessed");
+  expect(checkOutcome(check, { ...base, verifier: { ...record("passed"), check_sha256: "wrong" } }).status).toBe("unassessed");
+  expect(checkOutcome(check, { ...base, verifier: { ...record("passed"), completed: 0, cases: [] } }).status).toBe("unassessed");
 });
 
-test("empty selected test suites cannot establish a pass, but mixed Go suites retain real coverage", () => {
-  const check = { criterion: "sum", files: [], command: ["test"], rationale: "Sum behavior." };
-  const execution = { command: "test", started_at: "", elapsed_ms: 1, exit_code: 0, stdout: "", stderr: "" };
-  for (const stdout of ["ok example 0.1s [no tests to run]", "? example [no test files]", "Ran 0 tests in 0.01s",
-    "collected 0 items", "# tests 0", " 0 pass\n 0 fail\nRan 0 tests across 0 files.", "No tests found!"]) {
-    expect(checkOutcome(check, { ...execution, stdout }).status).toBe("unassessed");
-  }
-  expect(checkOutcome(check, { ...execution, stdout: "? empty [no test files]\nok tested 0.2s\n" }).status).toBe("pass");
-  for (const stdout of ["Ran 0 tests in 0.01s\nRan 2 tests in 0.02s", "# tests 0\n# tests 2",
-    "collected 0 items\ncollected 3 items", "No tests found!\n 2 pass\nRan 2 tests across 1 file."]) {
-    expect(checkOutcome(check, { ...execution, stdout }).status).toBe("pass");
-  }
-  for (const stdout of [" 0 pass\n 1 fail\nRan 1 test across 1 file.",
-    "? empty [no test files]\nassertion failed\nFAIL tested 0.2s\nFAIL", "Ran 0 tests\nsetup failed"]) {
-    expect(checkOutcome(check, { ...execution, exit_code: 1, stdout }).status).toBe("fail");
-  }
-});
-
-test("retained baseline tests declare relative patterns and leave internal build breaks unassessed", () => {
+test("retained baseline tests keep candidate compile failures rather than relabeling output", () => {
   const retained = { patterns: ["*_test.go"], command: "go test ." };
   expect(validateCriteria({ ...contract, retained_tests: retained }, "task").retained_tests).toEqual(retained);
   for (const value of [{ ...retained, patterns: [] }, { ...retained, command: "" }, { ...retained, patterns: ["../x_test.go"] },
     { ...retained, patterns: ["/abs_test.go"] }, { ...retained, patterns: [".git/*"] }, "go test ."]) {
     expect(() => validateCriteria({ ...contract, retained_tests: value }, "task")).toThrow("retained_tests");
   }
-  const check = { criterion: "__retained_tests", files: [], command: ["go", "test"], rationale: "Baseline tests pass." };
-  const execution: CommandEvidence = { command: "go test", started_at: "", elapsed_ms: 1, exit_code: 1, stdout: "", stderr: "" };
-  const built = (stdout: string) => retainedOutcome(checkOutcome(check, { ...execution, stdout }));
-  expect(built("# example\n./a_test.go:3:2: undefined: helper\nFAIL\texample [build failed]\nFAIL").status).toBe("unassessed");
-  expect(built("--- FAIL: TestHelp (0.00s)\n    help_test.go:9: missing usage\nFAIL\nFAIL\texample\t0.1s\nFAIL").status).toBe("fail");
-  expect(retainedOutcome(checkOutcome(check, { ...execution, exit_code: 0, stdout: "ok\texample\t0.1s" })).status).toBe("pass");
+  const evidence = { criterion: "__retained_tests", status: "fail" as const, basis: "executed" as const, reasoning: "Candidate failed",
+    execution: { command: "go test", started_at: "", elapsed_ms: 1, exit_code: 1, stdout: "FAIL example [build failed]", stderr: "" } };
+  expect(retainedOutcome(evidence).status).toBe("fail");
 });
 
 test("retained baseline tests run baseline files against each candidate as separate evidence", async () => {
@@ -134,19 +140,21 @@ test("retained baseline tests run baseline files against each candidate as separ
   await git("-C", source, "commit", "-qm", "base");
   const base = (await checked(["git", "-C", source, "rev-parse", "HEAD"])).stdout.trim();
   await git("clone", "-q", "--bare", source, join(root, "seed.git"));
-  const state = { id: "fixture-run", image: "fixture", source: { base_commit: base }, execution: { current_launcher: "codex" }, timeout_seconds: 1,
+  const state = { id: "fixture-run", image: "fixture", task: { sha256: "task" }, source: { base_commit: base }, execution: { current_launcher: "codex" }, timeout_seconds: 1,
     resource_limits: { cpus: "1", memory: "1g" }, results: { stock: { grade: { elapsed_ms: 0 } } } } as unknown as RunState;
   const fixed = validateCriteria({ ...contract, retained_tests: { patterns: ["*_test.go"], command: "go test ." } }, "task");
   const mounts: string[][] = [];
+  const qualified = qualificationFixture();
   const run = spyOn(containers, "runOwnedContainer").mockImplementation(async options => {
     mounts.push(options.createArgs.filter(arg => arg.endsWith(":/baseline:ro")));
     const retained = options.name.includes("-retained-");
+    await supervisorFixture(options, retained ? "candidate_error" : "passed");
     return { exitCode: retained ? 1 : 0, stdout: retained ? "--- FAIL: TestHelp\nFAIL\texample\t0.1s" : "ok\texample\t0.1s", stderr: "", elapsedMs: 1, timedOut: false, canceled: false };
   });
   let prompt = "";
   try {
     const evidence = await prepareSemanticAssessment({ runDir: root, state, contract: fixed, pass: 1, order: ["stock"], docker: "unused", persistState: async () => {},
-      ask: async (_stage, text) => { prompt = text; return { "candidate-1": [{ criterion: "sum", files: [], command: ["test"], rationale: "Sum behavior" }] }; } });
+      ask: async (_stage, text) => { prompt = text; return { "candidate-1": [{ criterion: "sum", files: [], command: ["test"], rationale: "Sum behavior", verification, repair }] }; } });
     expect(evidence.existing_tests["candidate-1"].status).toBe("pass");
     expect(evidence.retained_tests?.["candidate-1"].status).toBe("fail");
     expect(evidence.candidates["candidate-1"].map(item => item.criterion)).toEqual(["sum"]);
@@ -157,19 +165,53 @@ test("retained baseline tests run baseline files against each candidate as separ
     expect(harness.retained).toEqual({ patterns: ["*_test.go"] });
     expect(prompt).toContain("Retained baseline tests ran the unchanged baseline test files");
     expect(semanticPromptEvidence(evidence).retained_tests?.["candidate-1"].status).toBe("fail");
-  } finally { run.mockRestore(); await rm(root, { recursive: true, force: true }); }
+  } finally { run.mockRestore(); qualified.mockRestore(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("original existing command executes once and stays diagnostic beside independent observations", async () => {
+  const root = await mkdtemp(join(tmpdir(), "semantic-existing-command-"));
+  const state = { id: "existing-command", image: "fixture", task: { sha256: "task" }, execution: { current_launcher: "codex" },
+    timeout_seconds: 1, resource_limits: { cpus: "1", memory: "1g" }, results: { stock: { grade: { elapsed_ms: 0 } } } } as unknown as RunState;
+  const qualified = qualificationFixture();
+  const diagnostics: string[][] = [];
+  const run = spyOn(containers, "runOwnedContainer").mockImplementation(async options => {
+    const original = options.name.endsWith("-__existing_test_command");
+    const source = options.createArgs.find(arg => arg.endsWith(":/harness.json:ro"))!.slice(0, -":/harness.json:ro".length);
+    if (original) diagnostics.push(JSON.parse(await readFile(source, "utf8")).command);
+    await supervisorFixture(options, original ? "candidate_error" : "passed");
+    return { exitCode: original ? 1 : 0, stdout: original ? "Original suite failed" : "observed", stderr: "", elapsedMs: 2,
+      timedOut: false, canceled: false, cleanupVerified: true };
+  });
+  try {
+    const evidence = await prepareSemanticAssessment({ runDir: root, state, contract, pass: 1, order: ["stock"], docker: "unused", persistState: async () => {},
+      ask: async () => ({ "candidate-1": [{ criterion: "sum", files: [], command: ["true"], rationale: "Sum behavior", verification }] }) });
+    expect(diagnostics).toEqual([["sh", "-lc", contract.existing_tests]]);
+    expect(evidence.existing_tests["candidate-1"].status).toBe("pass");
+    expect(evidence.existing_test_commands?.["candidate-1"]).toMatchObject({ status: "unassessed", execution: { exit_code: 1, stdout: "Original suite failed" } });
+    expect(evidence.candidates["candidate-1"].map(item => item.status)).toEqual(["pass"]);
+    const saved = await Bun.file(join(root, "evaluator/semantic/pass-1/existing-command/candidate-1/__existing_test_command/evidence.json")).json();
+    expect(saved.status).toBe("unassessed");
+    expect(saved.reasoning).toContain("non-gating diagnostic");
+    expect(semanticPromptEvidence(evidence).existing_test_commands?.["candidate-1"].execution?.exit_code).toBe(1);
+    const replay = await prepareSemanticAssessment({ runDir: root, state, contract, pass: 1, order: ["stock"], docker: "unused", persistState: async () => {},
+      reuseSaved: true, ask: async () => { throw Error("completed rounds must replay"); } });
+    expect(diagnostics).toHaveLength(1);
+    expect(replay.existing_test_commands).toEqual(evidence.existing_test_commands);
+  } finally { run.mockRestore(); qualified.mockRestore(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("repair preserves behavioral failures and only replaces unassessed checks", async () => {
   const root = await mkdtemp(join(tmpdir(), "semantic-repair-"));
-  const state = { id: "repair", image: "fixture", execution: { current_launcher: "codex" }, timeout_seconds: 1, resource_limits: { cpus: "1", memory: "1g" },
+  const state = { id: "repair", image: "fixture", task: { sha256: "task" }, execution: { current_launcher: "codex" }, timeout_seconds: 1, resource_limits: { cpus: "1", memory: "1g" },
     results: { stock: { grade: { elapsed_ms: 0 } }, current: { grade: { elapsed_ms: 0 } } } } as unknown as RunState;
   const fixed = { ...contract, criteria: [...contract.criteria, { id: "broken", description: "Exercise its real entry point" }] };
   const executed: string[] = [];
+  const qualified = qualificationFixture();
   const run = spyOn(containers, "runOwnedContainer").mockImplementation(async options => {
     executed.push(options.name);
     const broken = options.name.includes("round-1") && options.name.endsWith("-broken");
     const failed = options.name.endsWith("-sum");
+    await supervisorFixture(options, broken ? "evaluator_wiring" : failed ? "assertion_failure" : "passed");
     return { exitCode: broken ? 125 : failed ? 1 : 0, stdout: "", stderr: broken ? "HARNESS_ERROR: incorrect adapter" : failed ? "assertion failed" : "",
       elapsedMs: 1, timedOut: false, canceled: false };
   });
@@ -182,27 +224,31 @@ test("repair preserves behavioral failures and only replaces unassessed checks",
         // A malicious or mistaken repair also submits a passing replacement for
         // the real failure. The runner must not execute or accept it.
         return Object.fromEntries(["candidate-1", "candidate-2"].map(id => [id, fixed.criteria.map(item => ({
-          criterion: item.id, command: ["test"], files: [], rationale: "Check required behavior",
+          criterion: item.id, command: ["test"], files: [], rationale: "Check required behavior", verification, repair,
         }))]));
       } });
     expect(stages).toEqual(["harness-1", "harness-2"]);
     expect(executed.filter(name => name.includes("round-2") && name.endsWith("-sum"))).toHaveLength(0);
     expect(evidence.candidates["candidate-1"].map(item => item.status)).toEqual(["fail", "pass"]);
     expect(evidence.history["candidate-1"].filter(item => item.criterion === "sum")).toHaveLength(1);
-  } finally { run.mockRestore(); await rm(root, { recursive: true, force: true }); }
+  } finally { run.mockRestore(); qualified.mockRestore(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("a purely behavioral failure does not buy another harness-authoring round", async () => {
   const root = await mkdtemp(join(tmpdir(), "semantic-no-repair-"));
-  const state = { id: "failed", image: "fixture", execution: { current_launcher: "codex" }, timeout_seconds: 1, resource_limits: { cpus: "1", memory: "1g" },
+  const state = { id: "failed", image: "fixture", task: { sha256: "task" }, execution: { current_launcher: "codex" }, timeout_seconds: 1, resource_limits: { cpus: "1", memory: "1g" },
     results: { stock: { grade: { elapsed_ms: 0 } } } } as unknown as RunState;
-  const run = spyOn(containers, "runOwnedContainer").mockResolvedValue({ exitCode: 1, stdout: "", stderr: "assertion failed", elapsedMs: 1, timedOut: false, canceled: false });
+  const qualified = qualificationFixture();
+  const run = spyOn(containers, "runOwnedContainer").mockImplementation(async options => {
+    await supervisorFixture(options, "assertion_failure");
+    return { exitCode: 1, stdout: "", stderr: "assertion failed", elapsedMs: 1, timedOut: false, canceled: false, cleanupVerified: true };
+  });
   const stages: string[] = [];
   try {
     await prepareSemanticAssessment({ runDir: root, state, contract, pass: 1, order: ["stock"], docker: "unused", persistState: async () => {},
-      ask: async stage => { stages.push(stage); return { "candidate-1": [{ criterion: "sum", files: [], command: ["test"], rationale: "Sum behavior" }] }; } });
+      ask: async stage => { stages.push(stage); return { "candidate-1": [{ criterion: "sum", files: [], command: ["test"], rationale: "Sum behavior", verification, repair }] }; } });
     expect(stages).toEqual(["harness-1"]);
-  } finally { run.mockRestore(); await rm(root, { recursive: true, force: true }); }
+  } finally { run.mockRestore(); qualified.mockRestore(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("a missing explicit public interface is a source-only defect, not a failed invented harness", () => {

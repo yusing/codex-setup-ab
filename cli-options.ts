@@ -10,6 +10,8 @@ export const COMMAND_OPTIONS: Record<string, string[]> = {
     "run-trials": ["trial-set", "auth-file", "grok-auth-file", "docker-bin", "confirm-paid-inference"],
     "report-trials": ["trial-set"],
     preflight: ["run-dir", "docker-bin"],
+    "configure-fixed": ["run-dir", "config", "task-dir", "prompt-path"],
+    "verify-fixed": ["run-dir", "docker-bin", "arm", "config", "task-dir", "prompt-path"],
     run: ["evaluation-mode", "evaluation-baselines", "import-arms", "run-dir", "auth-file", "grok-auth-file", "docker-bin", "arm", "control-run", "control-bundle-sha256", "confirm-paid-inference"],
     finish: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference", "recover-judge"],
     reevaluate: ["run-dir", "output-parent", "auth-file", "docker-bin", "confirm-paid-inference"],

@@ -1,0 +1,176 @@
+import fnmatch, hashlib, importlib, json, os, pathlib, resource, shutil, signal, subprocess, sys, tempfile, time, traceback
+
+# This process only interprets data. Candidate code and authored shell commands
+# run in children with another UID, no capabilities, no credentials and no network.
+# The result directory and the expected values are never writable by that UID.
+candidate = pathlib.Path('/candidate')
+workspace = pathlib.Path('/tmp/evaluation')
+result_root = pathlib.Path('/verifier-results')
+harness = json.load(open('/harness.json'))
+deadline = time.monotonic() + harness['execution_timeout_seconds']
+uid, gid = harness['candidate_uid'], harness['candidate_gid']
+checks = harness.get('verification', {}).get('cases', [])
+record = dict(schema='codex-ab.verifier-result.v1', check_sha256=harness['check_sha256'],
+              status='executor_setup', completed=0, expected=len(checks), detail='', cases=[])
+
+def finish(status, detail, exit_code=0):
+    record['status'], record['detail'] = status, detail
+    path = result_root / 'result.json'
+    path.write_text(json.dumps(record, allow_nan=False))
+    # The enclosing mount is mode 0700 and inaccessible to the candidate UID.
+    # Readable file mode lets the host owner read results with rootless Docker's
+    # UID mapping too, without making the private directory traversable.
+    path.chmod(0o644)
+    raise SystemExit(exit_code)
+
+def child_identity():
+    os.setgroups([])
+    os.setgid(gid)
+    os.setuid(uid)
+    capabilities = dict(line.split(':', 1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
+    if any(int(capabilities.get(key, '0').strip(), 16) for key in ('CapEff', 'CapPrm', 'CapAmb')):
+        raise RuntimeError('Candidate capabilities did not clear after dropping privileges')
+    # Candidate stdout cannot exhaust the supervisor's disk or memory.
+    resource.setrlimit(resource.RLIMIT_FSIZE, (4 * 1024 * 1024, 4 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+def run(command, cwd, stdin=''):
+    budget = min(harness['case_timeout_seconds'], deadline - time.monotonic())
+    if budget <= 0: finish('timeout', 'The evaluator exhausted its command execution time budget.')
+    env = dict(os.environ)
+    env.update(HOME='/tmp/candidate-home', TMPDIR='/tmp/candidate-tmp',
+               XDG_CACHE_HOME='/tmp/candidate-home/.cache', GOCACHE='/tmp/candidate-home/go-build',
+               BUN_INSTALL_CACHE_DIR='/tmp/candidate-home/bun-cache', PIP_CACHE_DIR='/tmp/candidate-home/pip-cache',
+               PYTHONDONTWRITEBYTECODE='1')
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        process = subprocess.Popen(command, cwd=cwd, stdin=subprocess.PIPE, stdout=out, stderr=err,
+                                   env=env, preexec_fn=child_identity, start_new_session=True, close_fds=True)
+        timed_out = False
+        try:
+            process.communicate(stdin.encode(), timeout=budget)
+        except subprocess.TimeoutExpired:
+            # The root supervisor retains CAP_KILL; child_identity clears all
+            # effective/permitted/ambient capabilities before candidate code.
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            process.communicate()
+            timed_out = True
+        out.seek(0); err.seek(0)
+        stdout, stderr = out.read(4 * 1024 * 1024).decode(errors='replace'), err.read(4 * 1024 * 1024).decode(errors='replace')
+        sys.stdout.write(stdout); sys.stdout.flush()
+        sys.stderr.write(stderr); sys.stderr.flush()
+        if timed_out: finish('timeout', 'The candidate command exceeded its evaluator time budget.')
+        return process.returncode, stdout, stderr
+
+def identity(path):
+    if path.is_symlink(): return ['link', os.readlink(path)]
+    if path.is_file(): return ['file', hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mode & 0o7777]
+    return None
+
+def fingerprints(root):
+    return {str(path.relative_to(root)): identity(path) for path in root.rglob('*') if path.is_symlink() or path.is_file()}
+
+def own(root):
+    # Do not follow candidate symlinks while adjusting the private copy.
+    for path in [root, *root.rglob('*')]:
+        os.chown(path, uid, gid, follow_symlinks=False)
+
+def strict_json(value):
+    def invalid(value): raise ValueError('nonfinite JSON value')
+    return json.dumps(json.loads(value, parse_constant=invalid), sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+try:
+    if os.geteuid() != 0 or uid == 0 or gid == 0:
+        finish('executor_setup', 'Verifier requires a root supervisor and a distinct unprivileged candidate UID.')
+    if not result_root.is_dir() or (result_root.stat().st_mode & 0o077) or result_root.stat().st_uid == uid:
+        finish('executor_setup', 'Supervisor result directory must not be accessible to candidate users.')
+    harness_stat = pathlib.Path('/harness.json').stat()
+    if harness_stat.st_uid == uid or (harness_stat.st_mode & 0o077):
+        finish('executor_setup', 'Verifier expectations must be private to the supervisor.')
+    shutil.copytree(candidate, workspace, symlinks=True)
+    own(workspace)
+    for name in ('candidate-home', 'candidate-tmp'):
+        path = pathlib.Path('/tmp') / name
+        path.mkdir(mode=0o700)
+        os.chown(path, uid, gid)
+    baseline = fingerprints(workspace)
+    cache = pathlib.Path('/opt/task-deps/go-build')
+    if cache.is_dir(): (cache / 'trim.txt').write_text(str(int(time.time())))
+    # Both dependency preparation and arbitrary test commands are unprivileged.
+    code, _, _ = run(['sh', '-lc', harness.get('preparation', 'true')], workspace)
+    if code: finish('candidate_error', 'Candidate preparation failed through the predetermined setup.', 1)
+    for module in harness.get('evaluator_dependencies', []):
+        code, _, _ = run(['python3', '-I', '-c', 'import importlib.util,sys; sys.exit(0 if importlib.util.find_spec(sys.argv[1]) else 3)', module], '/tmp')
+        if code: finish('evaluator_wiring', 'Declared evaluator-only Python dependency is unavailable: ' + module)
+    cwd = workspace
+    retained = harness.get('retained')
+    if retained is not None:
+        cwd = pathlib.Path('/tmp/retained')
+        shutil.copytree(workspace, cwd, symlinks=True)
+        matches = lambda rel: rel.split('/')[0] != '.git' and any(fnmatch.fnmatchcase(rel, pattern) for pattern in retained['patterns'])
+        for path in list(cwd.rglob('*')):
+            if (path.is_symlink() or path.is_file()) and matches(str(path.relative_to(cwd))): path.unlink()
+        restored = 0
+        for path in pathlib.Path('/baseline').rglob('*'):
+            rel = str(path.relative_to('/baseline'))
+            if path.is_file() and not path.is_symlink() and matches(rel):
+                target = cwd / rel
+                if not target.resolve().is_relative_to(cwd): finish('evaluator_wiring', 'Retained test path traverses a symlink.')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+                restored += 1
+        if not restored: finish('evaluator_wiring', 'No baseline files match the retained test patterns.')
+        own(cwd)
+    for item in harness['files']:
+        target = workspace / item['path']
+        if target.exists() or target.is_symlink() or not target.resolve().is_relative_to(workspace):
+            finish('evaluator_wiring', 'Harness must not overwrite candidate files or traverse symlinks.')
+        # Authored Python syntax is checked by the supervisor without importing it.
+        if item['path'].endswith('.py'):
+            try: compile(item['source'], item['path'], 'exec')
+            except SyntaxError: finish('evaluator_wiring', 'Evaluator-authored Python source has invalid syntax.')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(item['source'])
+        os.chown(target, uid, gid)
+    own(workspace)
+    if not checks:
+        code, _, _ = run(harness['command'], cwd)
+        changed = [path for path, value in baseline.items() if identity(workspace / path) != value]
+        if changed: finish('evaluator_wiring', 'Check modified candidate files: ' + json.dumps(changed[:100]))
+        if code: finish('candidate_error', 'Candidate or shared-process test command failed; output is evidence, not supervisor provenance.', 1)
+        finish('incomplete', 'Legacy command exited zero without supervisor-owned assertions. Test output alone cannot attest completion.')
+    failure_kind = None
+    for case in checks:
+        command, stdin = case.get('command'), case.get('stdin', '')
+        if case['kind'] == 'python-call':
+            # This helper reports an observed value only. All expected values and
+            # assertions remain in the parent; a child success marker is ignored.
+            command = ['python3', '-I', '-c', '''import importlib,json,pathlib,sys
+sys.path.insert(0,str(pathlib.Path.cwd()))
+request=json.load(sys.stdin)
+target=importlib.import_module(request['module'])
+for part in request['callable'].split('.'): target=getattr(target,part)
+value=target(*request['args'],**request['kwargs'])
+print(json.dumps(value,allow_nan=False))
+''']
+            stdin = json.dumps(dict(json.loads(case['input']), module=case['module'], callable=case['callable']))
+        code, stdout, stderr = run(command, cwd, stdin)
+        wanted_code = case.get('expected_exit', 0)
+        passed = code == wanted_code
+        if passed:
+            try:
+                if case.get('format', 'json') == 'json': passed = strict_json(stdout) == strict_json(case['expected'])
+                else: passed = stdout == case['expected']
+            except (ValueError, TypeError): passed = False
+        record['cases'].append(dict(id=case['id'], status='pass' if passed else 'fail', exit_code=code,
+                                    stdout=stdout, stderr=stderr))
+        record['completed'] += 1
+        if not passed: failure_kind = 'candidate_error' if code != wanted_code else failure_kind or 'assertion_failure'
+    changed = [path for path, value in baseline.items() if identity(workspace / path) != value]
+    if changed: finish('candidate_error', 'Candidate execution modified its source files: ' + json.dumps(changed[:100]), 1)
+    finish(failure_kind or 'passed', 'Supervisor completed each required assertion.', 1 if failure_kind else 0)
+except FileNotFoundError as error:
+    finish('evaluator_wiring', 'Executor could not find a configured command or input: ' + str(error))
+except Exception as error:
+    traceback.print_exc()
+    finish('executor_setup', 'Supervisor failed: ' + type(error).__name__ + ': ' + str(error))
