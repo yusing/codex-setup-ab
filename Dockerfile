@@ -4,6 +4,22 @@ FROM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS node-toolchain
 FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS bun-toolchain
 
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS git-toolchain
+# Pinned source from the official Git distribution. Distro Git lacks the
+# --no-lazy-fetch capability used by the pinned coordination task.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl gcc make perl xz-utils \
+        libcurl4-openssl-dev libexpat1-dev libssl-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --fail --location --silent --show-error \
+        https://www.kernel.org/pub/software/scm/git/git-2.56.1.tar.xz -o /tmp/git.tar.xz \
+    && echo 'f0b0bf89264b9bd2e1c640363e7529643989da76281600473c50745cd34a607f  /tmp/git.tar.xz' | sha256sum --check --strict \
+    && mkdir /tmp/git \
+    && tar -xJf /tmp/git.tar.xz -C /tmp/git --strip-components=1 \
+    && make -C /tmp/git -j2 prefix=/opt/git NO_TCLTK=YesPlease NO_GETTEXT=YesPlease NO_RUST=YesPlease install \
+    && /opt/git/bin/git --no-lazy-fetch version
+
 FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 # Use public, digest-pinned official toolchains without inheriting Mekugi,
@@ -11,6 +27,7 @@ FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a
 COPY --from=go-toolchain /usr/local/go /usr/local/go
 COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
 COPY --from=bun-toolchain /usr/local/bin/bun /usr/local/bin/bun
+COPY --from=git-toolchain /opt/git /opt/git
 ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
 
 RUN apt-get update \
@@ -31,7 +48,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && go version \
     && node --version \
-    && bun --version
+    && bun --version \
+    && ln -s /opt/git/bin/* /usr/local/bin/ \
+    && git --no-lazy-fetch version
 
 # The comparison is bare Codex versus bare Codex. Copy the same audited
 # standalone CLI and its code-mode host used by both arms from an explicit

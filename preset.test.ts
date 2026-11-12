@@ -31,7 +31,7 @@ test("custom launch composes ordered launcher revisions and rejects incomplete i
   expect(() => launchConfiguration({ preset: "stock-current", arms: JSON.stringify(arms) })).toThrow("requires");
 });
 
-type ImageState = "matching" | "missing-bun" | "bun-error" | "stale-codex" | "stale-host" | "wrong-operator" | "wrong-operator-missing-host" | "missing" | "inspect-error" | "identity-error" | "hash-error";
+type ImageState = "matching" | "missing-bun" | "old-git" | "missing-git-https" | "bun-error" | "stale-codex" | "stale-host" | "wrong-operator" | "wrong-operator-missing-host" | "missing" | "inspect-error" | "identity-error" | "hash-error";
 
 async function imageProbe(state: ImageState) {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-preset-"));
@@ -61,6 +61,8 @@ case "$1" in
       *' bun --version '*)
         [ "$PRESET_STATE" != missing-bun ] || { echo 'bun not found' >&2; exit 127; }
         [ "$PRESET_STATE" != bun-error ] || { echo 'daemon unavailable' >&2; exit 125; }
+        [ "$PRESET_STATE" != old-git ] || { echo 'unknown option: --no-lazy-fetch' >&2; exit 11; }
+        [ "$PRESET_STATE" != missing-git-https ] || exit 12
         echo 1.4.2 ;;
       *' sha256sum '*)
         case "$PRESET_STATE" in hash-error|wrong-operator-missing-host) echo 'hash probe failed' >&2; exit 1 ;; esac
@@ -183,7 +185,8 @@ test("image verification reuses matching binaries and rebuilds stale identity or
   expect(matching.error).toBe("");
   expect(matching.calls).toContain("sha256sum /usr/local/bin/codex /usr/local/bin/codex-code-mode-host");
   expect(matching.calls).not.toContain("\nbuild ");
-  for (const state of ["stale-codex", "stale-host", "wrong-operator", "missing", "missing-bun"] as const) {
+  expect(matching.calls).toContain("git --no-lazy-fetch version");
+  for (const state of ["stale-codex", "stale-host", "wrong-operator", "missing", "missing-bun", "old-git", "missing-git-https"] as const) {
     const result = await imageProbe(state);
     expect(result.error).toBe("");
     expect(result.calls).toContain("build --build-context codex_binary=" + result.root + "/selected");
