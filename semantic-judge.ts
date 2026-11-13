@@ -73,10 +73,10 @@ export async function runSemanticJudge(runDir: string, state: RunState, auth: st
   const task = await readFile(join(runDir, state.task.path), "utf8");
   const report: JudgeReport = recover ? state.judge! : {
     status: "incomplete", started_at: new Date().toISOString(), model: JUDGE_MODEL,
-    reasoning_effort: "high", service_tier: "fast", passes: [], winner: "none", usage_homes: [], attempts: [],
+    reasoning_effort: "high", service_tier: "default", passes: [], winner: "none", usage_homes: [], attempts: [],
   };
   if (recover) {
-    report.service_tier = "fast";
+    report.service_tier = "default";
     const reused = new Set(report.attempts!.filter(item => item.status === "complete").map(item => item.pass));
     report.recovery = { started_at: new Date().toISOString(), previous_error: report.error!, reused_passes: [...reused].sort() };
     report.status = "incomplete";
@@ -174,7 +174,7 @@ ${prompt}`;
           const schemaPath = join(root, "schema.json");
           await writeFile(schemaPath, JSON.stringify(responseSchema), { mode: 0o444 });
           const attempt: JudgeAttempt = {
-            pass, stage, attempt: number, service_tier: "fast", status: "running", started_at: new Date().toISOString(),
+            pass, stage, attempt: number, service_tier: report.service_tier, status: "running", started_at: new Date().toISOString(),
             stdout_path: `${relative}/stdout.jsonl`, stderr_path: `${relative}/stderr.txt`, usage_home: `${relative}/home/ubuntu/.codex`,
           };
           report.attempts!.push(attempt);
@@ -207,7 +207,7 @@ ${prompt}`;
                   ...order.flatMap((arm, candidateIndex) => ["-v", `${join(runDir, "evaluator", arm)}:/candidates/${ids[candidateIndex]}:ro`]),
                   image, "codex", "exec", "--json", "--color", "never", "--skip-git-repo-check",
                   "--output-schema", "/schema.json", "--model", report.model, "-c", 'model_reasoning_effort="high"',
-                  "-c", 'service_tier="fast"',
+                  "-c", `service_tier=${JSON.stringify(report.service_tier)}`,
                   "-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"', "-"],
               }));
             if (result.snapshotImageId) attempt.home_image_id = result.snapshotImageId;

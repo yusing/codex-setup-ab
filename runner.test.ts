@@ -573,7 +573,7 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   for (const attempt of judged.judge!.attempts!) {
     const mounted = join(fake.stateDir, `codex-ab-${state.id}-judge-${attempt.pass}-${attempt.stage}-${attempt.attempt}.config.toml`);
     expect(Bun.TOML.parse(await readFile(mounted, "utf8"))).toEqual({ model: "gpt-6.1-sol", model_reasoning_effort: "high",
-      service_tier: "fast", approval_policy: "never", sandbox_mode: "read-only", web_search: "disabled",
+      service_tier: "default", approval_policy: "never", sandbox_mode: "read-only", web_search: "disabled",
       features: { code_mode_host: true, ...Object.fromEntries(JUDGE_DISABLED_FEATURES.map(feature => [feature, false])) },
       mcp_servers: { source_reader: { command: "node", args: ["/reader/reader.mjs"], required: true, default_tools_approval_mode: "approve", enabled_tools: ["list_files", "read_file", "write_check_plan"] } },
       projects: { "/workspace": { trust_level: "trusted" } } });
@@ -1257,13 +1257,13 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   expect(evaluatorLaunches.every(line => line.includes("--network none") && !line.includes("auth.json") && !line.includes("docker.sock"))).toBe(true);
   expect(evaluatorLaunches.every(line => line.includes("XDG_STATE_HOME=/tmp/state") &&
     line.includes("XDG_CONFIG_HOME=/tmp/config") && line.includes("MEKUGI_RUNTIME_DIR=/tmp/runtime"))).toBe(true);
-  expect(judgeLaunches.every(line => line.includes('sandbox_mode="read-only"') && line.includes('service_tier="fast"'))).toBe(true);
+  expect(judgeLaunches.every(line => line.includes('sandbox_mode="read-only"') && line.includes('service_tier="default"'))).toBe(true);
   for (const pass of [1, 2]) for (const stage of ["harness-1", "assessment"]) {
     const config = await readFile(join(fake.stateDir, `codex-ab-${state.id}-judge-${pass}-${stage}-1.config.toml`), "utf8");
     for (const feature of JUDGE_DISABLED_FEATURES) expect(config).toContain(`${feature} = false`);
   }
-  expect(done.judge?.service_tier).toBe("fast");
-  expect(done.judge?.attempts?.every(attempt => attempt.service_tier === "fast")).toBe(true);
+  expect(done.judge?.service_tier).toBe("default");
+  expect(done.judge?.attempts?.every(attempt => attempt.service_tier === "default")).toBe(true);
   expect(evaluatorLaunches.every(line => !line.includes(":/build-cache") && !line.includes("GOCACHE=/tmp/go-build"))).toBe(true);
   expect(evaluatorLaunches.every(line => !line.includes("--read-only") && line.includes(":/candidate:ro") && line.includes(":/harness.json:ro"))).toBe(true);
   expect(evaluatorLaunches.every(line => line.includes(done.evaluator_cache_image!.image_id) && !line.includes(":/compiler-seed"))).toBe(true);
@@ -2455,6 +2455,7 @@ test.each(["timeout", "configuration", "tool-host"])("finish recovers %s harness
   const savedPass = judge.passes[0]!;
   const candidateOutputs = await Promise.all(arms.map(arm => readFile(join(run, state.results![arm]!.stdout_path), "utf8")));
   judge.status = "failed";
+  judge.service_tier = "fast";
   judge.error = failure === "timeout" ? `Error: semantic judge timed out after ${state.timeout_seconds} seconds`
     : failure === "configuration" ? "Error: semantic judge pass 1, executable checks, round 1 failed (1)"
     : `Error: ENOENT: no such file or directory, open '${join(run, "evaluator/judge/pass-1-harness-1-1/harness/checks.json")}'`;
@@ -2463,6 +2464,7 @@ test.each(["timeout", "configuration", "tool-host"])("finish recovers %s harness
   judge.winner = "none";
   judge.attempts = judge.attempts!.filter(item => item.stage === "harness-1");
   for (const attempt of judge.attempts) {
+    attempt.service_tier = "fast";
     attempt.status = attempt.pass === 1 ? "failed" : "canceled";
     if (failure === "configuration") {
       attempt.error = attempt.pass === 1 ? judge.error : "Error: semantic judge canceled";
@@ -2547,6 +2549,7 @@ test.each(["timeout", "configuration", "tool-host"])("finish recovers %s harness
   const finished = await readState(run);
   expect(finished.finishing?.status).toBe("complete");
   expect(finished.judge?.status).toBe("complete");
+  expect(finished.judge?.service_tier).toBe("default");
   expect(finished.judge?.passes).toHaveLength(2);
   expect(finished.judge?.recovery).toMatchObject({ previous_error: judge.error, reused_passes: [] });
   expect(finished.judge?.attempts?.filter(item => item.stage === "harness-1" && item.attempt === 1)).toEqual(priorAttempts);
@@ -2559,6 +2562,7 @@ test.each(["timeout", "configuration", "tool-host"])("finish recovers %s harness
   expect(await Promise.all(arms.map(arm => readFile(join(run, finished.results![arm]!.stdout_path), "utf8")))).toEqual(candidateOutputs);
   for (const pass of [1, 2]) {
     expect(finished.judge?.attempts?.find(item => item.pass === pass && item.stage === "harness-1" && item.attempt === 2)?.status).toBe("complete");
+    expect(finished.judge?.attempts?.find(item => item.pass === pass && item.stage === "harness-1" && item.attempt === 2)?.service_tier).toBe("default");
   }
   const addedLog = (await readFile(fake.log, "utf8")).slice(priorLog.length);
   expect(addedLog).toContain("-judge-1-harness-1-2");
