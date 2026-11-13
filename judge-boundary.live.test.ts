@@ -5,16 +5,17 @@ import { join } from "node:path";
 import { prepareJudgeReader, qualifyJudgeRuntime, sourceJudgeConfig } from "./judge-boundary";
 import { minimalCodexConfig } from "./prepare";
 import { runOwnedContainer } from "./container";
-import type { RunState } from "./types";
 const liveTest = process.env.CODEX_AB_LIVE_DOCKER === "1" ? test : test.skip;
 const image = process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:model-free";
 const docker = process.env.CODEX_AB_DOCKER_BIN ?? "docker";
-liveTest("pinned source judge disables execution flags and its broker restricts source reads", async () => {
+const utilityNames = ["update_plan", "apply_patch", "request_user_input", "request_user_input_async", "send_message_to_user_async",
+  "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "get_context_remaining", "new_context_window", "tool_search", "clock__curr_time"];
+liveTest("source judge disables execution flags and its broker restricts source reads", async () => {
   const root = await mkdtemp(join(tmpdir(), "judge-boundary-live-"));
   try {
     const home = join(root,"home"); await mkdir(join(home,".codex"),{recursive:true});
     await writeFile(join(home,".codex/config.toml"),sourceJudgeConfig(minimalCodexConfig("gpt-6.1-sol","high")));
-    await qualifyJudgeRuntime(docker, {runtime_tools:{codex_version:"codex-cli 0.154.0"}} as RunState,home,image,`codex-ab-reader-features-${process.pid}`);
+    await qualifyJudgeRuntime(docker,home,image,`codex-ab-reader-features-${process.pid}`);
     const source = join(root,"source"); await mkdir(source);
     await writeFile(join(source,"malicious.py"),'open("/home/ubuntu/.codex/auth.json").read()\n');
     const reader = await prepareJudgeReader(root);
@@ -38,9 +39,26 @@ liveTest("pinned source judge disables execution flags and its broker restricts 
 // intact, and every actually advertised tool is checked against the allowlist.
 const mockProvider = String.raw`
 import { createServer } from 'node:http';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import * as zlib from 'node:zlib';
 const requests = [], unexpected = [];
+const boundarySource = [
+  'const utilities = new Set(${JSON.stringify(utilityNames)});',
+  'const broker = /^(?:mcp__source_reader(?:__|\\.)|source_reader\\.)(?:list_files|read_file|write_check_plan)$/;',
+  'const names = ALL_TOOLS.map(tool => tool.name); text(JSON.stringify({tools:names}));',
+  'const unexpected = names.filter(name => !utilities.has(name.replace(/^functions[_.]/,"")) && !broker.test(name));',
+  'if (unexpected.length) throw Error("Unexpected executable surface: " + unexpected.join(","));',
+  'if (typeof process !== "undefined" || typeof require !== "undefined" || typeof fetch !== "undefined" || typeof Bun !== "undefined" || typeof Deno !== "undefined") throw Error("Host I/O globals exposed");',
+  'const reader = ALL_TOOLS.find(tool => broker.test(tool.name) && tool.name.endsWith("read_file"));',
+  'const lister = ALL_TOOLS.find(tool => broker.test(tool.name) && tool.name.endsWith("list_files"));',
+  'const writer = ALL_TOOLS.find(tool => broker.test(tool.name) && tool.name.endsWith("write_check_plan"));',
+  'if (!reader || !lister || !writer) throw Error("Source reader unavailable");',
+  'const listed = await tools[lister.name]({path:"/candidates/candidate-1"});',
+  'if (listed.isError || !JSON.stringify(listed).includes("candidate.py")) throw Error("Broker listing failed");',
+  'const observed = await tools[reader.name]({path:"/candidates/candidate-1/candidate.py"});',
+  'if (observed.isError || !JSON.stringify(observed).includes("candidate must never execute")) throw Error("Broker read failed");',
+  'text(await tools[writer.name]({json:JSON.stringify({boundary:"ready"})}));'
+].join('\n');
 const server = createServer(async (request, response) => {
   try {
     if (request.method !== 'POST' || new URL(request.url, 'http://localhost').pathname !== '/v1/responses') {
@@ -54,9 +72,12 @@ const server = createServer(async (request, response) => {
     else if (request.headers['content-encoding'] === 'zstd') bytes = zlib.zstdDecompressSync(bytes);
     else if (request.headers['content-encoding'] && request.headers['content-encoding'] !== 'identity') throw Error('unsupported encoding');
     requests.push({ body: JSON.parse(bytes.toString('utf8')), authorization: Boolean(request.headers.authorization) });
+    const output = !requests.at(-1).body.tools && !JSON.stringify(requests.at(-1).body.input).includes('boundary-call')
+      ? {id:'boundary-call',type:'custom_tool_call',call_id:'boundary-call',name:'exec',input:boundarySource}
+      : {id:'boundary-message',type:'message',role:'assistant',content:[{type:'output_text',text:'boundary-ready'}]};
     const events = [
       {type:'response.created',response:{id:'boundary-response'}},
-      {type:'response.output_item.done',item:{id:'boundary-message',type:'message',role:'assistant',content:[{type:'output_text',text:'boundary-ready'}]}},
+      {type:'response.output_item.done',item:output},
       {type:'response.completed',response:{id:'boundary-response',usage:{input_tokens:0,input_tokens_details:null,output_tokens:0,output_tokens_details:null,total_tokens:0}}}
     ];
     response.writeHead(200, {'content-type':'text/event-stream'});
@@ -65,7 +86,6 @@ const server = createServer(async (request, response) => {
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const port = server.address().port;
-const version = execFileSync('codex', ['--version'], {encoding:'utf8'}).trim();
 const args = ['exec','--json','--color','never','--skip-git-repo-check','--model','gpt-6.1-sol',
   '-c','model_provider="fixture"',
   '-c','model_providers.fixture.name="Loopback boundary fixture"',
@@ -83,18 +103,17 @@ child.stdin.end('Confirm the source inspection boundary.');
 const timer = setTimeout(() => child.kill('SIGKILL'), 30000);
 const code = await new Promise((resolve,reject) => {child.once('error',reject);child.once('close',resolve);});
 clearTimeout(timer); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
-console.log(JSON.stringify({code,version,requests,unexpected,stdout:stdout.slice(-4096),stderr:stderr.slice(-4096)}));
+console.log(JSON.stringify({code,requests,unexpected,stdout:stdout.slice(-4096),stderr:stderr.slice(-4096)}));
 `;
 
-liveTest("pinned CLI advertises only approved source and utility tools to a credential-free mock provider", async () => {
+liveTest("selected CLI advertises only approved source and utility tools to a credential-free mock provider", async () => {
   const root = await mkdtemp(join(tmpdir(), "judge-tool-inventory-"));
   try {
     const home = join(root, "home"), source = join(root, "source"), harness = join(root, "harness");
     await mkdir(join(home, ".codex"), { recursive: true });
     await mkdir(source); await mkdir(harness);
     await writeFile(join(home, ".codex/config.toml"), sourceJudgeConfig(minimalCodexConfig("gpt-6.1-sol", "high")));
-    await qualifyJudgeRuntime(docker, { runtime_tools: { codex_version: "codex-cli 0.154.0" } } as RunState,
-      home, image, `codex-ab-tool-inventory-features-${process.pid}`);
+    await qualifyJudgeRuntime(docker, home, image, `codex-ab-tool-inventory-features-${process.pid}`);
     await writeFile(join(source, "candidate.py"), 'raise RuntimeError("candidate must never execute in source judge")\n');
     const reader = await prepareJudgeReader(root), mock = join(root, "mock-provider.mjs");
     await writeFile(mock, mockProvider);
@@ -104,17 +123,22 @@ liveTest("pinned CLI advertises only approved source and utility tools to a cred
         "-v", `${source}:/candidates/candidate-1:ro`, "-v", `${harness}:/harness`, image, "node", "/mock-provider.mjs"] });
     expect(result.exitCode, result.stderr).toBe(0);
     const captured = JSON.parse(result.stdout.trim());
-    expect(captured.version).toMatch(/^codex-cli 0\.154\.0(?:\s|$)/);
     expect(captured.code, captured.stderr).toBe(0);
     expect(captured.unexpected).toEqual([]);
     expect(captured.requests.length).toBeGreaterThan(0);
     const leafTools = (tools: any[], namespace = ""): Array<{ name: string; type: string }> => tools.flatMap(tool =>
       tool.type === "namespace" ? leafTools(tool.tools, tool.name)
         : [{ name: `${namespace ? namespace + "." : ""}${tool.name ?? tool.function?.name ?? ""}`, type: tool.type }]);
-    const utilities = new Set(["update_plan", "apply_patch", "request_user_input", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]);
+    const utilities = new Set(utilityNames);
     const broker = /^(?:mcp__source_reader(?:__|\.)|source_reader\.)(?:list_files|read_file|write_check_plan)$/;
     for (const request of captured.requests) {
       expect(request.authorization).toBe(false);
+      if (!request.body.tools) {
+        const toolResults = captured.requests.flatMap((r:any) => r.body.input?.filter((item:any) => item.type === "custom_tool_call_output") ?? []);
+        expect(await Bun.file(join(harness, "checks.json")).exists(), captured.stdout + captured.stderr + JSON.stringify(toolResults)).toBe(true);
+        expect(await Bun.file(join(harness, "checks.json")).json(), captured.stdout + captured.stderr).toEqual({boundary:"ready"});
+        continue;
+      }
       const tools = leafTools(request.body.tools);
       expect(tools.length).toBeGreaterThan(0);
       const unexpectedTools = tools.filter(tool => {

@@ -154,9 +154,9 @@ fully accepted. No paid candidate or judge run was performed.
 
 ## Limits and further validation
 
-- The source-reader capability boundary is qualified for **Codex CLI 0.154.0**.
-  Another CLI version fails closed before source-judge inference until its tool
-  registration semantics and runtime behavior are qualified. The native patch tool
+- The source-reader runtime check requires the execution features to be disabled,
+  without a CLI version allowlist. The live provider mock checks the selected
+  runtime's advertised tools. The native patch tool
   remains registered but its writes are denied by read-only/never policy; it is
   not a general process-execution capability. Broker path restrictions do not
   claim to remove the patch tool's limited path/context-match observations.

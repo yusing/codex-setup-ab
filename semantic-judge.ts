@@ -168,7 +168,7 @@ ${prompt}`;
           await mkdir(join(home, ".codex"), { recursive: true, mode: 0o700 });
           await writeFile(join(home, ".codex/config.toml"), sourceJudgeConfig(minimalCodexConfig(report.model, report.reasoning_effort, report.service_tier)), { mode: 0o600 });
           const readerPath = await prepareJudgeReader(root);
-          await qualifyJudgeRuntime(docker, state, home, state.image_id ?? state.image, `codex-ab-${state.id}-reader-probe-${pass}-${stage}-${number}`, controller.signal);
+          await qualifyJudgeRuntime(docker, home, state.image_id ?? state.image, `codex-ab-${state.id}-reader-probe-${pass}-${stage}-${number}`, controller.signal);
           await copyFile(auth, join(home, ".codex/auth.json"));
           await chmod(join(home, ".codex/auth.json"), 0o600);
           const schemaPath = join(root, "schema.json");

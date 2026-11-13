@@ -1,7 +1,7 @@
 import { armNames, candidateIds, qualityAspectKeys, CURRENT_SCORE_RUBRIC, LEGACY_SCORE_KEYS, LEGACY_SCORE_RUBRIC,
   SCORE_KEYS, SCORE_RUBRICS, scoreRubric, type CandidateId, type JudgeScore, type QualityAspects, type ScoreAxis, type ScoreRubric } from "./types";
 import { access, readFile, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { JUDGE_MODEL, runSemanticJudge } from "./semantic-judge";
 import { verifyAdaptiveJudgeInputs } from "./semantic-preflight";
 import { armExecutionSucceeded, readState, withRunLock, writeState } from "./state";
@@ -238,6 +238,21 @@ export async function assertRecoverableJudge(runDir: string, state: RunState): P
   const prior = state.judge;
   let recoverable = RECOVERABLE_JUDGE_ERRORS.has(prior?.error ?? "") ||
     prior?.error === `Error: semantic judge timed out after ${state.timeout_seconds} seconds`;
+  // A code-mode-only model cannot call the broker when its tool host is disabled.
+  // Require the retained configuration and CLI diagnostic, not just a missing plan.
+  if (!recoverable && prior) {
+    const attempt = prior.attempts?.find(item => item.pass === prior.failed_pass &&
+      item.stage === "harness-1" && item.status === "failed" && item.error === prior.error);
+    if (attempt && prior.error === `Error: ENOENT: no such file or directory, open '${join(runDir, dirname(attempt.stdout_path), "harness/checks.json")}'`) {
+      const [config, stderr] = await Promise.all([
+        readFile(join(runDir, attempt.usage_home, "config.toml"), "utf8"),
+        readFile(join(runDir, attempt.stderr_path), "utf8"),
+      ]);
+      const features = (Bun.TOML.parse(config) as { features?: { code_mode_host?: boolean } }).features;
+      recoverable = features?.code_mode_host === false &&
+        /^.*ERROR codex_core::tools::router: error=code-mode host is disabled\r?$/m.test(stderr);
+    }
+  }
   // Older setup-commit judges inherited setup A's config without its referenced files.
   // Require the original startup evidence, not an arbitrary nonzero judge exit.
   if (!recoverable && state.comparison === "setup-commits" && prior && prior.error ===

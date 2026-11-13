@@ -274,7 +274,7 @@ bundled task does not migrate an existing run in place. Prepare a fresh run to
 use the new contract, and keep the old run as historical evidence. Editing its
 criteria or hashes would invalidate the frozen-input provenance.
 
-The source-judge live test uses the pinned Codex CLI and a local Responses mock
+The source-judge live test uses the selected image's Codex CLI and a local Responses mock
 inside a container with networking disabled. It inspects the tools actually
 advertised to the provider without supplying real provider credentials or purchasing model
 output. Its allowlist includes the reader and native utility tools. Native
@@ -282,8 +282,12 @@ output. Its allowlist includes the reader and native utility tools. Native
 diff emission or patch execution, but verification reads can still expose a
 path-existence or guessed-context oracle beyond the broker's roots. This is
 not a claim that all native reads are confined to the broker. Generic process
-execution, code mode, delegation, plugins, apps, hooks, and image tools are
-disabled for the pinned source judge.
+execution, delegation, plugins, apps, hooks, and image tools are
+disabled for the source judge.
+Code Mode's isolated JavaScript host remains available for models that require
+it to reach the restricted tools. The model-free provider fixture exercises
+broker reads and plan writes through that host and rejects process tools and
+host I/O globals on that surface.
 
 Shell execution is disabled through `shell_tool=false`. In Codex CLI 0.154.0,
 `unified_exec` remains enabled under ordinary configuration; it chooses the

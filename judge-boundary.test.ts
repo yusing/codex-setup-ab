@@ -2,14 +2,39 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertJudgeFeatures, JUDGE_DISABLED_FEATURES, sourceJudgeConfig } from "./judge-boundary";
+import { assertJudgeFeatures, JUDGE_DISABLED_FEATURES, qualifyJudgeRuntime, sourceJudgeConfig } from "./judge-boundary";
 import { minimalCodexConfig } from "./prepare";
+
+test("runtime qualification checks capabilities without a CLI version allowlist", async () => {
+  const root = await mkdtemp(join(tmpdir(), "judge-runtime-"));
+  try {
+    const docker = join(root, "docker"), features = join(root, "features"), log = join(root, "calls");
+    await writeFile(features, JUDGE_DISABLED_FEATURES.map(key => `${key} stable false`).join("\n"));
+    await writeFile(docker, `#!/bin/sh
+printf '%s\\n' "$*" >> '${log}'
+case "$1" in
+  container) echo 'No such container' >&2; exit 1 ;;
+  create) echo fixture ;;
+  start) cat '${features}' ;;
+  *) exit 2 ;;
+esac
+`, { mode: 0o755 });
+    await qualifyJudgeRuntime(docker, root, "selected-image", "capability-probe");
+    const calls = await Bun.file(log).text();
+    expect(calls).toContain("selected-image codex features list");
+    expect(calls).not.toContain("--version");
+    await writeFile(features, "shell_tool stable true\n");
+    await expect(qualifyJudgeRuntime(docker, root, "selected-image", "unsafe-probe")).rejects.toThrow("shell_tool=false");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("judge registration disables executable tools and keeps broker paths outside source configuration", () => {
   const config = Bun.TOML.parse(sourceJudgeConfig(minimalCodexConfig("gpt-6.1-sol", "high"))) as any;
   expect(config.sandbox_mode).toBe("read-only"); expect(config.web_search).toBe("disabled");
+  expect(config.features.code_mode_host).toBe(true);
   for (const key of JUDGE_DISABLED_FEATURES) expect(config.features[key]).toBe(false);
   expect(config.mcp_servers.source_reader.required).toBe(true);
+  expect(config.mcp_servers.source_reader.default_tools_approval_mode).toBe("approve");
   expect(() => assertJudgeFeatures(JUDGE_DISABLED_FEATURES.map(key => `${key} stable false`).join("\n"))).not.toThrow();
   expect(() => assertJudgeFeatures("shell_tool stable true")).toThrow("inference is blocked");
 });

@@ -574,8 +574,8 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
     const mounted = join(fake.stateDir, `codex-ab-${state.id}-judge-${attempt.pass}-${attempt.stage}-${attempt.attempt}.config.toml`);
     expect(Bun.TOML.parse(await readFile(mounted, "utf8"))).toEqual({ model: "gpt-6.1-sol", model_reasoning_effort: "high",
       service_tier: "fast", approval_policy: "never", sandbox_mode: "read-only", web_search: "disabled",
-      features: Object.fromEntries(JUDGE_DISABLED_FEATURES.map(feature => [feature, false])),
-      mcp_servers: { source_reader: { command: "node", args: ["/reader/reader.mjs"], required: true, enabled_tools: ["list_files", "read_file", "write_check_plan"] } },
+      features: { code_mode_host: true, ...Object.fromEntries(JUDGE_DISABLED_FEATURES.map(feature => [feature, false])) },
+      mcp_servers: { source_reader: { command: "node", args: ["/reader/reader.mjs"], required: true, default_tools_approval_mode: "approve", enabled_tools: ["list_files", "read_file", "write_check_plan"] } },
       projects: { "/workspace": { trust_level: "trusted" } } });
   }
   expect(await Promise.all([a, b].map(snapshot => readFile(join(snapshot, ".codex/config.toml"), "utf8")))).toEqual(candidateConfigs);
@@ -2429,7 +2429,7 @@ test("finish recovers pre-judge reporting failure without restarting candidates"
   await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("failed finishing");
 }, 30_000);
 
-test.each(["timeout", "configuration"])("finish recovers %s harness startup without changing completed candidate or existing-test evidence", async failure => {
+test.each(["timeout", "configuration", "tool-host"])("finish recovers %s harness startup without changing completed candidate or existing-test evidence", async failure => {
   let run: string;
   if (failure === "configuration") {
     const setupHome = join(root, "recover-config-home");
@@ -2456,7 +2456,8 @@ test.each(["timeout", "configuration"])("finish recovers %s harness startup with
   const candidateOutputs = await Promise.all(arms.map(arm => readFile(join(run, state.results![arm]!.stdout_path), "utf8")));
   judge.status = "failed";
   judge.error = failure === "timeout" ? `Error: semantic judge timed out after ${state.timeout_seconds} seconds`
-    : "Error: semantic judge pass 1, executable checks, round 1 failed (1)";
+    : failure === "configuration" ? "Error: semantic judge pass 1, executable checks, round 1 failed (1)"
+    : `Error: ENOENT: no such file or directory, open '${join(run, "evaluator/judge/pass-1-harness-1-1/harness/checks.json")}'`;
   judge.failed_pass = 1;
   judge.passes = [];
   judge.winner = "none";
@@ -2469,6 +2470,12 @@ test.each(["timeout", "configuration"])("finish recovers %s harness startup with
       await writeFile(join(run, attempt.stderr_path), attempt.pass === 1
         ? "Error: failed to read model instructions file /missing/setup-instructions.md: No such file or directory (os error 2)\n" : "");
       await cp(join(run, "snapshots/stock/home/ubuntu/.codex/config.toml"), join(run, attempt.usage_home, "config.toml"));
+    }
+    if (failure === "tool-host") {
+      attempt.error = attempt.pass === 1 ? judge.error : "Error: semantic judge canceled";
+      await writeFile(join(run, attempt.stderr_path), "ERROR codex_core::tools::router: error=code-mode host is disabled\n");
+      const config = join(run, attempt.usage_home, "config.toml");
+      await writeFile(config, (await readFile(config, "utf8")).replace("code_mode_host = true", "code_mode_host = false"));
     }
   }
   judge.usage_homes = judge.attempts.map(item => item.usage_home);
@@ -2496,6 +2503,16 @@ test.each(["timeout", "configuration"])("finish recovers %s harness startup with
       await writeFile(path, "tampered control\n");
       await expect(verifyPreparedInputs(run, state, "judging")).rejects.toThrow(message);
       await writeFile(path, retained);
+    }
+  }
+  if (failure === "tool-host") {
+    const failed = priorAttempts.find(attempt => attempt.status === "failed")!;
+    for (const [path, replacement] of [[failed.stderr_path, "unrelated evaluator failure"],
+      [`${failed.usage_home}/config.toml`, "[features]\ncode_mode_host = true\n"]] as const) {
+      const retained = await readFile(join(run, path), "utf8");
+      await writeFile(join(run, path), replacement);
+      await expect(assertRecoverableJudge(run, state)).rejects.toThrow("recovery requires a failed judge");
+      await writeFile(join(run, path), retained);
     }
   }
 
