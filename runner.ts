@@ -3,7 +3,7 @@ import { applySkillSelection } from "./setup-skills";
 import { armNames } from "./types";
 import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories, discardDownloadedCatalog, TASK_PATH } from "./dependencies";
 import { prepareRuntimeHome, runtimeHomeMounts } from "./runtime-home";
-import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedContainerOptions, type OwnedNetwork } from "./container";

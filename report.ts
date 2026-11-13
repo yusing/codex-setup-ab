@@ -16,7 +16,7 @@ import { compactionComparisonExclusion, journalEvidence, journalEvidenceMarkdown
 import { readJudgeResponse, scoreComparisonIssue, summarizeCheck, unassessedQualityAspects, validateJudgePass } from "./judge";
 import { collectBundle, finalizeBundle } from "./bundle";
 import { readState, writeState, withRunLock } from "./state";
-import type { ArmName, ArmResult, JudgePass, RunState } from "./types";
+import type { ArmName, ArmResult, JudgePass } from "./types";
 
 export interface ReportOptions {
   outputDirectory?: string;

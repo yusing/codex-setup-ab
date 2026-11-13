@@ -106,7 +106,6 @@ export async function recordToolStore(source: string): Promise<SnapshotFile[]> {
   let lastProgress = performance.now();
   async function walk(directory: string): Promise<void> {
     const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       const input = join(directory, entry.name);
       const name = relative(source, input);

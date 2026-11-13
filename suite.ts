@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { prepare, type PrepareOptions } from "./prepare";
 import { loadTaskPack } from "./task-pack";
