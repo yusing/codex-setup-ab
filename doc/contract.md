@@ -9,7 +9,10 @@ described in the [specification](spec.md); build and multi-run workflows are in 
 
 ## Arm identities
 
-Reports and operator progress name arms by their actual launcher and setup (for example, `Codex (minimal setup)` versus `Codex + Mekugi (minimal setup)`). Duplicate-output comparisons and historical journal-compaction comparisons include off/on labels. Operator progress reveals the A/B mapping for each reversed-order judge pass; blinded judge/grader inputs still use `candidate-N`, and machine evidence retains those IDs. Legacy CLI selectors and storage paths retain `stock`/`current` keys; custom compositions append numbered arm keys; report JSON includes `arm_labels` for display. Regenerate a report to apply these names to an existing run.
+Reports and progress use launcher/setup labels, including treatment off/on labels.
+Machine keys remain `stock`, `current`, then `arm-3`, etc.; JSON exposes `arm_labels`.
+Judge inputs use anonymous `candidate-N` IDs. Operator progress reveals each pass's
+mapping, not to the judge. Regenerate an existing report to apply display labels.
 
 ## Prepare an isolated pair
 
@@ -19,9 +22,18 @@ run_dir="$(./dist/codex-ab prepare \
   --task-pack ./tasks/session-retention/manifest.json)"
 ```
 
-Preparation creates a new mode-0700 `mktemp` directory outside the repository. It shallow-fetches exactly the base commit into a bare seed, makes two `--no-local --no-hardlinks` clones, removes their remotes, and verifies tree identity, the lack of object alternates and linked worktrees, and absence of the future solution commit. Implementation workspaces never receive the solution. A task pack may pin a `source.reference_commit` endpoint for evaluator-only upstream evidence. Preparation freezes the actual ordered commit patches and the combined base-to-endpoint diff from the supplied source repository, with commit IDs and file hashes. The range must descend from the baseline and include the excluded solution commit. Judges can inspect this read-only reference when designing checks and assessing the final result; it does not enter implementation mounts. References are retained in trials and checksummed bundles. Older runs without a reference keep their original inputs.
+Preparation creates a private mode-0700 directory outside the repository and
+independent base-only clones without remotes, alternates, linked worktrees, or
+hardlinks. It verifies tree identity and absence of the excluded solution commit.
+A pack's `source.reference_commit` pins evaluator-only ordered patches and the
+combined diff, with IDs and hashes. Its ancestry must descend from the baseline
+and include the excluded commit. References survive trials/bundles but never enter
+implementation mounts; older runs without references keep their original inputs.
 
-The current setup starts with a shallow, independent clone of the configuration repository rooted at `--current-home` (default `/home/ubuntu`), with its remote removed. All tracked configuration is included automatically, so adding or removing a guidance file does not require a runner change. Current tracked edits, staged additions, and deletions are overlaid without changing the source checkout. New untracked instruction files must be added to Git before preparation to be included.
+The current setup is an independent shallow clone of `--current-home` (default
+`/home/ubuntu`), without its remote. It includes all tracked configuration plus
+tracked edits, staged additions, and deletions, without modifying the source or
+index. Add untracked guidance to Git before preparation to include it.
 
 For `setup-commits`, supply `--setup-a-commit REF` and `--setup-b-commit REF`
 against the configuration repository at `--current-home`. Both references resolve to
@@ -79,11 +91,45 @@ index remain unchanged. Legacy `--control-run` reuse is unavailable for setup
 revisions; use `--import-arms` for historical comparisons, or repeat the frozen
 comparison through the existing trial workflow.
 
-To apply a benchmark-only reviewer overlay, add `--review-treatment DIR` with `parent-agents.md`, `review-correctness.toml`, `review-simplify.toml`, and `web-reviewer.toml`. Preparation applies them to the isolated current snapshot after copying the live home, records before/after hashes in the manifest, and leaves active guidance untouched. Omit this option to benchmark the current home without a treatment. Use `--current-launcher codex` to run bare Codex without Mekugi.
+`--review-treatment DIR` overlays `parent-agents.md`, `review-correctness.toml`,
+`review-simplify.toml`, and `web-reviewer.toml` only in the isolated setup, recording
+before/after hashes. Omit it to preserve the selected setup. `--current-launcher
+codex` selects bare Codex.
 
-Runtime supplements are copied separately: installed hooks, materialized skills, bundled plugins when their temporary cache exists, the referenced remote-skill cache generations, and the existing Modern Go Guidelines provider. Preparation copies mise's migration completion records and the pipx lock sidecars referenced by its lockfile, but does not copy or hard-link its installed tools. Containers use the shared base/dependency image plus a read-only bind mount of the existing host mise tool store. Preparation records its absolute path and file metadata (device, inode, size, mode, and nanosecond modification/change times), without reading or hashing installed-tool contents. Preflight and the final launch check reject changed metadata, including same-size rewrites. This checks that the same host installation is still in place, rather than accepting replacement files with matching contents. Keep that host path available and do not update or remove installed tools while a run or trial set is in use: a read-only container mount does not prevent host-side changes. Trial pairs reuse the same mount without duplicating the store. The obsolete `--snapshot-base` option has been removed. Task dependency caches remain in the shared Docker dependency image. Preflight rejects mise migration failures before agent execution; the tool store stays read-only. The current arm starts Codex through that setup, so every tool declared by the active user configuration is available without network access. Mise and Grok executables are retained at their existing host paths, with captured SHA-256 identities, and mounted read-only only into containers that need them. Keep those executable paths available and unchanged alongside the tool store. Container checks and task preparation resolve Bun through PATH from the pinned base image; the selected host Bun executable remains recorded and verified as preparation provenance, without a separate executable mount or image copy. Preparation copies the selected Mekugi executable pair into the run snapshot and pins both SHA-256 identities. Preflight copies both frozen executables into the shared dependency image at build time and checks their hashes. Host Mekugi updates or removal after preparation do not affect the benchmark. Older prepared runs retain their recorded executable mounts; prepare a new run to use image-pinned Mekugi. `--current-launcher mekugi` selects `--mekugi-bin` (default `~/go/bin/mekugi`) without copying Mekugi state. Other untracked home files, including authentication and session history, are not copied. The source repository is expected to contain only configuration suitable for the benchmark, not tracked credentials or task solutions.
+Runtime supplements include installed hooks, materialized skills, available bundled
+plugins, referenced remote-skill generations, Modern Go Guidelines, mise migration
+records, and referenced pipx lock sidecars. Untracked authentication, sessions, and
+Mekugi state are excluded. Tracked setup files must contain no credentials or task
+solutions.
 
-The clone preserves absolute `/home/ubuntu` paths inside its container. `snapshot-manifest.json` records the configuration commit and tree, overlaid tracked paths, a SHA-256 for every regular setup file (excluding Git metadata), literal symlink targets, and portability adaptations. The complete installed-tool metadata manifest is stored as compressed JSON and verified before launch, along with the selected runtime executable hashes. Older uncompressed manifests and copied-binary snapshots remain readable. Preflight validates setup integrity and benchmark environment readiness: pinned inputs and runtime identities, configured tool availability, readable configuration, writable runtime homes, candidate Git identity, task interpreter paths, prepared task dependencies, and provider reachability. Setup and launcher checks run offline without credentials. For Mekugi, it checks the selected executable pair and launches `mekugi codex --version`, or standalone `mekugi --version` for Grok routing. Preflight does not load skills, execute guidance hooks, require particular guidance tools, or run task evaluation tests. Task-defined dependency preparation may compile dependencies while building the shared dependency image; preflight does not repeat it as a baseline qualification run. Missing benchmark requirements fail before inference, while optional setup guidance remains the setup's choice.
+Installed tools are not copied or hardlinked. Tool-enabled containers mount the
+host mise store read-only at its recorded absolute path. Preparation records
+device, inode, size, mode, and nanosecond mtime/ctime without hashing payloads;
+preflight and launch reject drift, including same-size rewrites. Matching content
+in a replacement installation is not sufficient. Keep host stores unchanged while
+runs/trials use them. Read-only container mounts do not prevent host updates.
+`--snapshot-base` is removed; task caches belong in shared dependency images.
+
+Mise and Grok executables are hash-pinned read-only host mounts where needed.
+The selected host Bun is verified as provenance, but containers resolve Bun from
+the pinned image's PATH. Selected Mekugi and adjacent `mekugi-exec` are copied into
+the snapshot, hashed, and embedded in the dependency image; later host changes do
+not affect them. Older runs retain their original executable mounts. The default
+`--mekugi-bin` is `~/go/bin/mekugi`; selecting it does not copy Mekugi state.
+
+Containers preserve `/home/ubuntu` paths. `snapshot-manifest.json` binds the setup
+commit/tree, tracked overlays, regular-file hashes, literal symlink targets, and
+portability adaptations, excluding Git metadata. Compressed installed-tool
+metadata and runtime hashes are verified before launch; older uncompressed and
+copied-binary snapshots remain readable.
+
+Preflight checks immutable inputs, runtime identities, offline configured tools,
+readable configuration, writable homes, Git identity, task interpreters/dependencies,
+and provider reachability. It does not load skills, run guidance hooks, require
+optional guidance tools, or execute task evaluation tests. Dependency preparation
+may compile during image construction; preflight does not repeat it as baseline
+qualification. Mekugi checks use its pinned pair and `mekugi codex --version`, or
+`mekugi --version` for Grok routing. Missing requirements fail before inference.
 
 When mise's Rust installation links to the source home's `.cargo/bin`, preparation
 also records metadata for those binaries and the `.rustup` runtime without reading
@@ -93,7 +139,17 @@ to each arm. Keep these host runtime paths unchanged too. Mise automatic install
 are disabled against the read-only stores; missing tools must be resolved before
 preparing a new run.
 
-Each arm sees only its own clone, caches, and private home. New implementation-agent contexts use neutral task instructions, paths, environment names, and Git branches rather than comparison identifiers. Judges retain their paired inputs. Fresh runs use random session directories for implementation workspaces, active homes, runtime state, and capture exports, including their host-side mount sources. Their mapping is recorded in `run.json`; operator-only logs retain setup labels. Historical records keep their original identities. The shared dependency environment uses `/opt/task-deps`; older prepared inputs require fresh preparation to use the neutral context. The host installed-tool store is mounted read-only into the current arm for `stock-current`, into both arms for `setup-commits`, `stock-mekugi`, `same-setup`, `journal-compaction`, and `duplicate-output`, and into neither arm for `codex-mekugi-grok`. Agent logs and captured patches stay outside its writable mounts. Behavioral criteria are fixed before execution; adaptive checks are authored after both candidates stop and run in separate evaluator workspaces.
+Arms have independent writable workspaces, homes, and caches. Implementation
+contexts use neutral prompts, paths, environment names, and Git branches; random
+session paths and their operator-only mapping are recorded in `run.json`.
+Dependency environments use `/opt/task-deps`; older inputs need fresh preparation
+for neutral paths. Judges retain comparison context.
+
+The host tool store reaches current only in `stock-current`, both arms in
+`setup-commits`, `stock-mekugi`, `same-setup`, historical `journal-compaction`, and
+`duplicate-output`, and neither in `codex-mekugi-grok`. Logs and patches stay outside
+candidate-writable mounts. Criteria are fixed before execution; adaptive checks
+are authored after candidates stop and run in separate evaluator workspaces.
 
 Fresh unprotected Codex implementation and judge homes use private Docker copy-on-write
 layers from immutable setup images. Model-free plugin reconciliation prefetches shared
@@ -157,7 +213,31 @@ After reviewing `run.json`, start the model runs explicitly:
   --confirm-paid-inference
 ```
 
-The command first checks that the base image exposes the exact Codex version recorded during preparation, its hash-matched code-mode host, and no image-bundled `mekugi`; exercises a real local code-mode execution without model access; and checks the complete current setup offline. Preflight builds or reuses a `codex-ab-deps:<key>` Docker image keyed by the base image ID, source commit/tree, submodules, preparation command, pinned Mekugi hash when selected, and operator identity. Dependency caches and the frozen Mekugi executable enter the final image, not source, homes, credentials, or evaluator controls. Mekugi startup checks and execution use that immutable image without a host Mekugi bind mount. Fresh containers share immutable image layers and get private copy-on-write storage; dependency changes made by an agent never reach another arm, another run, or grading. Each arm materializes its generated workspace assets offline using those cached dependencies. Grading uses the original dependency image offline with read-only candidate and harness mounts, a fresh private Docker copy-on-write root, and a shared immutable build-cache seed; cache writes and execution workspaces stay temporary. Evaluator cache reuse is described in the blind-judge section. Protected execution uses temporary Go build output because its root filesystem is read-only. Declared regenerable `node_modules` directories created during preparation are excluded from the capture manifest unless they contain tracked source. The collector does not remove candidate files; it records exclusions and can regenerate dependencies from the shared image. The first image build may download dependencies; later matching runs reuse it. Build logs are saved under `artifacts/dependencies.stdout` and `artifacts/dependencies.stderr`, and the immutable dependency image ID is recorded in `run.json`. Keep that image available for later grading or trial runs. Docker images and build cache occupy shared disk space outside the corpus; this does not impose a 1 GB cap on source, tool snapshots, or captured logs. It rejects any preparation that changes either immutable baseline. Only after both preparations pass does it start both arms with the selected model and reasoning effort (defaults: gpt-6-astra and medium) concurrently with default two-CPU and 4 GiB limits, overridden by any explicit per-arm settings. Preflight and the final launch check verify copied controls, both setup templates, the host installed-tool file manifest, the selected Bun executable, and immutable baseline identity. The image tag is resolved before checking it, and all subsequent containers use that image ID. The default agent timeout is 30 minutes. Both arms use the service tier read from the snapshotted current configuration, and the report records it.
+Before inference, preflight checks the recorded Codex version and companion hashes,
+absence of image-bundled Mekugi, a real model-free Code Mode execution, setup
+integrity, and configured tools. It resolves the image tag once; subsequent
+containers use the immutable ID.
+
+The shared `codex-ab-deps:<key>` image binds the base image, source commit/tree,
+submodules, preparation command, selected Mekugi hashes, and operator identity.
+It contains dependency caches and frozen Mekugi binaries, not source, homes,
+credentials, or evaluator controls. The first build may download dependencies;
+matching runs reuse it. Build diagnostics are retained under
+`artifacts/dependencies.stdout` and `.stderr`; keep recorded images for later
+checks/trials. Shared Docker storage does not impose a 1 GB corpus/log limit.
+
+Arms materialize generated assets offline, using private writable layers over
+that image. Preparation must not alter immutable baselines. Declared regenerable
+`node_modules` directories are excluded from capture unless they contain tracked
+source; exclusion does not delete candidate files. Protected execution uses
+temporary build output. Grading uses read-only inputs and private layers over
+immutable dependency/cache seeds, never another arm's changes.
+
+Both preparations must pass before candidates launch, concurrently by default.
+Defaults are Astra, medium reasoning, two CPUs, 4 GiB, and 30 minutes, subject to
+preset and explicit per-arm settings. Service tier comes from the selected setup
+and is recorded. Final launch rechecks controls, setup templates, mounted tools,
+Bun provenance, and baseline identity.
 
 Mekugi arms use `mekugi codex headless --yolo` (without `codex` for third-party
 routing), admitting Main and its children through Mekugi's server-owned runtime.
@@ -359,29 +439,20 @@ failing behavioral checks are ignored and their evidence stands. If there are no
 unassessed criteria, no repair-model request is made. A final source assessment can
 identify a wrongly wired ordinary failure as unassessed, but cannot replace its
 assertions with a passing check in that run.
-Harnesses must use the runtime required by the inspected entry point. A trusted
-supervisor records executor setup, evaluator wiring, assertion failures, candidate
-errors, incomplete execution, timeout, and cancellation separately. Candidate output,
-exception vocabulary, exit 125, and a printed `HARNESS_ERROR:` marker cannot assign
-failure provenance. Evaluator-only dependencies must be declared and checked outside
-the candidate import path. The supervisor retains the exact check and case identities;
-candidate processes cannot write its result or signal its privileged parent.
-Earlier evidence remains available to the final assessment; real behavior failures must not be
-weakened into passes. Different names and test wiring are allowed; different required outcomes are
-not. Compilation or setup failures caused by assumed names, runtimes, or entry points remain
-**unassessed**, not automatic candidate failures. A missing explicitly required public interface
-can be a source-only defect. An unsupported source-only failure becomes unassessed instead of aborting judgment.
-An executed failure must be supported by a failed check for that same criterion. If its check
-passed or could not assess the behavior, the failure label becomes unassessed and retains the
-judge's observation. Failures from other criteria remain separate evidence. Passing
-requires completed supervisor assertions, qualified frozen controls, and the judge's
-assessment that those assertions cover the criterion. Raw probe status remains visible
-when qualification is missing or invalid. Both reversed-order passes, disagreements,
-source, commands, outputs, and repairs are retained. They check presentation bias and
-do not provide independent ground truth. A legacy command's zero exit, nonempty output,
-or printed test count cannot establish a pass. Detected candidate-file mutations
-report changed paths with before/after hashes or modes (up to 100 paths, with the
-total count), rather than an undiagnosable generic failure.
+Harnesses must match the inspected interface's runtime. The
+[verification protocol](verification.md#independent-observations-and-assertions)
+owns trusted completion, failure provenance, dependency declarations, and output
+bounds; [repair invariants](verification.md#repair-invariants) freeze case obligations.
+
+Assumed names, runtimes, or entry points causing setup failure remain unassessed.
+A missing explicitly required interface can be a source-only defect; unsupported
+source-only failures become unassessed. An executed failure needs a failed check
+for that criterion, not another criterion's result. Passing requires completed
+supervisor assertions, qualified frozen controls, and the judge's assessment of
+coverage. Raw probes remain visible when qualification fails. Both passes,
+disagreements, source, commands, output, and repairs are retained; reversed orders
+check presentation bias, not independent ground truth. Candidate-file mutations
+report before/after hashes or modes for up to 100 paths, plus the total count.
 
 `retained_tests` is optional. Each pass then also runs its command in a scratch copy of every
 candidate in which files matching the patterns (shell-style, where `*` also matches `/`, never
@@ -415,7 +486,25 @@ The `run` command performs blind semantic assessment automatically after all can
 ./dist/codex-ab judge --run-dir "$run_dir" --confirm-paid-inference
 ```
 
-The gpt-6.1-sol judge uses high reasoning and the default service tier. It receives the task, anonymous patches, changed-file lists, bounded output summaries, and complete read-only evaluator evidence under `/evidence`, plus anonymous evaluator source directories for inspecting affected contracts and callers. It does not receive arm labels, costs, agent logs, or either agent's writable filesystem. Task packs with a pinned upstream reference also mount its frozen commit patches and combined diff read-only under `/reference`. Both stages use them to establish task-scoped behavior while accepting equivalent designs and safe improvements; source comparison does not replace executed criterion evidence. The judge assesses final candidate trees, not commit-by-commit correspondence. Two separate homes containing the restricted source-reader configuration judge opposite presentation orders; they do not copy the task agents' mise runtime. Each pass uses two stages when its first harness succeeds or three when one repair stage is needed, with up to three capacity attempts per stage. Each assessment returns validated JSON scores from 0 to 5 for correctness (25%), simplicity (25%), completeness (20%), implementation performance (12%), maintainability (10%), approach (4%), and test quality (4%), plus evidence, issues, and a winner. A complete weighted total ranges from 0 to 100. Historical four-component assessments retain their correctness/completeness/maintainability/test-quality weights of 50/20/20/10 and are not ranked against the expanded rubric. Critical findings override totals; a candidate that failed any required gate cannot win. Disagreement is reported rather than forced into consensus. Large logs stay retained and inspectable without being duplicated into the prompt. Oversized patches or summary packs still fail explicitly. Historical reports retain their recorded judge metadata. When judging an older run whose saved prices lack gpt-6.1-sol, the judge records a separate fallback rate for its own usage without changing the run's original pricing snapshot or trial controls.
+The judge uses gpt-6.1-sol, high reasoning, and default service tier. It receives
+the task, anonymous patches/change lists, bounded summaries, and full read-only
+`/evidence` and candidate trees. Pinned references appear under `/reference`.
+It sees no arm labels, costs, agent logs, or candidate-writable filesystem.
+Reference behavior defines task scope, not commit correspondence; equivalent
+designs and safe improvements are allowed, but source comparison cannot replace
+executed evidence.
+
+Two independent restricted homes judge opposite orders. Each pass has authoring,
+one optional repair, then assessment, with at most three capacity launches per
+stage. Validated scores range 0–5; weights are correctness 25%, simplicity 25%,
+completeness 20%, implementation performance 12%, maintainability 10%, approach 4%,
+and test quality 4%, producing a complete total of 0–100. Historical four-axis
+rubrics retain 50/20/20/10 and are not ranked against the expanded rubric. Critical
+findings override totals; failed required gates prevent winning. Disagreements
+remain visible. Oversized patches/summary packs fail explicitly; large logs stay
+inspectable without prompt duplication. Historical judge metadata is unchanged.
+If saved prices lack the new judge model, its fallback rate is recorded separately
+without changing original pricing or trial controls.
 
 The source-reading judge has no model-accessible shell, unified execution,
 delegation, plugin/app, hook, image-viewer, or web-search capability. A fixed MCP broker
@@ -444,28 +533,18 @@ New judge requests, including recovered stages, use the default service tier;
 each new attempt records its tier. Historical attempts retain their metadata.
 Judge cost estimates use recorded model list rates; historical service-tier
 surcharges are not included.
-Offline evaluator checks across both candidates and passes reuse the same
-prewarmed Go build cache from the pinned baseline and the Bun dependency cache
-seed in the pinned dependency image. Baseline cache warming runs offline in a
-shared Docker image keyed by the pinned dependency image, baseline commit,
-operator, and warming timeout. The run records its immutable image ID rather
-than storing another compiler cache in its directory. Matching runs reuse that
-image; keep it available for later checks. Warming compiles without running
-baseline tests and retains its warming inputs, command, and diagnostics. Compilation is optional
-and bounded to two minutes or the shorter run timeout; partial cache entries
-remain reusable after a timeout. Cancellation still stops the operation.
-Each check uses its fresh private Docker writable layer to update native Go and
-Bun caches directly over the immutable image seed. No full cache is copied into
-its temporary workspace. Native cache behavior, including Go executable reuse,
-remains intact. Existing Go seed payloads remain read-only to prevent access-time
-bookkeeping from copying aged payloads into every check; native action indexes
-and new cache entries remain writable. Candidate check processes stay offline,
-unprivileged, capability-free, and resource bounded. Their trusted supervisor starts
-with only the capabilities needed to prepare the private workspace and drop child
-privileges. Candidate and harness mounts are read-only. A check cannot change its
-image, another check's cache, or original candidate files. Cache writes stay
-outside report bundles and credential-bearing judge containers. Candidate source
-copies, outputs, and temporary execution workspaces remain separate.
+Offline checks share a baseline Go/Bun cache seed in an immutable image keyed by
+dependency image, baseline, operator, and warming timeout. Warming compiles without
+running baseline tests, records inputs/diagnostics, and is bounded to two minutes
+or the shorter run timeout. Partial cache entries after timeout remain reusable;
+cancellation stops warming. Keep recorded images for later checks.
+
+Each check gets a private writable layer, not a copied compiler cache. Go seed
+payloads stay read-only to avoid access-time copy-up; native action indexes and new
+entries stay writable. Candidate/harness mounts are read-only. Unprivileged,
+capability-free, offline candidate processes cannot alter other checks or images.
+The supervisor has only workspace/privilege-drop capabilities. Temporary source,
+outputs, and cache writes stay outside report bundles and credential-bearing homes.
 
 After an implementation or judge container is confirmed stopped and removed,
 the runner discards its downloaded remote plugin catalog if that path was absent
@@ -561,7 +640,21 @@ recalculates weighted scores, records the input hash, and shows agreement or dis
 Imported assessments do not restart inference, replace the official judge, supply missing usage,
 or change overall winner eligibility. They are supplied evidence, not an operational fallback.
 
-The runner automatically writes `reports/report.md`, `reports/report.json`, and a checksummed `reports/bundle/` after execution, including partial runs. The bundle contains setup identities, task and evaluator controls, captured patches, interaction and role audits, source assessment, paired comparison, semantic check results, and integrity checks. Encrypted interaction content remains unknown; command waits are counted separately from reviewer-status polling. The standalone `report` command refreshes the standard report and an existing finishing bundle without starting inference. Readable rejected judge responses are retained separately as unvalidated evidence, never as an eligible winner. It includes raw, uncached, cached, cache-write, output, reasoning-output, and total tokens for root and child agents; estimated public-list API cost; command time; agent and grader wall time; gate status; B-minus-A percentages; both raw judge passes; and a separate judge cost. Pricing is fetched and snapshotted once per run, with source, timestamp, assumptions, and warnings. If usage or required checks are incomplete, the report shows no overall winner. An independently verified and qualified criterion failure can settle a new reliable failed outcome even when other criteria remain unassessed; a verified pass still needs complete checks in both passes. Historical raw grades remain visible without acquiring new evidence guarantees. When both candidates fail, neither wins; the report explains why and separately identifies the faster and lower-estimated-cost arms without declaring a quality winner.
+Execution automatically retains `reports/report.md`, `reports/report.json`, and a
+checksummed `reports/bundle/`, including partial runs. Bundles contain setup/task
+identities, evaluator controls, patches, interaction/role audits, assessments,
+checks, and integrity evidence. Standalone reporting refreshes an existing
+finishing bundle without inference. Rejected judge responses remain unvalidated,
+never winner evidence.
+
+Reports include root/child token categories, list-price estimates, command/agent/
+grader times, gates, percentage differences, both passes, and separate judge cost.
+Pricing is snapshotted once with source, time, assumptions, and warnings. Incomplete
+usage or required checks prevent an overall winner. A qualified failure can settle
+a failed outcome despite other unassessed criteria; verified success requires
+complete checks in both passes. Historical grades gain no new guarantees. If both
+fail, neither wins, though speed/cost differences remain visible. Encrypted
+interaction content stays unknown; command waits and reviewer polling are separate.
 
 Validated Mekugi exports also report compaction answerer, provider cost and cost
 from the first compaction onward, excluding prewarm. Older exports without

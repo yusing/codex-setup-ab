@@ -106,40 +106,13 @@ running a check. Symlinks, path escapes, file creation/deletion, mode changes,
 multiple-file diffs, and overlapping file replacements are rejected. The full
 patch remains part of the frozen control identity.
 
-The following compact criteria example is for a fictional task that introduces
-`math_impl.add(a, b)`. Replace the task hash with the actual prompt hash and use
-real pinned task/reference behavior in production. The inline reference is a
-fixture, not an official benchmark task.
+For a complete real criteria contract, use the
+[Flask manifest](../tasks/flask-ipv6-server-name/manifest.json) and its
+[control provenance](../tasks/flask-ipv6-server-name/README.md). They bind the prompt,
+retained observations, four control roles, source pins, and expected behavior.
+Do not copy trivial fixture controls into a real task.
 
-```json
-{
-  "schema": "codex-ab.criteria.v1",
-  "task_sha256": "REPLACE_WITH_THE_TASK_SHA256",
-  "criteria": [
-    {"id": "sum", "description": "Return the numeric sum of both inputs", "required_interface": "math_impl.add(a, b)"}
-  ],
-  "preparation": "true",
-  "existing_tests": "python3 -m unittest discover",
-  "existing_test_verification": {
-    "schema": "codex-ab.verification.v1",
-    "cases": [
-      {"id": "preserved-zero", "kind": "python-call", "module": "math_impl", "callable": "add", "input": "{\"args\":[0,0],\"kwargs\":{}}", "expected": "0"}
-    ]
-  },
-  "qualification": "not-run",
-  "evaluator_controls": {
-    "schema": "codex-ab.evaluator-controls.v1",
-    "cases": [
-      {"id": "reference", "role": "reference", "base": "baseline", "files": [{"path": "math_impl.py", "source": "def add(a, b): return a + b\n"}], "expected": {"sum": "pass"}},
-      {"id": "unchanged", "role": "baseline", "base": "baseline", "files": [], "expected": {"sum": "fail"}},
-      {"id": "subtraction", "role": "negative", "base": "baseline", "files": [{"path": "math_impl.py", "source": "def add(a, b): return a - b\n"}], "expected": {"sum": "fail"}},
-      {"id": "alternative", "role": "alternative", "base": "baseline", "files": [{"path": "math_impl.py", "source": "def combine(a, b): return sum([a, b])\n"}], "python_target": {"module": "math_impl", "callable": "combine"}, "expected": {"sum": "pass"}}
-    ]
-  }
-}
-```
-
-The corresponding authored check includes independent cases, for example:
+A fictional `math_impl.add(a, b)` check illustrates the observation shape:
 
 ```json
 {
@@ -215,17 +188,12 @@ permissions, and the offline network namespace. Cache tests additionally require
 `CODEX_AB_LIVE_REFERENCE_RUN`. Skipped live tests do not verify the container
 boundary. No test in this workflow authorizes paid inference.
 
-The existing [Flask IPv6 task](../tasks/flask-ipv6-server-name/README.md) is a
-complete migrated pack with real pinned upstream source controls. Its observer
-calls actual `Flask.run`, replacing only `werkzeug.serving.run_simple` to record
-host, port, options, application identity, and cleanup. The original scoped
-pytest command remains a separate diagnostic. The model-free live test uses
-seven IPv6 observations and thirteen retained-behavior observations, asserting
-each complete JSON batch from the supervisor. It executes the ordinary semantic
-assessment and qualification path against the reference, unchanged baseline,
-targeted source mutant, and an independent valid parser. CI installs the pack's
-pinned Python dependencies and fetches the exact upstream reference before this
-offline test.
+The [Flask IPv6 task](../tasks/flask-ipv6-server-name/README.md) exercises actual
+`Flask.run`, replacing only the server launcher to observe host, port, options,
+application identity, and cleanup. Its live test runs seven IPv6 and thirteen
+retained observations through normal supervision/qualification against all four
+controls. Original pytest output is diagnostic only. CI provides pinned source
+and dependencies before offline execution.
 
 ```sh
 CODEX_AB_LIVE_DOCKER=1 CODEX_AB_VERIFIER_IMAGE=codex-ab:model-free \

@@ -109,18 +109,10 @@ alongside the new reliability and uncertainty sections; their populations differ
 
 ## Scored-attempt metrics and compatibility
 
-[reliability.ts](../reliability.ts) versions its denominator policy. It separates
-execution, behavioral result, evaluator validity, observed candidate costs, and
-whether those costs are eligible for comparisons. Pass rate uses scored attempts;
-infrastructure failures, invalid evaluations, unassessed outcomes, and administrative
-cancellations are separately counted. Unstarted slots do not count as attempts.
-
-Cost per verified success includes eligible candidate costs from all scored
-attempts, including failures. Unknown or approximate cost prevents a complete cost
-per success. Observed partial spend stays visible. Zero successes gives an undefined
-value rather than zero. Evaluator spend remains separate. Historical records without
-trusted outcome dimensions remain explicitly unassessed in the new metrics; old
-reports and evidence are not rewritten. New trial and suite report schemas are v2.
+The [report contract](contract.md#report) defines scored-attempt denominators,
+cost eligibility, missing evidence, and v2 report compatibility. Candidate costs
+include scored failures; evaluator spend is separate. Historical records without
+trusted outcome dimensions remain unassessed and are never rewritten.
 
 These capabilities support the proposed FHE-style analysis. They do not themselves
 establish an official FHE score or equivalence to its task verifiers and runtime.

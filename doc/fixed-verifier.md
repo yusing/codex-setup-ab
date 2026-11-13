@@ -132,18 +132,13 @@ current fixed grade while preserving all earlier result files. Repeated verifier
 invocations on one implementation are not fresh implementation attempts and must
 not be added to a scored-attempt denominator.
 
-The implementation entry point is
-[`executeFixedVerifier()`](../fixed-verifier.ts). It requires the reconstructed
-evaluator tree, the trusted candidate manifest, and its patch. It verifies the
-actual file bytes, executable bits, symlinks, Git index tree, and change list
-before starting Docker. Legacy candidates without a trusted capture manifest
-cannot establish this identity and are rejected by this path.
+[`executeFixedVerifier()`](../fixed-verifier.ts) verifies the reconstructed tree,
+trusted manifest, patch, bytes, modes, symlinks, index tree, and change list before
+Docker starts. Legacy candidates without trusted capture are rejected.
 
-Each invocation needs a new output destination. A prior invocation or reward
-directory is never reused. Retained evidence includes the exact configuration,
-task and verifier manifests, candidate manifest, raw stdout/stderr, original
-reward files, and a versioned `codex-ab.fixed-result.v1` result. The runner uses
-the existing owned-container lifecycle and verifies cleanup.
+Outputs are never reused. Evidence retains configuration, task/verifier/candidate
+manifests, stdout/stderr, reward files, and `codex-ab.fixed-result.v1`. The owned
+container lifecycle verifies cleanup.
 
 ## Score and validity contract
 
@@ -198,9 +193,7 @@ CODEX_AB_LIVE_DOCKER=1 CODEX_AB_LIVE_IMAGE=codex-ab:delivery \
   bun test fixed-verifier.live.test.ts
 ```
 
-The ordinary tests exercise pin validation, immutable inputs, exact command and
-mount wiring, reward precedence, missing/invalid outputs, process outcomes, and
-cleanup failure. The separately gated live test runs the real owned Docker path,
-verifies offline networking and read-only mounts, preserves prior evidence, and
-distinguishes correct, wrong, and early-zero-exit fixtures. A skipped live test is
-not a passed container-boundary check. Neither suite invokes a model.
+Ordinary tests cover pins, immutable inputs, command/mount wiring, reward parsing,
+process outcomes, and cleanup errors. The live gate checks actual offline/read-only
+Docker boundaries, prior-evidence preservation, and correct/wrong/early-exit
+fixtures. Neither invokes models; skips establish no boundary coverage.

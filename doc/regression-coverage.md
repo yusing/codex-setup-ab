@@ -1,11 +1,7 @@
 # Regression coverage map
 
-This map shows which recurring agent failure classes the commit-backed task packs
-and evaluation checks can detect, and which they cannot. It lets readers choose
-tasks for an instruction or launcher comparison and judge what a result does and
-does not establish. The classes summarize recurring failures that instruction
-changes have tried to prevent; they are not a claim that every past session was
-inspected.
+Use this map to choose tasks and interpret their limits. It describes detectable
+failure classes, not an audit of every historical session.
 
 A task detects a class only through observable output: the delivered patch, its
 executed checks, the judge's seven-axis assessment, and recorded telemetry. A

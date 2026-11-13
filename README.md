@@ -13,7 +13,7 @@ New evidence separates trusted candidate capture, verifier completion, evaluator
 qualification, usage coverage, and pricing precision. Reports retain the existing
 joint-success comparisons and add scored-attempt reliability and paired uncertainty
 over tasks. Original benchmark verifiers have a separate fixed-verifier mode.
-See the [implementation and migration notes](doc/fhe-evolution.md).
+See the [evidence reliability guide](doc/fhe-evolution.md).
 
 ## Prerequisites and build
 
@@ -145,7 +145,7 @@ available to agents. See the [CLI guide](doc/cli.md) and [contract](doc/contract
 - [Verifier completion and qualification](doc/verification.md): independent assertions, frozen controls, and task-pack migration.
 - [Fixed verifiers](doc/fixed-verifier.md): pinned original-verifier execution and its comparability limits.
 - [Guidance and launcher experiment](doc/guidance-launcher.md): prepare the four matched cells and fresh repeated trials without inference.
-- [Evidence evolution](doc/fhe-evolution.md): changes, compatibility, validation, and remaining limits.
+- [Evidence reliability](doc/fhe-evolution.md): required provenance, interpretation, and validation.
 - [sqlite-utils multi-commit upgrade](tasks/sqlite-utils-history/README.md): a post-cutoff, 19-commit brownfield task for quality and requirement retention.
 - [Regression coverage map](doc/regression-coverage.md): which agent failure classes the task packs and checks can and cannot detect.
 
@@ -163,7 +163,10 @@ bun run build
 ```
 
 `check` validates repository-relative documentation paths, typechecks production
-TypeScript, and runs the tests. CI runs the same command and builds the CLI. A
+TypeScript, and runs all tests in six isolated worker processes. Runner tests are
+split by workflow, with private fixtures per file; tests within each file stay serial
+to protect spies and environment changes. `bun test runner-setup.test.ts` runs one
+focused group. CI runs the same command and builds the CLI. A
 separate model-free Docker job runs on pushes, pull requests, and a weekly schedule.
 It exercises the actual collector, verifier supervisor, source reader, arm network
 separation, fixed-verifier mounts, imports, and owned-container cleanup. Local live
@@ -179,7 +182,7 @@ local Codex path). It is skipped when that integration is not requested.
 | --- | --- | --- |
 | UI rendering and evidence watching | [Browser app](web/app.js), [server](web-server.ts) | `bun test web-server.test.ts` |
 | Task choices, presets, and launch defaults | [Launch catalog](launch.ts), [CLI options](cli-options.ts) | `bun test preset.test.ts task-pack.test.ts` |
-| Execution, grading, and recovery | [Workflow](workflow.ts), [runner](runner.ts), [semantic judge](semantic-judge.ts) | `bun test runner.test.ts semantic.test.ts` |
+| Execution, grading, and recovery | [Workflow](workflow.ts), [runner](runner.ts), [semantic judge](semantic-judge.ts) | `bun test runner semantic.test.ts` |
 | Trusted candidate capture | [Collector](candidate-script.txt), [manifest verification](candidate-evidence.ts) | `bun test candidate.test.ts`; Docker: `candidate.live.test.ts` |
 | Verifier provenance and qualification | [Supervisor protocol](semantic-protocol.ts), [qualification](semantic-qualification.ts), [fixed adapter](fixed-verifier.ts) | `bun test semantic-protocol.test.ts fixed-verifier.test.ts fixed-workflow.test.ts` |
 | Source judge permissions | [Capability boundary](judge-boundary.ts), [reader](judge-reader.mjs) | `bun test judge-boundary.test.ts`; Docker: `judge-boundary.live.test.ts` |

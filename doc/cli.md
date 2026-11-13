@@ -45,7 +45,10 @@ docker build \
 
 The harness follows the selected host Codex version, not a separately pinned CLI release. The container operator is always `1000:1000`. The preset runner checks an existing image before use and rebuilds it when its operator identity or the Codex/code-mode-host binary hashes differ from the selected host setup, its PATH-resolved Bun cannot run, or Git lacks `--no-lazy-fetch` or its HTTPS transport helper. Rebuild older images lacking those tools before manual preflight. Existing prepared runs retain their recorded runtime identities; prepare a new run to use an updated runtime.
 
-No model request occurs during the build or `prepare`. Adaptive `run` includes two source-assessment passes in reversed presentation orders after a completed pair. These are presentation-bias checks, not independent ground truth. The restricted source-reader judge checks that the selected runtime reports its required execution features disabled before inference; it does not impose a CLI version allowlist. Each pass has two stages when the first harness succeeds, or three when one repair stage is needed; every stage allows at most three Sol launches on capacity errors. `judge` is available for older, not-yet-judged pairs. Both commands make model requests using your Codex authentication and quota, and require `--confirm-paid-inference` to start. Reported API costs are list-price estimates, not subscription charges or invoices.
+Build and preparation make no model requests. Candidate execution and adaptive
+judging require `--confirm-paid-inference` and use your authentication/quota.
+Reported costs are list-price estimates, not subscription charges or invoices.
+See the [judge contract](contract.md#blind-judge) for stages, retries, and limits.
 
 ## Find and inspect retained evidence
 
@@ -304,16 +307,11 @@ separate legacy profiles, without a commit-backed or post-cutoff qualification.
 
 ## Diverse task suite
 
-`tasks/diverse-suite.json` selects four pinned task packs: Gin, Flask, Express,
-and nvm. Supply a JSON object mapping each task ID to a local checkout containing
-its baseline and reference ancestry. The suite prepares at least two fresh pairs
-per task/setup and runs model-free preflight before allowing inference. These
-packs use adaptive grading, not prequalified hidden-test oracles. Earlier
-baseline checks passed for Flask (9 tests) and Express (71 tests). On October 29,
-2026, local reference checks passed for Gin's TestContextCopy family, Flask's
-focused address tests (10), Express's res.send suite (76), and Nvm's syntax,
-source-selection, and no-eval regression tests. These source-level checks do not
-qualify Docker execution, adaptive judges, or comparison outcomes.
+`tasks/diverse-suite.json` selects Gin, Flask, Express, and NVM. Map each task ID to
+a local checkout containing its baseline and reference ancestry. Preparation
+creates at least two fresh pairs per task/setup and performs model-free preflight.
+These use adaptive grading, not prequalified hidden-test oracles; source checks
+alone do not qualify Docker execution or judge outcomes.
 
 ```sh
 cat > /tmp/codex-ab-sources.json <<'JSON'
@@ -368,36 +366,21 @@ and use `"setup_commit":"worktree"` for the fresh custom arm. A `HEAD` arm conti
 to use committed files only. Worktree changes are frozen in the arm manifest; untracked
 instruction files are excluded.
 
-Sources must have completed execution and finishing with a valid published bundle.
-The same pinned task, criteria, model, reasoning, service tier, base image, Codex
-binaries, resources, timeout, and compaction limit must match. Setup revisions,
-launchers, and their treatments can differ, including captured Mekugi builds.
-Runtime images may differ only for launcher-binary changes under matching task
-dependency preparation inputs; see the [import contract](contract.md).
-Each mapping optionally accepts
-`bundle_sha256`; without it the current manifest is pinned automatically.
-Choose **Reuse historical evaluation** (the default with imports) to preserve old
-grades, scores, and assessments. Each fresh setup selects an imported setup as its
-evaluation baseline. The judge starts from that arm's historical tests and
-assessments, adapts the tests to the fresh implementation, and checks the same
-behavior. Only fresh candidates run tests and receive new scores. Original and
-adapted checks and their rationales remain in the evidence bundle.
+Sources need complete, infrastructure-valid published bundles and matching task
+and execution controls. Setup/launcher treatments may differ. Optional
+`bundle_sha256` pins a mapping; otherwise its current manifest is pinned.
+See the [import contract](contract.md#run-and-grade-both-arms) for exact matching,
+provenance, and accounting rules.
 
-Fresh assessments include simplicity, implementation performance, and approach in
-the weighted score, with explicit evidence. See the [scoring rubric](contract.md#blind-judge).
-Historical assessments lacking them display unassessed and retain their original
-rubric rather than inheriting the fresh candidate's conclusions or new weights.
+| Evaluation choice | Effect |
+| --- | --- |
+| `--evaluation-mode reuse` (default) | Preserve imported grades/scores; adapt their checks only for fresh candidates. |
+| `--evaluation-mode fresh` | Regrade and blindly reassess all patches. Required when historical assessment evidence is missing. |
+| `--evaluation-baselines '{"arm-4":"arm-3"}'` | Select an imported baseline for a fresh slot; omitted mappings use the last imported slot. |
 
-Choose **Fresh evaluation of all candidates** to regrade and rejudge every patch.
-CLI equivalents are `--evaluation-mode reuse|fresh` and optionally
-`--evaluation-baselines '{"arm-4":"arm-3"}'`, mapping fresh slots to imported
-slots. Without a mapping, fresh arms use the last imported slot. Reuse rankings
-compare frozen and new weighted scores only under the same complete rubric, rather
-than claiming a fresh joint blind verdict. Mixed-rubric comparisons have no quality
-ranking. Missing historical assessment evidence requires fresh evaluation.
-Original usage evidence is copied and repriced using the new run's list prices;
-missing measurements remain unknown. Original runs are unchanged. Historical
-imports use repeat count 1 and cannot combine with `--arm` or `--control-run`.
+Reuse rankings require the same complete rubric; mixed rubrics have no quality
+ranking. Original runs remain unchanged, missing measurements stay unknown, and
+imports require repeat count 1 without `--arm` or `--control-run`.
 
 ## Reevaluate retained implementations
 
