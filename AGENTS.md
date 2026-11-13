@@ -2,6 +2,7 @@
 
 - Start with the [source ownership and focused checks](README.md#source-ownership-and-focused-checks).
 - Use the [CLI inspection guide](doc/cli.md#find-and-inspect-retained-evidence) for result IDs and retained evidence.
+  A `#<uuid>` in a request is a workbench entry ID naming a run; resolve it there before asking.
 - Reader behavior lives in the [specification](doc/spec.md) and [contract](doc/contract.md).
 
 # Benchmark task selection
