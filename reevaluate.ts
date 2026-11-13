@@ -1,5 +1,4 @@
 import { cp, mkdir, mkdtemp, readFile, realpath } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { verifyBundleManifest } from "./bundle";
 import { verifyPreparedInputs } from "./prepare";
@@ -7,7 +6,7 @@ import { armExecutionSucceeded, readState, sha256, writeState } from "./state";
 import { armNames, type RunState } from "./types";
 
 /** Copy preparation controls only. Executed homes and evaluator output stay in the source. */
-export async function prepareReevaluation(sourceDirectory: string, outputParent = tmpdir()): Promise<string> {
+export async function prepareReevaluation(sourceDirectory: string, outputParent = "/var/tmp"): Promise<string> {
   const sourceDir = await realpath(resolve(sourceDirectory));
   const outputRoot = await realpath(resolve(outputParent));
   const relativeOutput = relative(sourceDir, outputRoot);

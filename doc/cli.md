@@ -14,6 +14,9 @@ Run commands from the repository root. Human-directed work uses the
 semantic grading, and report options, see the [contract](contract.md).
 Use `./dist/codex-ab --help` for all flags.
 
+Retained run, trial, suite, reevaluation, and build outputs default to `/var/tmp`.
+Use `--output-parent` to choose another parent directory.
+
 ## Prerequisites and build
 
 You need Bun 1.4 or later, Git, Python 3 for Mekugi export validation, Docker with BuildKit named-context support, access to the source commit, a standalone Codex binary and its matching `codex-code-mode-host` companion, and a mode-0600 Codex `auth.json`. The pinned Ubuntu 24.04 image copies Go 1.27.1, Node 24.21.0, and Bun 1.4.2 from public, digest-pinned official images, and builds Git 2.56.1 from its checksum-pinned official source archive. This supplies the `--no-lazy-fetch` capability required by the coordination task while retaining local and HTTPS transports. It does not inherit another benchmark image's runtime, wrappers, source, home, or credentials. It copies the chosen standalone Codex pair directly. Preparation records the CLI version plus both files' SHA-256 identities; preflight requires both container copies to match.
@@ -223,10 +226,10 @@ They use the generic `task` profile, not a repository-specific runner branch.
 Obtain the source repository locally, then prepare from its manifest:
 
 ```sh
-git clone https://github.com/nvm-sh/nvm.git /tmp/codex-ab-nvm-source
+git clone https://github.com/nvm-sh/nvm.git /var/tmp/codex-ab-nvm-source
 run_dir="$(./dist/codex-ab prepare \
   --task-pack ./tasks/nvm-download-no-eval/manifest.json \
-  --source /tmp/codex-ab-nvm-source \
+  --source /var/tmp/codex-ab-nvm-source \
   --comparison same-setup \
   --mekugi-source /home/ubuntu/projects/mekugi \
   --image codex-ab:0.1.0)"

@@ -4,7 +4,6 @@ import { armNames } from "./types";
 import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories, discardDownloadedCatalog, TASK_PATH } from "./dependencies";
 import { prepareRuntimeHome, runtimeHomeMounts } from "./runtime-home";
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedContainerOptions, type OwnedNetwork } from "./container";
@@ -191,7 +190,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   await ensureDependencyImage(docker, runDir, state, signal);
   const setupImage = dependencyImage(state);
   async function checkSetup(arm: ArmName, options: Omit<OwnedContainerOptions, "docker" | "signal">) {
-    const home = await mkdtemp(join(tmpdir(), "codex-ab-preflight-"));
+    const home = await mkdtemp(join("/var/tmp", "codex-ab-preflight-"));
     try {
       await cp(resolve(runDir, state.arms[arm].home_template), home, { recursive: true, verbatimSymlinks: true });
       await chmod(home, 0o700);

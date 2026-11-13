@@ -6,7 +6,6 @@ import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
-import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { checked, exec } from "./process";
 import { readToolStoreManifest, recordToolStore, verifySnapshotIdentities, type SnapshotFile, type ToolStoreManifest } from "./snapshot";
@@ -538,7 +537,7 @@ export async function verifyRepositoryIsolation(repository: string): Promise<voi
 
 export async function initializeSubmodules(repository: string, submodules: NonNullable<RunState["submodules"]>): Promise<void> {
   for (const sub of submodules) {
-    const seed = await mkdtemp(join(tmpdir(), "task-source-"));
+    const seed = await mkdtemp(join("/var/tmp", "task-source-"));
     try {
       await checked(["git", "init", "--bare", seed]);
       await checked(["git", "-C", seed, "fetch", "--depth=1", pathToFileURL(sub.source).href, `${sub.sha}:refs/heads/work`]);
@@ -690,7 +689,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (options.model && grokComparison && options.model !== model) throw new Error(`${comparison} uses ${model}`);
   const codeModeHostSha256 = await sha256(codeModeHost);
   if (!(await exists(join(source, ".git")))) throw new Error(`source is not a Git worktree: ${source}`);
-  const runDir = await realpath(await mkdtemp(join(options.outputParent ?? tmpdir(), "task-run-")));
+  const runDir = await realpath(await mkdtemp(join(options.outputParent ?? "/var/tmp", "task-run-")));
   await chmod(runDir, 0o700);
   progress(`created isolated run ${runDir}`);
   for (const dir of ["control", "evaluator", "sessions", "snapshots", "artifacts"]) await mkdir(join(runDir, dir), { recursive: true });

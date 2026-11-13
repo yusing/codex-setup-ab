@@ -1,7 +1,6 @@
 import { armLabels } from "./arm-labels";
 import { copyFile, cp, mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { verifyBundleManifest, writeBundleManifest } from "./bundle";
 import { preflightRunUnlocked } from "./runner";
 import { verifyPreparedInputs } from "./prepare";
@@ -127,7 +126,7 @@ export async function prepareTrials(options: {
     state.pricing ??= await fetchPricing();
     const controls = trialControls(state);
     const controlsSha256 = digest(controls);
-    const directory = await mkdtemp(join(options.outputParent ?? tmpdir(), "task-runs-"));
+    const directory = await mkdtemp(join(options.outputParent ?? "/var/tmp", "task-runs-"));
     const set: TrialSet = {
       schema: "codex-ab.trials.v1", id: basename(directory), created_at: new Date().toISOString(),
       status: "preparing", schedule, controls, controls_sha256: controlsSha256,

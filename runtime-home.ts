@@ -1,7 +1,6 @@
 import { applySkillSelection } from "./setup-skills";
 import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { dependencyImage } from "./dependencies";
 import { checked, exec } from "./process";
@@ -118,7 +117,7 @@ export async function prepareRuntimeHome(options: {
     const tag = `codex-ab-home:${key}`;
     const existing = await imageId(docker, tag, signal);
     if (existing) return { key, image_id: existing };
-    const context = await mkdtemp(join(tmpdir(), "task-home-image-"));
+    const context = await mkdtemp(join("/var/tmp", "task-home-image-"));
     try {
       const buildBase = `codex-ab-home-base:${base.slice("sha256:".length)}`;
       await checked([docker, "tag", base, buildBase], { signal });

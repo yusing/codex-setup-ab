@@ -182,7 +182,7 @@ checks and both blind judging passes. It performs no implementation-agent calls.
 Any source isolation preflight evidence remains historical; reevaluation does not
 repeat implementation preflight.
 New judging has its own usage and costs, and may change functional assessments as
-well as scores. `--output-parent` selects the parent of the new evidence directory;
+well as scores. `--output-parent` selects the parent of the new evidence directory (default `/var/tmp`);
 `--confirm-paid-inference` is required. Incomplete or invalid sources are rejected
 before paid inference. This is a new evaluation, not a restart of the source run.
 

@@ -1,6 +1,5 @@
 import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { join, resolve, relative } from "node:path";
-import { tmpdir } from "node:os";
 import { checked } from "./process";
 import { runOwnedContainer } from "./container";
 import { sha256 } from "./state";
@@ -18,7 +17,7 @@ export interface MekugiBuild {
 export async function buildMekugi(options: { source: string; image: string; outputParent?: string; docker?: string; signal?: AbortSignal }): Promise<string> {
   const source = await realpath(options.source);
   const docker = options.docker ?? "docker";
-  const parent = await realpath(options.outputParent ?? tmpdir());
+  const parent = await realpath(options.outputParent ?? "/var/tmp");
   if (parent === source || relative(source, parent).split("/")[0] !== "..") throw new Error("build output must be outside the source tree");
   const directory = await mkdtemp(join(parent, "codex-ab-build-"));
   await writeFile(join(directory, "build_inputs.py"), MEKUGI_BUILD_INPUTS);

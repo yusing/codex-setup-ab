@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { ensureLaunchImage, launchConfiguration } from "./launch";
+import { ensureLaunchImage, launchConfiguration, taskCatalog } from "./launch";
 import { main } from "./cli";
 
 test("launch maps historical arms to slots while leaving fresh candidates", () => {
@@ -230,4 +230,12 @@ test("setup-commit launch requires both revisions and shares the selected launch
   expect(() => launchConfiguration({ preset: "setup-commits" })).toThrow("both setup commits");
   expect(() => launchConfiguration({ ...options, preset: "stock-current" })).toThrow("only for setup-commits");
   expect(() => launchConfiguration({ ...options, "review-treatment": "/overlay" })).toThrow("overlays");
+});
+
+test("default source checkouts use persistent temporary storage and output overrides survive", () => {
+  for (const task of taskCatalog().filter(task => task.repository)) {
+    const override = task.id === "nvm-download-no-eval" ? process.env.CODEX_AB_SOURCE_DIR : process.env.CODEX_AB_SQLITE_UTILS_SOURCE;
+    expect(task.source).toBe(override ?? (task.id === "nvm-download-no-eval" ? "/var/tmp/codex-ab-nvm-source" : "/var/tmp/codex-ab-sqlite-utils-source"));
+  }
+  expect(launchConfiguration({ "output-parent": "/chosen/output" }).prepare.outputParent).toBe("/chosen/output");
 });

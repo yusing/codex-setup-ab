@@ -1,6 +1,5 @@
 import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { prepare, type PrepareOptions } from "./prepare";
 import { loadTaskPack } from "./task-pack";
 import { prepareTrials, readTrialSet, reportTrials, runTrials, summarize } from "./trials";
@@ -78,7 +77,7 @@ export async function prepareSuite(options: {
     return { id: item.id, packPath, source: sources[item.id] as string, pack };
   }));
   if (new Set(tasks.map(task => task.id)).size !== tasks.length) throw new Error("duplicate suite task");
-  const directory = await mkdtemp(join(options.outputParent ?? tmpdir(), "task-suite-"));
+  const directory = await mkdtemp(join(options.outputParent ?? "/var/tmp", "task-suite-"));
   const state: SuiteState = { schema: "codex-ab.suite-run.v1", id: basename(directory), created_at: new Date().toISOString(),
     status: "preparing", comparison: options.comparison, schedule: options.schedule, count: options.count,
     manifest_sha256: await sha256(manifestPath), sources_sha256: await sha256(sourcesPath), sets: [] };

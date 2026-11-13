@@ -1,5 +1,4 @@
 import { cp, copyFile, lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { exec, checked } from "./process";
@@ -70,7 +69,7 @@ export async function ensureDependencyImage(docker: string, runDir: string, stat
     }
     process.stderr.write(`[run] building shared dependency image ${tag}; build logs: ${join(runDir, "artifacts/dependencies.stderr")}\n`);
     await checked([docker, "tag", base, buildBase], { signal });
-    const context = await mkdtemp(join(tmpdir(), "codex-ab-deps-"));
+    const context = await mkdtemp(join("/var/tmp", "codex-ab-deps-"));
     try {
       await cp(resolve(runDir, state.arms.stock.repository), join(context, "baseline"), { recursive: true, verbatimSymlinks: true });
       if (state.runtime_tools.mekugi_in_image) await copyFile(resolve(runDir, state.runtime_tools.mekugi_source!), join(context, "mekugi"));

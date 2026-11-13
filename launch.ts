@@ -6,7 +6,7 @@ import { compositionKeys, parseArmConfigurations } from "./arms";
 import { CODEX_MODELS, REASONING_EFFORTS } from "./types";
 import { access, realpath, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { exec, checked } from "./process";
 import { prepare, type PrepareOptions } from "./prepare";
@@ -29,12 +29,12 @@ export const COMPARISONS = [
 export function taskCatalog() {
   const userRoot = homedir();
   return [
-    { id: "nvm-download-no-eval", title: "NVM download arguments", source: process.env.CODEX_AB_SOURCE_DIR ?? join(tmpdir(), "codex-ab-nvm-source"), timeout: 1800, effort: "medium", pack: "tasks/nvm-download-no-eval/manifest.json", repository: "https://github.com/nvm-sh/nvm.git" },
+    { id: "nvm-download-no-eval", title: "NVM download arguments", source: process.env.CODEX_AB_SOURCE_DIR ?? join("/var/tmp", "codex-ab-nvm-source"), timeout: 1800, effort: "medium", pack: "tasks/nvm-download-no-eval/manifest.json", repository: "https://github.com/nvm-sh/nvm.git" },
     { id: "skills-mgr-agent-cli", title: "Skills manager repository-to-agent workflow", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-agent-cli/manifest.json" },
     { id: "skills-mgr-remote-uninstall", title: "Skills manager remote uninstall", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-remote-uninstall/manifest.json" },
     { id: "skills-mgr-get-short-circuit", title: "Skills manager fast conditional acquisition", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-get-short-circuit/manifest.json" },
     { id: "session-retention", title: "Mekugi coordination checkpoints", source: process.env.CODEX_AB_MEKUGI_SOURCE ?? join(userRoot, "projects/mekugi"), timeout: 3600, effort: "xhigh", pack: "tasks/session-retention/manifest.json" },
-    { id: "sqlite-utils-history", title: "sqlite-utils multi-commit upgrade", source: process.env.CODEX_AB_SQLITE_UTILS_SOURCE ?? join(tmpdir(), "codex-ab-sqlite-utils-source"), timeout: 3300, effort: "xhigh", pack: "tasks/sqlite-utils-history/manifest.json",
+    { id: "sqlite-utils-history", title: "sqlite-utils multi-commit upgrade", source: process.env.CODEX_AB_SQLITE_UTILS_SOURCE ?? join("/var/tmp", "codex-ab-sqlite-utils-source"), timeout: 3300, effort: "xhigh", pack: "tasks/sqlite-utils-history/manifest.json",
       repository: "https://github.com/simonw/sqlite-utils.git", compactLimit: 200000, preset: "stock-mekugi" },
     ...["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding"].map(id => ({ id, title: id === "gin-context-copy" ? "Gin context copy" : id === "flask-ipv6-server-name" ? "Flask IPv6 server name" : "Express transfer encoding", source: join(userRoot, "projects", id.split("-")[0]!), timeout: 1800, effort: "medium", pack: `tasks/${id}/manifest.json` })),
     { id: "custom", title: "Custom task or portable pack", source: "", timeout: 1800, effort: "medium", pack: "" },
