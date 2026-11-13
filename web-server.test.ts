@@ -1031,6 +1031,32 @@ test("a pinned-repository task check announces the clone without starting work",
   expect((await post("/api/check", { command: "launch", options: { ...options, task: "session-retention" } })).status).toBe(400);
 });
 
+test("manual imports take historical models instead of hidden defaults and preserve the fresh model", async () => {
+  const codex = join(root, "codex");
+  for (const path of [codex, join(root, "codex-code-mode-host")]) {
+    await file(path, "#!/bin/sh\nexit 0\n");
+    await chmod(path, 0o755);
+  }
+  const directory = join(root, "previous");
+  const original = JSON.stringify({ schema_version: 1, execution: { model: "gpt-6.1-sol" },
+    arms: { stock: {}, current: {} }, arm_settings: { current: { model: "gpt-6.1-terra" } } });
+  await file(join(directory, "run.json"), original);
+  await file(join(directory, "reports/bundle/MANIFEST.sha256"), "fixture");
+  const options = { preset: "custom", task: "sqlite-utils-history", source: join(root, "missing"),
+    "prepare-only": true, "current-home": root, "codex-bin": codex, "docker-bin": "/bin/false",
+    "mekugi-source": root, "mekugi-bin": codex,
+    arms: JSON.stringify(Array.from({ length: 3 }, () => ({ launcher: "codex", setup_commit: "stock" }))),
+    "arm-settings": JSON.stringify({ stock: { model: "gpt-6.1-terra" }, current: { model: "gpt-6-astra" }, "arm-3": { model: "gpt-6-astra" } }),
+    "import-arms": JSON.stringify([{ target_arm: "current", run_dir: directory, arm: "current" }, { target_arm: "arm-3", run_dir: directory, arm: "stock" }]) };
+  const response = await post("/api/check", { command: "launch", options });
+  expect(response.status).toBe(200);
+  const checked = await response.json();
+  expect(JSON.parse(checked.request.options["arm-settings"])).toMatchObject({
+    stock: { model: "gpt-6.1-terra" }, current: { model: "gpt-6.1-terra" }, "arm-3": { model: "gpt-6.1-sol" } });
+  expect(await readFile(join(directory, "run.json"), "utf8")).toBe(original);
+  expect((await (await fetch(origin + "/api/entries")).json()).entries).toEqual([]);
+});
+
 test("a model-free CLI operation completes, persists its result, and releases the active slot", async () => {
   const directory = await pair();
   const entry = await attach(directory);

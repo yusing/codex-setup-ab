@@ -286,6 +286,19 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     const paid = PAID.has(command) || command === "launch" && options["prepare-only"] !== true || command === "prepare-suite" && body.runAfterPrepare === true;
     if (consent && paid && options["confirm-paid-inference"] !== true && body.confirmPaid !== true) throw new Error("Confirm paid inference for this operation before starting");
     if (command === "launch") {
+      // Previous results own their model identity; hidden fresh-run form defaults do not.
+      if (options["import-arms"]) {
+        const parsed = launchConfiguration(options);
+        const settings = Object.fromEntries(Object.entries(parsed.prepare.armSettings ?? {}).map(([arm, value]) =>
+          [arm, { ...value, model: value.model as RunState["execution"]["model"] | undefined }]));
+        for (const item of parsed.importArms ?? []) {
+          const source = await readState(item.run_dir);
+          if (!Object.hasOwn(source.arms, item.arm)) throw new Error("Unknown previous arm: " + item.arm);
+          settings[item.target_arm] = { ...settings[item.target_arm],
+            model: source.arm_settings?.[item.arm]?.model ?? source.execution.model };
+        }
+        options["arm-settings"] = JSON.stringify(settings);
+      }
       const config = launchConfiguration(options);
       const sourceExists = await stat(config.prepare.source).then(info => info.isDirectory()).catch(() => false);
       const task = taskCatalog().find(item => item.id === (options.task ?? launchDefaults().task));
