@@ -99,8 +99,9 @@ through server-sent events when operation or evidence files change. A dropped
 connection reconnects automatically and loads the current view. You can stop an
 active operation; cancellation retains available evidence and uses the runner's
 container cleanup. Closing a browser tab leaves the server operation running.
-Reload to reconnect, or attach an existing run, trial-set, or suite directory after
-restarting the server. Started runs are never restarted; the existing audited
+An open page refreshes its connection and reattaches the selected evidence directory
+automatically after a server restart, preserving unsent form inputs. Other retained
+runs, trial sets, and suites can be attached by directory. Started runs are never restarted; the existing audited
 judge-recovery action remains available.
 
 Results lead with the overall outcome and each setup's grade, per-pass criterion counts,
@@ -114,6 +115,11 @@ Pausing evidence updates keeps operation status and Stop feedback live.
 Loaded or refreshed views use current invalidation reasons instead of winner claims
 from an older report. Regenerate the report to update exported evidence. Failed builds expose their available compiler
 logs and build outcome without requiring a successful provenance manifest.
+
+Arms settings, including the preset, imported-result paths, and skill overrides,
+are saved in this browser’s localStorage and restored on reload. Clear site data
+to discard them. Request tokens, credentials, and paid-inference consent are not saved.
+If browser storage is unavailable, the form still works without persistence.
 
 The workbench runs one operation at a time. Its run list is kept in server memory;
 benchmark evidence stays in the existing external run directories. Credential inputs

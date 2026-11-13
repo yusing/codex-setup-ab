@@ -9,6 +9,8 @@ let config, selected, snapshot, activeId, busy = false, actionEntry, reportSigna
 let artifactItems = [];
 let listSignature, artifactSignature, childSignature, liveKeys;
 let eventStream, latestSnapshot;
+let armsDraftReady = false;
+const ARMS_DRAFT_KEY = "codex-ab.arms.v1";
 const MEKUGI_TOGGLES = [
   ["shell-guard", "Guard remote VCS writes and sudo commands"],
   ["deduplicate-output", "Deduplicate output and attachments"],
@@ -129,6 +131,48 @@ function selectArm(row, focus = false) {
   if (focus) $(row.dataset.tab).focus();
   loadArmSkills(row);
 }
+function saveArmsDraft() {
+  if (!armsDraftReady) return;
+  const draft = { preset: $("f-preset").value, evaluation: $("f-evaluation-mode").value,
+    active: armElements().indexOf(activeArm), arms: armElements().map(row => ({
+      fields: Object.fromEntries([...row.querySelectorAll("[data-setting]")].map(input =>
+        [input.dataset.setting, input.type === "checkbox" ? input.checked : input.value])),
+      skills: row.skillOverrides, originalSettings: row.originalSettings,
+    })) };
+  try { localStorage.setItem(ARMS_DRAFT_KEY, JSON.stringify(draft)); }
+  catch { /* Storage may be unavailable; the live form remains usable. */ }
+}
+function restoreArmsDraft() {
+  let draft;
+  try { draft = JSON.parse(localStorage.getItem(ARMS_DRAFT_KEY)); } catch { return false; }
+  if (!draft || !config.comparisons.some(item => item.id === draft.preset)
+    || !Array.isArray(draft.arms) || draft.arms.length < 2
+    || draft.arms.some(arm => !arm || !arm.fields || typeof arm.fields !== "object")) return false;
+  $("f-preset").value = draft.preset;
+  $("f-evaluation-mode").value = draft.evaluation === "fresh" ? "fresh" : "reuse";
+  $("custom-arms").replaceChildren(); $("arm-tabs").replaceChildren();
+  for (const arm of draft.arms) {
+    const row = addCustomArm(undefined, undefined, obj(arm.originalSettings));
+    row.skillOverrides = Object.fromEntries(Object.entries(obj(arm.skills)).filter(([, value]) => typeof value === "boolean"));
+    for (const input of row.querySelectorAll("[data-setting]")) {
+      const value = arm.fields[input.dataset.setting];
+      if (input.type === "checkbox" && typeof value === "boolean") input.checked = value;
+      else if (typeof value === "string") {
+        if (input.dataset.setting === "model" && ![...input.options].some(option => option.value === value)) input.add(new Option(value, value));
+        input.value = value;
+      }
+    }
+  }
+  activeArm = armElements()[draft.active] || armElements()[0];
+  updateCombination();
+  // Baseline options depend on all imported rows having been restored first.
+  armElements().forEach((row, index) => {
+    const value = draft.arms[index].fields["evaluation-baseline"];
+    if (typeof value === "string") armInput(row, "evaluation-baseline").value = value;
+  });
+  selectArm(activeArm);
+  return true;
+}
 function addCustomArm(launcher = "mekugi", revision = "HEAD", settings = {}) {
   const index = ++customArmIndex, prefix = "arm-" + index;
   const row = document.createElement("div");
@@ -215,7 +259,7 @@ async function loadArmSkills(row) {
     for (const skill of data.skills) {
       const label = document.createElement("label"); label.className = "check skill-toggle";
       const input = document.createElement("input"); input.type = "checkbox"; input.checked = row.skillOverrides[skill.name] ?? skill.enabled;
-      input.addEventListener("change", () => { row.skillOverrides[skill.name] = input.checked; $("input-status").hidden = true; });
+      input.addEventListener("change", () => { row.skillOverrides[skill.name] = input.checked; $("input-status").hidden = true; saveArmsDraft(); });
       const text = document.createElement("span"); text.textContent = skill.name;
       if (skill.conditional) { const note = document.createElement("small"); note.textContent = "Conditional in setup"; text.append(note); }
       label.append(input, text); content.querySelector(".skill-list").append(label);
@@ -226,12 +270,12 @@ async function loadArmSkills(row) {
         input.dispatchEvent(new Event("change"));
       }
     });
-    content.querySelector(".reset-skills")?.addEventListener("click", () => { row.skillOverrides = {}; row.skillsKey = undefined; loadArmSkills(row); });
+    content.querySelector(".reset-skills")?.addEventListener("click", () => { row.skillOverrides = {}; row.skillsKey = undefined; loadArmSkills(row); saveArmsDraft(); });
   } catch (error) {
     if (row.skillsKey !== key || !row.isConnected) return;
     content.replaceChildren(); const message = document.createElement("p"); message.className = "error"; message.setAttribute("role", "alert"); message.textContent = error.message;
     const retry = document.createElement("button"); retry.type = "button"; retry.textContent = "Retry skills";
-    retry.addEventListener("click", () => { row.skillsKey = undefined; loadArmSkills(row); }); content.append(message, retry);
+    retry.addEventListener("click", () => { row.skillsKey = undefined; loadArmSkills(row); saveArmsDraft(); }); content.append(message, retry);
   }
 }
 function applyPreset() {
@@ -282,8 +326,12 @@ function drawLaunch() {
   });
   for (const id of ["f-mekugi-build", "f-task-pack", "f-evaluation-mode"]) $(id).addEventListener("change", updateCombination);
   $("f-current-home").addEventListener("change", () => { for (const row of armElements()) { row.skillOverrides = {}; row.skillsKey = undefined; } updateCombination(); });
-  $("launch-form").oninput = () => { $("input-status").hidden = true; };
-  applyPreset(); updateConsent();
+  $("launch-form").oninput = () => { $("input-status").hidden = true; saveArmsDraft(); };
+  $("launch-form").onchange = saveArmsDraft;
+  armsDraftReady = false;
+  if (!restoreArmsDraft()) applyPreset();
+  armsDraftReady = true;
+  updateConsent();
 }
 function setEnabled(id, enabled) { if ($(id)) $(id).disabled = !enabled; }
 function updateCombination() {
@@ -323,6 +371,7 @@ function updateCombination() {
   if (custom && $("f-task-pack").value.trim()) for (const name of ["base", "forbidden", "task-file", "criteria", "profile"]) setEnabled("f-" + name, false);
   $("input-status").hidden = true;
   if (activeArm?.isConnected) selectArm(activeArm);
+  saveArmsDraft();
 }
 function updateConsent() {
   const paid = !$("prepare-only").checked;
@@ -892,6 +941,24 @@ function connectEvents() {
   const stream = new EventSource("/api/events" + (id ? "?entry=" + encodeURIComponent(id) : ""));
   eventStream = stream;
   const current = () => eventStream === stream && selected === id;
+  stream.addEventListener("session", async (event) => {
+    const session = JSON.parse(event.data);
+    if (!current() || session.id === config.token && (!id || session.attached)) return;
+    const directory = latestSnapshot?.entry.directory || snapshot?.entry.directory;
+    try {
+      const fresh = await api("config");
+      if (!current()) return;
+      config = fresh;
+      if (id && directory) {
+        const entry = await api("attach", { directory });
+        if (current()) await selectEntry(entry.id);
+      } else if (id) {
+        $("watch-error").textContent = "This selection is no longer attached. Choose its evidence directory to continue.";
+      }
+    } catch (error) {
+      if (current()) $("connection").textContent = "Recovery failed: " + error.message;
+    }
+  });
   stream.addEventListener("entries", (event) => {
     if (!current()) return;
     renderEntries(JSON.parse(event.data));
@@ -912,7 +979,7 @@ function connectEvents() {
     if (current()) $("watch-error").textContent = JSON.parse(event.data).error;
   });
   stream.onerror = () => {
-    if (current()) $("connection").textContent = "Connection lost. Reconnecting automatically. If the service restarted, reload and attach retained evidence.";
+    if (current()) $("connection").textContent = "Connection lost. Reconnecting automatically.";
   };
 }
 async function init() {

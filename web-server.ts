@@ -587,6 +587,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         req.signal.addEventListener("abort", close, { once: true });
         if (req.signal.aborted) { close(); return; }
         controller.enqueue(encoder.encode("retry: 1500\n\n"));
+        send("session", { id: token, attached: Boolean(entry) });
         heartbeat = setInterval(() => {
           if (controller.desiredSize !== null && controller.desiredSize <= 0) { close(); return; }
           controller.enqueue(encoder.encode(": keepalive\n\n"));
@@ -633,7 +634,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
         if (req.method === "GET" && url.pathname === "/api/events") {
           const id = url.searchParams.get("entry");
           const selected = id ? entries.get(id) : undefined;
-          if (id && !selected) return json({ error: "Attach the evidence directory again if the server was restarted" }, 404);
+          // A stale selection must still receive the new session and reconnect.
           server.timeout(req, 0);
           return events(req, selected);
         }

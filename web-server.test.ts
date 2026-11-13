@@ -884,7 +884,10 @@ test("SSE pushes attachment, external evidence changes, and current state on rec
   const reconnected = await subscribe(entry.id);
   expect((await reconnected.next("snapshot")).state.status).toBe("replacement");
   reconnected.close();
-  expect((await fetch(origin + "/api/events?entry=missing")).status).toBe(404);
+  const stale = await subscribe("missing");
+  expect((await stale.next("session")).id).toBe(token);
+  expect((await stale.next("entries")).entries).toBeArray();
+  stale.close();
 }, 15000);
 
 test("SSE discovers suite reports written after their empty directory appears", async () => {
@@ -1173,4 +1176,48 @@ test("setup commit identities label retained pair and trial evidence", async () 
     const detail = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
     expect(detail.arm_labels).toEqual({ stock: "Codex + Mekugi (setup aaaaaaaaaaaa)", current: "Codex + Mekugi (setup bbbbbbbbbbbb)" });
   }
+});
+
+
+test("browser refreshes its token and reattaches evidence without replaying operations", async () => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const handlers: Record<string, (event: { data: string }) => Promise<void>> = {};
+  const calls: unknown[] = [];
+  const context = { calls, document: { getElementById: () => ({}) },
+    EventSource: class {
+      close() {}
+      addEventListener(name: string, handler: typeof handlers[string]) { handlers[name] = handler; }
+    } };
+  runInNewContext(source + `
+    config = { token: "old" }; selected = "old-entry";
+    latestSnapshot = { entry: { directory: "/retained" } };
+    api = async (path, body) => {
+      calls.push([path, body, config.token]);
+      return path === "config" ? { token: "new" } : { id: "new-entry" };
+    };
+    selectEntry = async id => calls.push(["select", id]);
+    connectEvents();`, context);
+  await handlers.session!({ data: JSON.stringify({ id: "new", attached: true }) });
+  expect(calls).toEqual([["config", undefined, "old"], ["attach", { directory: "/retained" }, "new"], ["select", "new-entry"]]);
+  await handlers.session!({ data: JSON.stringify({ id: "new", attached: true }) });
+  expect(calls).toHaveLength(3);
+});
+
+test("Arms draft saves raw edits and skills without consent or credentials and tolerates storage failure", async () => {
+  const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
+  const values: Record<string, string> = {};
+  const row = { skillOverrides: { example: false }, originalSettings: {}, querySelectorAll: () => [
+    { dataset: { setting: "revision" }, type: "text", value: "unfinished revision " },
+    { dataset: { setting: "parallel-work" }, type: "checkbox", checked: true },
+  ] };
+  const elements: Record<string, unknown> = { "f-preset": { value: "custom" }, "f-evaluation-mode": { value: "reuse" }, "custom-arms": { children: [row, row] } };
+  const context = { document: { getElementById: (id: string) => elements[id] },
+    localStorage: { setItem: (key: string, value: string) => { values[key] = value; }, getItem: () => "broken json" } };
+  runInNewContext(source + '\narmsDraftReady = true; activeArm = armElements()[0]; saveArmsDraft();', context);
+  const draft = JSON.parse(values["codex-ab.arms.v1"]!);
+  expect(draft.arms[0]).toEqual({ fields: { revision: "unfinished revision ", "parallel-work": true }, skills: { example: false }, originalSettings: {} });
+  expect(Object.keys(draft).sort()).toEqual(["active", "arms", "evaluation", "preset"]);
+  expect(runInNewContext(source + '\nrestoreArmsDraft();', context)).toBe(false);
+  context.localStorage.setItem = () => { throw new Error("blocked"); };
+  expect(() => runInNewContext(source + '\narmsDraftReady = true; saveArmsDraft();', context)).not.toThrow();
 });
