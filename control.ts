@@ -203,8 +203,8 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
       source_run_id: source.id, source_arm: item.arm,
       source_usage: usageIdentity(originalUsage),
       remetered_original: usageIdentity(metered), original_pricing: source.pricing,
-      original_pricing_sha256: digest(source.pricing), target_pricing_sha256: digest(state.pricing),
-      repriced: digest(source.pricing) !== digest(state.pricing) };
+      original_pricing_sha256: digest(source.pricing), target_pricing_sha256: state.pricing ? digest(state.pricing) : null,
+      repriced: state.pricing ? digest(source.pricing) !== digest(state.pricing) : null };
     plans.push({ item, sourceRun, source, bundle, hash, result: result!, evidenceRoot, evidenceState, evidenceArm, original, home, expected, exportCopies, recoveryCopies, accounting, originalUsage });
   }
   const results: Partial<Record<string, ArmResult>> = {};

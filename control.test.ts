@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { controlIdentity, importArms, importControl } from "./control";
@@ -566,4 +566,18 @@ test("imports allow launcher-only image rebuilds and reject changed dependency c
       expect(await Bun.file(join(f.targetRun, "artifacts/current/changes.patch")).exists()).toBe(false);
     }
   }
+});
+
+test("imports a relocated publication before target pricing is available", async () => {
+  const f = await archivedControl(false);
+  const relocated = join(dirname(f.sourceRun), "relocated-source");
+  await rename(f.sourceRun, relocated);
+  directories.push(relocated);
+  delete f.treatment.pricing;
+  f.treatment.evaluation = { mode: "fresh" };
+  const imported = await importArms(f.targetRun, f.treatment, [{ target_arm: "current", run_dir: relocated, arm: "stock" }]);
+  expect(imported.current?.exit_code).toBe(0);
+  const provenance = await Bun.file(join(f.targetRun, f.treatment.imported_arms!.current!.directory, "accounting-verification.json")).json();
+  expect(provenance).toMatchObject({ status: "verified", target_pricing_sha256: null, repriced: null });
+  expect(provenance.original_pricing_sha256).toMatch(/^[a-f0-9]{64}$/);
 });

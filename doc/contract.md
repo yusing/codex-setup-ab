@@ -200,7 +200,9 @@ mode `reuse` preserves imported grades and per-pass scores and assessments;
 rollouts retain their namespaces and checksums. Before any repricing, import remeters
 the retained evidence against the source pricing and checks the original reported
 totals and coverage. Original measurements and verification results remain in
-`accounting-verification.json`; repricing uses the new snapshot separately. Old
+`accounting-verification.json`; repricing uses the new snapshot separately. When
+the target has no pricing snapshot yet, its pricing hash and repricing comparison
+are recorded as `null`; source accounting is still verified. Old
 rollout or accounting schemas and missing trusted capture provenance are rejected.
 Unknown current-format usage remains unknown and cannot establish complete accounting.
 Sources remain unchanged and the new run
