@@ -9,7 +9,7 @@
   "scripts": {
     "start": "bun cli.ts serve",
     "build": "bun build ./cli.ts --compile --outfile ./dist/codex-ab",
-    "test": "bun test --preload ./test-support/offline-network.ts",
+    "test": "bun test --parallel=6",
     "check:docs": "bun scripts/check-docs.ts",
     "typecheck": "tsc --noEmit",
     "check": "bun run check:docs && bun run typecheck && bun run test"

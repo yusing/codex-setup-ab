@@ -26,7 +26,7 @@ case "$operation" in
  start)
   name=; for argument in "$@"; do name="$argument"; done
   spec="$(cat "$state/$name")"
-  case "$spec" in *'sleep-command'*) trap 'exit 143' TERM INT; sleep 2;; *'fail-command'*) case "$spec" in *--rm*) rm -f "$state/$name";; esac; exit 7;; *'auto-remove-race'*) exit 0;; *) echo harmless;; esac
+  case "$spec" in *'sleep-command'*) exec sleep 2;; *'fail-command'*) case "$spec" in *--rm*) rm -f "$state/$name";; esac; exit 7;; *'auto-remove-race'*) exit 0;; *) echo harmless;; esac
   case "$spec" in *--rm*) rm -f "$state/$name";; esac;;
  stop) echo stopped;;
  commit)
