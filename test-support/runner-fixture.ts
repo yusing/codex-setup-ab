@@ -79,6 +79,10 @@ esac
     const codex = join(h, ".local/bin/codex");
     await file(join(h, "go/bin/mekugi-exec"), "#!/bin/sh\nexit 0\n", 0o755);
     await file(join(h, "go/bin/mekugi"), "#!/bin/sh\nexec \"$@\"\n", 0o755);
+    for (const name of ["mekugi-app-server", "codex-code-mode-host", "bwrap"]) {
+      await file(join(h, "go/bin", name), `#!/bin/sh\necho fixture-${name}\n`, 0o755);
+    }
+    await file(join(h, "go/bin/mekugi-models.json"), '{"models":[]}\n');
     await file(codex, "#!/bin/sh\necho codex-cli 0.154.0\n", 0o755);
     codexHash = (await checked(["sha256sum", codex])).stdout.split(/\s+/)[0]!;
     const codeModeHost = join(h, ".local/bin/codex-code-mode-host");
@@ -288,6 +292,7 @@ case "$operation" in
       *-preflight-network-*) ${networkFailure ? "echo 'curl: (7) Network unreachable' >&2; status=7" : "printf '%s' '403'"} ;;
       *-preflight-environment-*) : ;;
       *-preflight-grok) printf '%s\\n' 'grok 1.0.30' ;;
+      *-preflight-mekugi-runtime-*) printf '%s\\n' CODEX_AB_TOOL_HOST_OK ;;
       *-warm) ${failWarm ? "echo prewarm-failed >&2; status=9" : ":"} ;;
       *-capture)
         capture=$(cat '${stateDir}/'$name.capture)

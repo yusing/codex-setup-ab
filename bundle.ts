@@ -232,6 +232,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     [state.task.path, state.task.sha256],
     ...(state.protected_runtime?.scripts.map(file => [file.path, file.sha256]) ?? []),
     ...(state.mekugi_build?.files.map(file => [file.path, file.sha256]) ?? []),
+    ...(state.runtime_tools.mekugi_runtime?.map(file => [file.source, file.sha256]) ?? []),
     ...(state.task_pack ? [[state.task_pack.path, state.task_pack.sha256]] : []),
     ...(state.upstream_reference?.files.map(file => [file.path, file.sha256]) ?? []),
     ...Object.values(state.results ?? {}).flatMap(result => result?.recovery?.files.map(file => [file.path, file.sha256]) ?? []),

@@ -184,33 +184,20 @@ To generate another self-contained report from retained evidence without inferen
 judges, use `report-trials --trial-set "$trial_set"`. Each report gets a new output directory;
 previous reports remain unchanged.
 
-## Retain exact Mekugi build provenance
+## Installed Mekugi runtime
 
-To bind the selected executable pair to dirty source and compiled guidance, build from a captured
-context rather than supplying a nearby checkout:
+Preparation uses the installed host Mekugi runtime without compiling Go or Rust.
+Keep `mekugi`, `mekugi-exec`, `mekugi-app-server`, `codex-code-mode-host`, Linux
+`bwrap`, and `mekugi-models.json` beside the selected `--mekugi-bin`. All six
+artifacts are frozen and hashed. The fork's code-mode host stays separate from
+the standalone Codex companion. Missing artifacts fail preparation.
 
-```sh
-build_dir="$(./dist/codex-ab build-mekugi \
-  --source /home/ubuntu/projects/mekugi --image codex-ab:0.1.0)"
-```
-
-This model-free command uses the comparison runner's bundled Mekugi source-exclusion rules. It
-excludes generated binaries, dependency `node_modules` trees, nested linked Git worktrees
-(including `.worktrees` and `.claude/worktrees`),
-and Backpass state while retaining dirty source and compiled embedded assets. The
-compiled `mekugi` and `mekugi-exec` executables omit debug symbols.
-It retains a source archive, the archiver, build command/logs, immutable builder-image identity,
-and both executable hashes in a private temporary directory. Compilation consumes the archive
-inside a container without host credentials. Dependency downloads are allowed during this build;
-no model request is made. Failed builds retain their available evidence.
-
-Use `prepare --mekugi-build "$build_dir"` instead of `--mekugi-bin` and
-`--mekugi-source`. Preparation snapshots the runner-bundled analyzer and isolation scripts,
-checks both executables, and copies source provenance into the existing result bundle. No live source
-checkout or original build directory is needed after preparation. The run image is still
-selected independently and verified normally. This is locally recorded build provenance,
-not a signed third-party attestation. Supplying binaries without a build bundle remains
-supported and explicitly reports missing source provenance.
+Previously captured bundles remain readable through `--mekugi-build`; this does
+not run a build. Their Go executable/source provenance is retained, while native
+artifacts are frozen from the installed Mekugi beside `go/bin/mekugi` under
+Runtime home. A historical Go build bundle does not establish native source
+provenance. Installed binaries without source provenance remain supported and
+are labeled accordingly in reports.
 
 ## Portable task packs
 

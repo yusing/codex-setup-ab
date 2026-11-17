@@ -1082,63 +1082,6 @@ test("a model-free CLI operation completes, persists its result, and releases th
   }
 });
 
-test("stopping a real CLI operation retains its phase log and releases the active slot", async () => {
-  const source = join(root, "source");
-  const docker = join(root, "fixture-docker");
-  await file(join(source, "README.md"), "Tiny captured source fixture\n");
-  await file(docker, "#!/bin/sh\nexec sleep 30\n");
-  await chmod(docker, 0o700);
-  const started = await post("/api/start", {
-    command: "build-mekugi", options: { source, image: "fixture-image", "docker-bin": docker, "output-parent": root },
-  });
-  expect(started.status).toBe(202);
-  const entry = await started.json();
-  const stream = await subscribe(entry.id);
-  let detail = await stream.next("snapshot", data => data.entry.job.log.includes("[build] freezing"));
-  expect(detail.entry.job.log).toContain("[build] freezing");
-  expect(detail.entry.job.status).toBe("running");
-  expect((await post(`/api/entries/${entry.id}/stop`, {})).status).toBe(200);
-  detail = await stream.next("snapshot", data => data.entry.job.status === "canceled");
-  stream.close();
-  expect(detail.entry.job.status).toBe("canceled");
-  expect(detail.entry.job.log).toContain("[build] freezing");
-  expect(Date.parse(detail.entry.job.finishedAt)).toBeGreaterThanOrEqual(Date.parse(detail.entry.job.startedAt));
-  expect((await (await fetch(origin + "/api/entries")).json()).active).toBeUndefined();
-}, 10000);
-
-test("failed real CLI builds expose their compiler logs and remain attachable", async () => {
-  const source = join(root, "source");
-  const docker = join(root, "fixture-docker");
-  await file(join(source, "README.md"), "Tiny captured source\n");
-  await file(docker, `#!/bin/sh
-case "$1" in
-image) echo sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
-container) echo 'No such container' >&2; exit 1 ;;
-create) echo fixture-container ;;
-start) echo 'Compiler progress'; echo 'Compilation failed' >&2; exit 1 ;;
-*) exit 99 ;;
-esac
-`);
-  await chmod(docker, 0o700);
-  const response = await post("/api/start", { command: "build-mekugi", options: { source, image: "fixture-image", "docker-bin": docker, "output-parent": root } });
-  expect(response.status).toBe(202);
-  const entry = await response.json();
-  let detail = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
-  const deadline = Date.now() + 5000;
-  while (detail.entry.job.status === "running" && Date.now() < deadline) {
-    await Bun.sleep(20);
-    detail = await (await fetch(`${origin}/api/entries/${entry.id}`)).json();
-  }
-  expect(detail.entry.job.status).toBe("failed");
-  expect(detail.state.status).toBe("failed");
-  expect(detail.live.build).toContain("Compiler progress");
-  expect(detail.live["build stderr"]).toContain("Compilation failed");
-  expect(detail.artifacts.map((artifact: { path: string }) => artifact.path)).toEqual(["build-result.json", "build.stderr", "build.stdout"]);
-  expect((await attach(detail.entry.directory)).id).toBe(entry.id);
-  const output = await fetch(`${origin}/api/entries/${entry.id}/artifacts?path=build.stderr`);
-  expect(await output.text()).toContain("Compilation failed");
-});
-
 test.each([false, true])("web parallel work serializes checked=%s", async checked => {
   const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
   const body = runInNewContext(source + '\nformOptions({ querySelectorAll: () => [{ name: "parallel-work", checked, disabled: false }] })', {

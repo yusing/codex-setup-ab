@@ -15,6 +15,7 @@ import { loadTaskPack, snapshotUpstreamReference } from "./task-pack";
 import { validateCriteria } from "./semantic";
 import type { BenchmarkModel } from "./types";
 import { isPairedMekugiComparison, validateMekugiFlags } from "./mekugi";
+import { snapshotMekugiRuntime, verifyMekugiRuntime } from "./mekugi-runtime";
 import { MEKUGI_EXPORT_SCRIPTS, MEKUGI_ISOLATION_SCRIPTS } from "./support/mekugi";
 import { sha256, writeState } from "./state";
 import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort, JudgeReport } from "./types";
@@ -153,6 +154,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState, purp
       if ((source || hash) && (!source || !hash || await sha256(resolve(runDir, source)) !== hash)) throw new Error(`snapshotted ${label} changed`);
     }
   }
+  if (state.runtime_tools.mekugi_runtime) await verifyMekugiRuntime(runDir, state.runtime_tools.mekugi_runtime);
   if (state.comparison === "custom") {
     const configurations = parseArmConfigurations(state.arm_configurations);
     const keys = compositionKeys(configurations.length);
@@ -758,11 +760,13 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   progress("verified independent base-only clones");
 
   const frozenMekugi = mekugiBinary ? "snapshots/runtime/mekugi" : undefined;
-  if (frozenMekugi) {
-    await mkdir(join(runDir, "snapshots/runtime"), { recursive: true });
-    await copyFile(mekugiBinary!, join(runDir, frozenMekugi));
-    await chmod(join(runDir, frozenMekugi), 0o755);
-    if (await sha256(join(runDir, frozenMekugi)) !== mekugiSha256) throw new Error("Mekugi changed during preparation");
+  // A captured Go build still uses the already-installed native runtime. Do not
+  // compile Rust or confuse its companion with the standalone Codex tool host.
+  const mekugiRuntime = mekugiBinary ? await snapshotMekugiRuntime(runDir, mekugiBinary,
+    build ? dirname(await realpath(join(runtimeHome, "go/bin/mekugi"))) : dirname(mekugiBinary)) : undefined;
+  if (mekugiRuntime && (mekugiRuntime.find(file => file.name === "mekugi")!.sha256 !== mekugiSha256
+      || mekugiRuntime.find(file => file.name === "mekugi-exec")!.sha256 !== mekugiExecSha256)) {
+    throw new Error("Mekugi changed during preparation");
   }
 
   const currentTemplate = join(runDir, "snapshots/current/home/ubuntu");
@@ -883,12 +887,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     }
     protectedRuntime = { boundary: "direct-egress-vs-router-only", scripts };
   }
-  if (mekugiExec) {
-    await mkdir(join(runDir, "snapshots/runtime"), { recursive: true });
-    await copyFile(mekugiExec, join(runDir, "snapshots/runtime/mekugi-exec"));
-    await chmod(join(runDir, "snapshots/runtime/mekugi-exec"), 0o755);
-    if (await sha256(join(runDir, "snapshots/runtime/mekugi-exec")) !== mekugiExecSha256) throw new Error("Mekugi companion changed during preparation");
-  }
   const state: RunState = {
     profile,
     comparison,
@@ -929,6 +927,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
       codex_code_mode_host_sha256: codeModeHostSha256,
       mekugi_exec_source: mekugiExec ? "snapshots/runtime/mekugi-exec" : undefined, mekugi_exec_sha256: mekugiExecSha256,
       mekugi_source: frozenMekugi, mekugi_sha256: mekugiSha256, mekugi_in_image: needsMekugi || undefined,
+      mekugi_runtime: mekugiRuntime,
       grok_source: grokBinary, grok_sha256: grokSha256, grok_version: grokVersion,
       codex_code_mode_host_size: codeModeHostStat.size,
     },

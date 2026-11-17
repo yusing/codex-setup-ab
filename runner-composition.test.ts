@@ -382,15 +382,16 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
   const calls = (await readFile(fake.log, "utf8")).split("\n");
   const stagedHomes = calls.filter(line => line.startsWith("PREFLIGHT_HOME ")).map(line => line.split(" ")[1]!);
-  expect(stagedHomes).toHaveLength(launcher === "mekugi" ? 4 : 2);
+  expect(stagedHomes).toHaveLength(launcher === "mekugi" ? 6 : 2);
   expect(new Set(stagedHomes).size).toBe(stagedHomes.length);
   for (const staged of stagedHomes) expect(await Bun.file(join(staged, ".codex/config.toml")).exists()).toBe(false);
   for (const snapshot of [a, b]) expect(await readFile(join(snapshot, ".local/bin/check_project"), "utf8")).toBe("#!/bin/sh\necho setup-utility\n");
   if (launcher === "mekugi") {
-    const preflights = calls.filter(line => line.includes(" create ") && line.includes("mekugi-metrics") && line.includes("codex --version"));
+    const preflights = calls.filter(line => line.includes(" create ") && line.includes("-preflight-mekugi-") && line.includes("--help"));
     expect(preflights).toHaveLength(2);
     expect(preflights.every(line => line.includes(":/home/ubuntu "))).toBe(true);
     expect(preflights.every(line => !line.includes(":/setup:ro"))).toBe(true);
+    expect(preflights.every(line => !line.includes("mekugi-metrics"))).toBe(true);
   }
   const launches = calls.filter(line => (line.includes(" exec --json ") || line.includes(" headless --yolo ")));
   expect(launches).toHaveLength(2);

@@ -6,7 +6,6 @@ import { BOOLEAN_FLAGS, COMMAND_OPTIONS } from "./cli-options";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { validateMekugiFlags } from "./mekugi";
-import { buildMekugi } from "./provenance";
 import { prepareTrials, reportTrials, runTrials } from "./trials";
 import { prepareSuite, reportSuite, runSuite } from "./suite";
 import { prepare } from "./prepare";
@@ -36,7 +35,6 @@ const HELP = `codex-ab ${VERSION}
 Prepare, run, grade, blindly judge, and report isolated Codex pairs or a pinned trial set.
 
 Usage:
-  codex-ab build-mekugi --source DIR --image NAME [--output-parent DIR] [--docker-bin FILE]
   codex-ab prepare [options]
   codex-ab prepare-trials --run-dir DIR --count N [--order concurrent|alternating] [--output-parent DIR] [--docker-bin FILE]
   codex-ab prepare-suite --suite FILE --sources-file FILE --count N [--comparison stock-current] [options]
@@ -166,16 +164,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   if (command === "launch") {
     await runLaunch(o);
     return 0;
-  }
-  if (command === "build-mekugi") {
-    const controller = new AbortController();
-    const cancel = () => controller.abort();
-    process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
-    try {
-      process.stdout.write(`${await buildMekugi({ source: string(o, "source"), image: string(o, "image"),
-        outputParent: o["output-parent"] as string | undefined, docker: o["docker-bin"] as string | undefined, signal: controller.signal })}\n`);
-      return 0;
-    } finally { process.removeListener("SIGINT", cancel); process.removeListener("SIGTERM", cancel); }
   }
   if (command === "prepare") {
     if (o.profile === "skills-mgr-bundle" && ["source", "base", "forbidden", "task", "criteria"].some(key => typeof o[key] !== "string")) {

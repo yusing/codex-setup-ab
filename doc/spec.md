@@ -151,11 +151,12 @@ snapshot with identical tools and controls. A launches direct Codex; B uses
 Mekugi's admitted headless adapter and server-owned Thread Control. Reviewer
 overlays apply equally. The default `stock-current` treatment is unchanged.
 
-`--mekugi-bin` selects an executable with adjacent `mekugi-exec`. Both are frozen,
-hash-pinned into the image, and unaffected by subsequent host updates. Prepare
-again to select new binaries. `--mekugi-source` selects export validation, not
-source-to-binary provenance; use [build capture](cli.md#retain-exact-mekugi-build-provenance)
-for that. The runner bundles and hashes the analyzer; the live checkout does not
+`--mekugi-bin` selects a complete [installed host runtime](cli.md#installed-mekugi-runtime),
+including its native app server, code-mode host, execution helpers and model catalog.
+These artifacts are frozen, hash-pinned into the image, and unaffected by subsequent
+host updates. Preparation does not compile Mekugi or Rust. Prepare again to select
+new binaries. `--mekugi-source` selects export validation, not source-to-binary
+provenance. The runner bundles and hashes the analyzer; the live checkout does not
 supply validation scripts.
 
 `--mekugi-flags` precede the `codex` subcommand. Supported controls include shell

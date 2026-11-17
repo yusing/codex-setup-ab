@@ -368,10 +368,21 @@ test("prepare pins the executable Mekugi pair", async () => {
   await file(selectedMekugi, selectedContent, 0o755);
   await expect(prepare({ ...options, mekugiBinary: selectedMekugi })).rejects.toThrow("ENOENT");
   await file(join(root, "separate-bin/mekugi-exec"), "#!/bin/sh\nexit 0\n", 0o755);
+  for (const name of ["mekugi-app-server", "codex-code-mode-host", "bwrap", "mekugi-models.json"]) {
+    await cp(join(home, "go/bin", name), join(root, "separate-bin", name));
+  }
   const run = await prepare({ ...options, mekugiBinary: selectedMekugi });
   const state = await readState(run);
   expect(state.runtime_tools.mekugi_source).toBe("snapshots/runtime/mekugi");
   expect(state.runtime_tools.mekugi_in_image).toBe(true);
+  expect(state.runtime_tools.mekugi_runtime?.map(file => file.name)).toEqual([
+    "mekugi", "mekugi-exec", "mekugi-app-server", "codex-code-mode-host", "bwrap", "mekugi-models.json",
+  ]);
+  for (const artifact of state.runtime_tools.mekugi_runtime!) {
+    expect(await sha256(join(run, artifact.source))).toBe(await sha256(join(root, "separate-bin", artifact.name)));
+  }
+  expect(state.runtime_tools.mekugi_runtime!.find(file => file.name === "codex-code-mode-host")!.sha256)
+    .not.toBe(state.runtime_tools.codex_code_mode_host_sha256);
   expect(state.runtime_tools.mekugi_sha256).toBe(await sha256(selectedMekugi));
   expect(await Bun.file(join(run, "snapshots/current/home/ubuntu/.local/bin/mekugi")).exists()).toBe(false);
   await verifyPreparedInputs(run, state);
@@ -386,6 +397,30 @@ test("prepare pins the executable Mekugi pair", async () => {
   await file(resolve(run, state.runtime_tools.mekugi_exec_source!), "#!/bin/sh\nexit 0\n", 0o755);
   await file(resolve(run, state.runtime_tools.mekugi_source!), "tampered snapshot\n");
   await expect(verifyPreparedInputs(run, state)).rejects.toThrow("snapshotted Mekugi changed");
+});
+
+test("preparation pins every native artifact and rejects incomplete installations without compiling", async () => {
+  const runtimeHome = join(root, "native-artifacts-home");
+  await cp(home, runtimeHome, { recursive: true, verbatimSymlinks: true });
+  const options = { source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+    outputParent: root, currentHome: runtimeHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    currentLauncher: "mekugi" as const };
+  await rm(join(runtimeHome, "go/bin/bwrap"));
+  await expect(prepare(options)).rejects.toThrow("ENOENT");
+  await cp(join(home, "go/bin/bwrap"), join(runtimeHome, "go/bin/bwrap"));
+  const run = await prepare(options);
+  const state = await readState(run);
+  const nativeFiles = state.runtime_tools.mekugi_runtime!.filter(file => !["mekugi", "mekugi-exec"].includes(file.name));
+  for (const artifact of nativeFiles) {
+    const path = join(run, artifact.source);
+    const original = await readFile(path);
+    await file(path, "tampered native artifact\n");
+    await expect(verifyPreparedInputs(run, state)).rejects.toThrow(`snapshotted Mekugi runtime changed: ${artifact.name}`);
+    await writeFile(path, original);
+    await verifyPreparedInputs(run, state);
+  }
+  state.runtime_tools.mekugi_runtime!.pop();
+  await expect(verifyPreparedInputs(run, state)).rejects.toThrow("runtime inventory is incomplete");
 });
 
 test("runner records timeouts and stops its exact session containers", async () => {

@@ -88,7 +88,7 @@ function compatibleDependencyImages(source: RunState, target: RunState): boolean
   // when both recorded recipes are known and their only changed inputs are those binaries.
   if (a.key !== dependencyKey(source, a.base_image) || b.key !== dependencyKey(target, b.base_image)) return false;
   const taskKey = (state: RunState, base: string) => dependencyKey({ ...state,
-    runtime_tools: { ...state.runtime_tools, mekugi_in_image: false } }, base);
+    runtime_tools: { ...state.runtime_tools, mekugi_in_image: false, mekugi_runtime: undefined } }, base);
   return taskKey(source, a.base_image) === taskKey(target, b.base_image);
 }
 

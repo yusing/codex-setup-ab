@@ -112,7 +112,8 @@ test("stock-mekugi shares configured tools while isolating current-home guidance
   expect(launches.find(line => line.includes(" mekugi "))).toContain("--tmpfs /home/ubuntu/.local/state/mekugi/debug:size=4g,mode=0700,uid=1000,gid=1000");
   const exportPreflight = (await readFile(fake.log, "utf8")).split("\n").find(line => line.includes(" create ") && line.includes("-preflight-mekugi "))!;
   expect(exportPreflight).toContain("/artifacts/preflight-mekugi:/mekugi-exports");
-  expect(exportPreflight).toContain("mekugi-metrics mekugi --debug --capture-output=/mekugi-exports/capture.jsonl codex --version");
+  expect(exportPreflight).toContain("mekugi --debug --capture-output=/mekugi-exports/capture.jsonl --help");
+  expect(exportPreflight).not.toContain("mekugi-metrics");
   await expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "stock-mekugi",
@@ -208,7 +209,7 @@ test("duplicate-output launches equal controls with distinct treatment and per-a
     const preflight = log.find(line => line.includes(" create ") && line.includes(`-preflight-mekugi-${arm} --label`))!;
     expect(preflight).toContain("--network none");
     expect(preflight).toContain(`--deduplicate-output=${treatment}`);
-    expect(preflight).toContain("codex --version");
+    expect(preflight).toContain("--help");
     expect(preflight).toContain(`${join(run, "artifacts/preflight-mekugi", arm)}:/mekugi-exports`);
     const stagedHome = preflight.match(/-v (\S+):\/home\/ubuntu /)![1]!;
     expect(preflight).toContain(`${stagedHome}:${snapshot.source_home} `);

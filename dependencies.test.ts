@@ -6,6 +6,7 @@ import { DEPENDENCY_ENV, dependencyKey, ensureDependencyImage, discardDownloaded
 import { protectedArgs } from "./isolation";
 import { sha256 } from "./state";
 import type { RunState } from "./types";
+import { MEKUGI_RUNTIME_DIRECTORY, MEKUGI_RUNTIME_FILES, snapshotMekugiRuntime } from "./mekugi-runtime";
 
 function fixture(): RunState {
   return { image_id: `sha256:${"a".repeat(64)}`, source: { base_commit: "base", base_tree: "tree" },
@@ -144,5 +145,54 @@ esac
     expect(recipe).toContain(`${state.runtime_tools.mekugi_exec_sha256}  /usr/local/bin/mekugi-exec`);
     expect(recipe).toContain(`${state.runtime_tools.mekugi_sha256}  /usr/local/bin/mekugi`);
     expect(state.dependency_image?.key).toBe(dependencyKey(state, state.image_id!));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("dependency images package the complete host runtime without replacing the stock code-mode host", async () => {
+  const root = await mkdtemp(join(tmpdir(), "native-mekugi-image-"));
+  try {
+    const installed = join(root, "installed");
+    for (const directory of [installed, join(root, "artifacts"), join(root, "baseline")]) await mkdir(directory);
+    for (const name of MEKUGI_RUNTIME_FILES) {
+      await writeFile(join(installed, name), `host ${name}`, { mode: name === "mekugi-models.json" ? 0o644 : 0o755 });
+    }
+    const runtime = await snapshotMekugiRuntime(root, join(installed, "mekugi"));
+    const state = fixture();
+    state.arms = { stock: { repository: "baseline" } } as RunState["arms"];
+    Object.assign(state.runtime_tools, { mekugi_runtime: runtime, mekugi_in_image: true,
+      mekugi_source: runtime[0]!.source, mekugi_sha256: runtime[0]!.sha256,
+      mekugi_exec_source: runtime[1]!.source, mekugi_exec_sha256: runtime[1]!.sha256 });
+    const key = dependencyKey(state, state.image_id!);
+    for (const file of runtime) {
+      const original = file.sha256;
+      file.sha256 = "f".repeat(64);
+      expect(dependencyKey(state, state.image_id!)).not.toBe(key);
+      file.sha256 = original;
+    }
+    // The original installation need not survive preparation.
+    await rm(installed, { recursive: true });
+    const docker = join(root, "docker");
+    await writeFile(docker, `#!/bin/sh
+set -eu
+case "$1 $2" in
+  'image inspect') if [ ! -f '${root}/built' ]; then echo 'No such image' >&2; exit 1; fi; echo '${state.image_id}' ;;
+  'tag '*) ;;
+  'build --tag')
+    ${runtime.map(file => `cmp '${join(root, file.source)}' "$4/${file.name}"`).join("\n    ")}
+    cp "$4/Dockerfile" '${root}/recipe'
+    touch '${root}/built' ;;
+  *) exit 99 ;;
+esac
+`, { mode: 0o755 });
+    await ensureDependencyImage(docker, root, state, new AbortController().signal);
+    const recipe = await readFile(join(root, "recipe"), "utf8");
+    for (const file of runtime) {
+      expect(recipe).toContain(`COPY --chmod=${file.name === "mekugi-models.json" ? "644" : "755"} ${file.name} ${MEKUGI_RUNTIME_DIRECTORY}/${file.name}`);
+      expect(recipe).toContain(`${file.sha256}  ${MEKUGI_RUNTIME_DIRECTORY}/${file.name}`);
+    }
+    expect(recipe).toContain(`ln -s ${MEKUGI_RUNTIME_DIRECTORY}/mekugi /usr/local/bin/mekugi`);
+    expect(recipe).not.toContain(" /usr/local/bin/codex-code-mode-host");
+    await writeFile(join(root, runtime[2]!.source), "tampered app server");
+    await expect(ensureDependencyImage(docker, root, state, new AbortController().signal)).rejects.toThrow("snapshotted Mekugi runtime changed: mekugi-app-server");
   } finally { await rm(root, { recursive: true, force: true }); }
 });

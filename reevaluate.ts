@@ -52,6 +52,7 @@ export async function prepareReevaluation(sourceDirectory: string, outputParent 
       ...(source.upstream_reference?.files.map(file => file.path) ?? []),
       ...Object.values(source.setup_revisions ?? {}).map(revision => revision.manifest),
       ...(source.mekugi_build?.files.map(file => file.path) ?? []),
+      ...(source.runtime_tools.mekugi_runtime?.map(file => file.source) ?? []),
       ...(source.protected_runtime?.scripts.map(file => file.path) ?? [])]);
     for (const exports of [source.mekugi_exports, ...Object.values(source.mekugi_exports_by_arm ?? {})]) {
       if (exports) { paths.add(exports.validator.path); paths.add(exports.reader.path); }

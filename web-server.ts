@@ -267,7 +267,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       if (!entry.directory || !ACTIONS[entry.kind].includes(command)) throw new Error("This operation does not apply to the selected evidence");
       const target = entry.kind === "pair" ? "run-dir" : entry.kind === "trials" ? "trial-set" : "suite-run";
       options[target] = entry.directory;
-    } else if (!["launch", "prepare-suite", "build-mekugi"].includes(command)) {
+    } else if (!["launch", "prepare-suite"].includes(command)) {
       throw new Error("Attach the existing evidence directory first");
     }
     const warnings: string[] = [];
@@ -334,7 +334,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       warnings.push("Preparation verifies pinned commits and local inputs. Missing or stale container images are rebuilt before inference.");
     } else {
       const requiredKeys: Record<string, string[]> = {
-        "prepare-suite": ["suite", "sources-file", "count"], "build-mekugi": ["source", "image"],
+        "prepare-suite": ["suite", "sources-file", "count"],
         "prepare-trials": ["count"], remeter: ["exclusions"], invalidate: ["reason"],
       };
       for (const key of requiredKeys[command] ?? []) if (!options[key]) throw new Error(key + " is required");
@@ -342,7 +342,6 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       if (options.order && !["concurrent", "alternating"].includes(String(options.order))) throw new Error("Choose concurrent or alternating order");
       if (command === "prepare-suite" && options.comparison && options.comparison !== "stock-current") throw new Error("Suites support minimal versus current setup");
       for (const key of ["suite", "sources-file", "exclusions", "source-assessments"]) if (options[key]) await required(String(options[key]), key);
-      if (command === "build-mekugi") await required(String(options.source), "Mekugi source", true);
       if (paid) await required(String(options["auth-file"] ?? body.authFile ?? defaults["auth-file"]), "Codex authentication file");
     }
     return { request: { command, options, entryId: entry?.id }, warnings };
@@ -388,7 +387,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     const { request } = await validate(body, true);
     if (active) throw new Error("An operation is active. Stop it or wait for completion");
     const original = request.entryId ? entries.get(request.entryId)! : undefined;
-    const entry = original ?? { id: randomUUID(), title: request.command === "launch" ? String(request.options.task ?? defaults.task) : request.command, kind: request.command === "prepare-suite" ? "suite" : request.command === "build-mekugi" ? "build" : "pair" };
+    const entry = original ?? { id: randomUUID(), title: request.command === "launch" ? String(request.options.task ?? defaults.task) : request.command, kind: request.command === "prepare-suite" ? "suite" : "pair" };
     entry.job = { command: request.command, status: "running", startedAt: new Date().toISOString(), log: "" };
     entries.set(entry.id, entry);
     active = { entry, canceled: false };

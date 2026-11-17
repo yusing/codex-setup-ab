@@ -112,9 +112,12 @@ runs/trials use them. Read-only container mounts do not prevent host updates.
 
 Mise and Grok executables are hash-pinned read-only host mounts where needed.
 The selected host Bun is verified as provenance, but containers resolve Bun from
-the pinned image's PATH. Selected Mekugi and adjacent `mekugi-exec` are copied into
-the snapshot, hashed, and embedded in the dependency image; later host changes do
-not affect them. Older runs retain their original executable mounts. The default
+the pinned image's PATH. Selected Mekugi and its adjacent installed runtime
+(`mekugi-exec`, `mekugi-app-server`, `codex-code-mode-host`, Linux `bwrap`, and
+`mekugi-models.json`) are copied into the snapshot, individually hashed, and embedded
+together in a private image directory, separate from stock Codex's code-mode host.
+Preparation never compiles Mekugi or Rust; later host changes do not affect the
+snapshots. Older runs retain their original executable mounts. The default
 `--mekugi-bin` is `~/go/bin/mekugi`; selecting it does not copy Mekugi state.
 
 Containers preserve `/home/ubuntu` paths. `snapshot-manifest.json` binds the setup
@@ -128,8 +131,10 @@ readable configuration, writable homes, Git identity, task interpreters/dependen
 and provider reachability. It does not load skills, run guidance hooks, require
 optional guidance tools, or execute task evaluation tests. Dependency preparation
 may compile during image construction; preflight does not repeat it as baseline
-qualification. Mekugi checks use its pinned pair and `mekugi codex --version`, or
-`mekugi --version` for Grok routing. Missing requirements fail before inference.
+qualification. Mekugi checks parse the selected flags through `--help`, verify every
+packaged artifact's hash, run the native server and bubblewrap version probes, and
+execute a model-free JavaScript smoke through Mekugi's own code-mode host. Missing
+requirements fail before inference. Historical runtimes retain their original probes.
 
 When mise's Rust installation links to the source home's `.cargo/bin`, preparation
 also records metadata for those binaries and the `.rustup` runtime without reading

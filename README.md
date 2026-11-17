@@ -21,8 +21,10 @@ See the [evidence reliability guide](doc/fhe-evolution.md).
 - Access to the task's source repository and pinned commit.
 - A standalone Codex binary with its matching `codex-code-mode-host` companion.
 - A mode-0600 Codex `auth.json` for inference.
-- Python 3 and the Mekugi executable pair (`mekugi` and `mekugi-exec` in one directory)
-  for comparisons using Mekugi export validation.
+- Python 3 and a complete installed Mekugi runtime for Mekugi comparisons: `mekugi`,
+  `mekugi-exec`, `mekugi-app-server`, `codex-code-mode-host`, `bwrap` (Linux), and
+  `mekugi-models.json` in one directory. Preparation snapshots these host artifacts
+  without compiling Mekugi or Rust, separately from the stock Codex pair.
 
 Pair preparation checks and builds the selected image automatically. For manual
 build commands and runtime details, see the [CLI build guide](doc/cli.md#prerequisites-and-build).
@@ -90,7 +92,7 @@ each fresh setup; judges adapt its historical tests to the new implementation
 while testing the same behaviors. Choose **Fresh evaluation of all candidates**
 to regrade and rescore every patch instead.
 The [import guide](doc/cli.md#import-previous-arms) covers matching controls and CLI use.
-Suite preparation and Mekugi build capture are available through the
+Suite preparation is available through the
 [CLI guide](doc/cli.md).
 
 The run view shows phase messages, elapsed time, persisted run/arm/judge status,

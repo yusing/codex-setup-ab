@@ -159,6 +159,7 @@ export interface RunState {
     mekugi_exec_sha256?: string;
     mekugi_sha256?: string;
     mekugi_in_image?: boolean;
+    mekugi_runtime?: import("./mekugi-runtime").MekugiRuntimeFile[];
     grok_source?: string;
     grok_sha256?: string;
     grok_version?: string;

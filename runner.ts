@@ -13,6 +13,7 @@ import { readCandidateManifest, readRegularEvidence, verifyCandidateReconstructi
 import { verifyFixedInputs } from "./fixed-workflow";
 import { executorOwnership, launcherMounts, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
+import { MEKUGI_RUNTIME_DIRECTORY } from "./mekugi-runtime";
 import { armExecutionSucceeded, readState, writeState, withRunLock } from "./state";
 import { isPairedMekugiComparison, usesMekugi, mekugiArmFlags, MEKUGI_METRICS_WRAPPER, validateMekugiFlags } from "./mekugi";
 import { importArms, importControl } from "./control";
@@ -239,11 +240,29 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
       const launch = await checkSetup(state.comparison === "codex-mekugi-grok" ? "stock" : arm, { name: `${prefix}-mekugi${paired ? `-${arm}` : ""}`, timeoutMs: 30000,
         createArgs: ["-v", `${exports}:/mekugi-exports`, setupImage, "sh", "-lc",
           'export PATH=/home/ubuntu/.local/bin:$PATH && exec "$@"',
-          "preflight", ...((state.comparison === "setup-commits" || state.comparison === "custom") ? ["mise", "exec", "--", "sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []), "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", (state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/mekugi" : "mekugi", ...flags,
+          "preflight", ...((state.comparison === "setup-commits" || state.comparison === "custom") ? ["mise", "exec", "--", "sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []),
+          // Help exits before creating a session, so it cannot produce captures.
+          ...(state.runtime_tools.mekugi_runtime ? [] : ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics"]),
+          (state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/mekugi" : "mekugi", ...flags,
           ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),
-          "--capture-output=/mekugi-exports/capture.jsonl", ...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"]), "--version"] });
+          "--capture-output=/mekugi-exports/capture.jsonl", ...(state.runtime_tools.mekugi_runtime ? ["--help"] : [...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"]), "--version"])] });
       await writeFile(join(runDir, `artifacts/preflight-mekugi${paired ? `-${arm}` : ""}.json`), JSON.stringify(launch, null, 2));
       if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
+      if (state.runtime_tools.mekugi_runtime) {
+        const runtime = await checkSetup(state.comparison === "codex-mekugi-grok" ? "stock" : arm, {
+          name: `${prefix}-mekugi-runtime-${arm}`, timeoutMs: 30000,
+          createArgs: [setupImage, "sh", "-c", [
+            ...state.runtime_tools.mekugi_runtime.map(file => `echo '${file.sha256}  ${MEKUGI_RUNTIME_DIRECTORY}/${file.name}' | sha256sum --check --strict`),
+            `${MEKUGI_RUNTIME_DIRECTORY}/mekugi-app-server --version`,
+            `${MEKUGI_RUNTIME_DIRECTORY}/bwrap --version`,
+            `CODEX_CODE_MODE_HOST=${MEKUGI_RUNTIME_DIRECTORY}/codex-code-mode-host node -e "$1"`,
+          ].join(" && "), "mekugi-runtime", TOOLHOST_SMOKE_SCRIPT],
+        });
+        await writeFile(join(runDir, `artifacts/preflight-mekugi-runtime-${arm}.json`), JSON.stringify(runtime, null, 2));
+        if (runtime.exitCode !== 0 || !runtime.stdout.includes("CODEX_AB_TOOL_HOST_OK")) {
+          throw new Error(`Mekugi native runtime smoke failed before inference: ${[runtime.stdout.trim(), runtime.stderr.trim()].filter(Boolean).join("; ")}`);
+        }
+      }
     }
   }
   if (state.protected_runtime) await protectedPreflight(docker, runDir, state, signal);
