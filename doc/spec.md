@@ -131,7 +131,8 @@ supported comparison for the current Mekugi interface.
 
 ## Duplicate-output comparison
 
-`duplicate-output` owns `--deduplicate-output=false` for A and `true` for B.
+`duplicate-output` requires a Mekugi build with the deduplication switch. It owns
+`--deduplicate-output=false` for A and `true` for B.
 Both arms use the same pinned Mekugi binary, immutable current-home setup, task,
 model, reasoning, service tier, tools, and ordinary container boundary. A selected
 reviewer overlay applies to both. Candidate controls need not match setup defaults.
@@ -141,9 +142,10 @@ host home; tool-store mounts remain read-only. Preflight uses a disposable home
 and checks both flag values and export paths. Supplying deduplication through
 `--mekugi-flags`, protected runtime, or imported direct-Codex controls is rejected.
 Missing/invalid exports prevent complete paired measurement. Outside this
-comparison deduplication defaults on; disable it with
-`--mekugi-flags '["--deduplicate-output=false"]'`. Host results, retained evidence,
-and UI output remain intact.
+comparison, builds with the switch default to enabled and accept
+`--mekugi-flags '["--deduplicate-output=false"]'` to turn it off. Standard Codex
+comparisons using the newer native Mekugi runtime can leave deduplication enabled
+but cannot turn it off. Host results, retained evidence, and UI output remain intact.
 
 ## Current setup: direct Codex versus Mekugi
 
@@ -160,9 +162,10 @@ new binaries. `--mekugi-source` selects export validation, not source-to-binary
 provenance. The runner bundles and hashes the analyzer; the live checkout does not
 supply validation scripts.
 
-`--mekugi-flags` precede the `codex` subcommand. Supported controls include shell
-guarding, deduplication, child-reply summaries, `--ansi-faint=auto|on|off`, timeouts,
-and `--debug`. UI unchecked toggles explicitly disable the selected behavior.
+`--mekugi-flags` controls include shell guarding, child-reply summaries,
+`--ansi-faint=auto|on|off`, timeouts, `--debug`, and deduplication on builds with
+the switch. Unchecking a UI toggle requests an explicit opt-out, which preflight
+rejects if the pinned launcher cannot honor it.
 Mode, journal, recovery, mentor, explore-filter, and `--grok` flags are rejected;
 comparison selection owns routing. Export destinations, credentials, and runtime
 configuration are benchmark-owned. Settings never rewrite the host.

@@ -106,7 +106,7 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
   return { home, output };
 }
 
-async function preflightChecks(docker: string, state: RunState, runDir: string, signal: AbortSignal): Promise<string> {
+async function preflightChecks(docker: string, state: RunState, runDir: string, signal: AbortSignal): Promise<Map<ArmName, string[]>> {
   if (state.comparison === "journal-compaction") throw new Error("journal-compaction is retired; prepare a supported comparison");
   validateMekugiFlags(state.mekugi_flags ?? []);
   await verifyPreparedInputs(runDir, state);
@@ -230,29 +230,50 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
       throw new Error(`unexpected container Grok version: ${grokCheck.stdout.trim()}`);
     }
   }
-  if (state.execution.current_launcher === "mekugi" || state.comparison === "codex-mekugi-grok") {
+  const effectiveMekugiFlags = new Map<ArmName, string[]>();
+  const mekugiArms = armNames(state).filter(arm => usesMekugi(state, arm));
+  if (mekugiArms.length) {
     progress("checking selected Mekugi flags and exports offline without model access");
     const paired = isPairedMekugiComparison(state.comparison) || (state.comparison === "setup-commits" || state.comparison === "custom");
-    for (const arm of state.comparison === "custom" ? armNames(state).filter(arm => usesMekugi(state, arm)) : paired ? ["stock", "current"] : ["current"]) {
+    const grokComparison = state.comparison === "codex-mekugi-grok";
+    const nativeRuntime = state.runtime_tools.mekugi_runtime;
+    for (const arm of mekugiArms) {
+      const name = `${prefix}-mekugi${paired ? `-${arm}` : ""}`;
       const exports = join(runDir, "artifacts/preflight-mekugi", paired ? arm : "");
       await mkdir(exports, { recursive: true, mode: 0o700 });
-      const flags = mekugiArmFlags(state, arm);
-      const launch = await checkSetup(state.comparison === "codex-mekugi-grok" ? "stock" : arm, { name: `${prefix}-mekugi${paired ? `-${arm}` : ""}`, timeoutMs: 30000,
-        createArgs: ["-v", `${exports}:/mekugi-exports`, setupImage, "sh", "-lc",
-          'export PATH=/home/ubuntu/.local/bin:$PATH && exec "$@"',
-          "preflight", ...((state.comparison === "setup-commits" || state.comparison === "custom") ? ["mise", "exec", "--", "sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []),
-          // Help exits before creating a session, so it cannot produce captures.
-          ...(state.runtime_tools.mekugi_runtime ? [] : ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics"]),
-          (state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/mekugi" : "mekugi", ...flags,
+      const pinnedPath = state.comparison === "setup-commits" || state.comparison === "custom";
+      const launcher = ["-v", `${exports}:/mekugi-exports`, setupImage, "sh", "-lc",
+        'export PATH=/home/ubuntu/.local/bin:$PATH && exec "$@"', "preflight",
+        ...(pinnedPath ? ["mise", "exec", "--", "sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []),
+        ...(nativeRuntime ? [] : ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics"]),
+        pinnedPath ? "/usr/local/bin/mekugi" : "mekugi"];
+      let flags = mekugiArmFlags(state, arm);
+      const dedup = flags.find(flag => /^--deduplicate-output(?:=|$)/.test(flag));
+      if (nativeRuntime && !state.protected_runtime && !grokComparison && dedup) {
+        // An unknown flag before --help sends the rest of argv to Codex, so ask for bare help.
+        const help = await checkSetup(arm, { name: `${name}-options`, createArgs: [...launcher, "--help"] });
+        if (help.exitCode !== 0 || !/^Usage: mekugi\b/m.test(help.stdout)) {
+          throw new Error(`could not read the pinned Mekugi launch options before inference: ${help.stderr.trim() || "expected Mekugi usage"}`);
+        }
+        if (!/^\s+-{1,2}deduplicate-output(?=\s|$)/m.test(help.stdout)) {
+          if (!help.stdout.includes("codex headless --yolo")) throw new Error("pinned Mekugi does not support --deduplicate-output and did not advertise the native headless launcher");
+          if (state.comparison === "duplicate-output" || dedup === "--deduplicate-output=false") {
+            throw new Error("pinned Mekugi does not support --deduplicate-output; native output deduplication cannot be disabled. Select a Mekugi build with the switch for an opt-out or duplicate-output comparison");
+          }
+          flags = flags.filter(flag => flag !== dedup);
+        }
+      }
+      const launch = await checkSetup(arm, { name, createArgs: [...launcher, ...flags,
           ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),
-          "--capture-output=/mekugi-exports/capture.jsonl", ...(state.runtime_tools.mekugi_runtime ? ["--help"] : [...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"]), "--version"])] });
-      await writeFile(join(runDir, `artifacts/preflight-mekugi${paired ? `-${arm}` : ""}.json`), JSON.stringify(launch, null, 2));
+          "--capture-output=/mekugi-exports/capture.jsonl", ...(nativeRuntime ? ["--help"] : [...(grokComparison ? [] : ["codex"]), "--version"])] });
+      await writeFile(join(runDir, `artifacts/preflight-mekugi${paired ? `-${arm}` : ""}.json`), JSON.stringify({ ...launch, flags }, null, 2));
       if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
-      if (state.runtime_tools.mekugi_runtime) {
-        const runtime = await checkSetup(state.comparison === "codex-mekugi-grok" ? "stock" : arm, {
+      effectiveMekugiFlags.set(arm, flags);
+      if (nativeRuntime) {
+        const runtime = await checkSetup(arm, {
           name: `${prefix}-mekugi-runtime-${arm}`, timeoutMs: 30000,
           createArgs: [setupImage, "sh", "-c", [
-            ...state.runtime_tools.mekugi_runtime.map(file => `echo '${file.sha256}  ${MEKUGI_RUNTIME_DIRECTORY}/${file.name}' | sha256sum --check --strict`),
+            ...nativeRuntime.map(file => `echo '${file.sha256}  ${MEKUGI_RUNTIME_DIRECTORY}/${file.name}' | sha256sum --check --strict`),
             `${MEKUGI_RUNTIME_DIRECTORY}/mekugi-app-server --version`,
             `${MEKUGI_RUNTIME_DIRECTORY}/bwrap --version`,
             `CODEX_CODE_MODE_HOST=${MEKUGI_RUNTIME_DIRECTORY}/codex-code-mode-host node -e "$1"`,
@@ -267,11 +288,11 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   }
   if (state.protected_runtime) await protectedPreflight(docker, runDir, state, signal);
   progress("preflight passed without model inference");
-  return image;
+  return effectiveMekugiFlags;
 
 }
 
-async function preflight(docker: string, state: RunState, runDir: string, externalSignal?: AbortSignal): Promise<string> {
+async function preflight(docker: string, state: RunState, runDir: string, externalSignal?: AbortSignal): Promise<Map<ArmName, string[]>> {
   const controller = new AbortController();
   const cancel = () => controller.abort();
   if (externalSignal?.aborted) controller.abort();
@@ -282,10 +303,10 @@ async function preflight(docker: string, state: RunState, runDir: string, extern
   try {
     await writeState(runDir, state);
     if (controller.signal.aborted) throw new Error("preflight canceled; no model was launched");
-    const imageId = await preflightChecks(docker, state, runDir, controller.signal);
+    const flags = await preflightChecks(docker, state, runDir, controller.signal);
     if (controller.signal.aborted) throw new Error("preflight canceled; no model was launched");
     state.preflight.status = "complete";
-    return imageId;
+    return flags;
   } catch (error) {
     state.preflight.status = "failed";
     state.preflight.error = error instanceof Error ? error.message : String(error);
@@ -303,8 +324,7 @@ export async function preflightRunUnlocked(runDirectory: string, dockerBin = pro
   const runDir = resolve(runDirectory);
   const state = await readState(runDir);
   if (state.status !== "prepared") throw new Error(`preflight requires a prepared run, got ${state.status}`);
-  state.image_id = await preflight(dockerBin, state, runDir);
-  await writeState(runDir, state);
+  await preflight(dockerBin, state, runDir);
 }
 
 async function prewarm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, signal: AbortSignal): Promise<void> {
@@ -348,7 +368,7 @@ export async function gradeArm(docker: string, runDir: string, state: RunState, 
   return { preparation: ready, router_suite: pending, elapsed_ms: 0, passed: false };
 }
 
-async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, providerNetwork: string, task: string, signal: AbortSignal): Promise<ArmResult> {
+async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, providerNetwork: string, task: string, signal: AbortSignal, mekugiFlags: readonly string[]): Promise<ArmResult> {
   state = armRuntime(state, arm);
   if (state.arm_settings?.[arm]?.parallel_work) task = parallelWorkTask(task);
   const name = `codex-ab-${state.id}-${arm}`;
@@ -364,7 +384,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
   const exports = state.mekugi_exports_by_arm?.[arm] ?? (arm === exportArm ? state.mekugi_exports : undefined);
   const exportArgs = exports
-    ? ["--capture-output=/mekugi-exports/capture.jsonl", ...(mekugiArmFlags(state, arm).some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"])] : [];
+    ? ["--capture-output=/mekugi-exports/capture.jsonl", ...(mekugiFlags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"])] : [];
   const exportRoot = exports ? dirname(resolve(runDir, exports.capture)) : undefined;
   const exportMount = exportRoot ? ["-v", `${exportRoot}:/mekugi-exports`] : [];
   if (exportRoot) await mkdir(exportRoot, { recursive: true, mode: 0o700 });
@@ -377,7 +397,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const grokCommand = grokArm
     ? ["grok", "--prompt-file", "/control/task.md", "--cwd", "/workspace", "-m", "grok-4.7", "--reasoning-effort", state.execution.reasoning_effort, "--always-approve", "--sandbox", "off", "--output-format", "json", "--disable-web-search"]
     : undefined;
-  const codexLauncher = mekugiArm ? [(state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/mekugi" : "mekugi", ...mekugiArmFlags(state, arm), ...exportArgs, ...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"])] : [(state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/codex" : "codex"];
+  const codexLauncher = mekugiArm ? [(state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/mekugi" : "mekugi", ...mekugiFlags, ...exportArgs, ...(state.comparison === "codex-mekugi-grok" ? [] : ["codex"])] : [(state.comparison === "setup-commits" || state.comparison === "custom") ? "/usr/local/bin/codex" : "codex"];
   const mekugiLauncher = exportArgs.length ? ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", ...codexLauncher] : codexLauncher;
   const launcher = grokCommand ?? (usesMise(state, arm) ? ["mise", "exec", "--", ...((state.comparison === "setup-commits" || state.comparison === "custom") ? ["sh", "-c", PINNED_LAUNCHER_ENV, "pinned-launcher"] : []), ...mekugiLauncher] : mekugiLauncher);
   const grokPath = grokArm ? ["-e", `PATH=/home/ubuntu/.grok/bin:${TASK_PATH}`, "-e", "GROK_HOME=/home/ubuntu/.grok"] : ["-e", `PATH=${TASK_PATH}`];
@@ -479,8 +499,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   if (options.controlRun && options.arm) throw new Error("--control-run selects the current treatment arm; do not pass --arm");
   if (Boolean(options.controlRun) !== Boolean(options.controlBundleSha256)) throw new Error("--control-run requires --control-bundle-sha256 and vice versa");
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
-  state.image_id = await preflight(docker, state, runDir, options.signal);
-  await writeState(runDir, state);
+  const mekugiFlags = await preflight(docker, state, runDir, options.signal);
   const imported = options.controlRun ? await importControl(runDir, state, options.controlRun, options.controlBundleSha256!) : undefined;
   const importedResults = options.importArms ? await importArms(runDir, state, options.importArms) : {};
   await writeState(runDir, state);
@@ -549,7 +568,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         status: "started",
       };
       await writeState(runDir, state);
-      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, providerNetworks[arm]!.name, task, controller.signal)));
+      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, providerNetworks[arm]!.name, task, controller.signal, mekugiFlags.get(arm) ?? [])));
       settled.forEach((item, index) => {
         const arm = batch[index]!;
         const attempt = state.arm_attempts![arm]!;

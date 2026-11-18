@@ -242,6 +242,46 @@ test("stock-mekugi records an optional shared compaction limit for both arms", a
   await expect(prepare({ ...options, autoCompactLimit: 0 })).rejects.toThrow("must be a positive integer");
 });
 
+async function fakeDockerWithNativeDeduplication() {
+  const fake = await fakeOwnedDocker(0);
+  await file(fake.path, (await readFile(fake.path, "utf8")).replace(" '  -deduplicate-output'", ""), 0o755);
+  return fake;
+}
+
+test("stock-mekugi uses native deduplication when the enabled arm flag has no switch", async () => {
+  const flags = ["--shell-guard=true", "--deduplicate-output=true", "--child-reply-summary=true"];
+  const run = await prepare({ ...mekugiComparisonOptions(), armSettings: { current: { mekugi_flags: flags } } });
+  const auth = join(root, "native-deduplication-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeDockerWithNativeDeduplication();
+  expect((await runPair({ runDir: run, authFile: auth, dockerBin: fake.path })).status).toBe("complete");
+  const state = await readState(run);
+  expect(state.arm_settings?.current?.mekugi_flags).toEqual(flags);
+
+  const creates = (await readFile(fake.log, "utf8")).split("\n").filter(line => line.includes(" create "));
+  const name = `codex-ab-${state.id}`;
+  expect(creates.find(line => line.includes(`--name ${name}-preflight-mekugi-options --label `))).toEndWith(" mekugi --help");
+  const preflight = creates.find(line => line.includes(`--name ${name}-preflight-mekugi --label `))!;
+  expect(preflight).toEndWith(" mekugi --shell-guard=true --child-reply-summary=true --debug --capture-output=/mekugi-exports/capture.jsonl --help");
+  const launch = creates.find(line => line.includes(`--name ${name}-current --label `))!;
+  expect(launch).toContain(" mekugi --shell-guard=true --child-reply-summary=true --capture-output=/mekugi-exports/capture.jsonl --debug codex headless --yolo ");
+  expect(launch).not.toContain("--deduplicate-output");
+});
+
+test("Mekugi without a deduplication switch rejects opt-outs and duplicate-output comparisons", async () => {
+  for (const options of [
+    { ...mekugiComparisonOptions(), mekugiFlags: ["--deduplicate-output=false"] },
+    { ...mekugiComparisonOptions(), comparison: "duplicate-output" as const, autoCompactLimit: undefined },
+  ]) {
+    const run = await prepare(options);
+    const fake = await fakeDockerWithNativeDeduplication();
+    await expect(preflightRun(run, fake.path)).rejects.toThrow("native output deduplication cannot be disabled");
+    const state = await readState(run);
+    expect(state.preflight?.status).toBe("failed");
+    expect(state.arm_attempts).toBeUndefined();
+  }
+}, 30_000);
+
 test("duplicate-output rejects an unsupported enabled treatment before launching either arm", async () => {
   const run = await prepare({ ...mekugiComparisonOptions(), comparison: "duplicate-output", autoCompactLimit: undefined });
   const state = await readState(run);

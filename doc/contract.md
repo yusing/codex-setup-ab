@@ -670,7 +670,10 @@ tracking start; snapshots are not added together across requests. Missing counts
 remain unknown. Journal counters and router compaction answerers describe historical
 exports; new runs use Codex-owned compaction. Retired journal comparisons remain
 reportable but cannot be launched, including from previously prepared inputs.
-Removed Mekugi flags in prepared inputs require fresh preparation before execution.
+Removed Mekugi flags in prepared inputs normally require fresh preparation before
+execution. For ordinary Codex comparisons with bundled native Mekugi, preflight
+can preserve an enabled deduplication request without passing the obsolete switch.
+It retains the requested settings and records the effective launcher flags.
 Current byte-only v7 exports reconcile transport bytes and provider usage without
 inventing semantic/token estimates or tool aggregates. Historical v6/v7 exports
 retain their original calculation checks.
