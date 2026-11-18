@@ -9,6 +9,8 @@ export const CODEX_MODELS = [
   { id: "gpt-6-astra", title: "GPT-6 Astra" },
   { id: "gpt-6.1-sol", title: "GPT-6.1 Sol" },
   { id: "gpt-6.1-terra", title: "GPT-6.1 Terra" },
+  { id: "gpt-6.2-astra", title: "GPT-6.2 Astra" },
+  { id: "gpt-6.2-sol", title: "GPT-6.2 Sol" },
 ] as const;
 export type BenchmarkModel = typeof CODEX_MODELS[number]["id"] | "grok:grok-4.7";
 

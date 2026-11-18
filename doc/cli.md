@@ -267,8 +267,11 @@ compare them as different task versions, not repetitions of the migrated packs.
 
 Cutoffs verified October 29, 2026 for [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra)
 and [`gpt-6.1-sol`](https://developers.openai.com/api/docs/models/gpt-6.1-sol) are
-April 30, 2026. Every baseline above is later than both cutoffs. Verify other
-models, including Grok, separately before claiming a post-cutoff comparison.
+April 30, 2026. The cutoffs for [`gpt-6.2-astra`](https://developers.openai.com/api/docs/models/gpt-6.2-astra)
+and [`gpt-6.2-sol`](https://developers.openai.com/api/docs/models/gpt-6.2-sol) are
+May 18 and June 1, 2026, respectively. Every baseline above is later than all
+four cutoffs. Verify other models, including Grok, separately before claiming a
+post-cutoff comparison.
 The [skills manager](../tasks/skills-mgr-agent-cli/README.md),
 [remote uninstall](../tasks/skills-mgr-remote-uninstall/README.md),
 [fast conditional acquisition](../tasks/skills-mgr-get-short-circuit/README.md), and

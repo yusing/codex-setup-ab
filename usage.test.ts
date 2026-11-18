@@ -365,6 +365,20 @@ test("fetchPricing falls back with exact stock rates and serializable provenance
   try {
     const snapshot = await fetchPricing();
     expect(snapshot.source).toBe("fallback");
+    for (const [id, input, output, read, write] of [
+      ["gpt-6.2-astra", 8, 40, 0.4, 10],
+      ["gpt-6.2-sol", 2, 10, 0.1, 2.5],
+    ] as const) {
+      expect(snapshot.models[id]).toMatchObject({
+        prompt: input / 1_000_000, completion: output / 1_000_000,
+        input_cache_read: read / 1_000_000, input_cache_write: write / 1_000_000,
+        overrides: [{
+          min_prompt_tokens: 272_000, min_prompt_tokens_exclusive: true,
+          prompt: 2 * input / 1_000_000, completion: 1.5 * output / 1_000_000,
+          input_cache_read: 2 * read / 1_000_000, input_cache_write: 2 * write / 1_000_000,
+        }],
+      });
+    }
     expect(snapshot.models["gpt-6-astra"].prompt).toBe(10 / 1_000_000);
     expect(snapshot.models["gpt-6.1-sol"]).toMatchObject({
       prompt: 2 / 1_000_000, completion: 10 / 1_000_000,

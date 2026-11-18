@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { parseArmImports } from "./control";
 import { parseArmConfigurations } from "./arms";
-import { REASONING_EFFORTS } from "./types";
+import { CODEX_MODELS, REASONING_EFFORTS } from "./types";
 import { BOOLEAN_FLAGS, COMMAND_OPTIONS } from "./cli-options";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -65,7 +65,7 @@ Import options (launch or run):
 
 Prepare options:
   --profile NAME        mekugi (default), godoxy-icons, skills-mgr-bundle, or task
-  --model NAME          gpt-6-astra (default), gpt-6.1-sol, or gpt-6.1-terra for Codex comparisons
+  --model NAME          Codex comparisons: ${CODEX_MODELS.map(({ id }) => id === "gpt-6-astra" ? `${id} (default)` : id).join(", ")}
   --parallel-work       ask both agents to delegate independent work in parallel
   --reasoning-effort N   ${REASONING_EFFORTS.join(", ")}
   --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)

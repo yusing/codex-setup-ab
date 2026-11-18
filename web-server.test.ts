@@ -1010,11 +1010,17 @@ test("setup skill catalog distinguishes empty, invalid and inaccessible selectio
   expect((await (await fetch(origin + "/api/entries")).json()).active).toBeUndefined();
 });
 
-test("the workbench model catalog offers Terra through launch configuration", async () => {
+test.each([
+  ["gpt-6.1-terra", "GPT-6.1 Terra"],
+  ["gpt-6.2-astra", "GPT-6.2 Astra"],
+  ["gpt-6.2-sol", "GPT-6.2 Sol"],
+])("the workbench offers %s for shared and per-arm launch selection", async (id, title) => {
   const config = await (await fetch(origin + "/api/config")).json();
-  const terra = config.models.find((model: { id: string }) => model.id === "gpt-6.1-terra");
-  expect(terra).toMatchObject({ title: "GPT-6.1 Terra" });
-  expect(launchConfiguration({ ...config.defaults, model: terra.id }).prepare.model).toBe(terra.id);
+  const model = config.models.find((item: { id: string }) => item.id === id);
+  expect(model).toMatchObject({ title });
+  expect(launchConfiguration({ ...config.defaults, model: model.id }).prepare.model).toBe(id);
+  expect(launchConfiguration({ ...config.defaults, "arm-settings": JSON.stringify({ stock: { model: model.id } }) })
+    .prepare.armSettings?.stock?.model).toBe(id);
 });
 
 test("a pinned-repository task check announces the clone without starting work", async () => {

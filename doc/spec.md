@@ -97,7 +97,8 @@ that task; launcher-comparison presets reject it before external effects.
 (default `$HOME/projects/mekugi`) for the runtime selector and coordination task.
 Set runtime, image, and credential paths in host infrastructure.
 
-Codex choices include `gpt-6-astra` (default), `gpt-6.1-sol`, and `gpt-6.1-terra`.
+Codex choices include `gpt-6-astra` (default), `gpt-6.1-sol`, `gpt-6.1-terra`,
+`gpt-6.2-astra`, and `gpt-6.2-sol`.
 Reasoning defaults to medium for NVM and xhigh for skills-manager and coordination
 tasks; the Grok preset defaults to high. `--reasoning-effort` overrides this.
 Efforts are none, minimal, low, medium, high, xhigh, max, and ultra; provider/model

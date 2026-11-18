@@ -120,7 +120,7 @@ test("stock-mekugi shares configured tools while isolating current-home guidance
     reviewTreatment: join(root, "unused-treatment"), mekugiSource: captureSource })).rejects.toThrow("does not accept");
 });
 
-test.each(["gpt-6.1-sol", "gpt-6.1-terra"] as const)("stock-mekugi accepts an explicit %s/high pair with the selected model", async (model) => {
+test.each(["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.2-astra", "gpt-6.2-sol"] as const)("stock-mekugi accepts an explicit %s/high pair with the selected model", async (model) => {
   const captureSource = join(root, `${model}-stock-mekugi-capture-source`);
   await mkdir(captureSource, { recursive: true });
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
