@@ -108,12 +108,20 @@ async function manifest(root: string): Promise<Array<{ path: string; type: strin
   return result;
 }
 
-export function minimalCodexConfig(model: RunState["execution"]["model"] | JudgeReport["model"], reasoningEffort: ReasoningEffort, serviceTier: JudgeReport["service_tier"] = "default"): string {
+export function baseCodexConfig(model: RunState["execution"]["model"] | JudgeReport["model"], reasoningEffort: ReasoningEffort, serviceTier: JudgeReport["service_tier"] = "default", rootSettings: string[] = []): string {
   return [
     `model = ${JSON.stringify(model)}`, `model_reasoning_effort = "${reasoningEffort}"`, `service_tier = ${JSON.stringify(serviceTier)}`,
     'approval_policy = "never"', 'sandbox_mode = "danger-full-access"',
+    ...rootSettings,
     '', '[projects."/workspace"]', 'trust_level = "trusted"', '',
   ].join("\n");
+}
+
+function minimalCodexConfig(model: RunState["execution"]["model"], effort: ReasoningEffort): string {
+  return baseCodexConfig(model, effort, "default", [
+    'skills.bundled.enabled = false', 'skills.include_instructions = false',
+    'features.plugins = false',
+  ]);
 }
 
 function grokStockConfig(reasoningEffort: ReasoningEffort): string {

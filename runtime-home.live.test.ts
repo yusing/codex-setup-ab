@@ -21,7 +21,7 @@ liveTest("runtime home preserves operator-writable mise state under the producti
     expect(await access(join(template, ".local/state")).then(() => true, () => false)).toBe(false);
     const document = JSON.parse(await readFile(join(reference!, state.setup_revisions?.[arm]?.manifest ?? state.snapshot_manifest), "utf8"));
     const current = JSON.parse(await readFile(join(reference!, state.snapshot_manifest), "utf8"));
-    const pluginImage = state.runtime_plugin_image!.image_id;
+    const pluginImage = state.runtime_plugin_image?.image_id;
     const auth = join(root, "empty-auth.json");
     await writeFile(auth, "{}\n", { mode: 0o600 });
 
@@ -30,7 +30,7 @@ liveTest("runtime home preserves operator-writable mise state under the producti
     const cachedPlugin = spyOn(processes, "exec").mockImplementation((args, options) => {
       const cached = args[0] === docker && args[1] === "image" && args[2] === "inspect"
         && args.at(-1)?.startsWith("codex-ab-home-plugins:");
-      return execute(cached ? [...args.slice(0, -1), pluginImage] : args, options);
+      return execute(cached && pluginImage ? [...args.slice(0, -1), pluginImage] : args, options);
     });
     let image: Awaited<ReturnType<typeof prepareRuntimeHome>>;
     try {

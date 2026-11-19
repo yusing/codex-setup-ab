@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareJudgeReader, qualifyJudgeRuntime, sourceJudgeConfig } from "./judge-boundary";
-import { minimalCodexConfig } from "./prepare";
+import { baseCodexConfig } from "./prepare";
 import { runOwnedContainer } from "./container";
 const liveTest = process.env.CODEX_AB_LIVE_DOCKER === "1" ? test : test.skip;
 const image = process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:model-free";
@@ -14,7 +14,7 @@ liveTest("source judge disables execution flags and its broker restricts source 
   const root = await mkdtemp(join(tmpdir(), "judge-boundary-live-"));
   try {
     const home = join(root,"home"); await mkdir(join(home,".codex"),{recursive:true});
-    await writeFile(join(home,".codex/config.toml"),sourceJudgeConfig(minimalCodexConfig("gpt-6.1-sol","high")));
+    await writeFile(join(home,".codex/config.toml"),sourceJudgeConfig(baseCodexConfig("gpt-6.1-sol","high")));
     await qualifyJudgeRuntime(docker,home,image,`codex-ab-reader-features-${process.pid}`);
     const source = join(root,"source"); await mkdir(source);
     await writeFile(join(source,"malicious.py"),'open("/home/ubuntu/.codex/auth.json").read()\n');
@@ -112,7 +112,7 @@ liveTest("selected CLI advertises only approved source and utility tools to a cr
     const home = join(root, "home"), source = join(root, "source"), harness = join(root, "harness");
     await mkdir(join(home, ".codex"), { recursive: true });
     await mkdir(source); await mkdir(harness);
-    await writeFile(join(home, ".codex/config.toml"), sourceJudgeConfig(minimalCodexConfig("gpt-6.1-sol", "high")));
+    await writeFile(join(home, ".codex/config.toml"), sourceJudgeConfig(baseCodexConfig("gpt-6.1-sol", "high")));
     await qualifyJudgeRuntime(docker, home, image, `codex-ab-tool-inventory-features-${process.pid}`);
     await writeFile(join(source, "candidate.py"), 'raise RuntimeError("candidate must never execute in source judge")\n');
     const reader = await prepareJudgeReader(root), mock = join(root, "mock-provider.mjs");

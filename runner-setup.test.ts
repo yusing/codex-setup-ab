@@ -79,6 +79,10 @@ test("stock-mekugi shares configured tools while isolating current-home guidance
     const template = join(run, state.arms[arm].home_template);
     const configValues = Bun.TOML.parse(await readFile(join(template, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
     expect(configValues.network_access).toBeUndefined();
+    expect(configValues.skills).toMatchObject({
+      bundled: { enabled: false }, include_instructions: false,
+    });
+    expect(configValues.features).toMatchObject({ plugins: false });
     const identity = await checked(["git", "-C", join(run, state.arms[arm].repository), "-c", "user.useConfigOnly=true", "var", "GIT_AUTHOR_IDENT"]);
     expect(identity.stdout).toStartWith("Task Agent <agent@example.invalid>");
     expect(await readFile(join(template, ".config/mise/config.toml"), "utf8")).toBe('[tools]\n"fixture-runner" = "1"\n');

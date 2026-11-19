@@ -53,7 +53,11 @@ For `custom`, supply `--arms` as an ordered JSON array, for example
 `launcher` selects `codex` or `mekugi` (the legacy launcher alias `stock` means `codex`).
 `setup_commit` independently selects `stock` for minimal guidance, `worktree` for
 the tracked working tree at `--current-home`, or a Git revision.
-Stock setups retain configured mise tool access but omit custom instructions, skills, hooks, and Mekugi configuration.
+Stock setups retain configured mise tool access but omit custom instructions,
+hooks and Mekugi configuration. Minimal Codex arms disable bundled skills,
+the skills catalog and plugin loading; their runtime homes skip plugin prefetch.
+Before inference, each minimal arm checks its own runtime in the prepared
+workspace. A nonempty skill inventory or a discovery error stops the run.
 Each revision arm receives the chosen setup revision;
 HEAD means the committed revision, without working-tree edits. A worktree arm overlays
 tracked edits, staged additions, and deletions on its HEAD, and its manifest records
@@ -157,8 +161,8 @@ candidate-writable mounts. Criteria are fixed before execution; adaptive checks
 are authored after candidates stop and run in separate evaluator workspaces.
 
 Fresh unprotected Codex implementation and judge homes use private Docker copy-on-write
-layers from immutable setup images. Model-free plugin reconciliation prefetches shared
-account-visible runtime inputs; normal launcher refresh behavior remains enabled.
+layers from immutable setup images. When plugins are enabled, model-free
+reconciliation prefetches account-visible inputs for normal launcher refresh.
 Original setup snapshots, live logs, sessions, authentication, and SQLite state
 remain ordinary private host files. Other home changes are retained in immutable
 Docker images recorded in `run.json`, including after failure or cancellation.

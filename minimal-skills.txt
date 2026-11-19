@@ -1,0 +1,30 @@
+"""Check the minimal candidate's effective skill inventory before inference."""
+import json
+import signal
+import subprocess
+import sys
+
+signal.alarm(45)
+with subprocess.Popen(
+    sys.argv[1:], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+) as server:
+    def request(number, method, params):
+        print(json.dumps(dict(id=number, method=method, params=params)),
+              file=server.stdin, flush=True)
+        for line in server.stdout:
+            reply = json.loads(line)
+            if reply.get("id") == number:
+                return reply["result"]
+        raise RuntimeError(f"no response to {method}")
+
+    try:
+        request(1, "initialize", {"clientInfo": {"name": "ab", "version": "1"}})
+        print('{"method":"initialized"}', file=server.stdin, flush=True)
+        rows = request(2, "skills/list", {
+            "cwds": ["/workspace"], "forceReload": True,
+        })["data"]
+        if (len(rows) != 1 or rows[0]["cwd"] != "/workspace"
+                or rows[0]["skills"] != [] or rows[0]["errors"] != []):
+            sys.exit("minimal setup requires an empty, error-free skills list")
+    finally:
+        server.terminate()

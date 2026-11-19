@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertJudgeFeatures, JUDGE_DISABLED_FEATURES, qualifyJudgeRuntime, sourceJudgeConfig } from "./judge-boundary";
-import { minimalCodexConfig } from "./prepare";
+import { baseCodexConfig } from "./prepare";
 
 test("runtime qualification checks capabilities without a CLI version allowlist", async () => {
   const root = await mkdtemp(join(tmpdir(), "judge-runtime-"));
@@ -29,7 +29,7 @@ esac
 });
 
 test("judge registration disables executable tools and keeps broker paths outside source configuration", () => {
-  const config = Bun.TOML.parse(sourceJudgeConfig(minimalCodexConfig("gpt-6.1-sol", "high"))) as any;
+  const config = Bun.TOML.parse(sourceJudgeConfig(baseCodexConfig("gpt-6.1-sol", "high"))) as any;
   expect(config.sandbox_mode).toBe("read-only"); expect(config.web_search).toBe("disabled");
   expect(config.features.code_mode_host).toBe(true);
   for (const key of JUDGE_DISABLED_FEATURES) expect(config.features[key]).toBe(false);

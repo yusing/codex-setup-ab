@@ -1,6 +1,6 @@
 import { applySkillSelection } from "./setup-skills";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { dependencyImage } from "./dependencies";
 import { checked, exec } from "./process";
@@ -107,7 +107,13 @@ export async function prepareRuntimeHome(options: {
   baseImage?: string; skills?: Record<string, boolean>;
 }): Promise<Image> {
   const { runDir, state, docker, signal } = options;
-  const base = await pluginSeed(runDir, state, options.auth, docker, options.baseImage ?? dependencyImage(state), signal);
+  const configFile = Bun.file(join(options.template, ".codex/config.toml"));
+  const config = await configFile.exists()
+    ? Bun.TOML.parse(await configFile.text()) as { features?: { plugins?: boolean } }
+    : undefined;
+  const runtimeBase = options.baseImage ?? dependencyImage(state);
+  const base = config?.features?.plugins === false ? runtimeBase
+    : await pluginSeed(runDir, state, options.auth, docker, runtimeBase, signal);
   const key = digest({ version: 3, base, skills: options.skills, setup: options.identity, sourceHome: options.sourceHome, operator: state.operator });
   const pending = homePreparations.get(state) ?? new Map<string, Promise<Image>>();
   homePreparations.set(state, pending);
@@ -125,12 +131,12 @@ export async function prepareRuntimeHome(options: {
         filter: source => resolve(source) !== resolve(options.template, ".codex/auth.json") });
       await applySkillSelection(join(context, "home"), options.skills);
       const configPath = join(context, "home/.codex/config.toml");
-      if (await Bun.file(configPath).exists()) {
-        const settings = { ...Bun.TOML.parse(await readFile(configPath, "utf8")),
+      if (config) {
+        const settings = { ...config,
           sqlite_home: "/runtime-state/codex", log_dir: "/runtime-state/codex/log" };
-        const config = Bun.TOML.stringify(settings);
-        if (config === undefined) throw new Error("cannot serialize runtime evidence paths");
-        await writeFile(configPath, config, { mode: 0o600 });
+        const text = Bun.TOML.stringify(settings);
+        if (text === undefined) throw new Error("cannot serialize runtime evidence paths");
+        await writeFile(configPath, text, { mode: 0o600 });
       }
       const alias = options.sourceHome && options.sourceHome !== "/home/ubuntu" ? options.sourceHome : undefined;
       const recipe = [`FROM ${buildBase}`, "USER root",

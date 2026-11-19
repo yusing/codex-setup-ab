@@ -9,6 +9,7 @@ import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedContainerOptions, type OwnedNetwork } from "./container";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
+import checkEmptySkills from "./minimal-skills.txt" with { type: "text" };
 import { readCandidateManifest, readRegularEvidence, verifyCandidateReconstruction } from "./candidate-evidence";
 import { verifyFixedInputs } from "./fixed-workflow";
 import { executorOwnership, launcherMounts, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
@@ -332,11 +333,21 @@ async function prewarm(docker: string, runDir: string, state: RunState, arm: Arm
   const repo = resolve(runDir, state.arms[arm].repository);
   const command = prepareAssets(state);
   const cow = state.runtime_homes?.[arm];
+  const template = state.arms[arm].home_template;
+  const minimal = state.setup_revisions?.[arm]
+    ? state.setup_revisions[arm].commit === "stock"
+    : ["snapshots/stock/home/ubuntu", "snapshots/stock-mekugi/home/ubuntu"].includes(template);
+  const server = usesMekugi(state, arm) && state.runtime_tools.mekugi_runtime
+    ? [`${MEKUGI_RUNTIME_DIRECTORY}/mekugi-app-server`] : ["codex", "app-server"];
+  const warm = minimal
+    ? ["sh", "-c", 'sh -lc "$1" && shift && exec python3 -c "$@"',
+      "minimal-warm", command, checkEmptySkills, ...server]
+    : ["sh", "-lc", command];
   const result = await runOwnedContainer({ docker, name, signal, snapshotImage: cow ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
     onSnapshot: image_id => { if (cow) cow.image_id = image_id; }, createArgs: [...containerArgs(state),
     "-v", `${repo}:/workspace`, ...(cow ? await runtimeHomeMounts(home) : ["-v", `${home}:/home/ubuntu`]),
     "--network", "none",
-    cow?.image_id ?? imageRef(state), "sh", "-lc", command] });
+    cow?.image_id ?? imageRef(state), ...warm] });
   if (cow && result.snapshotImageId) cow.image_id = result.snapshotImageId;
   if (result.exitCode !== 0) throw new Error(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]} cache prewarm failed: ${result.stderr.trim()}`);
   await inspectCandidate(docker, runDir, state, repo, `${arm}-warm-verify`, signal, true, true, undefined, await generatedDependencyDirectories(repo));
