@@ -799,10 +799,8 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     }
   }
   const currentConfig = Bun.TOML.parse(await readFile(join(currentTemplate, ".codex/config.toml"), "utf8")) as Record<string, unknown>;
-  const configured = (key: string): string | undefined =>
-    typeof currentConfig[key] === "string" ? currentConfig[key] : undefined;
-  const serviceTier = isolatedGuidance ? "default" : configured("service_tier");
-  if (!serviceTier) throw new Error("current setup does not declare service_tier");
+  const serviceTier = isolatedGuidance ? "default" : currentConfig.service_tier ?? "default";
+  if (typeof serviceTier !== "string" || !serviceTier.trim()) throw new Error("configured service_tier must be a nonempty string");
   const currentSetupInstalls = isolatedFromCurrentTools
     ? join(runDir, "snapshots/current/mise/installs")
     : await realpath(join(runtimeHome, ".local/share/mise/installs"));

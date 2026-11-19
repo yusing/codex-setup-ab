@@ -23,12 +23,13 @@ const { root, source, home, task, fixtureCriteria, mekugiSource, base, future, f
 test("current setup defaults do not constrain independently selected arm models", async () => {
   const currentHome = join(root, "different-model-home");
   await cp(home, currentHome, { recursive: true, verbatimSymlinks: true });
-  await writeFile(join(currentHome, ".codex/config.toml"), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\nservice_tier = "default"\n');
+  await writeFile(join(currentHome, ".codex/config.toml"), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n');
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
     outputParent: root, currentHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
     codexBinary: join(home, ".local/bin/codex"), armSettings: { stock: { model: "gpt-6.1-terra" }, current: { model: "gpt-6-astra" } } });
   const state = await readState(run);
   await verifyPreparedInputs(run, state);
+  expect(state.execution.service_tier).toBe("default");
   expect(state.arm_settings).toEqual({ stock: { model: "gpt-6.1-terra" }, current: { model: "gpt-6-astra" } });
 });
 

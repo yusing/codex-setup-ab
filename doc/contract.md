@@ -40,7 +40,7 @@ against the configuration repository at `--current-home`. Both references resolv
 commits before preparation. Each arm receives an independent, shallow snapshot of
 its revision, with no tracked working-tree overlay. Recorded commit/tree identities,
 per-arm manifests, reports, and trial controls identify both setups. Both arms use
-the service tier from revision B, the selected launcher (direct Codex by default,
+the service tier from revision B (default tier if omitted), the selected launcher (direct Codex by default,
 or Mekugi), task, and pinned runtime binaries/tool store. Model and reasoning
 controls are defaults that explicit per-arm settings can override. Reviewer overlays and
 asymmetric protected runtime are incompatible with this comparison. Candidate launch
@@ -62,7 +62,7 @@ required. Model, reasoning and resource controls supply defaults. Optional `--ar
 JSON maps arm keys to independent `model`, `reasoning_effort`, `cpus`, `memory`,
 `timeout_seconds`, `auto_compact_limit`, `parallel_work`, `mekugi_flags`, and
 `skills` selections. The same per-arm settings are available for other comparisons.
-Task, service tier (from the second setup, default for Stock), and pinned runtime
+Task, service tier (from the second setup, default for Stock or if omitted), and pinned runtime
 binaries remain shared. Skills map names in the selected setup registry to booleans;
 unchanged selections retain their setup defaults and conditions. Overrides change
 only the disposable runtime home, leaving the host and frozen setup intact.
