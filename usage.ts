@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createSessionDiagnostics, sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
 import { journalEvidence } from "./journal";
 import { mekugiMetricRuntimes, providerAttemptUsage, validCounter } from "./provider-usage";
-import { rolloutPaths } from "./rollout-evidence";
+import { evidenceLines, rolloutPaths } from "./rollout-evidence";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_TIMEOUT_MS = 8_000;
@@ -556,23 +556,6 @@ export interface MeterExclusions {
   command_ids: string[];
 }
 
-/** Keep at most one JSONL record plus the stream chunk while decoding UTF-8. */
-async function* rolloutLines(path: string): AsyncGenerator<string> {
-  const fragments: string[] = [];
-  for await (const text of Bun.file(path).stream().pipeThrough(new TextDecoderStream("utf-8", { ignoreBOM: true }))) {
-    let start = 0;
-    let end: number;
-    while ((end = text.indexOf("\n", start)) !== -1) {
-      const tail = text.slice(start, end);
-      yield fragments.length ? fragments.join("") + tail : tail;
-      fragments.length = 0;
-      start = end + 1;
-    }
-    if (start < text.length) fragments.push(text.slice(start));
-  }
-  if (fragments.length) yield fragments.join("");
-}
-
 /** Meter every rollout in a dedicated per-arm Codex home. */
 export async function meterRollouts(codexHome: string, pricing: PricingSnapshot, exclusions?: MeterExclusions, costSource: "rollout" | "native" = "rollout"): Promise<MeteredRollouts> {
   const warnings = [...pricing.warnings];
@@ -612,7 +595,7 @@ export async function meterRollouts(codexHome: string, pricing: PricingSnapshot,
     let position = 0;
     let lineNumber = 0;
     try {
-      for await (const line of rolloutLines(path)) {
+      for await (const line of evidenceLines(path)) {
         lineNumber++;
         if (!line.trim()) continue;
         let event: JsonObject;

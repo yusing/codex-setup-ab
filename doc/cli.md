@@ -74,6 +74,22 @@ directory again; an old entry ID alone cannot recover its path. Run directories 
 private: share selected measurements and artifact paths, not authentication homes or
 raw provider captures.
 
+Compare a retained first turn against stock in the same run or against a previous
+Mekugi run:
+
+```sh
+codex-ab first-request-diff --run-dir "$run"
+codex-ab first-request-diff --run-dir "$run" --against-run "$previous"
+```
+
+Use `--arm` and `--against-arm` for other arm names. The command writes a unified
+diff to stdout without changing retained evidence or calling a model. It compares
+startup messages and tool definitions before the first sampled item, plus the
+first turn's transport receipt when retained. Stock does not have a Mekugi
+transport receipt. Neither the receipt nor the rollout records the full provider
+request; older routers could change instructions after rollout logging. The diff
+includes private prompt text. Inspect it before sharing.
+
 For a pair, this read-only recipe emits selected measurements and a small artifact index.
 It accepts directory paths containing spaces and preserves missing evidence as `null`.
 It performs no inference, report regeneration, or recursive scan:

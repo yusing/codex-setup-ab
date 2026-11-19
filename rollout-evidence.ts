@@ -9,6 +9,23 @@ export interface RolloutManifest {
   arms: Record<string, RolloutFile[]>;
 }
 
+/** Keep at most one JSONL record plus the stream chunk while decoding UTF-8. */
+export async function* evidenceLines(path: string): AsyncGenerator<string> {
+  const fragments: string[] = [];
+  for await (const text of Bun.file(path).stream().pipeThrough(new TextDecoderStream("utf-8", { ignoreBOM: true }))) {
+    let start = 0;
+    let end: number;
+    while ((end = text.indexOf("\n", start)) !== -1) {
+      const tail = text.slice(start, end);
+      yield fragments.length ? fragments.join("") + tail : tail;
+      fragments.length = 0;
+      start = end + 1;
+    }
+    if (start < text.length) fragments.push(text.slice(start));
+  }
+  if (fragments.length) yield fragments.join("");
+}
+
 /** The same two namespaces and JSONL selection drive metering and retention. */
 export async function rolloutPaths(home: string): Promise<string[]> {
   const paths: string[] = [];

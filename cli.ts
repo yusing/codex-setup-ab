@@ -51,6 +51,8 @@ Usage:
   codex-ab reevaluate --run-dir SOURCE [--output-parent DIR] --confirm-paid-inference [options]
   codex-ab judge --run-dir DIR --confirm-paid-inference [options]
   codex-ab remeter --run-dir DIR --exclusions FILE
+  codex-ab first-request-diff --run-dir DIR [--arm NAME]
+             [--against-run DIR] [--against-arm NAME]
   codex-ab report --run-dir DIR [--output-dir DIR]
   codex-ab invalidate --run-dir DIR --reason TEXT
 
@@ -308,6 +310,14 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
   if (command === "remeter") {
     process.stdout.write(`${await remeterRun(string(o, "run-dir"), string(o, "exclusions"))}\n`);
+    return 0;
+  }
+  if (command === "first-request-diff") {
+    const { firstRequestDiff } = await import("./first-request-diff");
+    const run = string(o, "run-dir");
+    process.stdout.write(await firstRequestDiff(run, string(o, "arm", "current"),
+      string(o, "against-run", run),
+      string(o, "against-arm", o["against-run"] ? "current" : "stock")));
     return 0;
   }
   if (command === "report") {

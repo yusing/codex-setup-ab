@@ -16,6 +16,7 @@ export const COMMAND_OPTIONS: Record<string, string[]> = {
     reevaluate: ["run-dir", "output-parent", "auth-file", "docker-bin", "confirm-paid-inference"],
     judge: ["run-dir", "auth-file", "docker-bin", "confirm-paid-inference"],
     remeter: ["run-dir", "exclusions"],
+    "first-request-diff": ["run-dir", "arm", "against-run", "against-arm"],
     report: ["run-dir", "output-dir", "source-assessments"],
     invalidate: ["run-dir", "reason"],
 };
