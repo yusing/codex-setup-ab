@@ -218,7 +218,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       model: state.execution.model, "reasoning-effort": state.execution.reasoning_effort,
       cpus: state.resource_limits.cpus, memory: state.resource_limits.memory,
       timeout: String(state.timeout_seconds), image: state.image_id ?? state.image,
-      "codex-bin": state.runtime_tools.codex_source, "bun-bin": state.runtime_tools.bun,
+      "bun-bin": state.runtime_tools.bun,
       count: "1", "mekugi-flags": JSON.stringify(state.mekugi_flags ?? []) };
     if (state.auto_compact_limit) throw new Error("Automatic HEAD comparison cannot preserve this run's compaction limit. Use the matching comparison preset and manual imports.");
     if (state.task_pack) {
@@ -306,8 +306,6 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       else await required(config.prepare.source, "Source checkout", true);
       await required(config.prepare.currentHome, "Current setup home", true);
       if (config.prepare.runtimeHome) await required(config.prepare.runtimeHome, "Runtime home", true);
-      await required(config.prepare.codexBinary!, "Codex executable", false, true);
-      await required(join(dirname(await realpath(config.prepare.codexBinary!)), "codex-code-mode-host"), "Code-mode host", false, true);
       await required(config.docker, "Docker executable", false, true);
       await required(config.prepare.taskPackPath ?? config.prepare.taskPath, "Task contract");
       const pack = config.prepare.taskPackPath ? await loadTaskPack(config.prepare.taskPackPath) : undefined;

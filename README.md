@@ -17,9 +17,10 @@ See the [evidence reliability guide](doc/fhe-evolution.md).
 
 ## Prerequisites and build
 
-- Bun 1.4 or later, Git, and Docker with BuildKit named-context support.
+- Bun 1.4 or later, Git, and Docker with BuildKit.
 - Access to the task's source repository and pinned commit.
-- A standalone Codex binary with its matching `codex-code-mode-host` companion.
+- Stock Codex and its Code Mode companion are installed in the shared image.
+  The host does not need Codex.
 - A mode-0600 Codex `auth.json` for inference.
 - Python 3 and a complete installed Mekugi runtime for Mekugi comparisons: `mekugi`,
   `mekugi-exec`, `mekugi-app-server`, `codex-code-mode-host`, `bwrap` (Linux), and
@@ -174,9 +175,9 @@ It exercises the actual collector, verifier supervisor, source reader, arm netwo
 separation, fixed-verifier mounts, imports, and owned-container cleanup. Local live
 checks remain opt-in; Mekugi and real-task cache checks need their declared fixtures.
 Skipped checks do not verify a container boundary. These checks use no paid inference.
-The host-specific Code Mode smoke test requires `CODEX_AB_LIVE_TOOLHOST=1` and
-the real companion installed beside `CODEX_AB_TOOLHOST_CODEX_BIN` (or the default
-local Codex path). It is skipped when that integration is not requested.
+To smoke-test the real Code Mode companion offline, run
+`CODEX_AB_LIVE_TOOLHOST=1 bun test toolhost.test.ts` against the built shared
+image. Set `CODEX_AB_LIVE_IMAGE` to select a different image.
 
 ### Source ownership and focused checks
 

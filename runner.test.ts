@@ -83,11 +83,14 @@ test("benchmark attributes a preflight failure to preflight while retaining its 
   expect(log).not.toContain("-judge-");
 });
 
-test("preflight reports the missing image and Docker cause", async () => {
+test("preflight reports the missing recorded image ID and preserves the Docker cause", async () => {
   const run = await prepared();
+  const imageId = (await readState(run)).image_id;
   const docker = join(root, "missing-image-docker");
-  await file(docker, "#!/bin/sh\necho 'No such image: fixture-image' >&2\nexit 1\n", 0o755);
-  await expect(preflightRun(run, docker)).rejects.toThrow("cannot resolve immutable image ID for fixture-image: No such image: fixture-image");
+  await file(docker, '#!/bin/sh\necho "No such image: $5" >&2\nexit 1\n', 0o755);
+  await expect(preflightRun(run, docker)).rejects.toThrow(
+    `cannot resolve immutable image ID for ${imageId}: No such image: ${imageId}`,
+  );
 });
 
 test("an externally canceled pair stops before Docker preflight", async () => {
@@ -155,14 +158,14 @@ test.each([
   expect(await Bun.file(join(fake.stateDir, `codex-ab-${(await readState(run)).id}-preflight-image`)).exists()).toBe(false);
 });
 
-test("preflight reports expected and actual Codex versions with a rebuild action", async () => {
+test("preflight reports expected and actual Codex versions with a recovery action", async () => {
   const run = await prepared();
   const state = await readState(run);
   state.runtime_tools.codex_version = "codex-cli 0.155.0";
   await writeState(run, state);
   const fake = await fakeOwnedDocker(0);
   await expect(preflightRun(run, fake.path)).rejects.toThrow(
-    "expected codex-cli 0.155.0, got codex-cli 0.154.0. Rebuild fixture-image",
+    "expected codex-cli 0.155.0, got codex-cli 0.154.0. Use the original image or prepare a new run",
   );
   expect((await readFile(fake.log, "utf8"))).not.toContain(" codex exec ");
 });
@@ -355,7 +358,7 @@ test("prepare pins the executable Mekugi pair", async () => {
   const options = {
     source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
-    codexBinary: join(home, ".local/bin/codex"), currentLauncher: "mekugi" as const,
+    currentLauncher: "mekugi" as const,
     mekugiBinary: join(root, "missing-mekugi"),
   };
   await expect(prepare(options)).rejects.toThrow("ENOENT");

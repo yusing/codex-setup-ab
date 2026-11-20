@@ -52,23 +52,19 @@ RUN apt-get update \
     && ln -s /opt/git/bin/* /usr/local/bin/ \
     && git --no-lazy-fetch version
 
-# The comparison is bare Codex versus bare Codex. Copy the same audited
-# standalone CLI and its code-mode host used by both arms from an explicit
-# BuildKit named context.
-ARG CODEX_SHA256
-ARG CODEX_CODE_MODE_HOST_SHA256
-COPY --from=codex_binary codex /usr/local/bin/codex
-COPY --from=codex_binary codex-code-mode-host /usr/local/bin/codex-code-mode-host
-RUN chmod 0755 /usr/local/bin/codex /usr/local/bin/codex-code-mode-host \
-    && printf '%s  %s\n%s  %s\n' \
-        "$CODEX_SHA256" /usr/local/bin/codex \
-        "$CODEX_CODE_MODE_HOST_SHA256" /usr/local/bin/codex-code-mode-host \
-        | sha256sum --check --strict \
+# Keep the official standalone package outside the benchmark's mounted homes.
+RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex-install.sh \
+    && CODEX_HOME=/opt/codex CODEX_INSTALL_DIR=/usr/local/bin CODEX_NON_INTERACTIVE=1 \
+        sh /tmp/codex-install.sh \
+    && rm /tmp/codex-install.sh \
+    && ln -s /opt/codex/packages/standalone/current/bin/codex-code-mode-host \
+        /usr/local/bin/codex-code-mode-host \
+    && test -x /usr/local/bin/codex-code-mode-host \
     && ! command -v hpatch \
     && ! command -v mekugi \
     && /usr/local/bin/codex --version \
     && install -d /usr/local/libexec /root/.config /agent-issue-reports /go/pkg/mod \
-    && ln /usr/local/bin/codex /usr/local/libexec/codex-real
+    && ln "$(readlink -f /usr/local/bin/codex)" /usr/local/libexec/codex-real
 
 ARG BENCH_UID=1000
 ARG BENCH_GID=1000

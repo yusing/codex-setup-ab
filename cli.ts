@@ -94,7 +94,6 @@ Prepare options:
   --mekugi-bin FILE     Mekugi executable used by --current-launcher mekugi
   --grok-bin FILE       Grok executable used by --comparison codex-mekugi-grok
   --bun-bin FILE        host Bun 1.4+ executable recorded as preparation provenance
-  --codex-bin FILE      standalone Codex executable used to build the image
   --image NAME          prebuilt bare-Codex image (default codex-ab:0.1.0)
   --timeout SECONDS     per agent and judge launch (default 1800)
   --cpus COUNT          identical per-container CPU limit (default 2)
@@ -205,7 +204,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       grokBinary: o["grok-bin"] as string | undefined,
       currentHome: string(o, "current-home", homedir()), runtimeHome: o["runtime-home"] as string | undefined, image: string(o, "image", "codex-ab:0.1.0"),
       cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
-      codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),
+      dockerBin: o["docker-bin"] as string | undefined,
       bunBinary: o["bun-bin"] as string | undefined,
     });
     process.stdout.write(`${runDir}\n`);
@@ -251,7 +250,6 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
         mekugiSource: o["mekugi-source"] as string | undefined, mekugiBuild: o["mekugi-build"] as string | undefined,
         mekugiBinary: o["mekugi-bin"] as string | undefined,
-        codexBinary: string(o, "codex-bin", join(homedir(), ".local/bin/codex")),
         bunBinary: o["bun-bin"] as string | undefined } })}\n`);
     return 0;
   }

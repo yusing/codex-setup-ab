@@ -1024,13 +1024,8 @@ test.each([
 });
 
 test("a pinned-repository task check announces the clone without starting work", async () => {
-  const codex = join(root, "codex");
-  for (const path of [codex, join(root, "codex-code-mode-host")]) {
-    await file(path, "#!/bin/sh\nexit 0\n");
-    await chmod(path, 0o755);
-  }
   const source = join(root, "missing sqlite-utils checkout");
-  const options = { task: "sqlite-utils-history", source, "prepare-only": true, "current-home": root, "codex-bin": codex, "docker-bin": "/bin/false", "mekugi-source": root, "mekugi-bin": codex };
+  const options = { task: "sqlite-utils-history", source, "prepare-only": true, "current-home": root, "docker-bin": "/bin/false", "mekugi-source": root, "mekugi-bin": "/bin/false" };
   const catalog = (await (await fetch(origin + "/api/config")).json()).tasks;
   expect(catalog.find((task: { id: string }) => task.id === "sqlite-utils-history")).toMatchObject({ repository: "https://github.com/simonw/sqlite-utils.git", preset: "stock-mekugi", compactLimit: 200000 });
   const checked = await post("/api/check", { command: "launch", options });
@@ -1041,19 +1036,14 @@ test("a pinned-repository task check announces the clone without starting work",
 });
 
 test("manual imports take historical models instead of hidden defaults and preserve the fresh model", async () => {
-  const codex = join(root, "codex");
-  for (const path of [codex, join(root, "codex-code-mode-host")]) {
-    await file(path, "#!/bin/sh\nexit 0\n");
-    await chmod(path, 0o755);
-  }
   const directory = join(root, "previous");
   const original = JSON.stringify({ schema_version: 1, execution: { model: "gpt-6.1-sol" },
     arms: { stock: {}, current: {} }, arm_settings: { current: { model: "gpt-6.1-terra" } } });
   await file(join(directory, "run.json"), original);
   await file(join(directory, "reports/bundle/MANIFEST.sha256"), "fixture");
   const options = { preset: "custom", task: "sqlite-utils-history", source: join(root, "missing"),
-    "prepare-only": true, "current-home": root, "codex-bin": codex, "docker-bin": "/bin/false",
-    "mekugi-source": root, "mekugi-bin": codex,
+    "prepare-only": true, "current-home": root, "docker-bin": "/bin/false",
+    "mekugi-source": root, "mekugi-bin": "/bin/false",
     arms: JSON.stringify(Array.from({ length: 3 }, () => ({ launcher: "codex", setup_commit: "stock" }))),
     "arm-settings": JSON.stringify({ stock: { model: "gpt-6.1-terra" }, current: { model: "gpt-6-astra" }, "arm-3": { model: "gpt-6-astra" } }),
     "import-arms": JSON.stringify([{ target_arm: "current", run_dir: directory, arm: "current" }, { target_arm: "arm-3", run_dir: directory, arm: "stock" }]) };

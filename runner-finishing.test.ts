@@ -187,7 +187,7 @@ test("review treatment overlays only the isolated current home and is hash verif
   const run = await prepare({
     source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
-    codexBinary: join(home, ".local/bin/codex"), reviewTreatment: treatment,
+    reviewTreatment: treatment,
   });
   const state = await readState(run);
   expect(state.profile).toBe("task");

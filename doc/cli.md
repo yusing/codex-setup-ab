@@ -19,7 +19,16 @@ Use `--output-parent` to choose another parent directory.
 
 ## Prerequisites and build
 
-You need Bun 1.4 or later, Git, Python 3 for Mekugi export validation, Docker with BuildKit named-context support, access to the source commit, a standalone Codex binary and its matching `codex-code-mode-host` companion, and a mode-0600 Codex `auth.json`. The pinned Ubuntu 24.04 image copies Go 1.27.1, Node 24.21.0, and Bun 1.4.2 from public, digest-pinned official images, and builds Git 2.56.1 from its checksum-pinned official source archive. This supplies the `--no-lazy-fetch` capability required by the coordination task while retaining local and HTTPS transports. It does not inherit another benchmark image's runtime, wrappers, source, home, or credentials. It copies the chosen standalone Codex pair directly. Preparation records the CLI version plus both files' SHA-256 identities; preflight requires both container copies to match.
+You need Bun 1.4 or later, Git, Docker with BuildKit, access to the source commit,
+and Python 3 for Mekugi export validation. Inference also needs a mode-0600 Codex
+`auth.json`. You do not need Codex installed on the host.
+
+The Ubuntu 24.04 image installs standalone Codex and its matching Code Mode
+companion using the [official installer](https://learn.chatgpt.com/docs/codex/cli#get-started-with-codex-cli).
+The installer selects the release when the install step runs. The image also
+includes pinned Go, Node, Bun, and Git toolchains. Its Git supports
+`--no-lazy-fetch` and local and HTTPS transports. The image does not inherit
+another benchmark image's runtime, wrappers, source, home, or credentials.
 
 For human-directed work, [start the Web UI](../README.md#launch-and-watch-in-the-web-ui). Pair
 preparation checks and builds the selected image automatically. The following manual
@@ -28,22 +37,17 @@ build commands are for agent-directed setup.
 ```sh
 bun install
 bun run build
-codex_bin="$(readlink -f /home/ubuntu/.local/bin/codex)"
-codex_dir="$(dirname "$codex_bin")"
-codex_sha="$(sha256sum "$codex_bin" | cut -d' ' -f1)"
-codex_host="$codex_dir/codex-code-mode-host"
-codex_host_sha="$(sha256sum "$codex_host" | cut -d' ' -f1)"
-docker build \
-  --build-context "codex_binary=$codex_dir" \
-  --build-arg "CODEX_SHA256=$codex_sha" \
-  --build-arg "CODEX_CODE_MODE_HOST_SHA256=$codex_host_sha" \
-  --build-arg "BENCH_UID=1000" \
-  --build-arg "BENCH_GID=1000" \
-  -t codex-ab:0.1.0 .
+docker build -t codex-ab:0.1.0 .
 ./dist/codex-ab --version
 ```
 
-The harness follows the selected host Codex version, not a separately pinned CLI release. The container operator is always `1000:1000`. The preset runner checks an existing image before use and rebuilds it when its operator identity or the Codex/code-mode-host binary hashes differ from the selected host setup, its PATH-resolved Bun cannot run, or Git lacks `--no-lazy-fetch` or its HTTPS transport helper. Rebuild older images lacking those tools before manual preflight. Existing prepared runs retain their recorded runtime identities; prepare a new run to use an updated runtime.
+Launch reuses a capable image or builds one if missing or incomplete. Direct
+`prepare` and `prepare-suite` use a prebuilt image. The container operator is
+`1000:1000`. To refresh Codex deliberately, rebuild with `--no-cache` so Docker
+reruns the installer. Preparation records the immutable image ID, Codex
+version, and both executable hashes. Preflight checks those recorded identities.
+Prepare a new run to use an updated runtime; rebuilding does not change the
+image identity recorded by an existing run.
 
 Build and preparation make no model requests. Candidate execution and adaptive
 judging require `--confirm-paid-inference` and use your authentication/quota.

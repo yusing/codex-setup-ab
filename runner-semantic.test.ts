@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { cp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { cp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { runBenchmark } from "./workflow";
 import { checked } from "./process";
@@ -253,11 +253,18 @@ test("prepare makes base-only independent clones and an audited secret-free snap
 });
 
 
-test("prepare fails before creating a run when the Codex companion is missing", async () => {
-  const bad = join(root, "missing-companion/bin/codex");
-  await file(bad, "#!/bin/sh\necho codex-cli 0.154.0\n", 0o755);
-  expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
-    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30, codexBinary: bad })).rejects.toThrow();
+test("prepare fails before creating a run when the image's Codex companion is missing", async () => {
+  const dockerBin = join(root, "missing-companion-docker");
+  await file(dockerBin, `#!/bin/sh
+if [ "$1" = image ]; then echo 'sha256:${"a".repeat(64)}'; exit 0; fi
+echo 'Image is missing the executable Code Mode companion' >&2
+exit 1
+`, 0o755);
+  const before = await readdir(root);
+  await expect(prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
+    criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
+    cpus: "2", memory: "4g", timeoutSeconds: 30, dockerBin })).rejects.toThrow("Code Mode companion");
+  expect(await readdir(root)).toEqual(before);
 });
 
 test("prepare clones configuration and preserves tracked changes without a guidance allowlist", async () => {
@@ -269,8 +276,7 @@ test("prepare clones configuration and preserves tracked changes without a guida
   await checked(["git", "-C", currentHome, "add", "new-guidance/arbitrary-name.md"]);
   const statusBefore = (await checked(["git", "-C", currentHome, "status", "--porcelain"])).stdout;
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
-    outputParent: root, currentHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
-    codexBinary: join(currentHome, ".local/bin/codex") });
+    outputParent: root, currentHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30 });
   const snapshot = join(run, "snapshots/current/home/ubuntu");
   expect(await Bun.file(join(snapshot, ".codex/SMALL-TASK.md")).exists()).toBe(false);
   expect(await readFile(join(snapshot, ".codex/AGENTS.md"), "utf8")).toBe("current uncommitted instructions\n");

@@ -178,7 +178,7 @@ test("reevaluation independently rejudges every retained arm without implementat
   const sourceRun = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, taskPackPath: join(pack, "manifest.json"),
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
     comparison: "custom", arms: [{ launcher: "codex", setup_commit: "stock" }, { launcher: "mekugi", setup_commit: revision }, { launcher: "codex", setup_commit: revision }],
-    mekugiSource, mekugiBinary: join(home, "go/bin/mekugi"), codexBinary: join(home, ".local/bin/codex") });
+    mekugiSource, mekugiBinary: join(home, "go/bin/mekugi") });
   const initial = await readState(sourceRun);
   initial.pricing = { fetched_at: "fixture", source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: {} };
   await writeState(sourceRun, initial);

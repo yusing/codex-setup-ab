@@ -222,10 +222,12 @@ After reviewing `run.json`, start the model runs explicitly:
   --confirm-paid-inference
 ```
 
-Before inference, preflight checks the recorded Codex version and companion hashes,
-absence of image-bundled Mekugi, a real model-free Code Mode execution, setup
-integrity, and configured tools. It resolves the image tag once; subsequent
-containers use the immutable ID.
+Preparation resolves the selected image to an immutable ID and records the
+container's Codex version and both executable hashes. Before inference, preflight
+uses that ID to check the recorded version and hashes, absence of image-bundled
+Mekugi, a real model-free Code Mode execution, setup integrity, and configured
+tools. Older runs without a recorded image ID still resolve their tag at
+preflight.
 
 The shared `codex-ab-deps:<key>` image binds the base image, source commit/tree,
 submodules, preparation command, selected Mekugi hashes, and operator identity.

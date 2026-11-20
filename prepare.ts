@@ -47,17 +47,49 @@ export interface PrepareOptions {
   currentHome: string;
   runtimeHome?: string;
   image: string;
+  imageId?: string;
+  dockerBin?: string;
   cpus: string;
   memory: string;
   timeoutSeconds: number;
   currentLauncher?: CodexLauncher;
   mekugiBinary?: string;
   bunBinary?: string;
-  codexBinary?: string;
 }
 
 function progress(message: string): void { process.stderr.write(`[prepare] ${message}\n`); }
 const TOOL_SETUP_PATHS = [".local/bin/mise", ".config/mise", ".local/share/mise/migrations"];
+
+async function readImageCodex(options: PrepareOptions) {
+  const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
+  const imageId = options.imageId ?? (await checked([
+    docker, "image", "inspect", "--format", "{{.Id}}", options.image,
+  ], { timeoutMs: 30_000 })).stdout.trim();
+  if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) throw new Error("Invalid Docker image ID");
+  const codex = "/usr/local/bin/codex";
+  const host = "/usr/local/bin/codex-code-mode-host";
+  const probe = await checked([docker, "run", "--rm", "--network", "none", imageId, "sh", "-ec", `
+    test -x "$2" || { echo 'Image is missing the executable Code Mode companion' >&2; exit 1; }
+    "$1" --version
+    sha256sum "$1" "$2"
+    stat -Lc %s "$2"
+  `, "sh", codex, host], { timeoutMs: 30_000 });
+  const [version, codexHash, hostHash, hostSize, ...extra] = probe.stdout.trim().split("\n");
+  const shaLine = /^([0-9a-f]{64})  (.*)$/;
+  const cli = codexHash?.match(shaLine);
+  const companion = hostHash?.match(shaLine);
+  const size = Number(hostSize);
+  if (!/^codex-cli \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version ?? "")
+    || cli?.[2] !== codex || companion?.[2] !== host
+    || !Number.isSafeInteger(size) || size <= 0 || extra.length) {
+    throw new Error(`Invalid Codex runtime metadata from image ${imageId}`);
+  }
+  return { imageId, tools: {
+    codex_source: codex, codex_version: version!, codex_sha256: cli[1]!,
+    codex_code_mode_host_source: host, codex_code_mode_host_sha256: companion[1]!,
+    codex_code_mode_host_size: size,
+  } };
+}
 
 async function exists(path: string): Promise<boolean> { try { await lstat(path); return true; } catch { return false; } }
 
@@ -654,12 +686,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const taskPath = await realpath(options.taskPath);
   const criteriaPath = options.criteriaPath ? await realpath(options.criteriaPath) : undefined;
   const criteriaContract = pack?.contract ?? (criteriaPath ? validateCriteria(JSON.parse(await readFile(criteriaPath, "utf8")), await sha256(taskPath)) : undefined);
-  const codexBinary = await realpath(options.codexBinary ?? join(runtimeHome, ".local/bin/codex"));
-  const codexVersion = (await checked([codexBinary, "--version"])).stdout.trim();
-  if (!/^codex-cli \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(codexVersion)) throw new Error(`unexpected Codex version: ${codexVersion}`);
-  const codexSha256 = await sha256(codexBinary);
-  const codeModeHost = await realpath(join(dirname(codexBinary), "codex-code-mode-host"));
-  const codeModeHostStat = await stat(codeModeHost);
+  const imageCodex = await readImageCodex(options);
   const pinnedBun = join(runtimeHome, ".local/share/mise/installs/bun/1.4.2/bin/bun");
   const selectedBun = options.bunBinary ?? (await exists(pinnedBun) ? pinnedBun : Bun.which("bun"));
   if (!selectedBun) throw new Error("Bun 1.4 or later is required; install Bun or pass --bun-bin");
@@ -671,7 +698,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (!bunMatch || Number(bunMatch[1]) < 1 || (Number(bunMatch[1]) === 1 && Number(bunMatch[2]) < 4)) {
     throw new Error(`Bun 1.4 or later is required, got ${bunVersion || "(empty version)"}`);
   }
-  if (!codeModeHostStat.isFile() || (codeModeHostStat.mode & 0o111) === 0) throw new Error(`Codex code-mode host is not executable: ${codeModeHost}`);
   const miseBinary = isolatedFromCurrentTools ? undefined : await realpath(join(runtimeHome, ".local/bin/mise"));
   const miseStat = miseBinary ? await stat(miseBinary) : undefined;
   if (miseStat && (!miseStat.isFile() || (miseStat.mode & 0o111) === 0)) throw new Error(`current setup manager is not executable: ${miseBinary}`);
@@ -697,7 +723,6 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (options.model && !CODEX_MODELS.some(item => item.id === options.model) && !(grokComparison && options.model === "grok:grok-4.7")) throw new Error("unsupported benchmark model");
   const model: BenchmarkModel = grokComparison ? "grok:grok-4.7" : options.model ?? "gpt-6-astra";
   if (options.model && grokComparison && options.model !== model) throw new Error(`${comparison} uses ${model}`);
-  const codeModeHostSha256 = await sha256(codeModeHost);
   if (!(await exists(join(source, ".git")))) throw new Error(`source is not a Git worktree: ${source}`);
   const runDir = await realpath(await mkdtemp(join(options.outputParent ?? "/var/tmp", "task-run-")));
   await chmod(runDir, 0o700);
@@ -914,6 +939,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     upstream_reference: upstreamReference,
     criteria: preparedCriteria ? { path: "evaluator/criteria.json", sha256: await sha256(join(runDir, "evaluator/criteria.json")), contract: preparedCriteria } : undefined,
     image: options.image,
+    image_id: imageCodex.imageId,
     execution: { model, reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },
     resource_limits: { cpus: options.cpus, memory: options.memory },
     timeout_seconds: options.timeoutSeconds,
@@ -924,18 +950,15 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     current_snapshot: { captured_at: snapshotDocument.created_at, manifest_sha256: await sha256(snapshotManifest) },
     runtime_tools: {
       bun: bunBinary, bun_sha256: await sha256(bunBinary), shared_binaries: true,
-      codex_source: codexBinary, codex_version: codexVersion, codex_sha256: codexSha256,
-      codex_code_mode_host_source: codeModeHost,
+      ...imageCodex.tools,
       current_setup_installs: isolatedFromCurrentTools ? relative(runDir, currentSetupInstalls) : currentSetupInstalls,
       current_setup_files: relative(runDir, currentSetupFiles), current_setup_files_sha256: await sha256(currentSetupFiles),
       current_setup_mise_sha256: miseSha256,
       current_setup_mise_source: miseBinary,
-      codex_code_mode_host_sha256: codeModeHostSha256,
       mekugi_exec_source: mekugiExec ? "snapshots/runtime/mekugi-exec" : undefined, mekugi_exec_sha256: mekugiExecSha256,
       mekugi_source: frozenMekugi, mekugi_sha256: mekugiSha256, mekugi_in_image: needsMekugi || undefined,
       mekugi_runtime: mekugiRuntime,
       grok_source: grokBinary, grok_sha256: grokSha256, grok_version: grokVersion,
-      codex_code_mode_host_size: codeModeHostStat.size,
     },
     operator: { uid: 1000, gid: 1000 },
     arms: customArms ? Object.fromEntries(keys.map((arm, index) => [arm, { repository: repositories[arm], home_template: `snapshots/${arm}/home/ubuntu`, launcher: customArms[index]!.launcher }])) : {

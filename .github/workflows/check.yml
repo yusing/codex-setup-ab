@@ -30,6 +30,7 @@ jobs:
     timeout-minutes: 15
     env:
       CODEX_AB_LIVE_DOCKER: "1"
+      CODEX_AB_LIVE_TOOLHOST: "1"
       CODEX_AB_LIVE_MEKUGI: "0"
       CODEX_AB_LIVE_IMAGE: codex-ab:model-free
       CODEX_AB_VERIFIER_IMAGE: codex-ab:model-free
@@ -51,6 +52,9 @@ jobs:
           path: .flask-source
           persist-credentials: false
       - name: Exercise real collection, supervisor, reader, network, and cleanup boundaries
-        run: bun test --timeout 60000 candidate.live.test.ts semantic.live.test.ts judge-boundary.live.test.ts network.live.test.ts container.live.test.ts fixed-verifier.live.test.ts flask-qualification.live.test.ts
+        run: >
+          bun test --timeout 60000 candidate.live.test.ts semantic.live.test.ts
+          judge-boundary.live.test.ts network.live.test.ts container.live.test.ts
+          fixed-verifier.live.test.ts flask-qualification.live.test.ts toolhost.test.ts
       - name: Exercise published import and reevaluation preservation
         run: bun test control.test.ts bundle.test.ts

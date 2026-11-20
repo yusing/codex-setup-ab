@@ -1,4 +1,5 @@
 import { afterAll, beforeEach } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, rm, symlink, readlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -19,8 +20,8 @@ export async function runnerFixture() {
   let mekugiSource: string;
   let base: string;
   let future: string;
-  let codexHash!: string;
-  let codeModeHostHash!: string;
+  const codexHash = createHash("sha256").update("image codex fixture").digest("hex");
+  const codeModeHostHash = createHash("sha256").update("image Code Mode fixture").digest("hex");
   const originalPath = process.env.PATH;
   let brewPrefix: string;
   const fixtureVerification = { schema: "codex-ab.verification.v1" as const, cases: [
@@ -76,18 +77,12 @@ case "$*" in
 esac
 `, 0o755);
     await file(join(h, ".local/share/mise/installs/bun/1.4.2/bin/bun"), "#!/bin/sh\nprintf '1.4.2\\n'\n", 0o755);
-    const codex = join(h, ".local/bin/codex");
     await file(join(h, "go/bin/mekugi-exec"), "#!/bin/sh\nexit 0\n", 0o755);
     await file(join(h, "go/bin/mekugi"), "#!/bin/sh\nexec \"$@\"\n", 0o755);
     for (const name of ["mekugi-app-server", "codex-code-mode-host", "bwrap"]) {
       await file(join(h, "go/bin", name), `#!/bin/sh\necho fixture-${name}\n`, 0o755);
     }
     await file(join(h, "go/bin/mekugi-models.json"), '{"models":[]}\n');
-    await file(codex, "#!/bin/sh\necho codex-cli 0.154.0\n", 0o755);
-    codexHash = (await checked(["sha256sum", codex])).stdout.split(/\s+/)[0]!;
-    const codeModeHost = join(h, ".local/bin/codex-code-mode-host");
-    await file(codeModeHost, "#!/bin/sh\nexit 0\n", 0o755);
-    codeModeHostHash = (await checked(["sha256sum", codeModeHost])).stdout.split(/\s+/)[0]!;
     await file(join(h, ".codex/auth.json"), "must-not-copy\n", 0o600);
     await file(join(h, ".codex/history.jsonl"), "must-not-copy\n");
     await file(join(h, ".codex/mekugi.config.toml"), "must-not-copy\n");
@@ -103,6 +98,16 @@ esac
   root = await mkdtemp(join(tmpdir(), "codex-ab-test-"));
   brewPrefix = join(root, "linuxbrew");
   await file(join(brewPrefix, "bin/brew"), `#!/bin/sh\nprintf '%s\\n' '${brewPrefix}'\n`, 0o755);
+  const imageId = `sha256:${"a".repeat(64)}`;
+  await file(join(brewPrefix, "bin/docker"), `#!/bin/sh
+case "$*" in
+  'image inspect --format {{.Id}} '*) echo '${imageId}' ;;
+  'run --rm --network none ${imageId} sh -ec '*)
+    printf '%s\\n' 'codex-cli 0.154.0' '${codexHash}  /usr/local/bin/codex' \\
+      '${codeModeHostHash}  /usr/local/bin/codex-code-mode-host' '12345' ;;
+  *) exit 99 ;;
+esac
+`, 0o755);
   process.env.PATH = `${brewPrefix}/bin:${originalPath}`;
   source = join(root, "source");
   await mkdir(join(source, "internal/router"), { recursive: true });
@@ -146,7 +151,7 @@ esac
   async function prepared(timeoutSeconds = 30, currentLauncher: "codex" | "mekugi" = "codex", currentHome = home): Promise<string> {
     return prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
       outputParent: root, currentHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds,
-      codexBinary: join(currentHome, ".local/bin/codex"), currentLauncher,
+      currentLauncher,
       mekugiBinary: currentLauncher === "mekugi" ? join(currentHome, "go/bin/mekugi") : undefined });
   }
 

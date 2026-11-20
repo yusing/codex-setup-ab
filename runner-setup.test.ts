@@ -344,7 +344,7 @@ test("stock-mekugi CLI records the compact limit and restricts it to prepare", a
   try {
     expect(await main(["prepare", "--source", source, "--base", base, "--forbidden", future,
       "--task", task, "--criteria", fixtureCriteria, "--current-home", home,
-      "--codex-bin", join(home, ".local/bin/codex"), "--mekugi-bin", join(home, "go/bin/mekugi"),
+      "--mekugi-bin", join(home, "go/bin/mekugi"),
       "--output-parent", root, "--comparison", "stock-mekugi", "--auto-compact-limit", "8192",
       "--mekugi-source", mekugiSource])).toBe(0);
   } finally { capture.mockRestore(); }
@@ -541,10 +541,12 @@ test("Mekugi build inputs are pinned, bundled and independent of the live checko
   const buildOptions = { source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
     cpus: "2", memory: "4g", timeoutSeconds: 30, comparison: "same-setup" as const, mekugiBuild: build };
-  const mutateCodex = join(root, "mutate-build/codex");
-  await file(mutateCodex, `#!/bin/sh\nprintf '%s' changed > '${join(build, "build_inputs.py")}'\necho codex-cli 0.154.0\n`, 0o755);
-  await cp(join(home, ".local/bin/codex-code-mode-host"), join(root, "mutate-build/codex-code-mode-host"));
-  await expect(prepare({ ...buildOptions, codexBinary: mutateCodex })).rejects.toThrow("build inputs changed");
+  const mutateDocker = join(root, "mutate-build/docker");
+  await file(mutateDocker, `#!/bin/sh
+if [ "$1" = run ]; then printf '%s' changed > '${join(build, "build_inputs.py")}'; fi
+exec '${join(brewPrefix, "bin/docker")}' "$@"
+`, 0o755);
+  await expect(prepare({ ...buildOptions, dockerBin: mutateDocker })).rejects.toThrow("build inputs changed");
   await file(join(build, "build_inputs.py"), "# archive owner\n");
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task,
     criteriaPath: fixtureCriteria, outputParent: root, currentHome: home, image: "fixture-image",
@@ -612,7 +614,7 @@ test("task-pack CLI freezes pinned controls without exposing checks to either ar
   }) as typeof process.stdout.write);
   try {
     expect(await main(["prepare", "--task-pack", join(directory, "manifest.json"), "--source", source,
-      "--current-home", home, "--codex-bin", join(home, ".local/bin/codex"), "--output-parent", root])).toBe(0);
+      "--current-home", home, "--output-parent", root])).toBe(0);
   } finally { capture.mockRestore(); }
   const run = stdout.trim();
   const state = await readState(run);

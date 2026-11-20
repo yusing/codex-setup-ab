@@ -1,9 +1,8 @@
 import { expect, test } from "bun:test";
 
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHash } from "node:crypto";
 import { ensureLaunchImage, launchConfiguration, taskCatalog } from "./launch";
 import { main } from "./cli";
 
@@ -31,62 +30,49 @@ test("custom launch composes ordered launcher revisions and rejects incomplete i
   expect(() => launchConfiguration({ preset: "stock-current", arms: JSON.stringify(arms) })).toThrow("requires");
 });
 
-type ImageState = "matching" | "missing-bun" | "old-git" | "missing-git-https" | "bun-error" | "stale-codex" | "stale-host" | "wrong-operator" | "wrong-operator-missing-host" | "missing" | "inspect-error" | "identity-error" | "hash-error";
+type ImageState = "ready" | "missing-bun" | "old-git" | "missing-git-https" | "daemon-error"
+  | "missing-companion" | "wrong-operator" | "missing" | "inspect-error" | "identity-error";
+
+const fixtureImageId = `sha256:${"a".repeat(64)}`;
+const rebuiltImageId = `sha256:${"b".repeat(64)}`;
 
 async function imageProbe(state: ImageState) {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-preset-"));
   try {
-    await Promise.all(["bin", "selected"].map(path => mkdir(join(root, path), { recursive: true })));
-    const codex = "#!/bin/sh\necho selected-codex\n";
-    const host = "#!/bin/sh\necho selected-host\n";
-    await writeFile(join(root, "selected/codex"), codex, { mode: 0o755 });
-    await writeFile(join(root, "selected/codex-code-mode-host"), host, { mode: 0o755 });
-    await symlink(join(root, "selected/codex"), join(root, "bin/codex"));
-    await writeFile(join(root, "bin/docker"), `#!/bin/sh
+    const docker = join(root, "docker");
+    await writeFile(docker, `#!/bin/sh
 set -eu
-PRESET_LOG="$0.log"
-PRESET_STATE=${state}
-PRESET_CODEX_HASH=${createHash("sha256").update(codex).digest("hex")}
-PRESET_HOST_HASH=${createHash("sha256").update(host).digest("hex")}
-printf '%s\\n' "$*" >> "$PRESET_LOG"
+printf '%s\\n' "$*" >> "$0.log"
 case "$1" in
   image)
-    case "$PRESET_STATE" in
+    if [ -f "$0.built" ]; then echo '${rebuiltImageId}'; exit 0; fi
+    case '${state}' in
       missing) echo 'No such image' >&2; exit 1 ;;
       inspect-error) echo 'daemon unavailable' >&2; exit 1 ;;
     esac
-    echo sha256:fixture ;;
+    echo '${fixtureImageId}' ;;
   run)
     case " $* " in
       *' bun --version '*)
-        [ "$PRESET_STATE" != missing-bun ] || { echo 'bun not found' >&2; exit 127; }
-        [ "$PRESET_STATE" != bun-error ] || { echo 'daemon unavailable' >&2; exit 125; }
-        [ "$PRESET_STATE" != old-git ] || { echo 'unknown option: --no-lazy-fetch' >&2; exit 11; }
-        [ "$PRESET_STATE" != missing-git-https ] || exit 12
-        echo 1.4.2 ;;
-      *' sha256sum '*)
-        case "$PRESET_STATE" in hash-error|wrong-operator-missing-host) echo 'hash probe failed' >&2; exit 1 ;; esac
-        codex_hash=$PRESET_CODEX_HASH
-        host_hash=$PRESET_HOST_HASH
-        [ "$PRESET_STATE" != stale-codex ] || codex_hash=stale
-        [ "$PRESET_STATE" != stale-host ] || host_hash=stale
-        printf '%s  %s\\n%s  %s\\n' "$codex_hash" /usr/local/bin/codex "$host_hash" /usr/local/bin/codex-code-mode-host ;;
+        case '${state}' in
+          missing-bun) exit 10 ;; old-git) exit 11 ;; missing-git-https) exit 12 ;;
+          missing-companion) exit 13 ;; daemon-error) echo 'daemon unavailable' >&2; exit 125 ;;
+        esac ;;
       *)
-        [ "$PRESET_STATE" != identity-error ] || { echo 'identity probe failed' >&2; exit 1; }
-        case "$PRESET_STATE" in wrong-operator*) echo 0:0 ;; *) echo 1000:1000 ;; esac ;;
+        case '${state}' in
+          wrong-operator) echo 0:0 ;; identity-error) exit 1 ;; *) echo 1000:1000 ;;
+        esac ;;
     esac ;;
-  build) : ;;
+  build) touch "$0.built" ;;
   *) exit 99 ;;
 esac
 `, { mode: 0o755 });
-
-    const codexHash = createHash("sha256").update(codex).digest("hex");
-    const hostHash = createHash("sha256").update(host).digest("hex");
+    let id: string | undefined;
     let error = "";
     try {
-      await ensureLaunchImage({ image: "fixture:latest", codexBinary: join(root, "bin/codex"), docker: join(root, "bin/docker") }, () => {});
+      id = await ensureLaunchImage({ image: "fixture:latest", docker }, () => {});
     } catch (caught) { error = String(caught); }
-    return { error, calls: await readFile(join(root, "bin/docker.log"), "utf8").catch(() => ""), codexHash, hostHash, root };
+    return { id, error, calls: await readFile(`${docker}.log`, "utf8") };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -180,35 +166,27 @@ test("the human convenience launcher starts the workbench instead of a paid pres
   expect(await new Response(result.stderr).text()).toContain("unknown option for serve");
 });
 
-test("image verification reuses matching binaries and rebuilds stale identity or binary pairs", async () => {
-  const matching = await imageProbe("matching");
-  expect(matching.error).toBe("");
-  expect(matching.calls).toContain("sha256sum /usr/local/bin/codex /usr/local/bin/codex-code-mode-host");
-  expect(matching.calls).not.toContain("\nbuild ");
-  expect(matching.calls).toContain("git --no-lazy-fetch version");
-  for (const state of ["stale-codex", "stale-host", "wrong-operator", "missing", "missing-bun", "old-git", "missing-git-https"] as const) {
+test("launch reuses a capable image and rebuilds missing or incomplete images without a host Codex", async () => {
+  const ready = await imageProbe("ready");
+  expect(ready.id).toBe(fixtureImageId);
+  expect(ready.calls).toContain(`run --rm --network none ${fixtureImageId}`);
+  expect(ready.calls).toContain("test -x /usr/local/bin/codex-code-mode-host");
+  expect(ready.calls).toContain("git --no-lazy-fetch version");
+  expect(ready.calls).not.toContain("\nbuild ");
+  for (const state of ["wrong-operator", "missing", "missing-companion", "missing-bun", "old-git", "missing-git-https"] as const) {
     const result = await imageProbe(state);
-    expect(result.error).toBe("");
-    expect(result.calls).toContain("build --build-context codex_binary=" + result.root + "/selected");
-    expect(result.calls).toContain("--build-arg CODEX_SHA256=" + result.codexHash);
-    expect(result.calls).toContain("--build-arg CODEX_CODE_MODE_HOST_SHA256=" + result.hostHash);
-    expect(result.calls).toContain("--build-arg BENCH_UID=1000 --build-arg BENCH_GID=1000");
+    expect(result.id).toBe(rebuiltImageId);
+    expect(result.calls.split("\n").find(line => line.startsWith("build ")))
+      .toBe("build -t fixture:latest .");
   }
 });
 
-test("image probe failures stop without a build", async () => {
-  for (const state of ["inspect-error", "identity-error", "hash-error", "bun-error"] as const) {
+test("image probe infrastructure failures stop without a build", async () => {
+  for (const state of ["inspect-error", "identity-error", "daemon-error"] as const) {
     const result = await imageProbe(state);
     expect(result.error).toContain("Cannot");
     expect(result.calls).not.toContain("\nbuild ");
   }
-});
-
-test("wrong operator identity rebuilds an image even when its companion binary is absent", async () => {
-  const result = await imageProbe("wrong-operator-missing-host");
-  expect(result.error).toBe("");
-  expect(result.calls).toContain("build --build-context");
-  expect(result.calls).not.toContain("sha256sum /usr/local/bin/codex");
 });
 
 test.each(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])("launch accepts %s reasoning", effort => {

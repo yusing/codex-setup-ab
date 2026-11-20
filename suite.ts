@@ -87,6 +87,7 @@ export async function prepareSuite(options: {
       const setup = "standard";
       process.stderr.write(`[suite] preparing ${task.id}, ${setup}\n`);
       const run = await prepare({ ...options.common, source: task.source,
+        dockerBin: options.dockerBin ?? options.common.dockerBin,
         baseCommit: task.pack.manifest.source.base_commit, forbiddenCommit: task.pack.manifest.source.forbidden_commit,
         taskPath: task.pack.taskPath, taskPackPath: task.packPath, profile: "task",
         comparison: "stock-current",

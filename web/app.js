@@ -83,7 +83,6 @@ function sharedFields() {
   return field("Setup repository / home", "current-home", d["current-home"])
     + field("Runtime home (optional)", "runtime-home", "", "text", "Installed tools and runtime supplements; defaults to the setup home.")
     + field("Container image", "image", d.image)
-    + field("Codex executable", "codex-bin", d["codex-bin"])
     + field("Codex authentication file", "auth-file", d["auth-file"])
     + field("Mekugi source", "mekugi-source", d["mekugi-source"])
     + field("Mekugi executable", "mekugi-bin", d["mekugi-bin"])

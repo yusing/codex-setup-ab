@@ -26,7 +26,7 @@ test("current setup defaults do not constrain independently selected arm models"
   await writeFile(join(currentHome, ".codex/config.toml"), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "high"\n');
   const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
     outputParent: root, currentHome, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
-    codexBinary: join(home, ".local/bin/codex"), armSettings: { stock: { model: "gpt-6.1-terra" }, current: { model: "gpt-6-astra" } } });
+    armSettings: { stock: { model: "gpt-6.1-terra" }, current: { model: "gpt-6-astra" } } });
   const state = await readState(run);
   await verifyPreparedInputs(run, state);
   expect(state.execution.service_tier).toBe("default");
@@ -44,7 +44,7 @@ test("custom composition prepares independent launcher and stock/revision choice
     ];
     const run = await prepare({ source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
       outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
-      comparison: "custom", arms, mekugiSource, mekugiBinary: join(home, "go/bin/mekugi"), codexBinary: join(home, ".local/bin/codex") });
+      comparison: "custom", arms, mekugiSource, mekugiBinary: join(home, "go/bin/mekugi") });
     const state = await readState(run);
     expect(state.arm_configurations).toEqual(arms);
     await verifyPreparedInputs(run, state);
@@ -98,7 +98,7 @@ test("custom composition executes and blindly assesses every isolated arm, then 
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
     comparison: "custom", arms: [{ launcher: "codex", setup_commit: revision }, { launcher: "mekugi", setup_commit: revision }, { launcher: "mekugi", setup_commit: "HEAD" }],
     armSettings: { stock: { model: "gpt-6.1-terra", reasoning_effort: "high", cpus: "3", memory: "5g", timeout_seconds: 45, auto_compact_limit: 12345, parallel_work: true, skills: { "use-modern-go": false } }, current: { mekugi_flags: ["--shell-guard=false"] }, "arm-3": { mekugi_flags: ["--shell-guard=true"] } },
-    mekugiSource, mekugiBinary: join(home, "go/bin/mekugi"), codexBinary: join(home, ".local/bin/codex") });
+    mekugiSource, mekugiBinary: join(home, "go/bin/mekugi") });
   const initial = await readState(run);
   const keys = ["stock", "current", "arm-3"];
   expect(Object.keys(initial.arms)).toEqual(keys);
@@ -181,7 +181,7 @@ test.each(["reuse", "fresh"])("historical multi-arm imports execute one new cand
     outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
     comparison: "custom" as const, arms: [{ launcher: "codex" as const, setup_commit: "stock" },
       { launcher: "mekugi" as const, setup_commit: revision }, { launcher: "codex" as const, setup_commit: revision }],
-    mekugiSource, mekugiBinary: join(home, "go/bin/mekugi"), codexBinary: join(home, ".local/bin/codex") };
+    mekugiSource, mekugiBinary: join(home, "go/bin/mekugi") };
   const sourceRun = await prepare(options);
   const sourceState = await readState(sourceRun);
   sourceState.pricing = { fetched_at: "fixture", source: "fallback", catalog_url: "fixture", assumptions: [], warnings: [], models: { "gpt-6-astra": embeddedFallbackPricing("gpt-6-astra") } };
@@ -318,7 +318,7 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   await rm(configPath);
   await symlink("../historical-config.toml", configPath);
   await checked(["git", "-C", setupHome, "rm", "--cached", ".local/bin/codex"]);
-  await cp(join(home, ".local/bin/codex"), join(setupHome, ".local/bin/codex"));
+  await file(join(setupHome, ".local/bin/codex"), "#!/bin/sh\necho working-tree-codex\n", 0o755);
   await file(join(setupHome, ".codex/AGENTS.md"), "second revision\n");
   await file(join(setupHome, ".codex/hooks/revision.ts"), "second hook source\n");
   await checked(["git", "-C", setupHome, "add", ".codex"]);

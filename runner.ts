@@ -161,7 +161,7 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
   if (!check.stdout.includes("codex_path=/usr/local/bin/codex")) throw new Error(`image Codex is not the direct /usr/local/bin/codex entry: ${check.stdout.trim()}`);
   const containerVersion = check.stdout.split("\n").map(line => line.trim()).find(line => line.startsWith("codex-cli "));
   if (containerVersion !== state.runtime_tools.codex_version) {
-    throw new Error(`unexpected container Codex version: expected ${state.runtime_tools.codex_version}, got ${containerVersion ?? check.stdout.trim()}. Rebuild ${state.image} from the selected host Codex and prepare a new run; the preset runner does this automatically`);
+    throw new Error(`unexpected container Codex version: expected ${state.runtime_tools.codex_version}, got ${containerVersion ?? check.stdout.trim()}. Use the original image or prepare a new run`);
   }
   const expectedIdentity = `${state.operator.uid}:${state.operator.gid}`;
   if (identity.exitCode !== 0 || identity.stdout.trim() !== expectedIdentity) throw new Error(`container operator identity must be ${expectedIdentity}, got ${identity.stdout.trim()}`);
