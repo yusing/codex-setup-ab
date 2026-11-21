@@ -2,45 +2,42 @@
 
 [README](../README.md) · [Contract](contract.md) · [CLI guide](cli.md)
 
-The fixed-verifier mode executes a supplied, pinned original task verifier. Its
-result is separate from adaptive behavioral checks and source-quality scores.
-It does not generate checks, modify the verifier, run an implementation agent,
-or make model requests. A successful process exit alone never establishes a pass.
+The fixed-verifier mode executes a supplied, pinned original task verifier. Its result
+is separate from adaptive behavioral checks and source-quality scores. It does not
+generate checks, modify the verifier, run an implementation agent, or make model
+requests. A zero exit code alone never establishes a pass.
 
 ## Prepare the original inputs
 
-Obtain the original task directory, including its instruction, environment
-definition, and complete verifier directory. Keep this directory outside every
-candidate workspace. Pin the dataset's immutable revision and record its version;
-a branch name or a mutable image tag is rejected. Preserve the original task and
-verifier files, executable bits, and any internal symlinks.
+Obtain the original task directory (instruction, environment definition, and complete
+verifier directory) and keep it outside every candidate workspace. Pin the dataset's
+immutable revision and record its version; branch names and mutable image tags are
+rejected. Preserve original files, executable bits, and internal symlinks.
 
-The adapter hashes every regular file and symlink, ignoring Git metadata. Its
-`codex-ab.fixed-tree.v1` identity is the SHA-256 of the canonical JSON array of
-sorted file entries returned by `candidateFiles()`: relative path, Git-style
-file mode, SHA-256 of bytes or literal symlink target, and byte count. This
-identity is local to this adapter. It does not claim to equal an upstream
-archive digest. External or dangling verifier/task symlinks are rejected because
-their contents are not fully pinned.
+The adapter hashes every regular file and symlink (ignoring Git metadata). Its
+`codex-ab.fixed-tree.v1` identity is the SHA-256 of the canonical JSON array of sorted
+file entries from `candidateFiles()`: relative path, Git-style file mode, SHA-256 of
+bytes or literal symlink target, and byte count. This identity is local to this adapter
+and does not claim to equal an upstream archive digest. External or dangling symlinks
+are rejected.
 
-For example, obtain the two local tree identities with:
+Compute the two local tree identities with:
 
 ```sh
 bun -e 'import {fixedTreeIdentity} from "./fixed-verifier.ts"; for (const p of process.argv.slice(1)) console.log(p, (await fixedTreeIdentity(p)).sha256)' \
   /absolute/original-task /absolute/original-task/tests
 ```
 
-Build the original task environment separately using its documented recipe, then
-record the immutable image digest. All dependencies needed by the verifier must
-already be present: the adapter runs with Docker networking disabled. If that
-changes the benchmark's original network policy or dependency setup, retain the
-difference in the experiment record.
+Build the original task environment separately from its documented recipe and record
+the immutable image digest. All verifier dependencies must be preinstalled because the
+adapter runs with Docker networking disabled (`--network none`); if that differs from
+the benchmark's original policy, record the difference in the experiment record.
 
 ## Configuration
 
-Use an external JSON configuration with the following shape. Values in angle
-brackets are placeholders to replace with observed identities; this example is
-not an executable FHE task or an assertion that a particular corpus is available.
+Supply an external JSON configuration with the following schema (replace angle-bracket
+placeholders with observed identities; this example is not an executable FHE task or an
+assertion that a particular corpus is available):
 
 ```json
 {
@@ -70,112 +67,95 @@ not an executable FHE task or an assertion that a particular corpus is available
 }
 ```
 
-The command is an argument array and must explicitly name an entrypoint inside
-`/tests`. Set it to the original command, including the original interpreter and
-arguments. The image is either `sha256:…` or an image reference ending in
-`@sha256:…`. User, working directory, resource limits, timeout, and selected reward
-key are explicit controls. Unknown configuration fields are rejected.
+- `verifier.command` is an argument array explicitly naming an entrypoint under `/tests`.
+- `image` must be `sha256:…` or a reference ending in `@sha256:…`.
+- User, working directory, resource limits, timeout, and `reward_key` are explicit;
+  unknown configuration fields are rejected.
+- Both `candidate_mount` and `/tests` are mounted read-only. Only the container's
+  private layer and a fresh `/logs/verifier` mount are writable; earlier reports,
+  stdout/stderr, invocations, manifests, auth files, Docker sockets, user homes, and
+  other arms are never mounted.
 
-The candidate mount is read-only, as is `/tests`. The verifier may write its
-container's private layer and the fresh `/logs/verifier` mount. Only that new
-reward/log directory is writable on the host; the adapter's earlier reports,
-stdout/stderr, invocation, and manifests are outside its writable mounts. No
-authentication file, Docker socket, user home, or other arm is mounted.
-
-Tasks whose unchanged verifier needs to rewrite candidate source, fetch network
-dependencies, or use a platform other than this Linux container contract are
-unsupported by this first adapter. Do not silently rewrite their verifier or
-claim that the restricted execution reproduces original benchmark conditions.
+Tasks whose unchanged verifier must rewrite candidate source, fetch network
+dependencies, or run outside this Linux container contract are unsupported by this
+adapter. Do not silently rewrite their verifier or claim equivalence to original
+benchmark conditions.
 
 ## Execute and inspect
 
-For an original-verifier comparison, first prepare the run using the original
-task prompt, then freeze its verifier before any candidate execution:
+Prepare the run with the original task prompt, then freeze its verifier before any
+candidate execution:
 
 ```sh
-codex-ab configure-fixed --run-dir /absolute/prepared-run \
+./dist/codex-ab configure-fixed --run-dir /absolute/prepared-run \
   --config /absolute/fixed-verifier.json --task-dir /absolute/original-task
 ```
 
-Configuration verifies that the original `instruction.md` bytes have the exact
-SHA-256 of the prepared task. Use `--prompt-path relative/file.md` when the
-original prompt has another relative path. It copies the full pinned task into
-`evaluator/fixed-inputs/task`, records the exact configuration bytes, and verifies
-the copied identities. The original inputs can subsequently be moved or removed.
-The task's verifier remains in evaluator-only inputs. Reconfiguration after any
-candidate/judge attempt, historical imports, and historical evaluation reuse are
-unsupported in this first configured mode. Prepare a fresh comparison instead of
-mixing those evaluation contracts. Generic import and `reevaluate` also reject
-fixed-mode source runs, so they cannot silently become adaptive evaluations.
+`configure-fixed` verifies that `instruction.md` (override via
+`--prompt-path relative/file.md`) matches the prepared task's exact SHA-256, copies the
+pinned task into `evaluator/fixed-inputs/task`, records the exact config bytes, and
+verifies copied identities so the original inputs can later move. Reconfiguration after
+any candidate/judge attempt, historical imports, and evaluation reuse are unsupported in
+configured fixed mode; generic imports and `reevaluate` also reject fixed-mode runs so
+they cannot silently become adaptive evaluations.
 
-Normal run finishing dispatches the configured original verifier instead of
-adaptive judging. Fixed grades use the original reward gate and preserve the
-execution/validity distinction. The model-free verifier stage can also be invoked
-explicitly on retained candidates:
+Normal run finishing dispatches the configured verifier instead of adaptive judging.
+You can also invoke the model-free verifier stage explicitly on retained candidates:
 
 ```sh
-codex-ab verify-fixed --run-dir /absolute/configured-run
+./dist/codex-ab verify-fixed --run-dir /absolute/configured-run
 ```
 
-To add a separate fixed-verifier assessment to a completed adaptive run:
+To add a separate fixed-verifier assessment to a completed adaptive run without altering
+its adaptive grade:
 
 ```sh
-codex-ab verify-fixed --run-dir /absolute/run --arm stock \
+./dist/codex-ab verify-fixed --run-dir /absolute/run --arm stock \
   --config /absolute/fixed-verifier.json --task-dir /absolute/original-task
 ```
 
-Supplemental verification preserves the adaptive grade. Each result has its own
-immutable task/configuration snapshot and is reported separately. Every invocation
-uses a fresh `evaluator/fixed/<arm>/attempt-*` directory; the state retains all
-attempt references. An explicit new configured-verifier invocation updates its
-current fixed grade while preserving all earlier result files. Repeated verifier
-invocations on one implementation are not fresh implementation attempts and must
-not be added to a scored-attempt denominator.
+Each invocation writes to a fresh `evaluator/fixed/<arm>/attempt-*` directory with its
+own immutable task/config snapshot, retaining all prior attempts in state. Re-verifying
+one implementation updates its current fixed grade without adding a fresh implementation
+attempt to a scored-attempt denominator.
 
 [`executeFixedVerifier()`](../fixed-verifier.ts) verifies the reconstructed tree,
 trusted manifest, patch, bytes, modes, symlinks, index tree, and change list before
-Docker starts. Legacy candidates without trusted capture are rejected.
-
-Outputs are never reused. Evidence retains configuration, task/verifier/candidate
-manifests, stdout/stderr, reward files, and `codex-ab.fixed-result.v1`. The owned
-container lifecycle verifies cleanup.
+Docker starts; legacy candidates without trusted capture are rejected. Outputs are never
+reused; evidence retains config, manifests, stdout/stderr, reward files, and
+`codex-ab.fixed-result.v1`, and owned-container cleanup is verified.
 
 ## Score and validity contract
 
-`reward.json` takes precedence over `reward.txt`, matching Harbor. A present but
-empty, malformed, nonnumeric, or nonfinite JSON file cannot fall back to a text
-reward. JSON rewards retain their complete numeric map; `reward_key` selects the
-explicit outcome. Text rewards contain one decimal number under `reward`. The
-selected score must be finite and in `[0, 1]`; a score of `1` passes, and a lower
-score fails the binary completion gate while retaining the original numeric
-score. Missing, oversized, nonregular, or symlink reward files are invalid.
-
-Harbor consumes a recorded reward after ordinary verifier termination and does
-not use the test exit code as the score. This adapter therefore retains a valid
-reward alongside a nonzero exit, while keeping `execution_status` separate from
-`behavioral_result` and `evaluation_validity`. Exit zero without a reward is
-invalid and unassessed. Timeout, cancellation, and infrastructure or cleanup
-failure leave behavioral results unassessed even if a reward file was created.
-
-The result declares `trust_boundary: "upstream-fixed-verifier"`. The original
-verifier owns its assertion and reward-writing semantics. This adapter does not
-independently qualify its negative controls or guarantee that hostile candidate
-code running within the upstream verifier cannot spoof its reward. These results
-must not be presented as independently supervised adaptive-check evidence.
+- **Reward precedence**: `reward.json` takes precedence over `reward.txt`, matching
+  Harbor. A present but empty, malformed, nonnumeric, or nonfinite JSON file never falls
+  back to `reward.txt`. JSON rewards retain their complete numeric map (`reward_key`
+  selects the outcome); text rewards contain one decimal number under `reward`.
+- **Gate and validity**: The selected score must be finite and in `[0, 1]` (`1` passes;
+  lower scores fail the binary gate while keeping the numeric score). Missing,
+  oversized, nonregular, or symlink reward files are invalid.
+- **Process exit vs. reward**: Matching Harbor, a valid reward is retained alongside a
+  nonzero verifier exit while keeping `execution_status`, `behavioral_result`, and
+  `evaluation_validity` separate. Exit zero without a reward is invalid and unassessed.
+  Timeout, cancellation, and infrastructure or cleanup failures leave behavioral results
+  unassessed even if a reward file exists.
+- **Trust boundary**: Results record `trust_boundary: "upstream-fixed-verifier"`. The
+  original verifier owns its assertions and reward writer; this adapter does not qualify
+  negative controls or prevent hostile candidate code running inside the verifier from
+  spoofing its reward. Do not present fixed results as independently supervised adaptive
+  evidence.
 
 ## FHE provenance and comparison limits
 
-Every adapter result currently records `methodology_comparable: false`. Local
-pins prove which supplied bytes ran; they do not prove that those bytes are an
-official FHE 1.1 task, that all official tasks and attempts were run, or that the
-model/provider, harness, budget, and network controls match a published result.
+Every adapter result records `methodology_comparable: false`. Local pins prove which
+supplied bytes ran, not that they match an official FHE 1.1 task, full task/attempt
+denominator, or published model, provider, harness, budget, and network controls.
 
-At implementation time, the official site and Hub described FHE 1.1 with 62 tasks,
-while the publicly inspected reproduction repository still exposed a 30-task
-v1 configuration. No v1 task is relabeled as v1.1, and the local test fixtures are
-explicitly marked `local-fixture`. An FHE-comparable claim requires the actual
-official 1.1 task/verifier manifest, verified original bytes, matched controls
-or declared differences with a matched control, and the specified denominator.
+At implementation time, the official site and Hub described FHE 1.1 with 62 tasks, while
+the inspected reproduction repository exposed a 30-task v1 configuration. No v1 task is
+relabeled as v1.1, and local test fixtures are marked `local-fixture`. An FHE-comparable
+claim requires the official 1.1 manifest, verified original bytes, matched controls (or
+declared differences with a matched control), and the specified denominator.
 
 Primary references:
 
@@ -187,13 +167,15 @@ Primary references:
 ## Validation
 
 ```sh
-bun test fixed-verifier.test.ts
-bun test fixed-workflow.test.ts
-CODEX_AB_LIVE_DOCKER=1 CODEX_AB_LIVE_IMAGE=codex-ab:delivery \
+bun test fixed-verifier.test.ts fixed-workflow.test.ts
+CODEX_AB_LIVE_DOCKER=1 CODEX_AB_LIVE_IMAGE=codex-ab:model-free \
   bun test fixed-verifier.live.test.ts
 ```
 
+(`fixed-verifier.live.test.ts` defaults to `codex-ab:delivery` when
+`CODEX_AB_LIVE_IMAGE` is unset; CI builds and uses `codex-ab:model-free`.)
+
 Ordinary tests cover pins, immutable inputs, command/mount wiring, reward parsing,
-process outcomes, and cleanup errors. The live gate checks actual offline/read-only
-Docker boundaries, prior-evidence preservation, and correct/wrong/early-exit
-fixtures. Neither invokes models; skips establish no boundary coverage.
+process outcomes, and cleanup errors. The live gate checks real offline/read-only
+Docker boundaries, prior-evidence preservation, and correct/wrong/early-exit fixtures.
+Neither invokes models, and skipped tests establish no boundary coverage.

@@ -1,11 +1,13 @@
 # Regression coverage map
 
-Use this map to choose tasks and interpret their limits. It describes detectable
-failure classes, not an audit of every historical session.
+[README](../README.md) · [Specification](spec.md) · [CLI guide](cli.md)
 
-A task detects a class only through observable output: the delivered patch, its
-executed checks, the judge's seven-axis assessment, and recorded telemetry. A
-benchmark run cannot show that an agent avoided a failure the task never offered.
+Use this map to choose tasks and interpret their limits. It describes detectable failure
+classes, not an audit of every historical session.
+
+A task detects a class only through observable output: the delivered patch, its executed
+checks, the judge's seven-axis assessment, and recorded telemetry. A benchmark run cannot
+show that an agent avoided a failure the task never offered.
 
 ## Covered classes
 
@@ -26,21 +28,18 @@ benchmark run cannot show that an agent avoided a failure the task never offered
 
 ## Not covered
 
-These classes need interaction, multiple sessions, or artifacts that a
-single-prompt repository task does not produce:
+These classes need interaction, multiple sessions, or artifacts that a single-prompt
+repository task does not produce:
 
-- Misreading a mid-task correction or question, and asking or omitting a
-  clarifying question. Runs receive one prompt and no follow-up turns.
-- Handoff quality across separate sessions, and how a resumed agent consumes it.
-- Skill selection and delivery. Comparisons that disable every skill cannot
-  observe it.
-- Version-control hygiene such as commit scope, worktree placement, and checking
-  for upstream patches before removal. Candidates are graded on their working tree.
-- Tone, punctuation, and responsiveness of the final reply, which the judge does
-  not receive.
+- Misreading a mid-task correction or question, or asking/omitting a clarifying question
+  (runs receive one prompt and no follow-up turns).
+- Handoff quality across separate sessions and how a resumed agent consumes it.
+- Skill selection and delivery (comparisons that disable every skill cannot observe it).
+- Version-control hygiene such as commit scope, worktree placement, and checking for
+  upstream patches before removal (candidates are graded on their working tree).
+- Tone, punctuation, and responsiveness of the final reply (not shown to the judge).
 - Web UI design guidance.
-- Review independence and delegation structure, except through their token and
-  time cost.
+- Review independence and delegation structure, except through their token and time cost.
 
-Treat results on the covered classes as evidence for those classes only. A better
-score on these tasks does not establish improvement on the classes above.
+Treat results on the covered classes as evidence for those classes only. A better score
+on these tasks does not establish improvement on the classes above.

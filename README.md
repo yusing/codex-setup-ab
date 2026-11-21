@@ -2,143 +2,130 @@
 
 `codex-ab` runs isolated, descriptive comparisons of coding-agent setups on the same
 pinned repository task. Compare minimal Codex with your current guidance, direct Codex
-with Mekugi, two setup commits on shared pinned runtime binaries, or specific Mekugi treatments. A Grok CLI comparison is also available.
+with Mekugi, two setup commits on shared pinned runtime binaries, specific Mekugi
+treatments, or Mekugi against the Grok CLI.
 
 The Web UI prepares and launches runs, streams progress, and inspects retained results.
 Reports combine behavioral grades, source assessments, time, tokens, and estimated API
-costs. Unknown measurements stay unknown. A single pair does not support causal or
+costs. Unknown measurements stay unknown, and a single pair does not support causal or
 general conclusions.
 
-New evidence separates trusted candidate capture, verifier completion, evaluator
-qualification, usage coverage, and pricing precision. Reports retain the existing
-joint-success comparisons and add scored-attempt reliability and paired uncertainty
-over tasks. Original benchmark verifiers have a separate fixed-verifier mode.
-See the [evidence reliability guide](doc/fhe-evolution.md).
+Evidence separates trusted candidate capture, verifier completion, evaluator
+qualification, usage coverage, and pricing precision. Reports pair joint-success
+comparisons with scored-attempt reliability and cross-task uncertainty; original
+benchmark verifiers run in a separate fixed-verifier mode. See the
+[evidence reliability guide](doc/fhe-evolution.md).
 
 ## Prerequisites and build
 
-- Bun 1.4 or later, Git, and Docker with BuildKit.
-- Access to the task's source repository and pinned commit.
-- Stock Codex and its Code Mode companion are installed in the shared image.
-  The host does not need Codex.
-- A mode-0600 Codex `auth.json` for inference.
-- Python 3 and a complete installed Mekugi runtime for Mekugi comparisons: `mekugi`,
-  `mekugi-exec`, `mekugi-app-server`, `codex-code-mode-host`, `bwrap` (Linux), and
-  `mekugi-models.json` in one directory. Preparation snapshots these host artifacts
-  without compiling Mekugi or Rust, separately from the stock Codex pair.
+- **Core tools**: Bun 1.4+, Git, Docker with BuildKit, and access to the task's source
+  repository and pinned commit.
+- **Codex runtime**: Standalone Codex and its Code Mode companion are installed inside
+  the shared Docker image; the host does not need Codex.
+- **Inference credentials**: A mode-0600 Codex `auth.json` (plus a Grok OAuth store for
+  `codex-mekugi-grok`).
+- **Mekugi comparisons**: Python 3 and a complete [installed Mekugi runtime](doc/cli.md#installed-mekugi-runtime)
+  in one directory. Preparation snapshots these host artifacts without compiling Mekugi
+  or Rust, separately from the stock Codex pair.
 
-Pair preparation checks and builds the selected image automatically. For manual
-build commands and runtime details, see the [CLI build guide](doc/cli.md#prerequisites-and-build).
+Pair preparation checks and builds the selected image automatically. For manual build
+commands and container details, see the [CLI build guide](doc/cli.md#prerequisites-and-build).
 Build, preparation, and preflight make no model requests. Running candidates and judges
 uses your authentication and quota and requires explicit paid-inference consent.
 Reported API costs are list-price estimates, not subscription charges or invoices.
 
 ## Launch and watch in the Web UI
 
-Start the dark-mode workbench from this repository:
+### Starting the workbench
+
+Start the dark-mode workbench from the repository root:
 
 ```sh
 bun install
 bun start
 ```
 
-Open **http://localhost:4849**. `scripts/run.sh` also starts the Web UI and accepts only
-server options such as `--host ADDRESS` and `--port 4850`. Human-directed
-preparation, launch, watching, and result inspection belong in this workbench.
-The server binds to `127.0.0.1` by default. To bind to your Tailscale address:
+Open **http://localhost:4849**. `scripts/run.sh` also starts the Web UI and accepts
+server options (`--host ADDRESS`, `--port PORT`). The server binds to `127.0.0.1` by
+default; to expose it on your Tailscale interface:
 
 ```sh
 bun start --host "$(tailscale ip -4)"
 ```
 
-Open `http://<your-tailscale-ip>:4849` from a device in your tailnet. You can also
-use `--host 0.0.0.0` to listen on all IPv4 interfaces, or `--host ::` for IPv6.
-The workbench has no login and can control local files and paid runs. Bind only
-to trusted interfaces. Keep the server running while an operation is active.
+Then open `http://<your-tailscale-ip>:4849` from a device in your tailnet (`--host 0.0.0.0`
+listens on all IPv4 interfaces; `--host ::` listens on IPv6). Because the workbench has
+no login and can control local files and paid runs, bind only to trusted interfaces and
+keep the server running while an operation is active.
 
-Choose a pinned task and source checkout, then configure the comparison in the
-**Arms** tabs. Each arm has its own model, reasoning effort, execution limits and
-Mekugi behavior. Presets supply starting setups; **Custom composition** supports
-additional arms and independent launchers and setup commits. **Skills** offers
-individual switches for skills configured in that arm's setup registry. **Disable all**
-turns off every listed skill for that arm; **Use setup defaults** restores its selections. Changes
-apply to its disposable runtime home, not the host or another arm. Unchanged
-skills retain their setup's defaults, including conditions. Minimal guidance
-includes no setup skills.
+### Configuring comparisons
 
-Use **Check inputs** before starting. **Host infrastructure** holds shared runtime
-paths and authentication-file paths. Custom task inputs appear only for the custom
-task. For **Setup commit versus setup commit**, choose the revisions in their arm
-tabs. Different launchers turn it into a custom composition; tracked local edits
-stay out of committed setup snapshots. See the [setup-commit guide](doc/cli.md#compare-setup-commits).
-In a custom composition, **Current tracked setup** captures tracked edits from the
-setup repository. If that repository is a separate worktree, set **Runtime home**
-under **Host infrastructure** to the home containing the installed tools and
-supplements. Untracked instruction files are not captured.
-Tasks with a pinned upstream repository, such as NVM and sqlite-utils multi-commit upgrade,
-clone a missing source checkout during preparation. The sqlite-utils task defaults to
-minimal Codex versus minimal Mekugi, a shared 200,000-token
-auto-compact limit, xhigh reasoning, and a 55-minute limit.
-Preparation only is off by default; explicitly consent to paid inference before
-starting a run, or select preparation only for a model-free check. Mekugi behavior
-switches and response/idle timeouts appear only on Mekugi arms.
-A repeat count of two or more prepares fresh trial pairs.
-To compare with earlier results, select **Previous result** as the candidate in an
-arm tab and enter the retained run directory and arm key. Add arms for a custom
-multi-arm comparison, leaving at least one fresh slot and repeat count 1. Imported
-slots keep their original setup labels and skip
-candidate execution. **Reuse historical evaluation**, the default, also preserves
-their grades, scores, and assessments. Select an imported evaluation baseline for
-each fresh setup; judges adapt its historical tests to the new implementation
-while testing the same behaviors. Choose **Fresh evaluation of all candidates**
-to regrade and rescore every patch instead.
-The [import guide](doc/cli.md#import-previous-arms) covers matching controls and CLI use.
-Suite preparation is available through the
-[CLI guide](doc/cli.md).
+- **Task and source**: Choose a pinned task and source checkout, then run **Check inputs**
+  before starting. Tasks with a pinned upstream repository (such as NVM and
+  [sqlite-utils](tasks/sqlite-utils-history/README.md)) clone a missing checkout during
+  preparation. Custom task fields appear only for the custom task.
+- **Arms and presets**: Configure per-arm model, reasoning effort, execution limits, and
+  Mekugi behavior in the **Arms** tabs (Mekugi switches and response/idle timeouts appear
+  only on Mekugi arms). **Custom composition** supports additional arms with independent
+  launchers and setup commits.
+- **Skills**: Toggle individual skills from each arm's setup registry (**Disable all**
+  turns off every listed skill; **Use setup defaults** restores defaults). Overrides apply
+  only to that arm's disposable runtime home; minimal guidance includes no setup skills.
+- **Setup commits and worktrees**: For **Setup commit versus setup commit**, pick both
+  revisions in their arm tabs (tracked local edits are excluded; see the
+  [setup-commit guide](doc/cli.md#compare-setup-commits)). In custom compositions,
+  **Current tracked setup** captures tracked edits from the setup repo; if it is a
+  separate worktree, set **Runtime home** under **Host infrastructure** to the home
+  containing installed tools and supplements. Untracked instruction files are not captured.
+- **Repeats and imports**: Set a repeat count of 2+ to prepare fresh trial pairs. To
+  compare against earlier runs, choose **Previous result** in an arm tab (or use
+  **Compare against HEAD** on a completed run) with repeat count 1 and at least one fresh
+  slot. **Reuse historical evaluation** (default) preserves imported grades and adapts
+  historical tests to fresh candidates; **Fresh evaluation of all candidates** regrades
+  every patch. See the [import guide](doc/cli.md#import-previous-arms).
+- **Inference consent**: Preparation-only mode is off by default. Grant paid-inference
+  consent before starting a run, or select preparation-only for a model-free check.
 
-The run view shows phase messages, elapsed time, persisted run/arm/judge status,
-candidate output tails, and partial results while work continues. Updates arrive
-through server-sent events when operation or evidence files change. A dropped
-connection reconnects automatically and loads the current view. You can stop an
-active operation; cancellation retains available evidence and uses the runner's
-container cleanup. Closing a browser tab leaves the server operation running.
-An open page refreshes its connection and reattaches the selected evidence directory
-automatically after a server restart, preserving unsent form inputs. Other retained
-runs, trial sets, and suites can be attached by directory. Started runs are never restarted; the existing audited
-judge-recovery action remains available.
+Suite preparation and agent-directed launches use the CLI:
 
-Results lead with the overall outcome and each setup's grade, per-pass criterion counts,
-and judge scores, followed by time, token and estimated-cost comparisons, criterion
-evidence, judge reasoning, warnings, trial/suite aggregates, and retained reports,
-patches, and logs. Unknown metrics stay unknown. Each result is descriptive evidence,
-not a causal conclusion. Report generation, source assessments, usage correction,
-invalidation, preflight, and grading are available as existing-run actions in the UI.
-Explicit selection loads the selected run even when automatic watching is paused.
-Pausing evidence updates keeps operation status and Stop feedback live.
-Loaded or refreshed views use current invalidation reasons instead of winner claims
-from an older report. Regenerate the report to update exported evidence. Failed builds expose their available compiler
-logs and build outcome without requiring a successful provenance manifest.
+```sh
+./dist/codex-ab launch --preset NAME --prepare-only
+```
 
-Arms settings, including the preset, imported-result paths, and skill overrides,
-are saved in this browser’s localStorage and restored on reload. Clear site data
-to discard them. Request tokens, credentials, and paid-inference consent are not saved.
-If browser storage is unavailable, the form still works without persistence.
+Add `--confirm-paid-inference` (plus task, model, reasoning, or compaction flags) to
+execute inference. See the [CLI guide](doc/cli.md) and [contract](doc/contract.md).
 
-The workbench runs one operation at a time. Its run list is kept in server memory;
-benchmark evidence stays in the existing external run directories. Credential inputs
-are local file paths, never pasted credential contents. The browser does not serve
-private homes or authentication stores. Paid inference requires fresh consent for
-each operation. Checks and report-only actions do not grant this consent.
+### Live progress and results
 
-Use **Copy evidence reference** in the run view when asking an agent to inspect results.
-The reference includes the absolute evidence directory and the current workbench entry ID.
-If the browser blocks clipboard access, the UI selects the reference for manual copying.
-Entry IDs expire when the server restarts; the retained directory is the reusable reference.
+- **Streaming view**: Displays phase messages, elapsed time, persisted run/arm/judge
+  status, candidate output tails, and partial results over server-sent events. Dropped
+  connections reconnect automatically; closing a browser tab leaves the server operation
+  running, and reloading after a server restart reattaches the selected evidence directory
+  while preserving unsent form inputs.
+- **Cancellation and attachment**: Stopping an active operation retains available evidence
+  and cleans up owned containers. Other retained runs, trial sets, and suites can be
+  attached by directory. Started runs never restart; audited judge recovery remains
+  available.
+- **Results and actions**: Results lead with the overall outcome, grades, per-pass
+  criterion counts, and judge scores, followed by time, token, and cost comparisons,
+  criterion evidence, judge reasoning, warnings, aggregates, and retained artifacts.
+  Existing-run actions cover report generation, source assessments, usage correction,
+  invalidation, preflight, and grading. Loaded views reflect current invalidation reasons
+  over older winner claims, and failed builds surface available compiler logs without a
+  provenance manifest.
 
-For agent-directed preset launch, use `codex-ab launch --preset NAME` with
-task/model/reasoning/compaction flags and explicit `--confirm-paid-inference`.
-Use `--prepare-only` to stop before inference. Existing CLI commands and flags remain
-available to agents. See the [CLI guide](doc/cli.md) and [contract](doc/contract.md) for these interfaces.
+### Storage, privacy, and agent handoff
+
+- **Browser persistence**: Arm settings, preset, imported-result paths, and skill
+  overrides are saved in `localStorage` (clear site data to reset). Request tokens,
+  credentials, and paid-inference consent are never saved.
+- **Isolation and privacy**: The workbench runs one operation at a time and keeps its run
+  list in server memory; benchmark evidence stays in private external run directories.
+  Credentials are local file paths, never pasted contents, and paid inference requires
+  fresh consent for every operation.
+- **Agent handoff**: Use **Copy evidence reference** in the run view to copy the absolute
+  evidence directory and current workbench entry ID. Entry IDs expire on server restart;
+  the retained directory is the durable reference.
 
 ## Documentation
 
@@ -147,16 +134,16 @@ available to agents. See the [CLI guide](doc/cli.md) and [contract](doc/contract
 - [CLI guide](doc/cli.md): manual builds, repeated comparisons, task packs, suites, and control reuse.
 - [Verifier completion and qualification](doc/verification.md): independent assertions, frozen controls, and task-pack migration.
 - [Fixed verifiers](doc/fixed-verifier.md): pinned original-verifier execution and its comparability limits.
-- [Guidance and launcher experiment](doc/guidance-launcher.md): prepare the four matched cells and fresh repeated trials without inference.
+- [Guidance and launcher experiment](doc/guidance-launcher.md): prepare four matched cells and fresh repeated trials without inference.
 - [Evidence reliability](doc/fhe-evolution.md): required provenance, interpretation, and validation.
-- [sqlite-utils multi-commit upgrade](tasks/sqlite-utils-history/README.md): a post-cutoff, 19-commit brownfield task for quality and requirement retention.
-- [Regression coverage map](doc/regression-coverage.md): which agent failure classes the task packs and checks can and cannot detect.
+- [sqlite-utils multi-commit upgrade](tasks/sqlite-utils-history/README.md): post-cutoff, 19-commit brownfield task for quality and requirement retention.
+- [Regression coverage map](doc/regression-coverage.md): agent failure classes that task packs and checks can and cannot detect.
 
 Started runs and trial sets do not restart or resume. Cancellation preserves available
 evidence; prepare a fresh pair for another attempt. Limited judge recovery is documented
-in the [contract](doc/contract.md#blind-judge). Treat external run directories as private:
-they contain temporary agent homes and patches. Keep the recorded Docker images available
-and the host tool store unchanged while runs or trial sets use them.
+in the [contract](doc/contract.md#blind-judge). Treat external run directories as private
+(they contain temporary agent homes and patches), and keep recorded Docker images and
+the host tool store unchanged while runs or trial sets use them.
 
 ## Development
 
@@ -166,18 +153,21 @@ bun run build
 ```
 
 `check` validates repository-relative documentation paths, typechecks production
-TypeScript, and runs all tests in six isolated worker processes. Runner tests are
-split by workflow, with private fixtures per file; tests within each file stay serial
-to protect spies and environment changes. `bun test runner-setup.test.ts` runs one
-focused group. CI runs the same command and builds the CLI. A
-separate model-free Docker job runs on pushes, pull requests, and a weekly schedule.
-It exercises the actual collector, verifier supervisor, source reader, arm network
-separation, fixed-verifier mounts, imports, and owned-container cleanup. Local live
-checks remain opt-in; Mekugi and real-task cache checks need their declared fixtures.
-Skipped checks do not verify a container boundary. These checks use no paid inference.
-To smoke-test the real Code Mode companion offline, run
-`CODEX_AB_LIVE_TOOLHOST=1 bun test toolhost.test.ts` against the built shared
-image. Set `CODEX_AB_LIVE_IMAGE` to select a different image.
+TypeScript, and runs all tests across six isolated worker processes. Runner tests are
+split by workflow with private fixtures per file; tests within each file stay serial to
+protect spies and environment changes (for example, `bun test runner-setup.test.ts`).
+
+CI runs `bun run check`, builds the CLI, and runs a separate model-free Docker job on
+pushes, pull requests, and a weekly schedule covering capture, verifier supervision,
+source-reader boundaries, arm network separation, fixed-verifier mounts, imports, and
+container cleanup. Local live checks are opt-in and use no paid inference (skipped checks
+do not verify a container boundary). To smoke-test the Code Mode companion offline:
+
+```sh
+CODEX_AB_LIVE_TOOLHOST=1 bun test toolhost.test.ts
+```
+
+Set `CODEX_AB_LIVE_IMAGE` to target a different built image.
 
 ### Source ownership and focused checks
 
