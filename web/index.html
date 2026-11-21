@@ -11,52 +11,294 @@
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to workbench</a>
-  <header class="topbar"><a href="/" class="brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span>Codex <span class="brand-ab">AB</span></a><span class="topbar-label">Comparison workbench</span><span id="connection" role="status">Connecting to local service…</span></header>
+  <header class="topbar" role="banner">
+    <div class="topbar-inner">
+      <div class="topbar-brand">
+        <a href="/" class="brand">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i></span>
+          <span>Codex <span class="brand-ab">AB</span></span>
+        </a>
+        <span class="topbar-divider" aria-hidden="true"></span>
+        <span class="topbar-label">Comparison workbench</span>
+      </div>
+      <div class="topbar-meta">
+        <span class="kbd-hints" aria-hidden="true"><kbd>/</kbd> Filter</span>
+        <span id="connection" class="connection-pill" data-state="connecting" role="status" aria-live="polite">Connecting to local service…</span>
+      </div>
+    </div>
+  </header>
+
   <div class="workspace">
-    <aside aria-label="Runs and evidence">
-      <button id="new-run"><span aria-hidden="true">+</span> New comparison</button>
+    <aside class="sidebar" aria-label="Runs and evidence">
+      <button id="new-run" type="button" class="new-run-btn">
+        <span class="btn-icon" aria-hidden="true">+</span>
+        <span>New comparison</span>
+      </button>
+
       <details id="evidence-nav" class="evidence-nav" open>
-      <summary>Runs and evidence</summary>
-      <nav id="run-list" aria-label="Run list"><p>No runs yet. Set up a comparison or attach retained evidence.</p></nav>
-      <form id="attach-form">
-        <label for="attach-directory">Attach existing evidence</label>
-        <input id="attach-directory" name="directory" placeholder="/path/to/run-or-trial-set" required spellcheck="false">
-        <button type="submit">Attach directory</button>
-        <p id="attach-error" class="error" role="alert"></p>
-      </form>
+        <summary>
+          <span>Runs and evidence</span>
+          <span id="run-count" class="count-pill" aria-label="Total runs">0</span>
+        </summary>
+
+        <div class="sidebar-search">
+          <label class="sr-only" for="run-filter">Filter runs</label>
+          <input id="run-filter" type="search" placeholder="Filter runs by name or status…" autocomplete="off" spellcheck="false">
+        </div>
+
+        <nav id="run-list" aria-label="Run list">
+          <p class="empty-state">No runs yet. Set up a comparison or attach retained evidence.</p>
+        </nav>
+        <p id="run-filter-empty" class="empty-state" hidden>No runs match your filter.</p>
+
+        <form id="attach-form" class="attach-form">
+          <label for="attach-directory">Attach existing evidence</label>
+          <input id="attach-directory" name="directory" placeholder="/path/to/run-or-trial-set" required spellcheck="false" autocomplete="off">
+          <button type="submit" class="secondary-btn">Attach directory</button>
+          <p id="attach-error" class="error" role="alert"></p>
+        </form>
       </details>
     </aside>
+
     <main id="main" tabindex="-1">
-      <section id="launch-view">
-        <div class="page-heading"><h1>Set up a comparison</h1></div>
+      <section id="launch-view" aria-labelledby="launch-heading">
+        <div class="page-heading">
+          <div class="heading-copy">
+            <p class="eyebrow">Workbench setup</p>
+            <h1 id="launch-heading">Set up a comparison</h1>
+            <p class="page-subtitle">Configure isolated candidate arms, execution limits, and evaluation controls before launching.</p>
+          </div>
+        </div>
+
         <form id="launch-form">
           <div id="launch-fields"></div>
-          <div class="launch-footer"><h2>Launch</h2>
-            <label class="check"><input type="checkbox" id="prepare-only"> Prepare only, without model inference</label>
-            <label id="consent-label" class="check consent" hidden><input type="checkbox" id="paid-consent"> I authorize paid model inference for this operation, including source assessment.</label>
+
+          <aside class="launch-footer" aria-label="Launch controls">
+            <div class="launch-footer-header">
+              <h2>Launch</h2>
+              <p id="launch-summary" class="launch-summary"></p>
+            </div>
+
+            <div class="launch-toggles">
+              <label class="check">
+                <input type="checkbox" id="prepare-only">
+                <span>Prepare only, without model inference</span>
+              </label>
+
+              <label id="consent-label" class="check consent" hidden>
+                <input type="checkbox" id="paid-consent">
+                <span>I authorize paid model inference for this operation, including source assessment.</span>
+              </label>
+            </div>
+
             <p id="inference-note" class="hint">Preparation may clone the NVM source and rebuild a missing or stale image. It makes no model requests.</p>
-            <div class="button-row"><button type="button" id="check-inputs">Check inputs</button><button type="submit" id="start-operation" class="primary">Prepare comparison</button></div>
-            <div id="input-status" class="notice" role="status" hidden></div>
-          </div>
+
+            <div class="button-row">
+              <button type="button" id="check-inputs">Check inputs</button>
+              <button type="submit" id="start-operation" class="primary">Prepare comparison</button>
+            </div>
+
+            <div id="input-status" class="notice" role="status" aria-live="polite" hidden></div>
+          </aside>
         </form>
       </section>
-      <section id="watch-view" hidden>
-        <div class="page-heading"><div><h1 id="run-title">Run</h1><p id="run-directory" class="path"></p></div><div class="button-row"><button id="copy-reference" type="button" disabled>Copy evidence reference</button><button id="stop-operation" class="danger" hidden>Stop operation</button></div></div>
-        <button id="compare-head" type="button" hidden>Compare against HEAD</button>
-        <p id="reference-status" class="hint" role="status" hidden></p>
+
+      <section id="watch-view" aria-labelledby="run-title" hidden>
+        <div class="page-heading watch-heading">
+          <div class="heading-copy">
+            <p class="eyebrow">Evidence inspector</p>
+            <h1 id="run-title">Run</h1>
+            <p id="run-directory" class="path"></p>
+          </div>
+          <div class="button-row heading-actions">
+            <button id="compare-head" type="button" class="accent-btn" hidden>Compare against HEAD</button>
+            <button id="copy-reference" type="button" disabled>Copy evidence reference</button>
+            <button id="stop-operation" type="button" class="danger" hidden>Stop operation</button>
+          </div>
+        </div>
+
+        <p id="reference-status" class="notice" role="status" aria-live="polite" hidden></p>
         <textarea id="run-reference" aria-label="Evidence reference to copy" rows="3" readonly hidden></textarea>
+
         <div id="run-status" aria-live="polite"></div>
-        <div class="watch-controls"><label class="check"><input type="checkbox" id="watch-enabled" checked> Watch updates</label><label class="check"><input type="checkbox" id="follow-log" checked> Follow live output</label><span id="updated-at" class="hint"></span></div>
+
+        <div class="watch-toolbar">
+          <div class="watch-controls">
+            <label class="check">
+              <input type="checkbox" id="watch-enabled" checked>
+              <span>Watch updates</span>
+            </label>
+            <label class="check">
+              <input type="checkbox" id="follow-log" checked>
+              <span>Follow live output</span>
+            </label>
+            <span id="updated-at" class="hint updated-at"></span>
+          </div>
+          <nav class="section-jump" aria-label="Jump to section">
+            <a href="#phase-log-panel">Phase log</a>
+            <a href="#results">Results</a>
+            <a href="#existing-actions">Actions</a>
+            <a href="#evidence-panel">Evidence</a>
+          </nav>
+        </div>
+
         <div id="watch-error" class="error" role="alert"></div>
-        <section class="panel" aria-label="Operation phase log"><h2>Phase log</h2><pre id="phase-log" class="log" tabindex="0">Attach evidence or start an operation to see its phase messages.</pre></section>
+
+        <section id="phase-log-panel" class="panel" aria-label="Operation phase log">
+          <div class="panel-header">
+            <h2>Phase log</h2>
+          </div>
+          <pre id="phase-log" class="log" tabindex="0">Attach evidence or start an operation to see its phase messages.</pre>
+        </section>
+
         <div id="live-output"></div>
         <div id="children"></div>
+
         <section id="results" class="results" aria-label="Results"></section>
-        <section class="panel" id="existing-actions"><h2>Existing-run actions</h2><p class="hint">Started runs are never restarted. Finishing and judge recovery use the existing audited CLI rules.</p><form id="action-form"><div id="action-fields"></div><div class="button-row"><button type="button" id="check-action">Check action inputs</button><button type="submit" class="primary" id="start-action">Start action</button></div><p id="action-status" role="status"></p></form></section>
-        <section class="panel"><div class="section-heading"><h2>Retained evidence</h2><input id="artifact-filter" type="search" aria-label="Filter evidence paths" placeholder="Filter reports, patches, logs…"></div><p id="artifact-note" class="hint"></p><div id="artifacts"></div></section>
-        <details class="panel"><summary>Run configuration and persisted state</summary><div id="state-details"></div></details>
+
+        <section class="panel" id="existing-actions">
+          <div class="panel-header">
+            <h2>Existing-run actions</h2>
+          </div>
+          <p class="hint">Started runs are never restarted. Finishing and judge recovery use the existing audited CLI rules.</p>
+          <form id="action-form">
+            <div id="action-fields"></div>
+            <div class="button-row">
+              <button type="button" id="check-action">Check action inputs</button>
+              <button type="submit" class="primary" id="start-action">Start action</button>
+            </div>
+            <p id="action-status" role="status" aria-live="polite"></p>
+          </form>
+        </section>
+
+        <section id="evidence-panel" class="panel">
+          <div class="section-heading">
+            <h2>Retained evidence</h2>
+            <input id="artifact-filter" type="search" aria-label="Filter evidence paths" placeholder="Filter reports, patches, logs…" autocomplete="off" spellcheck="false">
+          </div>
+          <p id="artifact-note" class="hint"></p>
+          <div id="artifacts"></div>
+          <p id="artifact-filter-empty" class="empty-state" hidden>No evidence files match your filter.</p>
+        </section>
+
+        <details class="panel state-panel">
+          <summary>Run configuration and persisted state</summary>
+          <div id="state-details"></div>
+        </details>
       </section>
     </main>
   </div>
+
+  <script>
+    (() => {
+      const byId = (id) => document.getElementById(id);
+
+      function syncConnectionState() {
+        const el = byId("connection");
+        if (!el) return;
+        const text = (el.textContent || "").toLowerCase();
+        el.dataset.state = text.includes("operation active") ? "active"
+          : text.includes("ready") ? "ready"
+          : text.includes("lost") || text.includes("cannot") || text.includes("failed") ? "error"
+          : "connecting";
+      }
+
+      function syncRunList() {
+        const list = byId("run-list");
+        const count = byId("run-count");
+        const filterEl = byId("run-filter");
+        const emptyEl = byId("run-filter-empty");
+        if (!list) return;
+        const buttons = [...list.querySelectorAll("button[data-entry]")];
+        if (count) count.textContent = String(buttons.length);
+        const query = (filterEl?.value || "").trim().toLowerCase();
+        let visible = 0;
+        for (const btn of buttons) {
+          const meta = (btn.querySelector("small")?.textContent || "").toLowerCase();
+          btn.dataset.status = meta.includes("running") ? "running"
+            : meta.includes("stopping") ? "stopping"
+            : meta.includes("complete") ? "complete"
+            : meta.includes("failed") || meta.includes("canceled") || meta.includes("partial") ? "failed"
+            : "attached";
+          const match = !query || (btn.textContent || "").toLowerCase().includes(query);
+          btn.hidden = !match;
+          if (match) visible++;
+        }
+        if (emptyEl) emptyEl.hidden = !(buttons.length > 0 && visible === 0);
+      }
+
+      function syncLaunchSummary() {
+        const summary = byId("launch-summary");
+        const preset = byId("f-preset");
+        const task = byId("f-task");
+        const tabs = byId("arm-tabs");
+        if (!summary || !preset || !task) return;
+        const arms = tabs ? tabs.children.length : 0;
+        const presetText = preset.selectedOptions?.[0]?.textContent || preset.value;
+        const taskText = task.selectedOptions?.[0]?.textContent || task.value;
+        summary.textContent = (arms ? arms + " arms · " : "") + presetText + " · " + taskText;
+      }
+
+      function syncArtifactEmpty() {
+        const filterEl = byId("artifact-filter");
+        const artifacts = byId("artifacts");
+        const emptyEl = byId("artifact-filter-empty");
+        if (!filterEl || !artifacts || !emptyEl) return;
+        const hasFilter = filterEl.value.trim().length > 0;
+        const items = artifacts.querySelectorAll("li").length;
+        emptyEl.hidden = !(hasFilter && items === 0);
+      }
+
+      window.addEventListener("DOMContentLoaded", () => {
+        const conn = byId("connection");
+        if (conn) {
+          syncConnectionState();
+          new MutationObserver(syncConnectionState).observe(conn, { childList: true, characterData: true, subtree: true });
+        }
+
+        const runList = byId("run-list");
+        if (runList) {
+          syncRunList();
+          new MutationObserver(syncRunList).observe(runList, { childList: true });
+        }
+        byId("run-filter")?.addEventListener("input", syncRunList);
+
+        const launchFields = byId("launch-fields");
+        if (launchFields) {
+          new MutationObserver(syncLaunchSummary).observe(launchFields, { childList: true, subtree: true });
+          byId("launch-form")?.addEventListener("change", syncLaunchSummary);
+        }
+
+        const artifacts = byId("artifacts");
+        if (artifacts) {
+          new MutationObserver(syncArtifactEmpty).observe(artifacts, { childList: true });
+          byId("artifact-filter")?.addEventListener("input", syncArtifactEmpty);
+        }
+
+        document.addEventListener("keydown", (event) => {
+          if (event.metaKey || event.ctrlKey || event.altKey) return;
+          const tag = event.target?.tagName;
+          const editing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || event.target?.isContentEditable;
+          if (event.key === "/" && !editing) {
+            const watchView = byId("watch-view");
+            const target = watchView && !watchView.hidden ? byId("artifact-filter") : byId("run-filter");
+            if (target) {
+              event.preventDefault();
+              if (target.id === "run-filter" && byId("evidence-nav")) byId("evidence-nav").open = true;
+              target.focus();
+              target.select();
+            }
+          } else if (event.key === "Escape" && (event.target === byId("run-filter") || event.target === byId("artifact-filter"))) {
+            if (event.target.value) {
+              event.target.value = "";
+              event.target.dispatchEvent(new Event("input", { bubbles: true }));
+            } else {
+              event.target.blur();
+            }
+          }
+        });
+      });
+    })();
+  </script>
 </body>
 </html>
