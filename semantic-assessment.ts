@@ -124,7 +124,10 @@ export async function prepareSemanticAssessment(options: {
   const displayCandidate = (id: Candidate): string => `${presentationLabel(candidates.indexOf(id))} / ${labels[order[candidates.indexOf(id)]!]}`;
   const root = join(runDir, "evaluator/semantic", `pass-${pass}`);
   await mkdir(root, { recursive: true, mode: 0o700 });
-  if (options.historical) await writeFile(join(root, "historical.json"), JSON.stringify(options.historical, null, 2), { mode: 0o600 });
+  if (options.historical) {
+    const blinded = Object.fromEntries(Object.entries(options.historical).map(([id, { presentation: _presentation, ...rest }]) => [id, rest]));
+    await writeFile(join(root, "historical.json"), JSON.stringify(blinded, null, 2), { mode: 0o600 });
+  }
   const evidence: SemanticAssessmentEvidence = { candidates: Object.fromEntries(candidates.map(id => [id, []])), existing_tests: {} as Record<Candidate, CriterionEvidence>,
     history: Object.fromEntries(candidates.map(id => [id, []])) };
   const persistState = options.persistState ?? (() => writeState(runDir, state));
@@ -201,7 +204,7 @@ export async function prepareSemanticAssessment(options: {
   const passed = () => candidates.every(id => evidence.candidates[id].every(item => item.status === "pass"));
   for (let round = first; round <= 2 && !(round > 1 && passed()); round++) {
     const repairable = round === 1 ? undefined : Object.fromEntries(candidates.map(id => [id,
-      evidence.candidates[id].filter(item => item.status === "unassessed" && item.probe_status !== "pass" &&
+      evidence.candidates[id].filter(item => item.status === "unassessed" &&
         !["not-run", "incomplete"].includes(item.qualification?.status ?? "")).map(item => item.criterion)])) as Record<Candidate, string[]>;
     if (repairable && !Object.values(repairable).some(items => items.length)) break;
     const prompt = `${options.historical ? `Historical evaluation reuse: /evidence/historical.json contains the final historical tests, results, scores, and assessments selected for each fresh candidate.
