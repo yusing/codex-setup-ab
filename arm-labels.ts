@@ -7,8 +7,9 @@ export function armLabels(state: Pick<RunState, "comparison" | "execution" | "se
     const labels = { ...armLabels({ ...state, imported_arms: undefined }),
       ...Object.fromEntries(Object.entries(state.imported_arms).map(([arm, source]) => [arm, source.label])) };
     // An imported arm can share its setup label with a fresh arm; name its source run to tell them apart.
+    const baseLabels = { ...labels };
     for (const [arm, source] of Object.entries(state.imported_arms)) {
-      if (Object.entries(labels).some(([other, label]) => other !== arm && label === source.label)) {
+      if (Object.entries(baseLabels).some(([other, label]) => other !== arm && label === source.label)) {
         labels[arm as ArmName] = `${source.label} · run ${source.source_run_id}`;
       }
     }

@@ -38,9 +38,12 @@ export async function validateSkillSelection(template: string, selection: Record
 /** Adapt only a disposable arm home. Host and frozen setup bytes stay intact. */
 export async function applySkillSelection(template: string, selection?: Record<string, boolean>): Promise<void> {
   if (!selection || !Object.keys(selection).length) return;
-  await validateSkillSelection(template, selection);
   const path = join(template, selectionPath);
-  if (!(await realpath(dirname(path))).startsWith(resolve(template) + sep)) throw new Error("Skill registry directory escapes the arm home");
+  const root = await realpath(template);
+  if (!(await realpath(dirname(path))).startsWith(root + sep) || !(await realpath(path)).startsWith(root + sep)) {
+    throw new Error("Skill registry directory escapes the arm home");
+  }
+  await validateSkillSelection(template, selection);
   const config = registry(await readFile(path, "utf8"));
   for (const [name, enabled] of Object.entries(selection)) config.skills![name] = { ...config.skills![name], enabled };
   await rm(path, { force: true });
