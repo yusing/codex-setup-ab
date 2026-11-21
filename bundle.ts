@@ -262,7 +262,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
   }
   for (const arm of state.selected_arms ?? []) {
     const result = state.results?.[arm];
-    if (result && !result.collection_error) await copy(result.patch_path, `${arm}-changes.patch`);
+    if (result && !result.collection_error && !result.lifecycle_error) await copy(result.patch_path, `${arm}-changes.patch`);
     if (result?.capture_identity) await copy(result.capture_identity.manifest_path, `${arm}-candidate-manifest.json`);
     const home = state.arm_attempts?.[arm]?.codex_home ?? (result ? join(dirname(state.arms[arm].repository), "home/ubuntu/.codex") : undefined);
     const directory = home ? within(runDir, home) : undefined;
@@ -332,7 +332,7 @@ export async function collectBundle(runDirectory: string): Promise<string> {
     : state.comparison === "codex-mekugi-grok"
     ? {
       stock: "Minimal generated Codex configuration plus the Mekugi launcher on grok:grok-4.7; no current-home guidance overlay.",
-      current: "Minimal generated Grok configuration plus the Grok CLI on grok-4.7; no current-home guidance overlay.",
+      current: "Minimal generated Grok configuration plus the Grok CLI on grok:grok-4.7; no current-home guidance overlay.",
     }
     : state.comparison === "stock-mekugi"
       ? {
