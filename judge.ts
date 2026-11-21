@@ -275,9 +275,12 @@ export async function assertRecoverableJudge(runDir: string, state: RunState): P
     throw new Error("recovery requires a failed judge with a recoverable validation error, configuration startup failure or timeout, no recorded pass, and no running attempt");
   }
   const exists = async (path: string) => access(path).then(() => true, () => false);
+  const evaluatedCount = state.evaluation?.mode === "reuse"
+    ? armNames(state).filter(arm => !state.imported_arms?.[arm]).length
+    : armNames(state).length;
   for (const pass of [1, 2]) {
     const root = join(runDir, "evaluator/semantic", `pass-${pass}`);
-    if (!(await Promise.all(candidateIds(armNames(state).length).map(id => exists(join(root, "existing", id, "__existing_tests/evidence.json"))))).every(Boolean)) {
+    if (!(await Promise.all(candidateIds(evaluatedCount).map(id => exists(join(root, "existing", id, "__existing_tests/evidence.json"))))).every(Boolean)) {
       throw new Error("recovery requires completed existing tests in both passes");
     }
     for (const round of [1, 2]) {
