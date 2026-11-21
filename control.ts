@@ -4,13 +4,19 @@ import { dirname, join, relative, resolve } from "node:path";
 import { verifyBundleManifest } from "./bundle";
 import { armExecutionSucceeded, readState, sha256 } from "./state";
 import { applyMekugiProviderUsage, meterGrokHome, meterRollouts, type MeteredRollouts, type PricingSnapshot, USAGE_KEYS } from "./usage";
-import { armNames, type ArmImport, type ArmResult, type RunState } from "./types";
-import { isPairedMekugiComparison, mekugiRuntimeCaptures } from "./mekugi";
+import { armNames, type ArmImport, type ArmName, type ArmResult, type RunState } from "./types";
+import { isPairedMekugiComparison, mekugiRuntimeCaptures, usesMekugi } from "./mekugi";
 import { armLabels } from "./arm-labels";
 import { dependencyKey } from "./dependencies";
 import { historicalEvaluation } from "./evaluation";
 import { readRolloutManifest, verifyRolloutIdentity } from "./rollout-evidence";
 import { readCandidateManifest } from "./candidate-evidence";
+
+function armMekugiExports(state: RunState, arm: ArmName) {
+  const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
+  return state.mekugi_exports_by_arm?.[arm]
+    ?? (arm === exportArm && usesMekugi(state, arm) ? state.mekugi_exports : undefined);
+}
 
 interface PublishedReport { validity?: string; arms?: Record<string, { usage?: Partial<MeteredRollouts> }> }
 
@@ -170,7 +176,7 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
     const home = evidenceState.arm_attempts?.[evidenceArm]?.codex_home ?? join(dirname(evidenceState.arms[evidenceArm].repository), "home/ubuntu/.codex");
     const expected = rollouts.arms[item.arm] ?? [];
     await verifyRolloutIdentity(artifactPath(evidenceRoot, home), expected);
-    const exports = evidenceState.mekugi_exports_by_arm?.[evidenceArm] ?? evidenceState.mekugi_exports;
+    const exports = armMekugiExports(evidenceState, evidenceArm);
     const exportCopies: Array<{ from: string; path: string }> = [];
     if (exports) {
       const prefix = source.mekugi_exports_by_arm?.[item.arm] ? `${item.arm}-` : "";
@@ -263,9 +269,9 @@ export async function importArms(runDir: string, state: RunState, selections: Ar
       const sessions = artifactPath(evidenceRoot, join(grokHome, "sessions"));
       for (const file of await files(sessions)) await copy(file, join(grokHome, "sessions", relative(sessions, file)));
     }
+    const armExports = armMekugiExports(evidenceState, evidenceArm);
     const copiedUsage = await importMeasurement(root, evidenceState, evidenceArm, source.pricing as PricingSnapshot,
-      plan.originalUsage, exportCopies.find(file => file.path === (evidenceState.mekugi_exports_by_arm?.[evidenceArm] ?? evidenceState.mekugi_exports)?.metrics)
-        ? join(root, (evidenceState.mekugi_exports_by_arm?.[evidenceArm] ?? evidenceState.mekugi_exports)!.metrics) : undefined);
+      plan.originalUsage, armExports && exportCopies.find(file => file.path === armExports.metrics) ? join(root, armExports.metrics) : undefined);
     assertPublishedMeasurement(copiedUsage, plan.originalUsage);
     const accountingPath = join(directory, "accounting-verification.json");
     await writeFile(join(runDir, accountingPath), `${JSON.stringify(plan.accounting, null, 2)}\n`, { mode: 0o600 });
