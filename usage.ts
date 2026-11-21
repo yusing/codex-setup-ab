@@ -495,7 +495,10 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
     }
   }
   const captured = new Set([...groups.values()].map(group => group.threadId));
-  const rolloutThreads = new Set(metered.agents.map(agent => agent.thread_id));
+  const rolloutThreads = new Set([
+    ...metered.agents.map(agent => agent.thread_id),
+    ...(metered.unreconciled_cumulative ?? []).map(item => item.thread_id),
+  ]);
   const known = new Set(metered.sessions.map(session => session.thread_id));
   for (const threadId of captured) if (!known.has(threadId)) return `capture thread ${threadId} has no Codex rollout`;
   for (const threadId of rolloutThreads) if (!captured.has(threadId)) return `rollout thread ${threadId} has no captured provider attempts`;
@@ -539,14 +542,18 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
   metered.codex_visible_requests = visible;
   metered.journal = journalEvidence(metrics) ?? undefined;
   metered.cache_usage = { requests: orderKnown ? cacheRequests : null, prewarm: kindsKnown ? prewarm : null };
+  const hasRolloutErrors = metered.warnings.some(warning => /cannot enumerate rollout files|invalid JSONL|cannot read rollout|missing session_meta/.test(warning));
+  if (!hasRolloutErrors) delete metered.unreconciled_cumulative;
   const attempts = metered.agents.reduce((sum, agent) => sum + agent.request_count!, 0);
   metered.measurement_schema = "codex-ab.usage.v2";
-  metered.observation_validity = "valid";
-  metered.request_coverage = validatedCapture ? "verified" : "unverified";
+  metered.observation_validity = hasRolloutErrors ? "partial" : "valid";
+  metered.request_coverage = validatedCapture && !hasRolloutErrors ? "verified" : "unverified";
   metered.pricing_precision = metered.totals.estimated_api_usd === null ? "unavailable" : "per-request";
-  metered.coverage_basis = validatedCapture
-    ? "Every retained provider attempt has explicit complete usage in externally validated Mekugi captures; prewarm is separate."
-    : "Provider attempt counters are valid observations; full capture validation was not supplied.";
+  metered.coverage_basis = hasRolloutErrors
+    ? "Rollout discovery or parsing was incomplete; captured provider attempts cannot establish complete coverage."
+    : validatedCapture
+      ? "Every retained provider attempt has explicit complete usage in externally validated Mekugi captures; prewarm is separate."
+      : "Provider attempt counters are valid observations; full capture validation was not supplied.";
   metered.warnings.push(`Mekugi tokens and requests use ${attempts} validated provider attempts, excluding prewarm; the Codex rollout recorded ${rolloutRequests ?? "unknown"} requests and ${rolloutInput} input tokens`);
   return null;
 }

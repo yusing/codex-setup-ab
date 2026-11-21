@@ -1,4 +1,5 @@
 import { setupSkills } from "./setup-skills";
+import { usesMekugi } from "./mekugi";
 import { parseArmImports } from "./control";
 import { CODEX_MODELS, REASONING_EFFORTS } from "./types";
 import { constants, watch, type FSWatcher } from "node:fs";
@@ -237,7 +238,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       if (!state.criteria) throw new Error("The retained run has no criteria to reuse");
       options.criteria = await safeFile(root, state.criteria.path);
     }
-    const launcher = state.arms[arms.at(-1)!]!.launcher === "mekugi" ? "mekugi" : "codex";
+    const launcher = usesMekugi(state, arms.at(-1)!) ? "mekugi" : "codex";
     // Imported slots do not execute; stock placeholders avoid rebuilding obsolete revisions.
     options.arms = JSON.stringify([...arms.map(() => ({ launcher: "codex", setup_commit: "stock" })), { launcher, setup_commit: "HEAD" }]);
     const targets = compositionKeys(arms.length + 1);

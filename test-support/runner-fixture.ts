@@ -299,6 +299,7 @@ case "$operation" in
       *-preflight-grok) printf '%s\\n' 'grok 1.0.30' ;;
       *-preflight-mekugi*-options) printf '%s\\n' 'Usage: mekugi [flags]' '       mekugi [flags] codex headless --yolo' '  -deduplicate-output' ;;
       *-preflight-mekugi-runtime-*) printf '%s\\n' CODEX_AB_TOOL_HOST_OK ;;
+      *-preflight-mekugi|*-preflight-mekugi-*) printf '%s\\n' 'Usage: mekugi [flags]' ;;
       *-warm) ${failWarm ? "echo prewarm-failed >&2; status=9" : ":"} ;;
       *-capture)
         capture=$(cat '${stateDir}/'$name.capture)

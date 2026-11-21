@@ -113,7 +113,7 @@ async function copyRemoteSkillCache(home: string, destination: string): Promise<
     const entry = JSON.parse(await readFile(sourceEntry, "utf8")) as { name?: string; content?: string };
     if (!entry.name || !wanted.has(entry.name) || !entry.content) continue;
     const normalized = entry.content.replaceAll("\\", "/");
-    if (!/^content\/[A-Za-z0-9._-]+$/.test(normalized)) throw new Error(`unsafe remote skill cache path: ${entry.content}`);
+    if (!/^content\/[A-Za-z0-9._-]+$/.test(normalized) || normalized.split("/").some(seg => seg === "." || seg === "..")) throw new Error(`unsafe remote skill cache path: ${entry.content}`);
     await copyRequired(sourceEntry, join(destination, ".cache/skills-mgr/remote-skills/entries", name));
     await copyRequired(join(sourceRoot, normalized), join(destination, ".cache/skills-mgr/remote-skills", normalized));
     copied.add(entry.name);
@@ -411,9 +411,29 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
   // Runtime materializations are not authored configuration. Keep these
   // supplements separate from the Git-owned instructions, roles and skills.
   if (includeRuntimeSupplements) {
-    for (const item of revision ? [".codex/hooks/bin"] : [".codex/hooks", ".agents/skills"]) {
-      if (revision) await rm(join(destination, item), { recursive: true, force: true });
-      await copyRequired(join(runtimeHome, item), join(destination, item));
+    if (revision) {
+      await rm(join(destination, ".codex/hooks/bin"), { recursive: true, force: true });
+      await copyRequired(join(runtimeHome, ".codex/hooks/bin"), join(destination, ".codex/hooks/bin"));
+    } else if (runtimeHome !== home) {
+      await rm(join(destination, ".codex/hooks/bin"), { recursive: true, force: true });
+      await copyRequired(join(runtimeHome, ".codex/hooks/bin"), join(destination, ".codex/hooks/bin"));
+      const trackedOrChanged = new Set([...indexed, ...changed]);
+      const copyUntracked = async (rel: string): Promise<void> => {
+        const src = join(runtimeHome, rel);
+        const info = await lstat(src);
+        if (info.isDirectory()) {
+          await mkdir(join(destination, rel), { recursive: true });
+          for (const entry of await readdir(src)) await copyUntracked(join(rel, entry));
+          return;
+        }
+        if (trackedOrChanged.has(rel) || await exists(join(destination, rel))) return;
+        await copyRequired(src, join(destination, rel));
+      };
+      if (await exists(join(runtimeHome, ".agents/skills"))) await copyUntracked(".agents/skills");
+    } else {
+      for (const item of [".codex/hooks", ".agents/skills"]) {
+        await copyRequired(join(runtimeHome, item), join(destination, item));
+      }
     }
     // This disposable cache is not materialized in every current setup.
     const bundledMarketplace = ".codex/.tmp/bundled-marketplaces/openai-bundled";
@@ -441,7 +461,7 @@ async function snapshotCurrent(home: string, destination: string, mekugiBinary: 
     const miseLock = await exists(miseLockPath) ? await readFile(miseLockPath, "utf8") : "";
     const sidecars = [...miseLock.matchAll(/\bpath\s*=\s*"(locks\/[^"\n]+)"/g)].map(match => match[1]!);
     for (const sidecar of new Set(sidecars)) {
-      if (!/^locks\/[A-Za-z0-9._~-]+\/[A-Za-z0-9._~-]+$/.test(sidecar)) throw new Error(`unsafe mise lock sidecar: ${sidecar}`);
+      if (!/^locks\/[A-Za-z0-9._~-]+\/[A-Za-z0-9._~-]+$/.test(sidecar) || sidecar.split("/").some(seg => seg === "." || seg === "..")) throw new Error(`unsafe mise lock sidecar: ${sidecar}`);
       for (const name of ["pyproject.toml", "uv.lock"]) {
         const path = join(".config/mise", sidecar, name);
         if (!(await lstat(join(resourceHome, path))).isFile()) throw new Error(`mise lock sidecar is not a regular file: ${path}`);
@@ -728,6 +748,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   await chmod(runDir, 0o700);
   progress(`created isolated run ${runDir}`);
   for (const dir of ["control", "evaluator", "sessions", "snapshots", "artifacts"]) await mkdir(join(runDir, dir), { recursive: true });
+  if (options.parallelWork && Object.values(options.armSettings ?? {}).some(setting => setting?.parallel_work !== undefined)) {
+    throw new Error("cannot combine top-level --parallel-work with per-arm parallel_work overrides");
+  }
   await copyFile(taskPath, join(runDir, "control/task.md"));
   if (options.parallelWork) await writeFile(join(runDir, "control/task.md"), parallelWorkTask(await readFile(join(runDir, "control/task.md"), "utf8")));
   const preparedCriteria = criteriaContract
