@@ -3,7 +3,7 @@ import { applySkillSelection } from "./setup-skills";
 import { armNames } from "./types";
 import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories, discardDownloadedCatalog, TASK_PATH } from "./dependencies";
 import { prepareRuntimeHome, runtimeHomeMounts } from "./runtime-home";
-import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedContainerOptions, type OwnedNetwork } from "./container";
@@ -15,7 +15,7 @@ import { verifyFixedInputs } from "./fixed-workflow";
 import { executorOwnership, launcherMounts, miseToolMounts, protectedArgs, protectedPreflight } from "./isolation";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { MEKUGI_RUNTIME_DIRECTORY } from "./mekugi-runtime";
-import { armExecutionSucceeded, readState, writeState, withRunLock } from "./state";
+import { armExecutionSucceeded, readState, sha256, writeState, withRunLock } from "./state";
 import { isPairedMekugiComparison, usesMekugi, mekugiArmFlags, MEKUGI_METRICS_WRAPPER, validateMekugiFlags } from "./mekugi";
 import { importArms, importControl } from "./control";
 import { evaluationPlan } from "./evaluation";
@@ -89,8 +89,10 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
   await mkdir(join(home, ".bun/install/cache"), { recursive: true });
   if (state.comparison === "codex-mekugi-grok") {
     if (!grokAuthFile) throw new Error("codex-mekugi-grok requires --grok-auth-file");
+    const grokAuth = resolve(grokAuthFile);
+    if (((await stat(grokAuth)).mode & 0o077) !== 0) throw new Error("grok auth file must not be accessible by group or others (expected mode 0600)");
     await mkdir(join(home, ".grok"), { recursive: true, mode: 0o700 });
-    await copyFile(grokAuthFile, join(home, ".grok/auth.json"));
+    await copyFile(grokAuth, join(home, ".grok/auth.json"));
     await chmod(join(home, ".grok/auth.json"), 0o600);
   }
   await chmod(join(home, ".codex/auth.json"), 0o600);
@@ -99,9 +101,12 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
   if (cow) {
     const document = JSON.parse(await readFile(join(runDir, state.setup_revisions?.[arm]?.manifest ?? state.snapshot_manifest), "utf8"));
     const current = JSON.parse(await readFile(join(runDir, state.snapshot_manifest), "utf8"));
+    const configPath = join(template, ".codex/config.toml");
+    const templateConfigSha256 = await Bun.file(configPath).exists() ? await sha256(configPath) : null;
     state.runtime_homes ??= {};
     state.runtime_homes[arm] = { ...await prepareRuntimeHome({ runDir, state, template, auth: authFile, docker, signal,
-      identity: { files: document.files, repository: document.configuration_repository, template: state.arms[arm].home_template },
+      identity: { files: document.files, repository: document.configuration_repository, template: state.arms[arm].home_template,
+        ...(state.setup_revisions?.[arm] ? {} : { template_config_sha256: templateConfigSha256 }) },
       sourceHome: current.runtime_home ?? current.source_home, skills: state.arm_settings?.[arm]?.skills }) };
   }
   return { home, output };
@@ -268,7 +273,9 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
           ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),
           "--capture-output=/mekugi-exports/capture.jsonl", ...(nativeRuntime ? ["--help"] : [...(grokComparison ? [] : ["codex"]), "--version"])] });
       await writeFile(join(runDir, `artifacts/preflight-mekugi${paired ? `-${arm}` : ""}.json`), JSON.stringify({ ...launch, flags }, null, 2));
-      if (launch.exitCode !== 0) throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim()}`);
+      if (launch.exitCode !== 0 || (nativeRuntime && !/^Usage: mekugi\b/m.test(launch.stdout))) {
+        throw new Error(`selected Mekugi launcher failed before inference: ${launch.stderr.trim() || "expected Mekugi usage"}`);
+      }
       effectiveMekugiFlags.set(arm, flags);
       if (nativeRuntime) {
         const runtime = await checkSetup(arm, {
@@ -628,6 +635,9 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     for (const result of Object.values(state.results)) {
       if (result?.collection_error) state.error = state.error ? `${state.error}; ${result.collection_error}` : result.collection_error;
     }
+    const cleanup = await Promise.allSettled(Object.values(providerNetworks).map(network => network.remove()));
+    const cleanupFailure = cleanup.find(item => item.status === "rejected");
+    if (cleanupFailure?.status === "rejected") throw cleanupFailure.reason;
     state.status = !controller.signal.aborted && selectedArms.every(arm => armExecutionSucceeded(state.results?.[arm]) && state.results![arm]!.grade) ? "complete" : "partial";
     await writeState(runDir, state);
     return state;
@@ -637,12 +647,10 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     await writeState(runDir, state);
     throw error;
   } finally {
-    const cleanup = await Promise.allSettled(Object.values(providerNetworks).map(network => network.remove()));
+    await Promise.allSettled(Object.values(providerNetworks).map(network => network.remove()));
     options.signal?.removeEventListener("abort", externalCancel);
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
-    const failed = cleanup.find(item => item.status === "rejected");
-    if (failed?.status === "rejected") throw failed.reason;
   }
 }
 
