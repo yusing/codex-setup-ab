@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256Json } from "./util";
 
 /** Assertions live in the supervisor, outside the candidate's process and UID. */
 export interface SemanticVerification {
@@ -39,7 +39,7 @@ export interface VerifierRecord {
 }
 
 export function semanticCheckHash(check: object): string {
-  return createHash("sha256").update(JSON.stringify(check)).digest("hex");
+  return sha256Json(check);
 }
 
 function json(value: unknown, field: string): void {

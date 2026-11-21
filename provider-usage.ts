@@ -1,12 +1,10 @@
+import { isRecord as isObject } from "./util";
+
 const PROVIDER_USAGE_KEYS = ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens"] as const;
 export type ProviderAttemptUsage = Record<(typeof PROVIDER_USAGE_KEYS)[number], number>;
 
 export function validCounter(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /** Preserve runtime namespaces while reading validated family and historical snapshots. */
