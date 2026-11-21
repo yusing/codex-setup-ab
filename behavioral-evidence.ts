@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256Hex, sha256Json as digest } from "./util";
 import { semanticCheckHash, validateVerification, validateVerifierRecord } from "./semantic-protocol";
 import supervisorSource from "./semantic-supervisor.txt" with { type: "text" };
 import type { CriterionEvidence, SemanticCheck } from "./semantic";
@@ -13,7 +13,6 @@ export interface VerifiedCriterionEvidence {
 const undecided = (reason: string, invalid = false): VerifiedCriterionEvidence => ({
   behavior: "unassessed", evaluation_validity: invalid ? "invalid" : "unassessed", reason,
 });
-const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 /** Validate a retained probe, not a claimed status or a marker in command output. */
 function probe(row: CriterionEvidence): VerifiedCriterionEvidence {
@@ -65,7 +64,7 @@ function verifyCriterion(row: CriterionEvidence, state: RunState, existing: bool
     || qualification.reference_commit !== state.upstream_reference?.end_commit
     || qualification.evaluator_version !== "supervisor-v1" || !qualification.evaluator_model
     || qualification.runtime_image !== expectedRuntime
-    || qualification.supervisor_sha256 !== createHash("sha256").update(supervisorSource).digest("hex"))
+    || qualification.supervisor_sha256 !== sha256Hex(supervisorSource))
     return undecided("Evaluator qualification is not bound to these task, check, controls, and runtime identities.", true);
   const expected = controls.cases.filter(control => control.expected[row.criterion]);
   if (!Array.isArray(qualification.results) || expected.length !== qualification.results.length

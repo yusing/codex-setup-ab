@@ -1,9 +1,5 @@
 import { mekugiMetricRuntimes, providerAttemptUsage } from "./provider-usage";
-
-type RecordValue = Record<string, unknown>;
-function record(value: unknown): RecordValue {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
-}
+import { asRecord as record, type JsonRecord as RecordValue } from "./util";
 function count(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }

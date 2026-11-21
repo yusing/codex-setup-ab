@@ -1,4 +1,5 @@
 import { exec, type ExecResult } from "./process";
+import { errorMessage } from "./util";
 
 export interface OwnedContainerOptions {
   docker: string;
@@ -187,12 +188,12 @@ export async function runOwnedContainer(options: OwnedContainerOptions): Promise
         else if (raced.present) throw new OwnedContainerError(`refusing to remove unowned container after create failure: ${name}`);
       }
     } catch (cleanupError) {
-      const failure = new OwnedContainerError(`${error instanceof Error ? error.message : String(error)}; ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`, result);
+      const failure = new OwnedContainerError(`${errorMessage(error)}; ${errorMessage(cleanupError)}`, result);
       failure.snapshotImageId = snapshotImageId;
       throw failure;
     }
     if (error instanceof OwnedContainerError) { error.snapshotImageId = snapshotImageId; throw error; }
-    const failure = new OwnedContainerError(`container ${name} failed: ${error instanceof Error ? error.message : String(error)}`, result);
+    const failure = new OwnedContainerError(`container ${name} failed: ${errorMessage(error)}`, result);
     failure.snapshotImageId = snapshotImageId;
     throw failure;
   }
