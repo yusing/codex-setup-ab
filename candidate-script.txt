@@ -107,8 +107,14 @@ try {
   const excluded = new Set<string>();
   for (const path of spec.discardDependencies ?? []) {
     if (!path.endsWith("node_modules/") || path.startsWith("/") || path.split("/").includes("..") || baseline.some(entry => entry.path === path.slice(0, -1) || entry.path.startsWith(path)) || explicitlyTracked.some(file => file.startsWith(path))) continue;
-    const target = join(workspace, path);
-    if (await exists(target) && (await lstat(target)).isDirectory()) excluded.add(path);
+    const parts = path.slice(0, -1).split("/");
+    let realDir = true;
+    let cursor = workspace;
+    for (const part of parts) {
+      cursor = join(cursor, part);
+      if (!await exists(cursor) || !(await lstat(cursor)).isDirectory()) { realDir = false; break; }
+    }
+    if (realDir) excluded.add(path);
   }
   const snapshot = join(scratch, "tree"); await mkdir(snapshot);
   const captured = await entries(workspace, excluded, snapshot);

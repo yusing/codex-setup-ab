@@ -43,6 +43,8 @@ export async function prepareReevaluation(sourceDirectory: string, outputParent 
   delete fresh.judge_pricing;
   delete fresh.error;
   delete fresh.trial;
+  delete fresh.fixed_verifiers;
+  delete fresh.runtime_homes;
   await writeState(directory, fresh);
   try {
     const paths = new Set(["seed.git", "control", source.snapshot_manifest, source.runtime_tools.current_setup_files,

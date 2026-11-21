@@ -1,8 +1,9 @@
+import { armRuntime } from "./arm-settings";
 import { dependencyImage, TASK_PATH } from "./dependencies";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
-import { MEKUGI_METRICS_WRAPPER, usesMekugi } from "./mekugi";
+import { MEKUGI_METRICS_WRAPPER, mekugiArmFlags, usesMekugi } from "./mekugi";
 import { runOwnedContainer } from "./container";
 import type { ArmName, RunState } from "./types";
 import { readToolStoreMountRoots } from "./snapshot";
@@ -82,12 +83,14 @@ print('CODEX_AB_PROTECTED_RUNTIME_OK')
   const paths = [workspace, home, runtime, exports];
   try {
     await executorOwnership(docker, state, `${state.id}-isolation-own`, paths, false);
-    const common = [...protectedArgs(runDir, state, runtime), "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
+    const runtimeState = armRuntime(state, "current");
+    const flags = mekugiArmFlags(state, "current");
+    const common = [...protectedArgs(runDir, state, runtime), "--cpus", runtimeState.resource_limits.cpus, "--memory", runtimeState.resource_limits.memory,
         "-v", `${workspace}:/workspace`, "-v", `${home}:/home/ubuntu`,
         "-v", `${exports}:/mekugi-exports`,
         ...await miseToolMounts(runDir, state), ...launcherMounts(runDir, state, "current")];
-    const command = [dependencyImage(state), "mise", "exec", "--", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...(state.mekugi_flags ?? []),
-      ...(state.mekugi_flags?.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]), "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"];
+    const command = [dependencyImage(state), "mise", "exec", "--", "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", ...flags,
+      ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]), "--capture-output=/mekugi-exports/capture.jsonl", "codex", "--version"];
     const result = await runOwnedContainer({ docker, name: `${state.id}-isolation-probe`, signal, timeoutMs: 180000,
       createArgs: [...common, "-v", `${join(directory, "toolhost.js")}:/probe-toolhost.js:ro`,
         "-v", `${probe}:/usr/local/libexec/codex-real:ro`, ...command] });

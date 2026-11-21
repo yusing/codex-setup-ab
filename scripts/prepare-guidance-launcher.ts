@@ -20,8 +20,8 @@ export async function prepareGuidanceLauncher(input: {
   const shared = plan.arm_settings.stock!;
   const prototype = await prepare({ ...input.common, comparison: "custom", arms: plan.arms, armSettings: plan.arm_settings,
     model: shared.model, reasoningEffort: shared.reasoning_effort, cpus: shared.cpus!, memory: shared.memory!,
-    timeoutSeconds: shared.timeout_seconds!, autoCompactLimit: shared.auto_compact_limit,
-    // Per-arm settings add the shared delegation instruction once, after the task is frozen.
+    timeoutSeconds: shared.timeout_seconds!,
+    // Per-arm settings supply auto_compact_limit and add the shared delegation instruction once, after the task is frozen.
     parallelWork: false });
   // Pin the actual built image and task dependencies before recording the design.
   await preflightRun(prototype, input.docker_bin);

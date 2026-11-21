@@ -89,7 +89,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
     if (count !== 1) throw new Error("Historical arm imports require count 1");
     if (importArms.some(item => !keys.includes(item.target_arm)) || importArms.length >= keys.length) throw new Error("Imports must select existing slots and leave at least one fresh arm");
   }
-  const mekugi = customArms ? customArms.some(arm => arm.launcher === "mekugi") : !["stock-current", "setup-commits"].includes(comparison) || o["current-launcher"] === "mekugi";
+  const mekugi = customArms ? customArms.some(arm => arm.launcher === "mekugi") : !["stock-current", "setup-commits"].includes(comparison) || o["current-launcher"] === "mekugi" || Boolean(o["mekugi-build"]);
   if (["stock-mekugi", "codex-mekugi-grok"].includes(comparison) && o["review-treatment"]) throw new Error("This comparison does not accept a reviewer overlay");
   if (o["protect-mekugi"] && (!mekugi || ["stock-mekugi", "codex-mekugi-grok", "duplicate-output"].includes(comparison))) throw new Error("Protected runtime requires current-setup Mekugi or same-setup");
   if (comparison === "duplicate-output" && flags.some(flag => flag === "--deduplicate-output" || flag.startsWith("--deduplicate-output="))) throw new Error("The paired feature comparison owns its treatment flag and requires Mekugi Codex routing");
