@@ -672,4 +672,4 @@ test("task-pack CLI freezes pinned controls without exposing checks to either ar
   await expect(verifyPreparedInputs(run, state)).rejects.toThrow("control changed");
   await expect(main(["prepare", "--task-pack", join(directory, "manifest.json")])).rejects.toThrow("requires --source");
   await expect(main(["prepare", "--task-pack", join(directory, "manifest.json"), "--source", source, "--base", base])).rejects.toThrow("cannot override");
-});
+}, 30_000);

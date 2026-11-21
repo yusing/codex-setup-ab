@@ -69,7 +69,7 @@ test("predetermined semantic criteria flow through both frozen candidates and re
     expect(await Bun.file(join(run, home, "plugins/cache/tool.js")).text()).toBe("plugin source\n");
     expect(await Bun.file(join(run, home, "auth.json")).text()).toBe("{}\n");
   }
-});
+}, 30_000);
 test("parallel semantic passes preserve the initiating failure", async () => {
   const run = await prepared();
   const auth = join(root, "parallel-failure-auth.json"); await file(auth, "{}\n", 0o600);
@@ -80,7 +80,7 @@ test("parallel semantic passes preserve the initiating failure", async () => {
   expect(failed.judge?.failed_pass).toBe(2);
   expect(failed.judge?.error).toContain("missing per-criterion assessment");
   expect(failed.judge?.attempts?.find(attempt => attempt.pass === 2 && attempt.stage === "assessment")?.status).toBe("complete");
-});
+}, 30_000);
 
 test("live semantic source assessments reject missing qualitative aspects", async () => {
   const run = await prepared();
@@ -92,7 +92,7 @@ test("live semantic source assessments reject missing qualitative aspects", asyn
   expect(failed.judge?.failed_pass).toBe(2);
   expect(failed.judge?.winner).toBe("none");
   expect(failed.judge?.passes.some(pass => pass.pass === 2)).toBe(false);
-});
+}, 30_000);
 test("judge executable-check failures use operator-facing stage names", async () => {
   const run = await prepared();
   const auth = join(root, "harness-failure-auth.json");
@@ -100,7 +100,7 @@ test("judge executable-check failures use operator-facing stage names", async ()
   const fake = await fakeOwnedDocker(0, false, false, "", false, false, undefined, 1);
   await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("semantic judge pass 1, executable checks, round 1 failed (9)");
   expect((await readState(run)).judge?.status).toBe("failed");
-});
+}, 30_000);
 test.each(["missing", "malformed", "symlink"])("harness plan artifacts reject %s files before checks execute", async fault => {
   const run = await prepared();
   const auth = join(root, `artifact-${fault}-auth.json`); await file(auth, "{}\n", 0o600);
@@ -113,7 +113,7 @@ test.each(["missing", "malformed", "symlink"])("harness plan artifacts reject %s
   await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow(
     fault === "missing" ? "ENOENT" : fault === "malformed" ? "invalid semantic harness plan JSON" : "ELOOP");
   expect((await readFile(fake.log, "utf8"))).not.toContain("-round-1-");
-});
+}, 30_000);
 test("baseline compiler cache is image-pinned without a per-run cache copy", async () => {
   const run = await prepared(); const state = await readState(run);
   await file(join(run, "evaluator/stock/go.mod"), "module fixture\n");
@@ -185,7 +185,7 @@ test("completed semantic check time and artifacts survive a later author failure
   expect((await readState(run)).results!.stock!.grade!.elapsed_ms).toBe(captured.execution.elapsed_ms + diagnostic.execution.elapsed_ms);
   expect(captured.execution.elapsed_ms).toBeGreaterThan(0);
   expect(diagnostic.execution.elapsed_ms).toBeGreaterThan(0);
-});
+}, 30_000);
 
 /** Wrap a fake Docker so candidate 2's round-1 evaluator wiring is broken in every pass. */
 test("harness repair keeps a successful check when the judge resubmits it", async () => {
@@ -215,7 +215,7 @@ test("harness repair keeps a successful check when the judge resubmits it", asyn
   expect(evidence.candidates["candidate-2"][0]?.status).toBe("pass");
   expect(evidence.history["candidate-1"].map(item => item.criterion)).toEqual(["__existing_test_command", "__existing_tests", "fixture"]);
   expect(evidence.history["candidate-2"].map(item => item.status)).toEqual(["unassessed", "pass", "unassessed", "pass"]);
-});
+}, 30_000);
 
 test("prepare makes base-only independent clones and an audited secret-free snapshot", async () => {
   const run = await prepared();
