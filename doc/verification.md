@@ -1,116 +1,102 @@
 # Verifier completion and evaluator qualification
 
-[Contract](contract.md) · [CLI guide](cli.md)
+[README](../README.md) · [Contract](contract.md) · [CLI guide](cli.md)
 
-New semantic evidence uses `codex-ab.criterion-evidence.v2`. An exit code, printed
-test count, success marker, or `HARNESS_ERROR:` line is candidate-controlled data.
-None establishes that a verifier completed or that a failure belongs to the
-evaluator. Historical reports and evidence remain unchanged.
+New semantic evidence uses `codex-ab.criterion-evidence.v2`. An exit code, printed test
+count, success marker, or `HARNESS_ERROR:` line is candidate-controlled data; none
+establishes that a verifier completed or that a failure belongs to the evaluator.
+Historical reports and evidence remain unchanged.
 
 ## Independent observations and assertions
 
 The offline executor runs a Python supervisor as container root with only the
-capabilities needed to create a private workspace and drop child privileges.
-Candidate commands run as UID/GID 65534, without supplementary groups or model
-credentials, on `--network none`. The supervisor owns the expectations and
-compares observed results outside the candidate process. Candidate processes
-cannot write the private result mount or signal the supervisor. A completed
-record binds the exact check hash and the ordered, nonempty case set.
-The supervisor retains `CAP_KILL` so it can stop a timed-out child after the UID
-drop; the child must have zero effective, permitted, and ambient capabilities.
-Its total command budget leaves two seconds inside the outer container deadline
-for cleanup and the protected result, with a 100ms minimum for short deadlines
-and a 120-second per-command cap. Timed-out command output is retained.
+capabilities needed to create a private workspace, drop child privileges, and stop a
+timed-out child (`CAP_KILL`). Candidate commands run as UID/GID `65534` with zero
+effective/permitted/ambient capabilities, no supplementary groups, no credentials, and
+`--network none`. The supervisor owns expectations, compares observations outside the
+candidate process, and writes a private result mount that candidate processes cannot
+write or signal. Completed records bind the exact check hash and ordered, nonempty case
+set.
 
-`verification.schema` is `codex-ab.verification.v1`. Supported observations are:
+Total command budget leaves 2 seconds inside the outer container deadline for cleanup
+and result writing (100 ms minimum for short deadlines; 120-second per-command cap).
+Timed-out command output is retained. Stdout and stderr are each capped independently at
+4 MiB (build artifacts and child files are uncapped); an extra byte stops the process
+group and marks the observation unassessed (including during preparation). A truncated
+prefix can never establish a pass.
 
-- `command`: run argv with optional text stdin; assert both the exit code and
-  exact stdout. `format: "text"` compares exact text, including newlines.
-  `format: "json"` compares parsed JSON structurally, including equivalent numeric
-  spellings such as `1`, `1.0`, and `1e0`. Booleans are not numbers.
-  Put interpreter/entrypoint wiring in `command` and behavioral arguments,
-  including option-style inputs, in `args`; the executor appends `args` to
-  `command`. Case data may also be supplied in `stdin`.
-- `python-call`: import a documented module and invoke its callable in an
-  unprivileged Python child. `input` is JSON text containing `args` and `kwargs`;
-  `expected` is JSON text. The parent compares the observed JSON value. A library
-  that exits zero before producing a value fails this protocol.
+`verification.schema` is `codex-ab.verification.v1`. Supported case kinds:
 
-Each case is a separate process. Stateful library APIs, arbitrary shared-process
-pytest/Go/Jest suites, non-JSON object results, streaming protocols, and arbitrary
-language-specific function calls need dedicated adapters. This protocol does not
-claim an attested native function return against a deliberately reflective
-implementation that forges the same observable RPC value. It measures the
-declared external observations, with sensitive/incorrect checks constrained by
-frozen qualification controls.
+- **`command`**: runs `command` + `args` with optional text `stdin`, asserting both exit
+  code and exact stdout. `format: "text"` checks exact text (including newlines);
+  `format: "json"` compares parsed JSON structurally (equivalent numeric spellings such
+  as `1`, `1.0`, and `1e0` match; booleans are not numbers). Put interpreter/entrypoint
+  wiring in `command` and behavioral arguments (including option-style inputs) in `args`.
+- **`python-call`**: imports a documented module and invokes its callable in an
+  unprivileged Python child. `input` is JSON text (`args` and `kwargs`); `expected` is
+  JSON text compared by the parent. Exiting zero without producing a value fails.
 
-The supervisor bounds stdout and stderr independently to 4 MiB each, without
-limiting build artifacts or other child-created files. An extra byte stops the
-command process group and leaves the observation unassessed, including during
-preparation. A retained output prefix can never establish a passing assertion.
+Each case runs in a separate process. Stateful library APIs, shared-process
+pytest/Go/Jest suites, non-JSON results, streaming protocols, and arbitrary
+language-specific calls require dedicated adapters. This protocol measures declared
+external observations constrained by frozen qualification controls; it does not claim an
+attested native return against a reflective implementation forging the same RPC output.
 
-Legacy `command` checks still execute and retain their output. A zero exit without
-supervisor assertions is **unassessed**, even if a test runner prints a passing
-summary. Nonzero child status is retained as candidate/test-command failure;
-printed vocabulary cannot convert it to an evaluator error. Supervisor setup,
-missing configured executables, invalid evaluator Python syntax, timeout,
-cancellation, and missing result records are distinct unassessed outcomes.
-Candidate syntax/import/runtime errors reached through the declared interface
-remain behavioral failures. A candidate's chosen exit code 125 has no special
-authority. Retained baseline test failures are not reclassified by output text.
-Checks can declare `evaluator_dependencies`, an array of top-level Python module
-names used only by the evaluator. The supervisor verifies these in a clean
-isolated interpreter outside the candidate import path. An unavailable declared
-evaluator dependency is a wiring failure; an undeclared missing import reached
-inside candidate code remains a candidate error. Declaring a candidate-owned
-dependency as evaluator-only is invalid wiring and must be rejected in review
-and qualification.
+### Failure classification and preflight gates
 
-The raw independent observation result is retained as `probe_status`. An adaptive
-criterion can become an authoritative pass or failure only after its frozen
-evaluator controls have qualified the check. Missing or broken controls leave
-the raw result unassessed for quality eligibility and reliability scoring.
-The adaptive judge refuses a task missing `existing_test_verification` or any
-required frozen control role before reading credentials, fetching pricing,
-warming caches, or making a model request. It also requires every candidate's
-trusted capture manifest and patch to match the retained baseline and identity.
-Multi-arm adaptive benchmark execution checks the same task contract before
-candidate setup or inference, so missing controls cannot consume candidate spend
-and fail only when judging begins. Deliberate singleton execution is exempt.
-Prepare/configure-fixed remain available for original fixed-verifier tasks
-without adaptive controls. Configured fixed mode cannot invoke the adaptive
-judge. These are preparation requirements for new evaluation; older retained
-records do not acquire qualification from their previous pass labels.
+- **Legacy `command` checks**: still execute and retain output, but exit zero without
+  supervisor assertions is **unassessed** even if a test runner prints a passing summary.
+  Nonzero child status is retained as candidate/test-command failure; printed text never
+  reclassifies it (nor does candidate exit code 125). Retained baseline test failures are
+  not reclassified by output text.
+- **Unassessed vs. behavioral failures**: Supervisor setup errors, missing configured
+  executables, invalid evaluator Python syntax, timeouts, cancellations, and missing
+  result records are distinct unassessed outcomes. Candidate syntax, import, or runtime
+  errors reached through the declared interface remain behavioral failures.
+- **`evaluator_dependencies`**: optional list of top-level Python modules used only by
+  the evaluator, checked in a clean interpreter outside the candidate import path. A
+  missing declared evaluator dependency is a wiring failure; an undeclared missing import
+  in candidate code remains a candidate error. Declaring a candidate-owned dependency as
+  evaluator-only is invalid wiring.
+- **Qualification gate**: Raw independent results are stored as `probe_status`. An
+  adaptive criterion becomes an authoritative pass or failure only after frozen controls
+  qualify the check; missing or broken controls leave it unassessed.
+- **Pre-spend enforcement**: Both multi-arm adaptive benchmark execution and the adaptive
+  judge refuse tasks missing `existing_test_verification` or any required frozen control
+  role before reading credentials, fetching pricing, warming caches, or calling a model,
+  and verify every candidate's trusted capture manifest and patch. Deliberate singleton
+  execution is exempt. `prepare` and `configure-fixed` remain available for fixed-verifier
+  tasks without adaptive controls, and configured fixed mode cannot invoke the adaptive
+  judge. Historical records do not gain qualification from earlier pass labels.
 
 ## Frozen controls and a complete example
 
-`evaluator_controls` is stored in the task criteria before implementation begins.
-Its files stay in evaluator-only inputs. Every required criterion needs a
-reference control expected to pass, an unchanged baseline with its declared
-expected result, a targeted incorrect implementation expected to fail, and a
-valid alternative expected to pass. A baseline may legitimately pass an
-unaffected requirement. Role labels alone do not establish a valid oracle:
-task authors must map each expectation to the pinned task/reference behavior.
+`evaluator_controls` is frozen in the task criteria before implementation begins and
+stays in evaluator-only inputs. Every required criterion needs four roles:
 
-Controls start from `baseline` or the pinned upstream `reference`. The latter
-requires `source.reference_commit` and the frozen combined reference patch.
-`files` apply explicit regular-file replacements; `source: null` deletes a file.
-Paths cannot escape the control tree. `python_target` adapts only the callable
-interface while preserving every case input and expected output.
+1. **Reference control** (expected to pass)
+2. **Unchanged baseline** (with its declared expected result; a baseline may legitimately
+   pass an unaffected requirement)
+3. **Targeted incorrect implementation** (expected to fail)
+4. **Valid alternative** (expected to pass)
 
-For a small change to a large existing source file, `patches` accepts frozen
-objects with `path`, `before_sha256`, `after_sha256`, and a unified `diff`.
-Each patch must modify exactly its named existing regular file. The executor
-checks the preimage hash, applies the patch, and checks the postimage hash before
-running a check. Symlinks, path escapes, file creation/deletion, mode changes,
-multiple-file diffs, and overlapping file replacements are rejected. The full
-patch remains part of the frozen control identity.
+Role labels alone do not establish a valid oracle: task authors must map each expectation
+to pinned task/reference behavior.
 
-For a complete real criteria contract, use the
+Controls start from `baseline` or pinned upstream `reference` (requiring
+`source.reference_commit` and the frozen combined reference patch). `files` apply
+explicit regular-file replacements (`source: null` deletes a file; path escapes are
+rejected), and `python_target` adapts only the callable interface while keeping all
+case inputs and expected outputs fixed. For small edits to large existing files,
+`patches` accepts frozen objects (`path`, `before_sha256`, `after_sha256`, unified
+`diff`) that must modify exactly one existing regular file and pass preimage/postimage
+hash checks (symlinks, path escapes, creates/deletes, mode changes, multi-file diffs,
+and overlapping replacements are rejected).
+
+For a complete real criteria contract, see the
 [Flask manifest](../tasks/flask-ipv6-server-name/manifest.json) and its
-[control provenance](../tasks/flask-ipv6-server-name/README.md). They bind the prompt,
-retained observations, four control roles, source pins, and expected behavior.
-Do not copy trivial fixture controls into a real task.
+[control provenance](../tasks/flask-ipv6-server-name/README.md). Do not copy trivial
+fixture controls into a real task.
 
 A fictional `math_impl.add(a, b)` check illustrates the observation shape:
 
@@ -131,46 +117,38 @@ A fictional `math_impl.add(a, b)` check illustrates the observation shape:
 }
 ```
 
-`command` is the retained legacy argv field; when independent verification cases
-are supplied, those cases are the executed assertions. The existence of this
-field does not authorize treating `true` as behavioral coverage.
+`command` is the retained legacy argv field; when independent verification cases are
+present, those cases are the executed assertions (never treating `true` as coverage).
 
-Each candidate-specific check runs against every applicable control using the
-same offline executor. This also runs after a repair. Evidence records the
-evaluator/model version, task hash, reference commit, exact check hash, control
-identity, per-control result and qualification scope in
-`qualification/qualification.json` beside the check evidence. A no-op that passes
-both correct and incorrect controls fails qualification. Missing roles or an
-unassessed control are not successful qualification. Same-model reversed orders
-remain a presentation-bias check, not independent ground truth.
+Each candidate-specific check (including repairs) runs against every applicable control
+in the offline executor, recording evaluator/model version, task hash, reference commit,
+check hash, control identity, per-control results, and scope in
+`qualification/qualification.json`. A no-op passing both correct and incorrect controls
+fails qualification, and missing roles or unassessed controls never qualify. Same-model
+reversed orders check presentation bias, not independent ground truth.
 
-The existing-test gate needs `existing_test_verification` defining the supported
-independent observations for retained behavior. Adding a single trivial case
-does not certify an entire test suite. Declare the actual scope and meaningful
-assertions. The runner also executes the original `existing_tests` command once
-per candidate and judge pass in a separate offline workspace. Its stdout, stderr,
-exit status and timing are retained under `existing-command/__existing_test_command`
-and `pass-N-existing-command` as non-gating diagnostics. Recovery reuses that
-record. These command diagnostics cannot substitute for independent observations
-or settle a criterion or eligibility result.
-This distinction prevents a missing completion record from being silently
-treated as a complete successful test suite.
+The existing-test gate requires `existing_test_verification` with meaningful independent
+observations for retained behavior. The runner also executes the original
+`existing_tests` command once per candidate and pass in a separate offline workspace,
+storing its output and timing under `existing-command/__existing_test_command` and
+`pass-N-existing-command` as non-gating diagnostics (reused on recovery). These command
+diagnostics cannot substitute for independent observations or settle eligibility.
 
 ## Repair invariants
 
-Passed and failed behavioral checks are frozen. Only unassessed execution can be
-considered for wiring repair. The replacement must include `repair.defect` and
-nonempty lists named `retained_inputs`, `retained_assertions`,
-`retained_edge_cases`, and `retained_failure_conditions`. The runner independently
-checks that ordered case IDs, inputs and expected values are unchanged. An
-interface/command adaptation may reach a different implementation without
-changing those obligations. Command cases with an explicit `args` array can adapt
-their `command` wiring while preserving `args`, stdin, output, exit status, and
-format. Newly authored plans declare `args`, even when empty. A case originally
-missing `args` freezes its entire command; a repair cannot add `args` to unlock
-it. Case kinds are also frozen. Qualification repeats on the replacement. A previous
-behavioral failure cannot be cleared by a later passing assessment, including
-when importing a manually altered evidence history.
+Passed and failed behavioral checks are frozen; only unassessed execution is eligible
+for wiring repair. A replacement must include `repair.defect` and nonempty
+`retained_inputs`, `retained_assertions`, `retained_edge_cases`, and
+`retained_failure_conditions` lists. The runner independently verifies that ordered case
+IDs, case kinds, inputs, and expected values are unchanged:
+
+- Command cases with an explicit `args` array may adapt `command` wiring while keeping
+  `args`, stdin, output, exit status, and format fixed (new plans always declare `args`,
+  even when empty).
+- Cases originally missing `args` freeze their entire command; repairs cannot add `args`
+  to unlock them.
+- Qualification repeats on the replacement, and a previous behavioral failure can never
+  be cleared by a later passing assessment (including via altered imported history).
 
 ## Model-free verification
 
@@ -180,20 +158,16 @@ CODEX_AB_LIVE_DOCKER=1 bun test semantic.live.test.ts
 CODEX_AB_LIVE_DOCKER=1 CODEX_AB_LIVE_IMAGE=codex-ab:model-free bun test judge-boundary.live.test.ts
 ```
 
-The live test uses `CODEX_AB_VERIFIER_IMAGE` or `python:3.13-slim`; pull the chosen
-image before running the gate. It exercises correct/wrong/early-exit libraries,
-candidate syntax/import failures, evaluator syntax failures, zero tests, fake
-success markers, CLI observations, private result permissions, supervisor signal
-permissions, and the offline network namespace. Cache tests additionally require
-`CODEX_AB_LIVE_REFERENCE_RUN`. Skipped live tests do not verify the container
-boundary. No test in this workflow authorizes paid inference.
+`semantic.live.test.ts` uses `CODEX_AB_VERIFIER_IMAGE` or `python:3.13-slim` (pull it
+first) and exercises correct/wrong/early-exit libraries, candidate syntax/import errors,
+evaluator syntax errors, zero tests, fake success markers, CLI observations, private
+result permissions, supervisor signal permissions, and offline networking. Cache tests
+additionally require `CODEX_AB_LIVE_REFERENCE_RUN`. Skipped live tests do not verify
+container boundaries, and no test in this workflow authorizes paid inference.
 
-The [Flask IPv6 task](../tasks/flask-ipv6-server-name/README.md) exercises actual
-`Flask.run`, replacing only the server launcher to observe host, port, options,
-application identity, and cleanup. Its live test runs seven IPv6 and thirteen
-retained observations through normal supervision/qualification against all four
-controls. Original pytest output is diagnostic only. CI provides pinned source
-and dependencies before offline execution.
+The [Flask IPv6 task](../tasks/flask-ipv6-server-name/README.md) exercises real
+`Flask.run` (replacing only the server launcher) with 7 IPv6 and 13 retained
+observations across all four controls; original pytest output is diagnostic only:
 
 ```sh
 CODEX_AB_LIVE_DOCKER=1 CODEX_AB_VERIFIER_IMAGE=codex-ab:model-free \
@@ -204,19 +178,16 @@ CODEX_AB_LIVE_DOCKER=1 CODEX_AB_VERIFIER_IMAGE=codex-ab:model-free \
 ### Bundled task readiness
 
 Every bundled task manifest and the standalone skill-bundle criteria freeze
-existing-behavior observations and all four evaluator-control roles. The
-model-free readiness regression loads every checked-in contract and verifies
-both acceptance and rejection when observations or a required role are removed:
+existing-behavior observations and all four evaluator-control roles. Verify contract
+readiness (acceptance plus rejection when observations or a role are removed) with:
 
 ```sh
 bun test task-pack.test.ts semantic-preflight.test.ts
 ```
 
-These checks establish contract readiness, not runtime execution. Task-specific
-model-free tests exercise real source observations and controls using the normal
-offline supervisor. Prepare the pinned dependencies before running them; no
-model credentials or paid inference are required. Their commands, source pins,
-observation scope, and remaining limits are documented with each task:
+Contract readiness does not prove runtime execution; task-specific model-free tests
+exercise real source observations and controls offline once pinned dependencies are
+prepared. Commands, source pins, observation scope, and limits live in each task README:
 
 - [NVM download arguments](../tasks/nvm-download-no-eval/README.md)
 - [Gin context copying](../tasks/gin-context-copy/README.md)
@@ -229,38 +200,29 @@ observation scope, and remaining limits are documented with each task:
 - [Mekugi coordination checkpoints](../tasks/session-retention/README.md)
 - [sqlite-utils upgrade](../tasks/sqlite-utils-history/README.md)
 
-The standalone bundle task has no upstream solution commit. Its reference and
-alternative controls are authored fixtures, not upstream reference evidence;
-the task still permits different archive formats and equivalent interfaces.
-Controls qualify only the behaviors exercised by each authored check. Composite
-test/documentation criteria and opt-in native-provider integration require their
-own assessment; neither printed suite results nor representative probes certify
-their entire scope. Skipped tests establish no runtime coverage.
+The standalone bundle task has no upstream solution commit (its reference and
+alternative controls are authored fixtures, and different archive formats/equivalent
+interfaces remain allowed). Controls qualify only the behaviors exercised by each
+authored check; composite test/doc criteria and opt-in native-provider integration need
+their own assessment. Updating a bundled task does not migrate prepared runs in place—
+prepare a fresh run and keep older runs as historical evidence.
 
-Prepared runs retain their original frozen contracts and hashes. Updating a
-bundled task does not migrate an existing run in place. Prepare a fresh run to
-use the new contract, and keep the old run as historical evidence. Editing its
-criteria or hashes would invalidate the frozen-input provenance.
+### Source-judge boundary verification
 
-The source-judge live test uses the selected image's Codex CLI and a local Responses mock
-inside a container with networking disabled. It inspects the tools actually
-advertised to the provider without supplying real provider credentials or purchasing model
-output. Its allowlist includes the reader and native utility tools. Native
-`apply_patch` remains registered: read-only/never policy denies writes before
-diff emission or patch execution, but verification reads can still expose a
-path-existence or guessed-context oracle beyond the broker's roots. This is
-not a claim that all native reads are confined to the broker. Generic process
-execution, delegation, plugins, apps, hooks, and image tools are
-disabled for the source judge.
-Code Mode's isolated JavaScript host remains available for models that require
-it to reach the restricted tools. The model-free provider fixture exercises
-broker reads and plan writes through that host and rejects process tools and
-host I/O globals on that surface.
+`judge-boundary.live.test.ts` runs the selected image's Codex CLI against a local
+Responses mock with networking disabled to inspect advertised tools without credentials
+or inference. Its allowlist covers the broker reader and native utility tools; generic
+process execution, delegation, plugins, apps, hooks, and image tools are disabled.
+Native `apply_patch` remains registered: read-only/never policy denies writes before
+diff emission or patch execution, though verification reads can still expose a
+path-existence or guessed-context oracle beyond the broker's roots (this is not a claim
+that all native reads are confined to the broker). Code Mode's isolated JavaScript host
+remains available for models that need it to call the restricted broker tools; the live
+mock rejects process tools and host I/O globals on that surface.
 
-Shell execution is disabled through `shell_tool=false`. In Codex CLI 0.154.0,
-`unified_exec` remains enabled under ordinary configuration; it chooses the
-execution variant and is not an execution-denial gate. The pinned
-[tool registration](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/core/src/tools/spec_plan.rs)
-returns before registering either shell variant when `shell_tool` is disabled.
-Qualification requires that master flag to remain false, and the live provider
-mock rejects any advertised process-execution tools.
+Shell execution is disabled via `shell_tool=false`. In Codex CLI 0.154.0,
+`unified_exec` selects the execution variant rather than acting as a denial gate; the
+pinned [tool registration](https://github.com/openai/codex/blob/rust-v0.154.0/codex-rs/core/src/tools/spec_plan.rs)
+returns before registering either shell variant when `shell_tool` is false.
+Qualification requires `shell_tool=false`, and the live provider mock rejects any
+advertised process-execution tools.

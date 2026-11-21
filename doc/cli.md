@@ -1,38 +1,37 @@
 # Agent-directed CLI guide
 
-For trusted verifier evidence and task-pack migration, see
-[verifier completion and qualification](verification.md). To retain an original
-benchmark verifier unchanged, use the separate
-[fixed-verifier configuration and execution path](fixed-verifier.md).
-The [four-cell preparation helper](guidance-launcher.md) prepares matched guidance
-and launcher trials without authorizing inference.
+[README](../README.md) · [Specification](spec.md) · [Contract](contract.md)
 
-[README](../README.md) · [Specification](spec.md) · [Contract](contract.md) · [CLI guide](cli.md)
+Run commands from the repository root using `./dist/codex-ab` (or `bun cli.ts` without
+building). Human-directed work belongs in the
+[Web UI](../README.md#launch-and-watch-in-the-web-ui). Run `./dist/codex-ab --help` for
+the full command and option list.
 
-Run commands from the repository root. Human-directed work uses the
-[Web UI](../README.md#launch-and-watch-in-the-web-ui). For pair preparation, execution,
-semantic grading, and report options, see the [contract](contract.md).
-Use `./dist/codex-ab --help` for all flags.
-
-Retained run, trial, suite, reevaluation, and build outputs default to `/var/tmp`.
-Use `--output-parent` to choose another parent directory.
+- **Related guides**: [evidence reliability](fhe-evolution.md),
+  [verifier completion and qualification](verification.md),
+  [fixed-verifier mode](fixed-verifier.md), and the
+  [four-cell preparation helper](guidance-launcher.md).
+- **Default output parent**: Retained run, trial, suite, reevaluation, and build outputs
+  default to `/var/tmp`; override with `--output-parent`.
+- **Hybrid execution**: Grading, usage accounting, token/time/cost breakdowns, report
+  generation, and retry decisions are deterministic code. Only candidate implementation,
+  semantic harness authoring, and qualitative source assessment use models.
 
 ## Prerequisites and build
 
-You need Bun 1.4 or later, Git, Docker with BuildKit, access to the source commit,
-and Python 3 for Mekugi export validation. Inference also needs a mode-0600 Codex
-`auth.json`. You do not need Codex installed on the host.
+You need Bun 1.4+, Git, Docker with BuildKit, access to the source commit, and Python 3
+(for Mekugi export validation). Inference also requires a mode-0600 Codex `auth.json`
+(and a Grok OAuth store for `codex-mekugi-grok`). You do not need Codex installed on the
+host.
 
-The Ubuntu 24.04 image installs standalone Codex and its matching Code Mode
-companion using the [official installer](https://learn.chatgpt.com/docs/codex/cli#get-started-with-codex-cli).
-The installer selects the release when the install step runs. The image also
-includes pinned Go, Node, Bun, and Git toolchains. Its Git supports
-`--no-lazy-fetch` and local and HTTPS transports. The image does not inherit
-another benchmark image's runtime, wrappers, source, home, or credentials.
+The Ubuntu 24.04 image installs standalone Codex and its matching Code Mode companion
+using the [official installer](https://learn.chatgpt.com/docs/codex/cli#get-started-with-codex-cli)
+at image build time, alongside pinned Go, Node, Bun, and Git toolchains (Git supports
+`--no-lazy-fetch` plus local and HTTPS transports). The image does not inherit another
+benchmark image's runtime, wrappers, source, home, or credentials.
 
-For human-directed work, [start the Web UI](../README.md#launch-and-watch-in-the-web-ui). Pair
-preparation checks and builds the selected image automatically. The following manual
-build commands are for agent-directed setup.
+Pair preparation checks and builds the selected image automatically. Manual build
+commands for agent-directed setup:
 
 ```sh
 bun install
@@ -41,25 +40,23 @@ docker build -t codex-ab:0.1.0 .
 ./dist/codex-ab --version
 ```
 
-Launch reuses a capable image or builds one if missing or incomplete. Direct
-`prepare` and `prepare-suite` use a prebuilt image. The container operator is
-`1000:1000`. To refresh Codex deliberately, rebuild with `--no-cache` so Docker
-reruns the installer. Preparation records the immutable image ID, Codex
-version, and both executable hashes. Preflight checks those recorded identities.
-Prepare a new run to use an updated runtime; rebuilding does not change the
-image identity recorded by an existing run.
+`launch` reuses a capable image or builds one if missing or incomplete; direct `prepare`
+and `prepare-suite` expect a prebuilt image. The container operator is `1000:1000`. To
+refresh Codex deliberately, rebuild with `--no-cache` and prepare a new run (existing
+runs stay pinned to their recorded image ID, Codex version, and executable hashes, which
+`preflight` verifies).
 
-Build and preparation make no model requests. Candidate execution and adaptive
-judging require `--confirm-paid-inference` and use your authentication/quota.
-Reported costs are list-price estimates, not subscription charges or invoices.
+Build, preparation, and preflight make no model requests. Candidate execution and
+adaptive judging require `--confirm-paid-inference` and use your authentication and
+quota. Reported costs are list-price estimates, not subscription charges or invoices.
 See the [judge contract](contract.md#blind-judge) for stages, retries, and limits.
 
 ## Find and inspect retained evidence
 
 Prefer the absolute directory from the Web UI's **Copy evidence reference** action.
-Workbench entry IDs belong to the running server, not the persisted benchmark identity.
-If you have only an entry ID, query that server's current entries instead of scanning
-repositories, temporary homes, or provider captures:
+Workbench entry IDs belong to the running server, not persisted benchmark identity. If
+you have only an entry ID, query the running server's `/api/entries` endpoint instead of
+scanning repositories, temporary homes, or provider captures:
 
 ```sh
 curl -fsS http://localhost:4849/api/entries | python3 -c '
@@ -73,30 +70,31 @@ for entry in matches:
 ' 'ENTRY_ID'
 ```
 
-Use the actual host and port if they differ. After a server restart, attach the retained
-directory again; an old entry ID alone cannot recover its path. Run directories are
-private: share selected measurements and artifact paths, not authentication homes or
-raw provider captures.
+Adjust host/port if needed. After a server restart, reattach the retained directory
+directly—old entry IDs cannot recover paths. Run directories are private: share selected
+measurements and artifact paths, not authentication homes or raw provider captures.
 
-Compare a retained first turn against stock in the same run or against a previous
-Mekugi run:
+### Diff retained first requests
+
+Compare a retained first turn against `stock` in the same run or against a previous
+Mekugi run without changing evidence or calling a model:
 
 ```sh
-codex-ab first-request-diff --run-dir "$run"
-codex-ab first-request-diff --run-dir "$run" --against-run "$previous"
+./dist/codex-ab first-request-diff --run-dir "$run"
+./dist/codex-ab first-request-diff --run-dir "$run" --against-run "$previous"
 ```
 
-Use `--arm` and `--against-arm` for other arm names. The command writes a unified
-diff to stdout without changing retained evidence or calling a model. It compares
-startup messages and tool definitions before the first sampled item, plus the
-first turn's transport receipt when retained. Stock does not have a Mekugi
-transport receipt. Neither the receipt nor the rollout records the full provider
-request; older routers could change instructions after rollout logging. The diff
-includes private prompt text. Inspect it before sharing.
+Use `--arm` and `--against-arm` for other arm names. The unified diff compares startup
+messages and tool definitions before the first sampled item, plus the first turn's
+Mekugi transport receipt when retained (`stock` has no Mekugi receipt; neither the
+receipt nor the rollout records the full provider request). Inspect output before
+sharing because it includes private prompt text.
 
-For a pair, this read-only recipe emits selected measurements and a small artifact index.
-It accepts directory paths containing spaces and preserves missing evidence as `null`.
-It performs no inference, report regeneration, or recursive scan:
+### Read-only pair summary recipe
+
+This read-only recipe emits selected measurements and a compact artifact index for a
+pair, preserving missing evidence as `null` without inference, report regeneration, or
+recursive scans:
 
 ```sh
 python3 - '/absolute/path/to/run' <<'PY'
@@ -128,112 +126,92 @@ print(json.dumps({"directory": str(root), "run_id": state.get("id"),
 PY
 ```
 
-Then open the specific report section or bounded log tail that answers the question.
-Trial and suite directories instead contain `trials.json` or `suite.json`; use their
-recorded child directories to inspect individual pairs. The [contract](contract.md#report)
-describes the retained evidence and measurement limitations.
+Open only the specific report section or bounded log tail needed afterward. Trial and
+suite directories contain `trials.json` or `suite.json` listing their child run
+directories. See the [report contract](contract.md#report) for retained evidence and
+measurement limits.
 
 ## Compare setup commits
 
 Use the workbench's **Setup commit versus setup commit** comparison, or prepare a
-model-free pair from the agent CLI:
+model-free pair from the CLI:
 
 ```sh
-codex-ab launch --preset setup-commits --task nvm-download-no-eval \
+./dist/codex-ab launch --preset setup-commits --task nvm-download-no-eval \
   --current-home /path/to/configuration-repository \
   --setup-a-commit BASE_REF --setup-b-commit TREATMENT_REF --prepare-only
 ```
 
-Choose `--current-launcher mekugi` to use the same pinned Mekugi pair for both arms;
-the default is direct Codex. Commit selectors apply to the setup repository, not
-the benchmark task repository. Dirty tracked edits are excluded. Existing repeat
-count/order controls repeat the frozen snapshots. Paid inference still requires
-explicit consent. See the [snapshot contract](contract.md#prepare-an-isolated-pair)
-for runtime supplements and provenance limits.
+Pass `--current-launcher mekugi` to run both arms on the same pinned Mekugi runtime
+(default is direct Codex). Commit selectors apply to the setup repository, not the task
+repository, and exclude dirty tracked edits. Repeat count/order controls repeat the
+frozen snapshots; paid inference still requires `--confirm-paid-inference`.
 
-Per-arm settings are also accepted by `launch` and `prepare`. For example, use
-`--arm-settings '{"current":{"mekugi_flags":["--shell-guard=false"],"skills":{"example":false}}}'`
-with a Mekugi arm whose setup contains the named skill. The keys are retained arm
-keys (`stock`, `current`, `arm-3`, and so on); omitted settings keep the existing
-command defaults. See the [arm settings contract](contract.md#prepare-an-isolated-pair)
-for models, reasoning and resource controls. Skills are setup-level selections;
-repository-local selections keep skills-mgr's normal precedence.
+Both `launch` and `prepare` accept per-arm overrides via `--arm-settings` keyed by
+retained arm keys (`stock`, `current`, `arm-3`, …), for example:
+
+```sh
+--arm-settings '{"current":{"mekugi_flags":["--shell-guard=false"],"skills":{"example":false}}}'
+```
+
+Omitted fields keep command defaults. Skills are setup-level selections (repository-local
+selections keep `skills-mgr`'s normal precedence). See the
+[preparation contract](contract.md#prepare-an-isolated-pair) for runtime supplements,
+models, reasoning, and resource controls.
 
 ## Repeat a pinned comparison
 
-Start from an unused prepared pair. `prepare-trials` runs model-free preflight, pins the immutable
-image, input identities and pricing snapshot, then copies fresh source/setup trees for every pair.
-The prototype is not executed. Each pair has independent writable homes and container layers;
-task dependencies share the pinned Docker image without per-pair cache copies. Configured tools
-reuse the same read-only host installation store without per-pair copies; keep that store
-available and unchanged while the trial set is in use.
+Start from an unused prepared pair. `prepare-trials` runs model-free preflight, pins the
+immutable image, input identities, and pricing snapshot, and copies fresh source/setup
+trees for every pair without executing the prototype. Each pair gets independent
+writable homes and container layers while sharing the pinned dependency image and
+read-only host tool store (keep that store unchanged while the trial set is in use).
 
 ```sh
 trial_set="$(./dist/codex-ab prepare-trials --run-dir "$run_dir" --count 4)"
-```
-
-Pairs run one after another, with **both arms concurrent by default**. To alternate sequential
-arm order, prepare with `--order alternating`: A then B for odd-numbered pairs, B then A for even
-pairs. This changes resource contention relative to concurrent arms and is recorded in every
-report. Do not pool the two schedules as equivalent experiments.
-
-Execution includes both arms and their reversed-order judge passes for every pair, so it consumes model
-quota repeatedly. Start it only when intended:
-
-```sh
 ./dist/codex-ab run-trials --trial-set "$trial_set" --confirm-paid-inference
 ```
 
-For `codex-mekugi-grok` trial sets, also pass `--grok-auth-file /path/to/.grok/auth.json` to `run-trials`.
-
-Failed pairs retain their evidence and do not discard later planned trials. Cancellation stops
-the active pair and leaves remaining pairs unstarted. Started sets never resume or restart;
-prepare a new set for another attempt. Each finished pair's existing evidence bundle is copied
-into trial-set-owned storage before moving on, so later standalone reporting cannot
-silently replace the trial observation.
-
-The command prints one aggregate `report.md` path. It contains setup identities, paired means,
-medians, sample standard deviations, winner counts, separate judge costs, and the full per-pair
-reports inline. Adjacent JSON, checksums and per-pair machine bundles retain the evidence without
-copying private authentication homes. Every planned pair appears, including failed or incomplete
-ones. Only complete valid paired measurements enter aggregates; missing metrics remain unknown,
-and percentage differences omit zero A baselines. Negative differences are retained. Repeats
-are descriptive evidence, not a significance test or a causal conclusion.
-
-To generate another self-contained report from retained evidence without inference or rerunning
-judges, use `report-trials --trial-set "$trial_set"`. Each report gets a new output directory;
-previous reports remain unchanged.
+- **Schedule**: Pairs run sequentially with **both arms concurrent by default**. Pass
+  `--order alternating` to run A then B on odd pairs and B then A on even pairs; do not
+  pool concurrent and alternating schedules as equivalent experiments.
+- **Grok trials**: Pass `--grok-auth-file /path/to/.grok/auth.json` to `run-trials` for
+  `codex-mekugi-grok` sets.
+- **Failure and cancellation**: Failed pairs retain evidence without discarding later
+  trials. Cancellation stops the active pair and leaves remaining pairs unstarted.
+  Started sets never resume or restart; each finished pair's evidence bundle is copied
+  into trial-set storage before continuing.
+- **Reporting**: `run-trials` prints an aggregate `report.md` (with paired means,
+  medians, sample standard deviations, winner counts, separate judge costs, and inline
+  per-pair reports) alongside JSON, checksums, and per-pair bundles (excluding auth
+  homes). Only complete valid paired measurements enter aggregates; missing metrics stay
+  unknown, zero A baselines omit percentage deltas, and negative differences are kept.
+  Regenerate a self-contained report without inference via
+  `./dist/codex-ab report-trials --trial-set "$trial_set"`.
 
 ## Installed Mekugi runtime
 
-Preparation uses the installed host Mekugi runtime without compiling Go or Rust.
-Keep `mekugi`, `mekugi-exec`, `mekugi-app-server`, `codex-code-mode-host`, Linux
-`bwrap`, and `mekugi-models.json` beside the selected `--mekugi-bin`. All six
-artifacts are frozen and hashed. The fork's code-mode host stays separate from
-the standalone Codex companion. Missing artifacts fail preparation.
+Preparation snapshots the installed host Mekugi runtime without compiling Go or Rust.
+Keep all six artifacts beside `--mekugi-bin`: `mekugi`, `mekugi-exec`,
+`mekugi-app-server`, `codex-code-mode-host`, Linux `bwrap`, and `mekugi-models.json`.
+All six are frozen, hashed, and kept separate from stock Codex's code-mode host; missing
+artifacts fail preparation.
 
-Previously captured bundles remain readable through `--mekugi-build`; this does
-not run a build. Their Go executable/source provenance is retained, while native
-artifacts are frozen from the installed Mekugi beside `go/bin/mekugi` under
-Runtime home. A historical Go build bundle does not establish native source
-provenance. Installed binaries without source provenance remain supported and
-are labeled accordingly in reports.
+Previously captured bundles remain readable through `--mekugi-build` without running a
+build: their Go executable/source provenance is retained, while native artifacts are
+frozen from the installed Mekugi beside `go/bin/mekugi` under Runtime home. A historical
+Go build bundle does not establish native source provenance; installed binaries without
+source provenance remain supported and are labeled accordingly in reports.
 
 ## Portable task packs
 
-Portable packs include [nvm download](../tasks/nvm-download-no-eval/manifest.json),
-[Gin context copy](../tasks/gin-context-copy/manifest.json),
-[skills manager repository-to-agent workflow](../tasks/skills-mgr-agent-cli/README.md),
-[remote uninstall](../tasks/skills-mgr-remote-uninstall/README.md), and
-[fast conditional acquisition](../tasks/skills-mgr-get-short-circuit/README.md). The
-[regression coverage map](regression-coverage.md) relates them to recurring agent
-failure classes and lists what they cannot observe. Each pins its upstream base and
-excluded solution commit, evaluator reference endpoint, dependency preparation,
-and behavioral criteria. These tasks permit relevant regression tests and
-documentation alongside implementation changes, without synthetic single-file boundaries.
-They use the generic `task` profile, not a repository-specific runner branch.
+Portable packs pin their upstream base, excluded solution commit, evaluator reference
+endpoint, dependency preparation, and behavioral criteria under the generic `task`
+profile (permitting relevant regression tests and documentation without synthetic
+single-file boundaries). See the [regression coverage map](regression-coverage.md) for
+which failure classes they detect.
 
-Obtain the source repository locally, then prepare from its manifest:
+Clone the source repository locally, then prepare and preflight from its manifest:
 
 ```sh
 git clone https://github.com/nvm-sh/nvm.git /var/tmp/codex-ab-nvm-source
@@ -246,82 +224,55 @@ run_dir="$(./dist/codex-ab prepare \
 ./dist/codex-ab preflight --run-dir "$run_dir"
 ```
 
-For Gin, clone `https://github.com/gin-gonic/gin.git` and select
-`tasks/gin-context-copy/manifest.json`. `--task-pack` requires `--source` and rejects overrides
-of its profile, base, forbidden commit, prompt or grading inputs. Only the pinned base reaches
-the arms, even if the source checkout contains later commits.
+For Gin, clone `https://github.com/gin-gonic/gin.git` and pass
+`tasks/gin-context-copy/manifest.json`. `--task-pack` requires `--source` and rejects
+overrides of its profile, base, forbidden commit, prompt, or criteria. Only the pinned
+base enters candidate workspaces.
 
-Preparation fingerprints the manifest and prompt and freezes them, along with
-the expanded criterion contract, under evaluator-only storage. Packs may set
-`source.reference_commit` to pin an upstream endpoint for judges. The local source
-must contain that endpoint and its ancestry from the base. Preparation freezes
-those actual commit patches and the combined diff for read-only judge inspection,
-without adding them to implementation workspaces. The bundle retains these
-contents and hashes. No original pack directory is needed after preparation. A fingerprint
-identifies the supplied content; it is not a signature of upstream authenticity.
-
-Nvm needs no downloaded dependencies. Its pinned installer requires Bash to be
-sourced; argument translation retains POSIX-style constructs, and `sh -n` checks
-syntax rather than strict POSIX runtime portability. Gin prepares pinned Go
-modules before inference and reuses separate evaluator caches offline. Nvm's
-existing-test gate exercises installer source selection; adaptive checks use
-local fake download commands for argument handling. Pack contracts record
-`qualification: "not-run"`; preparation does not authorize inference or qualify
-an oracle.
+Preparation fingerprints and freezes the manifest, prompt, expanded criteria, and (when
+`source.reference_commit` is set) the ordered upstream reference patches and combined
+diff under evaluator-only storage; no original pack directory is needed afterward. A
+fingerprint identifies supplied content, not upstream authenticity. Pack contracts
+record `qualification: "not-run"`; preparation never authorizes inference.
 
 ### Commit-backed task provenance
 
-The four external-project fixes retain their original baselines and identifiers.
-The Mekugi task uses a recent modular-workspace baseline and retains its existing
-CLI identifier. All include evaluator-only reference evidence and expectations
-grounded in upstream behavior. Earlier runs keep their original controls;
-compare them as different task versions, not repetitions of the migrated packs.
-
 | Pack | Baseline and commit date | Reference endpoint | Criterion evidence |
 | --- | --- | --- | --- |
-| [Gin](../tasks/gin-context-copy/manifest.json) | `2e4d4f3`, June 22, 2026 | [`293ad7e`](https://github.com/gin-gonic/gin/commit/293ad7edebb3ae30369288bd6416ca0d78474727) | `copy-isolation` and `existing-copy-behavior`: Context.Copy and the TestContextCopy family in context_test.go; the prefix gate includes the added regressions. |
-| [Flask](../tasks/flask-ipv6-server-name/manifest.json) | `de8429f`, August 11, 2026 (authored July 14) | [`7203fea`](https://github.com/pallets/flask/commit/7203feabf723edae0286ae5dc64fec8ac4c91735) | `ipv6-server-name` and `existing-address-selection`: Flask.run host/port documentation and test_run_from_config, test_run_server_port, test_run_defaults. URL-parser normalization is allowed. |
-| [Express](../tasks/express-transfer-encoding/manifest.json) | `59e205a`, June 15, 2026 | [`9a34acf`](https://github.com/expressjs/express/commit/9a34acf03cb818ff3f8bc40e44176e277a25cbb9) | `transfer-encoding-length`: 18e5985 and its four transfer-coding cases; `send-regressions`: the later ETag fix 9a34acf and test/res.send.js. |
-| [Nvm](../tasks/nvm-download-no-eval/manifest.json) | `52047ed`, July 15, 2026 | [`b17550a`](https://github.com/nvm-sh/nvm/commit/b17550a0b9ab691439815dfccc8b73e3a59fa103) | `literal-arguments`, `wget-translations`, and `curl-posix`: install.sh, the unchanged curl route, and nvm_download_no_eval_injection. Option-like output operands are outside the required scope. |
-| [Mekugi coordination checkpoints](../tasks/session-retention/README.md) | `0368c3b`, October 28, 2026 | [`97ea72b`](https://github.com/yusing/mekugi/commit/97ea72b7ea54c4d70a78554908f911061df16bc1) | `495540d` defines aggregate waits; `97ea72b` defines safe standalone/compound compaction. The task README maps all criteria to their contracts and tests. |
+| [Gin](../tasks/gin-context-copy/manifest.json) | `2e4d4f3`, June 22, 2026 | [`293ad7e`](https://github.com/gin-gonic/gin/commit/293ad7edebb3ae30369288bd6416ca0d78474727) | `copy-isolation`, `existing-copy-behavior`: `Context.Copy` and `TestContextCopy*` in `context_test.go`. |
+| [Flask](../tasks/flask-ipv6-server-name/manifest.json) | `de8429f`, August 11, 2026 (authored July 14) | [`7203fea`](https://github.com/pallets/flask/commit/7203feabf723edae0286ae5dc64fec8ac4c91735) | `ipv6-server-name`, `existing-address-selection`: `Flask.run` host/port docs and run-config/port/default tests (URL-parser normalization allowed). |
+| [Express](../tasks/express-transfer-encoding/manifest.json) | `59e205a`, June 15, 2026 | [`9a34acf`](https://github.com/expressjs/express/commit/9a34acf03cb818ff3f8bc40e44176e277a25cbb9) | `transfer-encoding-length` (`18e5985` four transfer-coding cases); `send-regressions` (ETag fix `9a34acf` and `test/res.send.js`). |
+| [Nvm](../tasks/nvm-download-no-eval/manifest.json) | `52047ed`, July 15, 2026 | [`b17550a`](https://github.com/nvm-sh/nvm/commit/b17550a0b9ab691439815dfccc8b73e3a59fa103) | `literal-arguments`, `wget-translations`, `curl-posix`: `install.sh` (Bash-sourced), unchanged curl route, `nvm_download_no_eval_injection` (`sh -n` syntax check; option-like output operands out of scope). |
+| [Mekugi coordination checkpoints](../tasks/session-retention/README.md) | `0368c3b`, October 28, 2026 | [`97ea72b`](https://github.com/yusing/mekugi/commit/97ea72b7ea54c4d70a78554908f911061df16bc1) | `495540d` (aggregate waits) and `97ea72b` (safe standalone/compound compaction); see task README for full mapping. |
 
-Cutoffs verified October 29, 2026 for [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra)
-and [`gpt-6.1-sol`](https://developers.openai.com/api/docs/models/gpt-6.1-sol) are
-April 30, 2026. The cutoffs for [`gpt-6.2-astra`](https://developers.openai.com/api/docs/models/gpt-6.2-astra)
-and [`gpt-6.2-sol`](https://developers.openai.com/api/docs/models/gpt-6.2-sol) are
-May 18 and June 1, 2026, respectively. Every baseline above is later than all
-four cutoffs. Verify other models, including Grok, separately before claiming a
-post-cutoff comparison.
-The [skills manager](../tasks/skills-mgr-agent-cli/README.md),
+Verified knowledge cutoffs (checked October 29, 2026):
+[`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra) and
+[`gpt-6.1-sol`](https://developers.openai.com/api/docs/models/gpt-6.1-sol) are April 30,
+2026; [`gpt-6.2-astra`](https://developers.openai.com/api/docs/models/gpt-6.2-astra) is
+May 18, 2026; [`gpt-6.2-sol`](https://developers.openai.com/api/docs/models/gpt-6.2-sol)
+is June 1, 2026. Every baseline above postdates all four cutoffs; verify other models
+(including Grok) separately. The
+[skills manager](../tasks/skills-mgr-agent-cli/README.md),
 [remote uninstall](../tasks/skills-mgr-remote-uninstall/README.md),
 [fast conditional acquisition](../tasks/skills-mgr-get-short-circuit/README.md), and
 [sqlite-utils](../tasks/sqlite-utils-history/README.md) packs record their own
 provenance and cutoff evidence.
 
-Express freezes 18 ancestry commits to reach its ETag correction; only the two
-named fixes define new requirements. Mekugi freezes nine commits with two
-selected features; intervening work is reference context. Gin, Flask, and Nvm
-each use one reference commit. Reference limitations are permitted, not mandatory
-rejection rules; safe improvements are acceptable.
-
-Select **Mekugi coordination checkpoints**, retaining CLI task ID
-`session-retention`. It uses the modular Go workspace and pinned Claude worker,
-without WASM/plugin generation. The obsolete root grouped-activity prompt,
-shell-activity task, and standalone retention criteria are retired; their old
-versions remain in Git history and retained runs. Use bare Codex when implementing
-Mekugi changes, and separate-project tasks when comparing launchers.
-
-The legacy skills-mgr bundle prompt has no reference solution, and the GoDoxy
-icons profile uses a synthetic baseline with external task inputs. They remain
-separate legacy profiles, without a commit-backed or post-cutoff qualification.
+Notes on reference scope:
+- Gin, Flask, and Nvm each freeze one reference commit; Express freezes 18 ancestry
+  commits to reach `9a34acf` (only the two named fixes define new requirements); Mekugi
+  freezes 9 commits with 2 selected features. Reference limitations are permitted, not
+  mandatory rejection rules; safe improvements are acceptable.
+- **Mekugi coordination checkpoints** retains CLI task ID `session-retention` (modular Go
+  workspace and pinned Claude worker, no WASM/plugin generation). Use bare Codex when
+  implementing Mekugi changes and separate-project tasks when comparing launchers.
+- Legacy `skills-mgr-bundle` and `godoxy-icons` profiles have no commit-backed
+  post-cutoff qualification.
 
 ## Diverse task suite
 
-`tasks/diverse-suite.json` selects Gin, Flask, Express, and NVM. Map each task ID to
-a local checkout containing its baseline and reference ancestry. Preparation
-creates at least two fresh pairs per task/setup and performs model-free preflight.
-These use adaptive grading, not prequalified hidden-test oracles; source checks
-alone do not qualify Docker execution or judge outcomes.
+`tasks/diverse-suite.json` selects Gin, Flask, Express, and NVM. Map each task ID to a
+local checkout containing its baseline and reference ancestry:
 
 ```sh
 cat > /tmp/codex-ab-sources.json <<'JSON'
@@ -340,83 +291,73 @@ suite_run="$(./dist/codex-ab prepare-suite \
 ./dist/codex-ab report-suite --suite-run "$suite_run"
 ```
 
-The suite report gives task-level counts and B-minus-A time and estimated cost effects only for complete pairs where **both** candidates pass. Its macro mean weights each eligible task once; unknown cost is not zero-filled. The suite executes trial sets sequentially, does not resume interrupted runs, and retains partial reports. It is descriptive rather than a randomized causal estimate.
+Preparation creates at least two fresh pairs per task/setup and runs model-free
+preflight. The suite executes trial sets sequentially, does not resume interrupted runs,
+and retains partial reports. Its report shows task-level counts plus B-minus-A time and
+estimated cost effects on complete joint-pass pairs (macro mean weights each eligible
+task once; unknown costs are not zero-filled). Results are descriptive, not randomized
+causal estimates.
 
 ## Import previous arms
 
-In the workbench, enter a completed directory under **Start from a completed run** and
-click **Compare against HEAD**, or attach the directory and use that action on its
-results page. The draft imports every completed arm and adds one fresh setup at
-the configuration repository's `HEAD`. It copies matching task, model, reasoning,
-runtime and resource controls. Review the fresh launcher and runtime paths, then
-confirm inference to start. The original evidence remains unchanged.
+In the workbench, use **Start from a completed run → Compare against HEAD** (or the same
+action on an attached run's results page) to build an editable draft importing every
+completed arm plus one fresh configuration-repo `HEAD` arm.
 
-For individual arm selection, choose **Previous result** in an arm tab, or pass `--import-arms` to
-`launch` or `run`. Map each selected source arm to an existing comparison slot.
-For example, import a previous run's Mekugi result into the first slot and execute
-only the second slot:
+From the CLI, pass `--import-arms` to `launch` or `run` to fill existing slots from
+completed, infrastructure-valid published runs while leaving at least one fresh slot:
 
 ```sh
-codex-ab launch --preset stock-current --task nvm-download-no-eval \
+./dist/codex-ab launch --preset stock-current --task nvm-download-no-eval \
   --import-arms '[{"target_arm":"stock","run_dir":"/path/to/previous-run","arm":"current"}]' \
   --confirm-paid-inference
 ```
 
-Use `--prepare-only` to save the selections without inference, then start that
-prepared run normally. For an existing prepared comparison, use
-`codex-ab run --run-dir "$run_dir" --import-arms 'JSON_ARRAY' --confirm-paid-inference`.
-Custom compositions can import multiple arms, from one or several previous runs,
-into `stock`, `current`, `arm-3`, and later slots. Leave at least one slot fresh;
-the prepared launcher/setup choice in an imported slot is not executed. Its source
-label and setup provenance identify the actual historical candidate.
+Add `--prepare-only` to save selections without inference, or attach imports to a
+prepared run with
+`./dist/codex-ab run --run-dir "$run_dir" --import-arms 'JSON_ARRAY' --confirm-paid-inference`.
+Custom compositions can import multiple arms across `stock`, `current`, `arm-3`, ….
+To test tracked edits from a separate configuration worktree, pass `--current-home` (the
+worktree root), `--runtime-home` (the home with installed tools), and
+`"setup_commit":"worktree"` on the fresh custom arm (`HEAD` uses committed files only;
+untracked instruction files are excluded).
 
-To evaluate tracked edits from a separate configuration worktree, set `--current-home`
-to its repository root, `--runtime-home` to the home containing its installed runtime,
-and use `"setup_commit":"worktree"` for the fresh custom arm. A `HEAD` arm continues
-to use committed files only. Worktree changes are frozen in the arm manifest; untracked
-instruction files are excluded.
-
-Sources need complete, infrastructure-valid published bundles and matching task
-and execution controls. Setup/launcher treatments may differ. Optional
-`bundle_sha256` pins a mapping; otherwise its current manifest is pinned.
-See the [import contract](contract.md#run-and-grade-both-arms) for exact matching,
-provenance, and accounting rules.
+Optional `bundle_sha256` pins a mapping; otherwise its current manifest is pinned.
 
 | Evaluation choice | Effect |
 | --- | --- |
 | `--evaluation-mode reuse` (default) | Preserve imported grades/scores; adapt their checks only for fresh candidates. |
-| `--evaluation-mode fresh` | Regrade and blindly reassess all patches. Required when historical assessment evidence is missing. |
-| `--evaluation-baselines '{"arm-4":"arm-3"}'` | Select an imported baseline for a fresh slot; omitted mappings use the last imported slot. |
+| `--evaluation-mode fresh` | Regrade and blindly reassess all patches (required if historical assessment evidence is missing). |
+| `--evaluation-baselines '{"arm-4":"arm-3"}'` | Pick an imported baseline per fresh slot (omitted mappings use the last imported slot). |
 
-Reuse rankings require the same complete rubric; mixed rubrics have no quality
-ranking. Original runs remain unchanged, missing measurements stay unknown, and
-imports require repeat count 1 without `--arm` or `--control-run`.
+Reuse rankings require the same complete rubric across candidates; mixed rubrics omit a
+quality ranking. Original runs stay unchanged, missing metrics stay unknown, and imports
+require repeat count 1 without `--arm` or `--control-run`. See the
+[import contract](contract.md#run-and-grade-both-arms) for exact matching and accounting
+rules.
 
 ## Reevaluate retained implementations
 
-To compare every captured implementation under the current rubric without running
-the implementation agents again:
+Re-run evaluator checks and both blind judge passes under the current rubric for every
+arm in a completed, infrastructure-valid published run without rerunning implementation
+agents:
 
 ```sh
-codex-ab reevaluate --run-dir /path/to/completed-run \
+./dist/codex-ab reevaluate --run-dir /path/to/completed-run \
   --output-parent ./results --confirm-paid-inference
 ```
 
-The source must be a complete, infrastructure-valid comparison with a verified
-published bundle. The command creates a new evidence directory and freshly runs
-the evaluator checks and two blind judging passes for all source arms. Judging
-uses paid inference; implementation execution does not repeat. New checks can
-change functional assessments as well as scores.
-
-The original comparison remains unchanged. The new comparison retains its source
-provenance and implementation measurements, records new evaluator and judge costs,
-and can be attached to the workbench like any other result. Keep the pinned images
-and immutable preparation inputs available. This operation does not restart an
-incomplete implementation run.
+The original run stays unchanged. The new evidence directory retains source provenance
+and implementation measurements, records new evaluator/judge costs, and can be attached
+in the workbench. Keep pinned images and immutable preparation inputs available; this
+does not restart an incomplete implementation run.
 
 ## Reuse a completed stock control
 
-For a direct-Codex comparison, reuse the original stock result from a completed stock-only or paired run. You can also create a control with `run --arm stock --confirm-paid-inference`. Its finished bundle must be complete and valid. Prepare a second run with matching task, model, Codex/image, dependency image, resources, and recorded setup controls, then run it with `--control-run` and the SHA-256 of the published control bundle's `MANIFEST.sha256` file:
+For direct-Codex comparisons, reuse an original `stock` result from a completed paired
+or stock-only run (`run --arm stock --confirm-paid-inference`). Prepare a matching
+treatment run, then pass `--control-run` and the SHA-256 of the control bundle's
+`MANIFEST.sha256`:
 
 ```sh
 control_sha="$(sha256sum "$control_run/reports/bundle/MANIFEST.sha256" | cut -d' ' -f1)"
@@ -425,24 +366,33 @@ control_sha="$(sha256sum "$control_run/reports/bundle/MANIFEST.sha256" | cut -d'
   --confirm-paid-inference
 ```
 
-Only the treatment arm starts a new agent. The control bundle, state, rollout bytes, and usage totals must match, and both captured patches are graded against the new run's evaluator. A mismatched or altered control fails before treatment inference. This historical comparison does not establish unchanged host tool-store contents or configuration across runs. This path does not support the Grok, journal-compaction, or duplicate-output comparisons, or reuse of an imported control.
+Only the treatment arm launches an agent; both captured patches are graded against the
+new run's evaluator, and any mismatch fails before treatment inference. This legacy path
+does not establish unchanged host tool-store contents across runs and does not support
+`setup-commits`, `codex-mekugi-grok`, `duplicate-output`, or imported controls.
 
-For a standalone B run, use `run --arm current --confirm-paid-inference` without `--control-run`. It retains a single-arm report and bundle without a paired judge or winner.
+For a standalone B run, use `./dist/codex-ab run --arm current --confirm-paid-inference`
+without `--control-run` (retains a single-arm report/bundle without a paired judge or
+winner).
 
 ## Skills manager bundle profile
 
-The [skills-mgr bundle task](../tasks/skills-mgr-bundle/README.md) is a multi-part task outside Mekugi and GoDoxy. Use `--profile skills-mgr-bundle` with explicit source, base, forbidden commit, task, and `--criteria` inputs. It prepares the root Go package without Mekugi plugin assets. Candidate-specific checks are authored during semantic assessment, rather than supplied as hidden test files.
+The [skills-mgr bundle task](../tasks/skills-mgr-bundle/README.md) uses
+`--profile skills-mgr-bundle` with explicit `--source`, `--base`, `--forbidden`,
+`--task`, and `--criteria`. It prepares the root Go package without Mekugi plugin
+assets; candidate-specific checks are authored during semantic assessment.
 
 ## GoDoxy icons profile
 
-Use `prepare --profile godoxy-icons --reasoning-effort medium` (or `xhigh`) with explicit `--source`, `--base`, `--forbidden`, `--task`, and `--criteria` inputs. Prepare a fresh pair for each effort, launcher, or repeat. Add `--current-launcher mekugi` to launch the current arm as `mekugi codex`; otherwise it launches bare Codex. Select the Mekugi executable with `--mekugi-bin` if needed. The profile accepts only the pinned synthetic base `c335ef2d83d9fb8a774cb70b9b628ade54c654a2`, its recorded tree, excluded solution, and three exact submodule commits.
+Use `./dist/codex-ab prepare --profile godoxy-icons --reasoning-effort medium` (or
+`xhigh`) with explicit `--source`, `--base`, `--forbidden`, `--task`, and `--criteria`
+(add `--current-launcher mekugi` and optional `--mekugi-bin` to launch `current` through
+Mekugi). The profile accepts only synthetic base
+`c335ef2d83d9fb8a774cb70b9b628ade54c654a2`, its recorded tree, excluded solution, and
+three exact submodule commits (`goutils`, `internal/go-oidc`, `internal/gopsutil`).
 
-The source must contain local repositories at `goutils`, `internal/go-oidc`, and `internal/gopsutil` with the base commit's gitlink objects. Preparation shallow-fetches those exact commits into independent submodule clones, removes their remotes, and records their paths, source provenance, and SHAs in `run.json`. It rejects root remotes and initialized or populated `webui` throughout setup, patch collection, and grading. It does not initialize `webui`. The current arm uses the same audited current-home snapshot rules as the default profile.
-
-Preflight retains the bare-image and local Code Mode checks. Go's module-selected toolchain must be at least 1.27. Candidate edits inside the pinned submodules are rejected during patch collection. The supplied criteria choose dependency preparation and existing tests; use the icons package with `-ldflags=-checklinkname=0` where needed. Both reversed-order semantic passes evaluate the task against the captured candidates.
-
-
-The workflow is hybrid: grading, usage accounting, token/time/cost breakdowns, report generation,
-and retry decisions are deterministic code. Only candidate implementation, semantic harness authoring and qualitative source
-assessment use models. No conversational subagents are needed to grade, judge, or explain the
-recorded performance measurements.
+Preparation shallow-fetches those three local submodules into independent clones without
+remotes, records their SHAs in `run.json`, and rejects root remotes, initialized
+`webui`, and candidate edits inside pinned submodules. Go's module-selected toolchain
+must be at least 1.27; supplied criteria own dependency prep (using
+`-ldflags=-checklinkname=0` for the icons package where needed) and existing tests.
