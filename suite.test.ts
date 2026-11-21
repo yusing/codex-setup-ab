@@ -6,7 +6,7 @@ import { reportSuite, prepareSuite } from "./suite";
 import { loadTaskPack } from "./task-pack";
 import { writeBundleManifest } from "./bundle";
 import { sha256, writeState } from "./state";
-import { reportTrials, trialControls, type TrialSet } from "./trials";
+import { trialControls, type TrialSet } from "./trials";
 import type { RunState } from "./types";
 import { reliabilityReport } from "./reliability";
 

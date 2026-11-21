@@ -1,6 +1,6 @@
 import { cp, copyFile, lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { createHash } from "node:crypto";
+import { sha256Json } from "./util";
 import { exec, checked } from "./process";
 import type { RunState } from "./types";
 import { MEKUGI_RUNTIME_DIRECTORY, verifyMekugiRuntime } from "./mekugi-runtime";
@@ -15,14 +15,14 @@ export const DEPENDENCY_ENV = [
 ];
 
 export function dependencyKey(state: RunState, baseImage: string): string {
-  return createHash("sha256").update(JSON.stringify({
+  return sha256Json({
     version: 6, baseImage, tree: state.source.base_tree, commit: state.source.base_commit,
     submodules: state.submodules?.map(({ path, sha }) => ({ path, sha })),
     preparation: state.criteria?.contract.preparation,
     ...(state.runtime_tools.mekugi_in_image ? { mekugi: state.runtime_tools.mekugi_sha256, mekugi_exec: state.runtime_tools.mekugi_exec_sha256 } : {}),
     mekugi_runtime: state.runtime_tools.mekugi_runtime?.map(({ name, sha256 }) => ({ name, sha256 })),
     uid: state.operator.uid, gid: state.operator.gid,
-  })).digest("hex");
+  });
 }
 
 export async function ensureDependencyImage(docker: string, runDir: string, state: RunState, signal: AbortSignal): Promise<void> {

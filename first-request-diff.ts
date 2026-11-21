@@ -5,11 +5,9 @@ import { exec } from "./process";
 import { evidenceLines, rolloutPaths } from "./rollout-evidence";
 import { readState } from "./state";
 import { usesMekugi } from "./mekugi";
+import { isRecord, type JsonRecord as ObjectValue } from "./util";
 
-type ObjectValue = Record<string, unknown>;
-const object = (value: unknown): ObjectValue | undefined =>
-  value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as ObjectValue : undefined;
+const object = (value: unknown): ObjectValue | undefined => isRecord(value) ? value : undefined;
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
 async function* rows(path: string) {

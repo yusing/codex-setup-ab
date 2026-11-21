@@ -1,6 +1,6 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join, relative, isAbsolute } from "node:path";
-import { createHash } from "node:crypto";
+import { sha256Hex as hash } from "./util";
 import { validateCriteria, type CriteriaContract } from "./semantic";
 import { checked } from "./process";
 import { sha256 } from "./state";
@@ -14,7 +14,6 @@ interface TaskPack {
   criteria: Omit<CriteriaContract, "task_sha256">;
 }
 
-const hash = (text: string): string => createHash("sha256").update(text).digest("hex");
 
 export async function loadTaskPack(path: string): Promise<{
   manifest: TaskPack; taskPath: string; contract: CriteriaContract;

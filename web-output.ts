@@ -1,5 +1,4 @@
-type Event = Record<string, unknown>;
-const object = (value: unknown): Event => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Event : {};
+import { asRecord as object, type JsonRecord as Event } from "./util";
 const headlessItemTypes: Record<string, string> = {
   agentMessage: "agent_message", commandExecution: "command_execution", mcpToolCall: "mcp_tool_call",
   fileChange: "file_change", webSearch: "web_search",

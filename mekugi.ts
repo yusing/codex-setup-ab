@@ -74,7 +74,7 @@ export function mekugiArmFlags(state: Pick<RunState, "comparison" | "mekugi_flag
   return [...(state.arm_settings?.[arm]?.mekugi_flags ?? state.mekugi_flags ?? []), ...treatment];
 }
 
-export function mekugiIdentity(flags: string[]): { mode: string } {
+function mekugiIdentity(flags: string[]): { mode: string } {
   return {
     mode: flags.find(flag => flag.startsWith("--mode="))?.slice("--mode=".length) ?? "mekugi",
   };

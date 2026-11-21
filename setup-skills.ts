@@ -1,5 +1,6 @@
 import { readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, sep } from "node:path";
+import { isRecord } from "./util";
 import { checked } from "./process";
 
 const selectionPath = ".skills-mgr/.skills-mgr.json";
@@ -8,8 +9,8 @@ interface SkillRegistry { skills?: Record<string, SkillEntry>; [key: string]: un
 
 function registry(text: string): SkillRegistry {
   const value = JSON.parse(text);
-  if (!value || typeof value !== "object" || Array.isArray(value) || !value.skills || typeof value.skills !== "object" || Array.isArray(value.skills)
-    || Object.values(value.skills).some(item => !item || typeof item !== "object" || Array.isArray(item))) throw new Error("Invalid setup skill registry");
+  if (!isRecord(value) || !isRecord(value.skills)
+    || Object.values(value.skills).some(item => !isRecord(item))) throw new Error("Invalid setup skill registry");
   return value;
 }
 

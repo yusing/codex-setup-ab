@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { lstat, open, readdir, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { checked } from "./process";
+import { sha256Hex as digest } from "./util";
 
 export interface CandidateFile { path: string; mode: "100644" | "100755" | "120000"; sha256: string; size: number }
 export interface CandidateManifest {
@@ -9,7 +10,6 @@ export interface CandidateManifest {
   base_commit: string; base_tree: string; captured_tree: string;
   excluded_directories: string[]; files: CandidateFile[]; changed_files: string[]; patch_sha256: string;
 }
-const digest = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 export async function readRegularEvidence(path: string): Promise<Buffer> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try { if (!(await file.stat()).isFile()) throw new Error(`evidence must be a regular file: ${path}`); return await file.readFile(); }
