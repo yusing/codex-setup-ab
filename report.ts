@@ -464,10 +464,13 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       : "Uncached, cached, cache-write, and output tokens have separate prices; available dollar contributions appear below.";
     const recordedCostRows = selectedArms.map(arm => {
       const meter = usage[arm];
-      const recorded = usesMekugi(state, arm) ? meter?.recorded_api_usd
+      const context = contexts[arm];
+      const mekugi = isMekugi(arm);
+      const grok = context.state.comparison === "codex-mekugi-grok" && context.arm === "current";
+      const recorded = mekugi ? meter?.recorded_api_usd
         : meter?.agents.length && meter.agents.every(agent => agent.recorded_api_usd != null)
           ? meter.agents.reduce((sum, agent) => sum + agent.recorded_api_usd!, 0) : null;
-      return `| ${labels[arm]} | ${number(recorded, 6)} | ${usesMekugi(state, arm) ? "Mekugi native session estimate" : state.comparison === "codex-mekugi-grok" ? "Grok provider-recorded session cost" : "Not recorded"} |`;
+      return `| ${labels[arm]} | ${number(recorded, 6)} | ${mekugi ? "Mekugi native session estimate" : grok ? "Grok provider-recorded session cost" : "Not recorded"} |`;
     });
     const checkDetails = selectedArms.flatMap(arm => {
       const grade = state.results?.[arm]?.grade;
@@ -486,11 +489,11 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
     });
     const warnings = [
       ...(state.preflight?.status === "failed" ? [`preflight: ${state.preflight.error ?? "failed"}`] : []),
-      ...(!state.criteria ? ["No task-derived criteria were recorded. Historical measurements are descriptive only; grading completion and winner eligibility are unavailable."] : []),
+      ...(!state.fixed_verifier && !state.criteria ? ["No task-derived criteria were recorded. Historical measurements are descriptive only; grading completion and winner eligibility are unavailable."] : []),
       ...(state.finishing?.status === "failed" ? [`finishing: ${state.finishing.error ?? "failed"}`] : []),
       ...pricing.warnings.map(warning => `pricing: ${warning}`),
       ...selectedArms.flatMap(arm => (usage[arm]?.warnings ?? [state.results?.[arm] ? "usage was not measured" : "result and usage are missing"]).map(warning => `${labels[arm as ArmName]}: ${warning}`)),
-      ...(state.judge ? (judgeUsage?.warnings ?? ["judge usage was not measured"]).map(warning => `judge: ${warning}`) : ["judge: not run"]),
+      ...(state.fixed_verifier ? [] : state.judge ? (judgeUsage?.warnings ?? ["judge usage was not measured"]).map(warning => `judge: ${warning}`) : ["judge: not run"]),
       ...Object.entries(diagnosticsByArm ?? {}).flatMap(([arm, item]) => item?.status === "valid" ? [] : [`${labels[arm as ArmName]}: ${item?.reason ?? "provider capture unavailable"}`]),
     ];
     const judgeSummary = state.judge
