@@ -3,6 +3,7 @@
 FROM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0627f666428e40310f6b AS go-toolchain
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS node-toolchain
 FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS bun-toolchain
+FROM rust:1.99.1-slim-bookworm@sha256:f2c004e3d2d8b547e8cf7ffbc29205385f4e71d23e53e4e383065db5e9f822cd AS rust-toolchain
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS lean
 
@@ -65,6 +66,21 @@ ARG FIXTURE_GID=1001
 RUN mkdir -p /home/ubuntu/.codex \
     && chown -R "${FIXTURE_UID}:${FIXTURE_GID}" /home/ubuntu /workspace
 USER ${FIXTURE_UID}:${FIXTURE_GID}
+
+FROM lean AS rust
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+COPY --from=rust-toolchain /usr/local/cargo/bin /usr/local/bin
+ENV CARGO_HOME=/opt/task-deps/cargo \
+    CARGO_TARGET_DIR=/tmp/task-rust-target \
+    RUSTUP_HOME=/usr/local/rustup \
+    RUSTUP_TOOLCHAIN=1.99.1
+RUN rustup component add rustfmt clippy \
+    && cargo --version && rustc --version
+USER ubuntu
 
 FROM lean AS full
 USER root

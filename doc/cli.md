@@ -26,10 +26,10 @@ host.
 
 The Ubuntu 26.04 image installs standalone Codex and its matching Code Mode companion
 using the [official installer](https://learn.chatgpt.com/docs/codex/cli#get-started-with-codex-cli)
-at image build time. Both image targets include Node, Bun, Python, and packaged Ubuntu
-Git (with `--no-lazy-fetch`, local clones, and HTTPS). The full target adds Go,
-compilers, and the protected-runtime tools. Neither target includes a host setup or
-credentials.
+at image build time. The base includes Node, Bun, Python, and Ubuntu Git (with
+`--no-lazy-fetch`, local clones, and HTTPS). The full target adds Go, compilers,
+and protected-runtime tools. The Rust target adds pinned Rust and a C compiler.
+Images do not include a host setup or credentials.
 
 Pair preparation checks and builds the selected image automatically. Manual build
 commands for agent-directed setup:
@@ -42,8 +42,10 @@ docker build -t codex-ab:0.1.0 .
 
 `launch` reuses a capable image or builds one if missing or incomplete. Leave the
 workbench image blank, or omit `--image`, to use the lean image for the built-in NVM,
-Flask, sqlite-utils, and Express packs. Go tasks, custom packs, and protected runtime
-use the full image. Set `--image` or `CODEX_AB_IMAGE` to override this choice.
+Flask, sqlite-utils, and Express packs. The
+[Mekugi native source tools](../tasks/mekugi-source-tools/README.md)
+pack uses the Rust image. Go tasks, custom packs, and protected runtime use the
+full image. Set `--image` or `CODEX_AB_IMAGE` to override this choice.
 Direct `prepare` and `prepare-suite` expect a prebuilt image and default to the full
 image. The container operator is `1000:1000`. To
 refresh Codex deliberately, rebuild with `--no-cache` and prepare a new run (existing
@@ -250,7 +252,6 @@ record `qualification: "not-run"`; preparation never authorizes inference.
 | [Flask](../tasks/flask-ipv6-server-name/manifest.json) | `de8429f`, August 11, 2026 (authored July 14) | [`7203fea`](https://github.com/pallets/flask/commit/7203feabf723edae0286ae5dc64fec8ac4c91735) | `ipv6-server-name`, `existing-address-selection`: `Flask.run` host/port docs and run-config/port/default tests (URL-parser normalization allowed). |
 | [Express](../tasks/express-transfer-encoding/manifest.json) | `59e205a`, June 15, 2026 | [`9a34acf`](https://github.com/expressjs/express/commit/9a34acf03cb818ff3f8bc40e44176e277a25cbb9) | `transfer-encoding-length` (`18e5985` four transfer-coding cases); `send-regressions` (ETag fix `9a34acf` and `test/res.send.js`). |
 | [Nvm](../tasks/nvm-download-no-eval/manifest.json) | `52047ed`, July 15, 2026 | [`b17550a`](https://github.com/nvm-sh/nvm/commit/b17550a0b9ab691439815dfccc8b73e3a59fa103) | `literal-arguments`, `wget-translations`, `curl-posix`: `install.sh` (Bash-sourced), unchanged curl route, `nvm_download_no_eval_injection` (`sh -n` syntax check; option-like output operands out of scope). |
-| [Mekugi coordination checkpoints](../tasks/session-retention/README.md) | `0368c3b`, October 28, 2026 | [`97ea72b`](https://github.com/yusing/mekugi/commit/97ea72b7ea54c4d70a78554908f911061df16bc1) | `495540d` (aggregate waits) and `97ea72b` (safe standalone/compound compaction); see task README for full mapping. |
 
 Verified knowledge cutoffs (checked October 29, 2026):
 [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra) and
@@ -263,16 +264,17 @@ is June 1, 2026. Every baseline above postdates all four cutoffs; verify other m
 [remote uninstall](../tasks/skills-mgr-remote-uninstall/README.md),
 [fast conditional acquisition](../tasks/skills-mgr-get-short-circuit/README.md), and
 [sqlite-utils](../tasks/sqlite-utils-history/README.md) packs record their own
-provenance and cutoff evidence.
+provenance and cutoff evidence, as does
+[Mekugi native source tools](../tasks/mekugi-source-tools/README.md).
 
 Notes on reference scope:
 - Gin, Flask, and Nvm each freeze one reference commit; Express freezes 18 ancestry
-  commits to reach `9a34acf` (only the two named fixes define new requirements); Mekugi
-  freezes 9 commits with 2 selected features. Reference limitations are permitted, not
-  mandatory rejection rules; safe improvements are acceptable.
-- **Mekugi coordination checkpoints** retains CLI task ID `session-retention` (modular Go
-  workspace and pinned Claude worker, no WASM/plugin generation). Use bare Codex when
-  implementing Mekugi changes and separate-project tasks when comparing launchers.
+  commits to reach `9a34acf` (only the two named fixes define new requirements).
+  Reference limitations are permitted, not mandatory rejection rules; safe
+  improvements are acceptable.
+- [Mekugi coordination checkpoints](../tasks/session-retention/README.md) is
+  retired from the launch catalog. Retained runs and explicit portable-pack
+  preparation remain available.
 - Legacy `skills-mgr-bundle` and `godoxy-icons` profiles have no commit-backed
   post-cutoff qualification.
 

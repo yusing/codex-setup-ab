@@ -14,14 +14,12 @@ import { remeterRun } from "./remeter";
 import { finishBenchmark, reevaluateBenchmark, runBenchmark } from "./workflow";
 import { judgeRun } from "./judge";
 import { buildReport, invalidateRun } from "./report";
-import { runLaunch, sessionRetentionSource } from "./launch";
+import { runLaunch } from "./launch";
 import { serveWorkbench } from "./web-server";
 import { configureFixedVerifierRun, runFixedVerifiersUnlocked, verifyFixedArm } from "./fixed-workflow";
 import { withRunLock } from "./state";
 
 export const VERSION = "0.1.1";
-const DEFAULT_BASE = "0368c3b3abf4da904caec63948646b2a579c0695";
-const DEFAULT_FORBIDDEN = "495540d62e2e442f00455dc2c054de2d1f809505";
 
 const HELP = `codex-ab ${VERSION}
 
@@ -70,11 +68,10 @@ Prepare options:
   --model NAME          Codex comparisons: ${CODEX_MODELS.map(({ id }) => id === "gpt-6-astra" ? `${id} (default)` : id).join(", ")}
   --parallel-work       ask both agents to delegate independent work in parallel
   --reasoning-effort N   ${REASONING_EFFORTS.join(", ")}
-  --source DIR          source Git repository (default ~/projects/mekugi-archive,
-                       overridden by CODEX_AB_SESSION_SOURCE)
+  --source DIR          source Git repository
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
-  --task FILE           task prompt (default ./tasks/session-retention/task.md)
+  --task FILE           task prompt
   --task-pack FILE      portable pinned manifest; requires --source; owns task/base/criteria
   --criteria FILE       predetermined behavioral contract; defaults to task profile
   --output-parent DIR   parent for mktemp run directory (default system temp)
@@ -185,8 +182,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       model: o.model as import("./types").BenchmarkModel | undefined,
       parallelWork: o["parallel-work"] === true,
       reasoningEffort: string(o, "reasoning-effort", o.comparison === "codex-mekugi-grok" ? "high" : "medium") as import("./types").ReasoningEffort,
-      source: string(o, "source", sessionRetentionSource()), baseCommit: string(o, "base", DEFAULT_BASE),
-      forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("tasks/session-retention/task.md")),
+      source: string(o, "source", ""), baseCommit: string(o, "base", ""),
+      forbiddenCommit: string(o, "forbidden", ""), taskPath: string(o, "task", ""),
       taskPackPath: o["task-pack"] as string | undefined,
       criteriaPath: o.criteria as string | undefined,
       outputParent: o["output-parent"] as string | undefined,

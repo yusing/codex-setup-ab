@@ -86,24 +86,23 @@ The [launch catalog](../launch.ts) owns task choices and defaults:
 
 - **Tasks**: Omitting `--task` selects NVM (`nvm-download-no-eval`). Built-in tasks
   include NVM, Gin, Flask, Express, three skills-manager packs (each using a 2-hour
-  agent timeout), sqlite-utils, and Mekugi coordination checkpoints (`session-retention`,
-  1-hour timeout), plus `custom` for a custom pack or explicit inputs. Use bare Codex
-  via `stock-current` or `setup-commits` for `session-retention`; launcher-comparison
-  presets reject it before external effects.
+  agent timeout), sqlite-utils, and
+  [Mekugi native source tools](../tasks/mekugi-source-tools/README.md)
+  (`mekugi-source-tools`, 1-hour timeout), plus `custom` for a custom pack or
+  explicit inputs. Use bare Codex for the Mekugi task; launcher comparisons
+  require a separate project.
 - **Source environment overrides**:
   - `CODEX_AB_SOURCE_DIR`: NVM checkout (default `/var/tmp/codex-ab-nvm-source`)
   - `CODEX_AB_SKILLS_MGR_SOURCE`: skills-manager checkout (default `$HOME/projects/skills-mgr`)
-  - `CODEX_AB_SESSION_SOURCE`: archived Mekugi benchmark checkout (default
-    `$HOME/projects/mekugi-archive`)
-  - `CODEX_AB_MEKUGI_SOURCE`: Mekugi launcher checkout (default
-    `$HOME/projects/mekugi`)
+  - `CODEX_AB_MEKUGI_SOURCE`: Mekugi monorepo checkout for the native tools task
+    and launcher comparisons (default `$HOME/projects/mekugi`)
   - `CODEX_AB_SQLITE_UTILS_SOURCE`: sqlite-utils checkout (default `/var/tmp/codex-ab-sqlite-utils-source`)
 - **Models**: `gpt-6-astra` (default), `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6.2-astra`,
   and `gpt-6.2-sol`.
 - **Reasoning effort**: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and
   `ultra` (usability depends on provider/model support). Defaults are `medium` for NVM,
   Gin, Flask, and Express; `xhigh` for skills-manager, sqlite-utils, and
-  `session-retention`; and `high` for `codex-mekugi-grok`. Override with
+  `mekugi-source-tools`; and `high` for `codex-mekugi-grok`. Override with
   `--reasoning-effort`.
 - **Compaction and parallel work**: `stock-mekugi` accepts a shared
   `--auto-compact-limit N` (other comparisons reject the shared option); compaction

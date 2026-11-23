@@ -16,6 +16,8 @@ import type { CliOptions } from "./cli-options";
 
 const FULL_IMAGE = "codex-ab:0.1.0";
 const LEAN_IMAGE = "codex-ab:lean";
+const RUST_IMAGE = "codex-ab:rust";
+const MEKUGI_SOURCE_TASK = "mekugi-source-tools";
 const LEAN_TASKS = new Set([
   "nvm-download-no-eval", "flask-ipv6-server-name", "sqlite-utils-history",
   "express-transfer-encoding",
@@ -31,8 +33,8 @@ export const COMPARISONS = [
   { id: "codex-mekugi-grok", title: "Mekugi versus Grok CLI", a: "Mekugi · Grok", b: "Grok CLI", description: "Compare launchers on the fixed Grok model." },
 ];
 
-export function sessionRetentionSource(): string {
-  return process.env.CODEX_AB_SESSION_SOURCE ?? join(homedir(), "projects/mekugi-archive");
+function mekugiSource(): string {
+  return process.env.CODEX_AB_MEKUGI_SOURCE ?? join(homedir(), "projects/mekugi");
 }
 
 export function taskCatalog() {
@@ -42,7 +44,7 @@ export function taskCatalog() {
     { id: "skills-mgr-agent-cli", title: "Skills manager repository-to-agent workflow", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-agent-cli/manifest.json" },
     { id: "skills-mgr-remote-uninstall", title: "Skills manager remote uninstall", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-remote-uninstall/manifest.json" },
     { id: "skills-mgr-get-short-circuit", title: "Skills manager fast conditional acquisition", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-get-short-circuit/manifest.json" },
-    { id: "session-retention", title: "Mekugi coordination checkpoints", source: sessionRetentionSource(), timeout: 3600, effort: "xhigh", pack: "tasks/session-retention/manifest.json" },
+    { id: MEKUGI_SOURCE_TASK, title: "Mekugi native source tools", source: mekugiSource(), timeout: 3600, effort: "xhigh", pack: "tasks/mekugi-source-tools/manifest.json" },
     { id: "sqlite-utils-history", title: "sqlite-utils multi-commit upgrade", source: process.env.CODEX_AB_SQLITE_UTILS_SOURCE ?? join("/var/tmp", "codex-ab-sqlite-utils-source"), timeout: 3300, effort: "xhigh", pack: "tasks/sqlite-utils-history/manifest.json",
       repository: "https://github.com/simonw/sqlite-utils.git", compactLimit: 200000, preset: "stock-mekugi" },
     ...["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding"].map(id => ({ id, title: id === "gin-context-copy" ? "Gin context copy" : id === "flask-ipv6-server-name" ? "Flask IPv6 server name" : "Express transfer encoding", source: join(userRoot, "projects", id.split("-")[0]!), timeout: 1800, effort: "medium", pack: `tasks/${id}/manifest.json` })),
@@ -54,7 +56,7 @@ export function launchDefaults(): CliOptions {
     preset: "stock-current", task: "nvm-download-no-eval", model: "gpt-6-astra", count: "1", order: "concurrent",
     "current-home": homedir(), image: process.env.CODEX_AB_IMAGE ?? "",
     "docker-bin": process.env.CODEX_AB_DOCKER_BIN ?? "docker",
-    "mekugi-source": process.env.CODEX_AB_MEKUGI_SOURCE ?? join(homedir(), "projects/mekugi"),
+    "mekugi-source": mekugiSource(),
     "mekugi-bin": process.env.CODEX_AB_MEKUGI_BIN ?? join(homedir(), "go/bin/mekugi"),
     "grok-bin": process.env.CODEX_AB_GROK_BIN ?? join(homedir(), ".grok/bin/grok"),
     "auth-file": process.env.CODEX_AB_AUTH_FILE ?? join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"),
@@ -77,7 +79,6 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   const comparison = preset === "current-vs-current-mekugi" ? "same-setup" : preset;
   if (!COMPARISONS.some(item => item.id === comparison)) throw new Error("Choose a supported comparison");
   if (o["current-launcher"] && !["codex", "mekugi"].includes(String(o["current-launcher"]))) throw new Error("Current launcher must be codex or mekugi");
-  if (task.id === "session-retention" && !["stock-current", "setup-commits"].includes(comparison)) throw new Error("Mekugi comparisons require a task outside Mekugi; choose another task");
   if (o["journal-compaction"] !== undefined) throw new Error("Journal compaction is no longer supported");
   const flags = validateMekugiFlags(o["mekugi-flags"] ? JSON.parse(stringOption(o, "mekugi-flags")) : []);
   const count = positive(stringOption(o, "count", "1"), "Repeat count");
@@ -101,6 +102,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
     if (importArms.some(item => !keys.includes(item.target_arm)) || importArms.length >= keys.length) throw new Error("Imports must select existing slots and leave at least one fresh arm");
   }
   const mekugi = customArms ? customArms.some(arm => arm.launcher === "mekugi") : !["stock-current", "setup-commits"].includes(comparison) || o["current-launcher"] === "mekugi" || Boolean(o["mekugi-build"]);
+  if (task.id === MEKUGI_SOURCE_TASK && mekugi) throw new Error("Mekugi comparisons require a task outside Mekugi; choose another task");
   if (["stock-mekugi", "codex-mekugi-grok"].includes(comparison) && o["review-treatment"]) throw new Error("This comparison does not accept a reviewer overlay");
   if (o["protect-mekugi"] && (!mekugi || ["stock-mekugi", "codex-mekugi-grok", "duplicate-output"].includes(comparison))) throw new Error("Protected runtime requires current-setup Mekugi or same-setup");
   if (comparison === "duplicate-output" && flags.some(flag => flag === "--deduplicate-output" || flag.startsWith("--deduplicate-output="))) throw new Error("The paired feature comparison owns its treatment flag and requires Mekugi Codex routing");
@@ -113,9 +115,12 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (!source.trim()) throw new Error("Source checkout is required");
   const custom = task.id === "custom";
   const pack = stringOption(o, "task-pack", task.pack);
-  const image = stringOption(o, "image").trim()
-    || (LEAN_TASKS.has(task.id) && pack === task.pack && !o["protect-mekugi"]
-      ? LEAN_IMAGE : FULL_IMAGE);
+  let defaultImage = FULL_IMAGE;
+  if (pack === task.pack && !o["protect-mekugi"]) {
+    if (task.id === MEKUGI_SOURCE_TASK) defaultImage = RUST_IMAGE;
+    else if (LEAN_TASKS.has(task.id)) defaultImage = LEAN_IMAGE;
+  }
+  const image = stringOption(o, "image").trim() || defaultImage;
   if (custom && !pack && ["base", "forbidden", "task-file", "criteria"].some(key => !stringOption(o, key))) throw new Error("A custom task needs a pack, or base, forbidden commit, task file, and criteria file");
   if (pack && ["base", "forbidden", "task-file", "criteria", "profile"].some(key => o[key] !== undefined)) throw new Error("A task pack owns its profile, commits, prompt, and criteria");
   const cpus = stringOption(o, "cpus", "2");
@@ -137,7 +142,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
       source: source.trim() ? resolve(source) : "", profile: profile as PrepareOptions["profile"],
       baseCommit: stringOption(o, "base"),
       forbiddenCommit: stringOption(o, "forbidden"),
-      taskPath: resolve(stringOption(o, "task-file", "tasks/session-retention/task.md")),
+      taskPath: pack ? "" : resolve(stringOption(o, "task-file")),
       criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria")),
       taskPackPath: pack ? resolve(pack) : undefined,
       currentHome: resolve(stringOption(o, "current-home")), runtimeHome: o["runtime-home"] ? resolve(stringOption(o, "runtime-home")) : undefined, image, cpus, memory,
@@ -189,7 +194,8 @@ export async function ensureLaunchImage(options: {
   }
   progress(`Building image ${options.image} (${image})`);
   // Inherit streams so the workbench receives build progress, not a silent buffered build.
-  const target = options.image === LEAN_IMAGE ? ["--target", "lean"] : [];
+  const target = options.image === LEAN_IMAGE ? ["--target", "lean"]
+    : options.image === RUST_IMAGE ? ["--target", "rust"] : [];
   const child = Bun.spawn([options.docker, "build", ...target, "-t", options.image, "."],
     { stdout: "inherit", stderr: "inherit" });
   const cancel = () => child.kill("SIGTERM");

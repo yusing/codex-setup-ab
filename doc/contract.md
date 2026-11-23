@@ -17,12 +17,13 @@ labels.
 
 ## Prepare an isolated pair
 
-This example uses the [archived Mekugi checkout](../tasks/session-retention/README.md#prepare-and-run).
+This example uses the
+[Mekugi monorepo and Rust image](../tasks/mekugi-source-tools/README.md#prepare-and-run).
 
 ```sh
 run_dir="$(./dist/codex-ab prepare \
-  --source "$HOME/projects/mekugi-archive" \
-  --task-pack ./tasks/session-retention/manifest.json)"
+  --source "$HOME/projects/mekugi" --image codex-ab:rust \
+  --task-pack ./tasks/mekugi-source-tools/manifest.json)"
 ```
 
 Preparation creates a private mode-0700 directory outside the repository with

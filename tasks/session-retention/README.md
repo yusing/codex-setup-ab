@@ -49,10 +49,9 @@ does not establish candidate duration or observed compaction frequency.
 
 ## Prepare and run
 
-In the workbench select **Mekugi coordination checkpoints**. The CLI identifier
-remains `session-retention` to preserve existing selectors; new preparations use
-this task instead of the former replay-storage retention prompt. Earlier runs
-retain their original controls and form a different task.
+This historical pack is no longer in the launch catalog. For new comparisons on
+the monorepo, use [Mekugi native source tools](../mekugi-source-tools/README.md).
+Retained runs keep their original task and controls.
 
 Use `stock-current` for minimal versus current-home guidance, or `setup-commits`
 for two committed setups. Use bare Codex for implementing Mekugi changes;
@@ -65,16 +64,13 @@ the archive if you don't already have it:
 
 ```sh
 git clone https://github.com/yusing/mekugi.git "$HOME/projects/mekugi-archive"
-./dist/codex-ab launch --task session-retention --prepare-only
+./dist/codex-ab prepare --source "$HOME/projects/mekugi-archive" \
+  --task-pack tasks/session-retention/manifest.json
 ```
 
-For a different archive checkout, set `CODEX_AB_SESSION_SOURCE` or pass
-`--source`. `CODEX_AB_MEKUGI_SOURCE` is for launcher comparisons.
-
-Replace `--prepare-only` with `--confirm-paid-inference` to authorize candidate
-and judge inference. Defaults remain a one-hour candidate limit and xhigh
-reasoning. Alternatively, use `prepare --task-pack` with the manifest and source,
-then preflight; see [portable task packs](../../doc/cli.md#portable-task-packs).
+For a different archive checkout, change `--source`. Preparing the explicit
+pack does not start candidates or judging; see
+[portable task packs](../../doc/cli.md#portable-task-packs).
 
 ## Environment and qualification
 

@@ -197,7 +197,8 @@ prepared. Commands, source pins, observation scope, and limits live in each task
 - [Skills manager remote uninstall](../tasks/skills-mgr-remote-uninstall/README.md)
 - [Skills manager conditional acquisition](../tasks/skills-mgr-get-short-circuit/README.md)
 - [Portable skill bundles](../tasks/skills-mgr-bundle/README.md)
-- [Mekugi coordination checkpoints](../tasks/session-retention/README.md)
+- [Mekugi native source tools](../tasks/mekugi-source-tools/README.md)
+- [Mekugi coordination checkpoints (retired)](../tasks/session-retention/README.md)
 - [sqlite-utils upgrade](../tasks/sqlite-utils-history/README.md)
 
 The standalone bundle task has no upstream solution commit (its reference and

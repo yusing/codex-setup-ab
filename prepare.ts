@@ -712,6 +712,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     throw new Error("godoxy-icons benchmark identity mismatch");
   }
   if (!options.criteriaPath && !pack) throw new Error("prepare requires predetermined --criteria or --task-pack");
+  if (!options.source || !options.baseCommit || !options.forbiddenCommit || !options.taskPath) {
+    throw new Error("prepare requires --source and a task pack or explicit --base, --forbidden, and --task");
+  }
   const hostUid = process.getuid?.();
   const hostGid = process.getgid?.();
   if (hostUid === undefined || hostGid === undefined || hostUid <= 0 || hostGid <= 0) throw new Error("prepare requires a non-root POSIX operator identity");

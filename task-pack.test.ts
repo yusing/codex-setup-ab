@@ -86,6 +86,16 @@ test("Mekugi coordination checkpoints pin a modern modular-workspace reference",
   expect(Object.keys(pack.snapshot.files).sort()).toEqual(["manifest.json", "task.md"]);
 });
 
+test("native source tools use the maintained monorepo and a two-commit reference", async () => {
+  const pack = await loadTaskPack(join(import.meta.dir, "tasks/mekugi-source-tools/manifest.json"));
+  expect(pack.manifest.source).toEqual({
+    repository: "https://github.com/mekugi-harness/mekugi.git",
+    base_commit: "ff9e32e932575e7b56ccaca671f0c3e5efdebd74",
+    forbidden_commit: "df345c33f13334488d6ac936f540f648d365435d",
+    reference_commit: "66995741daf343b4c9f70f15f533b5c786a2751e",
+  });
+});
+
 test("pack fingerprints change with task contents and reject escaping assets", async () => {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-pack-"));
   try {

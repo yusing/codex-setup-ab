@@ -103,16 +103,16 @@ test("agent launch selects current task, model, launcher, reasoning and Mekugi f
   expect(grok.prepare.model).toBe("grok:grok-4.7");
   expect(grok.prepare.reasoningEffort).toBe("high");
   expect(grok.prepare.mekugiFlags).toEqual([]);
-  const session = launchConfiguration({ task: "session-retention" });
-  const archiveSource = process.env.CODEX_AB_SESSION_SOURCE ?? join(homedir(), "projects/mekugi-archive");
-  expect(session.prepare.source).toBe(resolve(archiveSource));
-  expect(launchConfiguration({ task: "session-retention", source: "/pinned/mekugi" })
+  const monorepo = launchConfiguration({ task: "mekugi-source-tools" });
+  const mekugiSource = process.env.CODEX_AB_MEKUGI_SOURCE ?? join(homedir(), "projects/mekugi");
+  expect(monorepo.prepare.source).toBe(resolve(mekugiSource));
+  expect(launchConfiguration({ task: "mekugi-source-tools", source: "/pinned/mekugi" })
     .prepare.source).toBe("/pinned/mekugi");
-  expect(session.prepare.taskPackPath).toEndWith("tasks/session-retention/manifest.json");
-  expect(session.prepare.profile).toBe("task");
-  expect(session.prepare.criteriaPath).toBeUndefined();
-  expect(session.prepare.reasoningEffort).toBe("xhigh");
-  expect(session.prepare.mekugiSource).toBeUndefined();
+  expect(monorepo.prepare.taskPackPath).toEndWith("tasks/mekugi-source-tools/manifest.json");
+  expect(monorepo.prepare.profile).toBe("task");
+  expect(monorepo.prepare.criteriaPath).toBeUndefined();
+  expect(monorepo.prepare.reasoningEffort).toBe("xhigh");
+  expect(monorepo.prepare.mekugiSource).toBeUndefined();
 });
 
 test("feature comparisons, repeat preparation, and custom task contracts use the retained owners", () => {
@@ -149,8 +149,10 @@ test("sqlite-utils upgrade uses its pinned pack, cloned source and documented ru
 
 test("incompatible comparisons and malformed parameters reject before external work", () => {
   for (const [options, error] of [
-    [{ preset: "same-setup", task: "session-retention" }, "require a task outside Mekugi"],
-    [{ task: "session-retention", base: "override" }, "task pack owns"],
+    [{ preset: "same-setup", task: "mekugi-source-tools" }, "require a task outside Mekugi"],
+    [{ task: "mekugi-source-tools", "current-launcher": "mekugi" }, "require a task outside Mekugi"],
+    [{ task: "mekugi-source-tools", base: "override" }, "task pack owns"],
+    [{ task: "session-retention" }, "supported task"],
     [{ task: "native-tool-frontends" }, "supported task"],
     [{ "journal-compaction": "auto" }, "no longer supported"],
     [{ "journal-compaction": "invalid", preset: "stock-mekugi" }, "no longer supported"],
@@ -199,13 +201,13 @@ test("image probe infrastructure failures stop without a build", async () => {
   }
 });
 
-test("launch defaults to a lean image only for built-in non-Go tasks", async () => {
+test("launch selects the default image for the built-in task's toolchain", async () => {
   for (const task of ["nvm-download-no-eval", "flask-ipv6-server-name",
     "express-transfer-encoding", "sqlite-utils-history"]) {
     expect(launchConfiguration({ task, image: "" }).prepare.image).toBe("codex-ab:lean");
   }
-  expect(launchConfiguration({ task: "session-retention", image: "" }).prepare.image)
-    .toBe("codex-ab:0.1.0");
+  expect(launchConfiguration({ task: "mekugi-source-tools", image: "" }).prepare.image)
+    .toBe("codex-ab:rust");
   expect(launchConfiguration({ task: "custom", "task-pack": "/own-pack", source: "/own-source",
     image: "" }).prepare.image).toBe("codex-ab:0.1.0");
   expect(launchConfiguration({ "task-pack": "/own-pack", image: "" }).prepare.image)
