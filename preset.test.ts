@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { ensureLaunchImage, launchConfiguration, taskCatalog } from "./launch";
 import { main } from "./cli";
 
@@ -90,7 +90,9 @@ test("Terra launch preserves model and reasoning selection", () => {
 test("agent launch selects current task, model, launcher, reasoning and Mekugi flags", () => {
   const skill = launchConfiguration({ preset: "stock-mekugi", task: "skills-mgr-agent-cli", model: "gpt-6.1-sol", "reasoning-effort": "low", "mekugi-flags": '["--deduplicate-output=false"]' });
   expect(skill.prepare.taskPackPath).toEndWith("tasks/skills-mgr-agent-cli/manifest.json");
-  expect(skill.prepare.mekugiSource).toBeDefined();
+  expect(skill.prepare.mekugiSource).toBe(
+    process.env.CODEX_AB_MEKUGI_SOURCE ?? join(homedir(), "projects/mekugi"),
+  );
   expect(skill.prepare.model).toBe("gpt-6.1-sol");
   expect(skill.prepare.reasoningEffort).toBe("low");
   expect(skill.prepare.timeoutSeconds).toBe(7200);
@@ -102,6 +104,10 @@ test("agent launch selects current task, model, launcher, reasoning and Mekugi f
   expect(grok.prepare.reasoningEffort).toBe("high");
   expect(grok.prepare.mekugiFlags).toEqual([]);
   const session = launchConfiguration({ task: "session-retention" });
+  const archiveSource = process.env.CODEX_AB_SESSION_SOURCE ?? join(homedir(), "projects/mekugi-archive");
+  expect(session.prepare.source).toBe(resolve(archiveSource));
+  expect(launchConfiguration({ task: "session-retention", source: "/pinned/mekugi" })
+    .prepare.source).toBe("/pinned/mekugi");
   expect(session.prepare.taskPackPath).toEndWith("tasks/session-retention/manifest.json");
   expect(session.prepare.profile).toBe("task");
   expect(session.prepare.criteriaPath).toBeUndefined();

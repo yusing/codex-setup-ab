@@ -93,7 +93,10 @@ The [launch catalog](../launch.ts) owns task choices and defaults:
 - **Source environment overrides**:
   - `CODEX_AB_SOURCE_DIR`: NVM checkout (default `/var/tmp/codex-ab-nvm-source`)
   - `CODEX_AB_SKILLS_MGR_SOURCE`: skills-manager checkout (default `$HOME/projects/skills-mgr`)
-  - `CODEX_AB_MEKUGI_SOURCE`: Mekugi checkout (default `$HOME/projects/mekugi`)
+  - `CODEX_AB_SESSION_SOURCE`: archived Mekugi benchmark checkout (default
+    `$HOME/projects/mekugi-archive`)
+  - `CODEX_AB_MEKUGI_SOURCE`: Mekugi launcher checkout (default
+    `$HOME/projects/mekugi`)
   - `CODEX_AB_SQLITE_UTILS_SOURCE`: sqlite-utils checkout (default `/var/tmp/codex-ab-sqlite-utils-source`)
 - **Models**: `gpt-6-astra` (default), `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6.2-astra`,
   and `gpt-6.2-sol`.

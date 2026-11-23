@@ -14,7 +14,7 @@ import { remeterRun } from "./remeter";
 import { finishBenchmark, reevaluateBenchmark, runBenchmark } from "./workflow";
 import { judgeRun } from "./judge";
 import { buildReport, invalidateRun } from "./report";
-import { runLaunch } from "./launch";
+import { runLaunch, sessionRetentionSource } from "./launch";
 import { serveWorkbench } from "./web-server";
 import { configureFixedVerifierRun, runFixedVerifiersUnlocked, verifyFixedArm } from "./fixed-workflow";
 import { withRunLock } from "./state";
@@ -70,7 +70,8 @@ Prepare options:
   --model NAME          Codex comparisons: ${CODEX_MODELS.map(({ id }) => id === "gpt-6-astra" ? `${id} (default)` : id).join(", ")}
   --parallel-work       ask both agents to delegate independent work in parallel
   --reasoning-effort N   ${REASONING_EFFORTS.join(", ")}
-  --source DIR          source Git repository (default /home/ubuntu/projects/mekugi)
+  --source DIR          source Git repository (default ~/projects/mekugi-archive,
+                       overridden by CODEX_AB_SESSION_SOURCE)
   --base SHA            exact shallow base commit
   --forbidden SHA       future/oracle commit that arms must not contain
   --task FILE           task prompt (default ./tasks/session-retention/task.md)
@@ -184,7 +185,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       model: o.model as import("./types").BenchmarkModel | undefined,
       parallelWork: o["parallel-work"] === true,
       reasoningEffort: string(o, "reasoning-effort", o.comparison === "codex-mekugi-grok" ? "high" : "medium") as import("./types").ReasoningEffort,
-      source: string(o, "source", "/home/ubuntu/projects/mekugi"), baseCommit: string(o, "base", DEFAULT_BASE),
+      source: string(o, "source", sessionRetentionSource()), baseCommit: string(o, "base", DEFAULT_BASE),
       forbiddenCommit: string(o, "forbidden", DEFAULT_FORBIDDEN), taskPath: string(o, "task", resolve("tasks/session-retention/task.md")),
       taskPackPath: o["task-pack"] as string | undefined,
       criteriaPath: o.criteria as string | undefined,

@@ -31,6 +31,10 @@ export const COMPARISONS = [
   { id: "codex-mekugi-grok", title: "Mekugi versus Grok CLI", a: "Mekugi · Grok", b: "Grok CLI", description: "Compare launchers on the fixed Grok model." },
 ];
 
+export function sessionRetentionSource(): string {
+  return process.env.CODEX_AB_SESSION_SOURCE ?? join(homedir(), "projects/mekugi-archive");
+}
+
 export function taskCatalog() {
   const userRoot = homedir();
   return [
@@ -38,7 +42,7 @@ export function taskCatalog() {
     { id: "skills-mgr-agent-cli", title: "Skills manager repository-to-agent workflow", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-agent-cli/manifest.json" },
     { id: "skills-mgr-remote-uninstall", title: "Skills manager remote uninstall", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-remote-uninstall/manifest.json" },
     { id: "skills-mgr-get-short-circuit", title: "Skills manager fast conditional acquisition", source: process.env.CODEX_AB_SKILLS_MGR_SOURCE ?? join(userRoot, "projects/skills-mgr"), timeout: 7200, effort: "xhigh", pack: "tasks/skills-mgr-get-short-circuit/manifest.json" },
-    { id: "session-retention", title: "Mekugi coordination checkpoints", source: process.env.CODEX_AB_MEKUGI_SOURCE ?? join(userRoot, "projects/mekugi"), timeout: 3600, effort: "xhigh", pack: "tasks/session-retention/manifest.json" },
+    { id: "session-retention", title: "Mekugi coordination checkpoints", source: sessionRetentionSource(), timeout: 3600, effort: "xhigh", pack: "tasks/session-retention/manifest.json" },
     { id: "sqlite-utils-history", title: "sqlite-utils multi-commit upgrade", source: process.env.CODEX_AB_SQLITE_UTILS_SOURCE ?? join("/var/tmp", "codex-ab-sqlite-utils-source"), timeout: 3300, effort: "xhigh", pack: "tasks/sqlite-utils-history/manifest.json",
       repository: "https://github.com/simonw/sqlite-utils.git", compactLimit: 200000, preset: "stock-mekugi" },
     ...["gin-context-copy", "flask-ipv6-server-name", "express-transfer-encoding"].map(id => ({ id, title: id === "gin-context-copy" ? "Gin context copy" : id === "flask-ipv6-server-name" ? "Flask IPv6 server name" : "Express transfer encoding", source: join(userRoot, "projects", id.split("-")[0]!), timeout: 1800, effort: "medium", pack: `tasks/${id}/manifest.json` })),

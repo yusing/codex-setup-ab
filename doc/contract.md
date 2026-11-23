@@ -17,9 +17,11 @@ labels.
 
 ## Prepare an isolated pair
 
+This example uses the [archived Mekugi checkout](../tasks/session-retention/README.md#prepare-and-run).
+
 ```sh
 run_dir="$(./dist/codex-ab prepare \
-  --source /home/ubuntu/projects/mekugi \
+  --source "$HOME/projects/mekugi-archive" \
   --task-pack ./tasks/session-retention/manifest.json)"
 ```
 

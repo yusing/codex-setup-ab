@@ -11,7 +11,9 @@ evaluator-only reference evidence.
 
 ## Baseline and reference
 
-Repository: [yusing/mekugi](https://github.com/yusing/mekugi).
+Repository: the [yusing/mekugi archive](https://github.com/yusing/mekugi).
+The current [Mekugi monorepo](https://github.com/mekugi-harness/mekugi)
+does not contain the pinned benchmark history.
 
 - Baseline: [`0368c3b3abf4da904caec63948646b2a579c0695`](https://github.com/yusing/mekugi/commit/0368c3b3abf4da904caec63948646b2a579c0695), October 28, 2026.
 - First excluded solution: [`495540d62e2e442f00455dc2c054de2d1f809505`](https://github.com/yusing/mekugi/commit/495540d62e2e442f00455dc2c054de2d1f809505), October 28, 2026, aggregate waits.
@@ -58,12 +60,16 @@ launcher-comparison presets reject this task. Select a
 [separate-project task](../../doc/spec.md#stock-codex-versus-stock-plus-mekugi)
 when comparing launchers.
 
-After following the [build guide](../../doc/cli.md#prerequisites-and-build):
+After following the [build guide](../../doc/cli.md#prerequisites-and-build), clone
+the archive if you don't already have it:
 
 ```sh
-./dist/codex-ab launch --task session-retention \
-  --source /path/to/mekugi --preset stock-current --prepare-only
+git clone https://github.com/yusing/mekugi.git "$HOME/projects/mekugi-archive"
+./dist/codex-ab launch --task session-retention --prepare-only
 ```
+
+For a different archive checkout, set `CODEX_AB_SESSION_SOURCE` or pass
+`--source`. `CODEX_AB_MEKUGI_SOURCE` is for launcher comparisons.
 
 Replace `--prepare-only` with `--confirm-paid-inference` to authorize candidate
 and judge inference. Defaults remain a one-hour candidate limit and xhigh
@@ -127,7 +133,7 @@ the evidence for that wider scope.
 Run the source-backed checks without model inference from this repository:
 
 ```sh
-CODEX_AB_SESSION_SOURCE=/path/to/mekugi \
+CODEX_AB_SESSION_SOURCE="$HOME/projects/mekugi-archive" \
   bun test session-retention-qualification.test.ts
 ```
 

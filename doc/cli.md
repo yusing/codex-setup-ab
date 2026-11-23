@@ -195,7 +195,10 @@ trial_set="$(./dist/codex-ab prepare-trials --run-dir "$run_dir" --count 4)"
 
 ## Installed Mekugi runtime
 
-Preparation snapshots the installed host Mekugi runtime without compiling Go or Rust.
+Install from the [Mekugi monorepo](https://github.com/mekugi-harness/mekugi#release-binaries).
+For its default release install location, pass `--mekugi-bin ~/.local/bin/mekugi`
+or set `CODEX_AB_MEKUGI_BIN` for launch and the workbench. Preparation snapshots
+the installed host Mekugi runtime without compiling Go or Rust.
 Keep all six artifacts beside `--mekugi-bin`: `mekugi`, `mekugi-exec`,
 `mekugi-app-server`, `codex-code-mode-host`, Linux `bwrap`, and `mekugi-models.json`.
 All six are frozen, hashed, and kept separate from stock Codex's code-mode host; missing
