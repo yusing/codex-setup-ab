@@ -269,7 +269,7 @@ export interface JudgeReport {
   started_at: string;
   finished_at?: string;
   /** Older completed reports retain their original judge model. */
-  model: "gpt-6.1-sol" | "gpt-6-sol" | "gpt-5.6-sol";
+  model: "gpt-6.2-sol" | "gpt-6.1-sol" | "gpt-6-sol" | "gpt-5.6-sol";
   /** Medium is retained for completed reports created before high became the judge default. */
   reasoning_effort: "medium" | "high";
   /** Optional because completed medium/default reports predate persisted judge-tier metadata. */

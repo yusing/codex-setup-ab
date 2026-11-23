@@ -425,7 +425,7 @@ test.each(["codex", "mekugi"] as const)("setup commits freeze both revisions wit
   const judged = await readState(run);
   for (const attempt of judged.judge!.attempts!) {
     const mounted = join(fake.stateDir, `codex-ab-${state.id}-judge-${attempt.pass}-${attempt.stage}-${attempt.attempt}.config.toml`);
-    expect(Bun.TOML.parse(await readFile(mounted, "utf8"))).toEqual({ model: "gpt-6.1-sol", model_reasoning_effort: "high",
+    expect(Bun.TOML.parse(await readFile(mounted, "utf8"))).toEqual({ model: "gpt-6.2-sol", model_reasoning_effort: "high",
       service_tier: "default", approval_policy: "never", sandbox_mode: "read-only", web_search: "disabled",
       features: { code_mode_host: true, ...Object.fromEntries(JUDGE_DISABLED_FEATURES.map(feature => [feature, false])) },
       mcp_servers: { source_reader: { command: "node", args: ["/reader/reader.mjs"], required: true, default_tools_approval_mode: "approve", enabled_tools: ["list_files", "read_file", "write_check_plan"] } },

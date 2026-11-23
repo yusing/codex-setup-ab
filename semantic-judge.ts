@@ -20,7 +20,7 @@ import { verifyAdaptiveJudgeInputs } from "./semantic-preflight";
 import type { CandidateId, JudgePass } from "./types";
 
 
-export const JUDGE_MODEL = "gpt-6.1-sol" as const;
+export const JUDGE_MODEL = "gpt-6.2-sol" as const;
 
 /** Frozen historical scores participate in ranking, never in a fresh blind verdict. */
 function mergeHistoricalPass(fresh: JudgePass, order: ArmName[], state: RunState,
@@ -251,7 +251,7 @@ ${prompt}`;
         }
         throw new Error("semantic judge capacity retries exhausted");
       };
-      const evidence = await prepareSemanticAssessment({ runDir, state, contract, pass, order, docker, signal: controller.signal, evaluatorModel: JUDGE_MODEL,
+      const evidence = await prepareSemanticAssessment({ runDir, state, contract, pass, order, docker, signal: controller.signal, evaluatorModel: report.model,
         ask: (stage, prompt, schema) => ask(stage, `${prompt}\nTask:\n${task}`, schema), persistState, reuseSaved: recover, historical: seeds });
       const OUTPUT_SCHEMA = judgeOutputSchema(ids);
       const schema = { ...OUTPUT_SCHEMA, required: [...OUTPUT_SCHEMA.required, "criteria"],

@@ -310,12 +310,14 @@ complete pair with criteria and no judge attempt:
 ./dist/codex-ab judge --run-dir "$run_dir" --confirm-paid-inference
 ```
 
-The judge runs `gpt-6.1-sol` at `high` reasoning and `default` service tier in two
-independent restricted homes (opposite presentation orders, up to three capacity
-launches per stage). It receives the task, anonymous patches/change lists, bounded
-summaries, and read-only `/evidence`, candidate trees, and `/reference` (no arm labels,
-costs, agent logs, or candidate-writable paths). Reference behavior defines task scope,
-not commit correspondence, and source inspection never replaces executed evidence.
+New judge attempts use `gpt-6.2-sol`, high reasoning, and the default service
+tier. Recovery continues with the recorded model. The judge receives
+the task, anonymous patches/change lists, bounded summaries, and full read-only
+`/evidence` and candidate trees. Pinned references appear under `/reference`.
+It sees no arm labels, costs, agent logs, or candidate-writable filesystem.
+Reference behavior defines task scope, not commit correspondence; equivalent
+designs and safe improvements are allowed, but source comparison cannot replace
+executed evidence.
 
 ### Scoring rubric and quality aspects
 
