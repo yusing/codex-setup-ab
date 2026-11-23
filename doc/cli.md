@@ -24,24 +24,28 @@ You need Bun 1.4+, Git, Docker with BuildKit, access to the source commit, and P
 (and a Grok OAuth store for `codex-mekugi-grok`). You do not need Codex installed on the
 host.
 
-The Ubuntu 24.04 image installs standalone Codex and its matching Code Mode companion
+The Ubuntu 26.04 image installs standalone Codex and its matching Code Mode companion
 using the [official installer](https://learn.chatgpt.com/docs/codex/cli#get-started-with-codex-cli)
-at image build time, alongside pinned Go, Node, Bun, and Git toolchains (Git supports
-`--no-lazy-fetch` plus local and HTTPS transports). The image does not inherit another
-benchmark image's runtime, wrappers, source, home, or credentials.
+at image build time. Both image targets include Node, Bun, Python, and packaged Ubuntu
+Git (with `--no-lazy-fetch`, local clones, and HTTPS). The full target adds Go,
+compilers, and the protected-runtime tools. Neither target includes a host setup or
+credentials.
 
 Pair preparation checks and builds the selected image automatically. Manual build
 commands for agent-directed setup:
 
 ```sh
-bun install
 bun run build
 docker build -t codex-ab:0.1.0 .
 ./dist/codex-ab --version
 ```
 
-`launch` reuses a capable image or builds one if missing or incomplete; direct `prepare`
-and `prepare-suite` expect a prebuilt image. The container operator is `1000:1000`. To
+`launch` reuses a capable image or builds one if missing or incomplete. Leave the
+workbench image blank, or omit `--image`, to use the lean image for the built-in NVM,
+Flask, sqlite-utils, and Express packs. Go tasks, custom packs, and protected runtime
+use the full image. Set `--image` or `CODEX_AB_IMAGE` to override this choice.
+Direct `prepare` and `prepare-suite` expect a prebuilt image and default to the full
+image. The container operator is `1000:1000`. To
 refresh Codex deliberately, rebuild with `--no-cache` and prepare a new run (existing
 runs stay pinned to their recorded image ID, Codex version, and executable hashes, which
 `preflight` verifies).

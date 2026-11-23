@@ -8,11 +8,18 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { exec, checked } from "./process";
-import { prepare, type PrepareOptions } from "./prepare";
+import { parseImageCodex, prepare, probeImageCodex, type PrepareOptions } from "./prepare";
 import { runBenchmark } from "./workflow";
 import { prepareTrials, runTrials } from "./trials";
 import { validateMekugiFlags } from "./mekugi";
 import type { CliOptions } from "./cli-options";
+
+const FULL_IMAGE = "codex-ab:0.1.0";
+const LEAN_IMAGE = "codex-ab:lean";
+const LEAN_TASKS = new Set([
+  "nvm-download-no-eval", "flask-ipv6-server-name", "sqlite-utils-history",
+  "express-transfer-encoding",
+]);
 
 export const COMPARISONS = [
   { id: "custom", title: "Custom composition", a: "First setup", b: "Additional setups", description: "Compare two or more Codex or Mekugi setups with Stock guidance or a committed revision." },
@@ -41,7 +48,7 @@ export function taskCatalog() {
 export function launchDefaults(): CliOptions {
   return {
     preset: "stock-current", task: "nvm-download-no-eval", model: "gpt-6-astra", count: "1", order: "concurrent",
-    "current-home": homedir(), image: process.env.CODEX_AB_IMAGE ?? "codex-ab:0.1.0",
+    "current-home": homedir(), image: process.env.CODEX_AB_IMAGE ?? "",
     "docker-bin": process.env.CODEX_AB_DOCKER_BIN ?? "docker",
     "mekugi-source": process.env.CODEX_AB_MEKUGI_SOURCE ?? join(homedir(), "projects/mekugi"),
     "mekugi-bin": process.env.CODEX_AB_MEKUGI_BIN ?? join(homedir(), "go/bin/mekugi"),
@@ -102,6 +109,9 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (!source.trim()) throw new Error("Source checkout is required");
   const custom = task.id === "custom";
   const pack = stringOption(o, "task-pack", task.pack);
+  const image = stringOption(o, "image").trim()
+    || (LEAN_TASKS.has(task.id) && pack === task.pack && !o["protect-mekugi"]
+      ? LEAN_IMAGE : FULL_IMAGE);
   if (custom && !pack && ["base", "forbidden", "task-file", "criteria"].some(key => !stringOption(o, key))) throw new Error("A custom task needs a pack, or base, forbidden commit, task file, and criteria file");
   if (pack && ["base", "forbidden", "task-file", "criteria", "profile"].some(key => o[key] !== undefined)) throw new Error("A task pack owns its profile, commits, prompt, and criteria");
   const cpus = stringOption(o, "cpus", "2");
@@ -126,7 +136,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
       taskPath: resolve(stringOption(o, "task-file", "tasks/session-retention/task.md")),
       criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria")),
       taskPackPath: pack ? resolve(pack) : undefined,
-      currentHome: resolve(stringOption(o, "current-home")), runtimeHome: o["runtime-home"] ? resolve(stringOption(o, "runtime-home")) : undefined, image: stringOption(o, "image"), cpus, memory,
+      currentHome: resolve(stringOption(o, "current-home")), runtimeHome: o["runtime-home"] ? resolve(stringOption(o, "runtime-home")) : undefined, image, cpus, memory,
       timeoutSeconds: positive(stringOption(o, "timeout", String(task.timeout)), "Timeout"), autoCompactLimit: limit,
       dockerBin: stringOption(o, "docker-bin"), bunBinary: stringOption(o, "bun-bin") || undefined,
       currentLauncher: mekugi ? comparison === "codex-mekugi-grok" ? "grok" : "mekugi" : "codex",
@@ -143,49 +153,53 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
 
 export async function ensureLaunchImage(options: {
   image: string; docker: string; signal?: AbortSignal;
-}, progress: (message: string) => void): Promise<string> {
-  const execute = (args: string[]) => exec([options.docker, ...args], { signal: options.signal });
-  const inspect = await execute(["image", "inspect", "--format", "{{.Id}}", options.image]);
-  const imageId = inspect.stdout.trim();
-  let reason = "";
-  if (inspect.exitCode !== 0) {
-    if (!/No such image|not found/i.test(inspect.stderr)) throw new Error(`Cannot inspect Docker image: ${inspect.stderr.trim()}`);
-    reason = "missing image";
-  } else {
-    if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) throw new Error("Cannot verify Docker image ID");
-    const identity = await execute(["run", "--rm", "--network", "none", imageId, "sh", "-lc",
-      'printf "%s:%s\\n" "$(id -u)" "$(id -g)"']);
-    if (identity.exitCode !== 0) throw new Error(`Cannot verify operator identity: ${identity.stderr.trim()}`);
-    if (identity.stdout.trim() !== "1000:1000") reason = `operator identity is ${identity.stdout.trim()}`;
-    if (!reason) {
-      const tools = await execute(["run", "--rm", "--network", "none", imageId, "sh", "-c",
-        'bun --version || exit 10; git --no-lazy-fetch version || exit 11; '
-        + 'test -x "$(git --exec-path)/git-remote-https" || exit 12; '
-        + 'test -x /usr/local/bin/codex-code-mode-host && /usr/local/bin/codex --version || exit 13']);
-      if (tools.exitCode !== 0) {
-        if (tools.exitCode === 125) throw new Error(`Cannot verify container runtime tools: ${tools.stderr.trim()}`);
-        reason = tools.exitCode === 11 ? "container Git lacks --no-lazy-fetch support"
-          : tools.exitCode === 12 ? "container Git HTTPS transport is missing"
-          : tools.exitCode === 13 ? "container Codex or its Code Mode companion is missing or cannot run"
-          : "container Bun is missing or cannot run through PATH";
+}, progress: (message: string) => void) {
+  const inspectImage = () => exec([options.docker, "image", "inspect", "--format", "{{.Id}}",
+    options.image], { signal: options.signal });
+  async function checkImage(imageId: string) {
+    const probe = await probeImageCodex(options.docker, imageId,
+      { forLaunch: true, signal: options.signal });
+    options.signal?.throwIfAborted();
+    if (!probe.timedOut) {
+      switch (probe.exitCode) {
+        case 0: return parseImageCodex(imageId, probe.stdout);
+        case 9: return `operator identity is ${probe.stdout.trim()}`;
+        case 10: return "container Bun is missing or cannot run through PATH";
+        case 11: return "container Git lacks --no-lazy-fetch support";
+        case 12: return "container Git HTTPS transport is missing";
+        case 13: return "container Codex or its Code Mode companion is missing or cannot run";
       }
     }
+    const detail = probe.timedOut ? "probe timed out" : probe.stderr.trim() || `probe exited ${probe.exitCode}`;
+    throw new Error(`Cannot verify container runtime tools: ${detail}`);
   }
-  if (!reason) { progress("Image operator, Codex, Bun, and Git are available"); return imageId; }
-  progress(`Building image ${options.image} (${reason})`);
+  const inspect = await inspectImage();
+  options.signal?.throwIfAborted();
+  if (inspect.exitCode !== 0 && !/No such image|not found/i.test(inspect.stderr)) {
+    throw new Error(`Cannot inspect Docker image: ${inspect.stderr.trim()}`);
+  }
+  const image = inspect.exitCode === 0 ? await checkImage(inspect.stdout.trim()) : "missing image";
+  if (typeof image !== "string") {
+    progress("Image operator, Codex, Bun, and Git are available");
+    return image;
+  }
+  progress(`Building image ${options.image} (${image})`);
   // Inherit streams so the workbench receives build progress, not a silent buffered build.
-  const child = Bun.spawn([options.docker, "build", "-t", options.image, "."],
+  const target = options.image === LEAN_IMAGE ? ["--target", "lean"] : [];
+  const child = Bun.spawn([options.docker, "build", ...target, "-t", options.image, "."],
     { stdout: "inherit", stderr: "inherit" });
   const cancel = () => child.kill("SIGTERM");
   options.signal?.addEventListener("abort", cancel, { once: true });
   if (options.signal?.aborted) cancel();
   try { if (await child.exited !== 0) throw new Error("Image build failed; see build output"); }
   finally { options.signal?.removeEventListener("abort", cancel); }
-  const built = await execute(["image", "inspect", "--format", "{{.Id}}", options.image]);
-  if (built.exitCode !== 0 || !/^sha256:[0-9a-f]{64}$/.test(built.stdout.trim())) {
+  const built = await inspectImage();
+  if (built.exitCode !== 0) {
     throw new Error(`Cannot verify built Docker image: ${built.stderr.trim()}`);
   }
-  return built.stdout.trim();
+  const qualified = await checkImage(built.stdout.trim());
+  if (typeof qualified === "string") throw new Error(`Built image is not usable: ${qualified}`);
+  return qualified;
 }
 export async function runLaunch(o: CliOptions): Promise<string> {
   const config = launchConfiguration(o);
@@ -203,11 +217,11 @@ export async function runLaunch(o: CliOptions): Promise<string> {
       else { progress(`Cloning ${task.title} source to ${config.prepare.source}`); await checked(["git", "clone", task.repository, config.prepare.source], { signal: controller.signal }); }
     }
     progress("Checking container image");
-    const imageId = await ensureLaunchImage({ image: config.prepare.image, docker: config.docker,
+    const imageCodex = await ensureLaunchImage({ image: config.prepare.image, docker: config.docker,
       signal: controller.signal }, progress);
     controller.signal.throwIfAborted();
     progress("Preparing isolated workspaces");
-    let directory = await prepare({ ...config.prepare, imageId });
+    let directory = await prepare({ ...config.prepare, imageCodex });
     if (config.importArms) {
       const state = await readState(directory);
       state.planned_imports = config.importArms;

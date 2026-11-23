@@ -267,6 +267,25 @@ exit 1
   expect(await readdir(root)).toEqual(before);
 });
 
+test("prepare-only launch records runtime identity without probing the image again", async () => {
+  const dockerBin = join(root, "launch-docker");
+  await file(dockerBin, `#!/bin/sh
+printf '%s\\n' "$1" >> "$0.log"
+exec docker "$@"
+`, 0o755);
+  const launched = await checked([process.execPath, join(import.meta.dir, "cli.ts"), "launch",
+    "--prepare-only", "--task", "custom", "--source", source, "--base", base,
+    "--forbidden", future, "--task-file", task, "--criteria", fixtureCriteria,
+    "--current-home", home, "--output-parent", root, "--image", "fixture-image",
+    "--docker-bin", dockerBin]);
+  const state = await readState(launched.stdout.trim());
+  expect(state.image_id).toBe(`sha256:${"a".repeat(64)}`);
+  expect(state.runtime_tools).toMatchObject({
+    codex_version: "codex-cli 0.154.0", codex_code_mode_host_size: 12345,
+  });
+  expect(await readFile(`${dockerBin}.log`, "utf8")).toBe("image\nrun\n");
+});
+
 test("prepare clones configuration and preserves tracked changes without a guidance allowlist", async () => {
   const currentHome = join(root, "current-without-small-task");
   await cp(home, currentHome, { recursive: true });

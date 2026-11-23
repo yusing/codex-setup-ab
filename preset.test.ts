@@ -35,8 +35,10 @@ type ImageState = "ready" | "missing-bun" | "old-git" | "missing-git-https" | "d
 
 const fixtureImageId = `sha256:${"a".repeat(64)}`;
 const rebuiltImageId = `sha256:${"b".repeat(64)}`;
+const codexHash = "c".repeat(64);
+const companionHash = "d".repeat(64);
 
-async function imageProbe(state: ImageState) {
+async function imageProbe(state: ImageState, tag = "fixture:latest") {
   const root = await mkdtemp(join(tmpdir(), "codex-ab-preset-"));
   try {
     const docker = join(root, "docker");
@@ -52,27 +54,26 @@ case "$1" in
     esac
     echo '${fixtureImageId}' ;;
   run)
-    case " $* " in
-      *' bun --version '*)
-        case '${state}' in
-          missing-bun) exit 10 ;; old-git) exit 11 ;; missing-git-https) exit 12 ;;
-          missing-companion) exit 13 ;; daemon-error) echo 'daemon unavailable' >&2; exit 125 ;;
-        esac ;;
-      *)
-        case '${state}' in
-          wrong-operator) echo 0:0 ;; identity-error) exit 1 ;; *) echo 1000:1000 ;;
-        esac ;;
-    esac ;;
+    if [ ! -f "$0.built" ]; then
+      case '${state}' in
+        wrong-operator) echo 0:0; exit 9 ;;
+        missing-bun) exit 10 ;; old-git) exit 11 ;; missing-git-https) exit 12 ;;
+        missing-companion) exit 13 ;; identity-error) exit 1 ;;
+        daemon-error) echo 'daemon unavailable' >&2; exit 125 ;;
+      esac
+    fi
+    printf '%s\\n' 'codex-cli 0.171.0' '${codexHash}  /usr/local/bin/codex' \
+      '${companionHash}  /usr/local/bin/codex-code-mode-host' '12345' ;;
   build) touch "$0.built" ;;
   *) exit 99 ;;
 esac
 `, { mode: 0o755 });
-    let id: string | undefined;
+    let image: Awaited<ReturnType<typeof ensureLaunchImage>> | undefined;
     let error = "";
     try {
-      id = await ensureLaunchImage({ image: "fixture:latest", docker }, () => {});
+      image = await ensureLaunchImage({ image: tag, docker }, () => {});
     } catch (caught) { error = String(caught); }
-    return { id, error, calls: await readFile(`${docker}.log`, "utf8") };
+    return { image, error, calls: await readFile(`${docker}.log`, "utf8") };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -168,14 +169,17 @@ test("the human convenience launcher starts the workbench instead of a paid pres
 
 test("launch reuses a capable image and rebuilds missing or incomplete images without a host Codex", async () => {
   const ready = await imageProbe("ready");
-  expect(ready.id).toBe(fixtureImageId);
-  expect(ready.calls).toContain(`run --rm --network none ${fixtureImageId}`);
-  expect(ready.calls).toContain("test -x /usr/local/bin/codex-code-mode-host");
-  expect(ready.calls).toContain("git --no-lazy-fetch version");
+  expect(ready.image).toMatchObject({ imageId: fixtureImageId, tools: {
+    codex_version: "codex-cli 0.171.0", codex_sha256: codexHash,
+    codex_code_mode_host_sha256: companionHash, codex_code_mode_host_size: 12345,
+  } });
+  expect(ready.calls.split("\n").filter(line => line.startsWith("run ")))
+    .toEqual([`run --rm --network none ${fixtureImageId} sh -ec `]);
   expect(ready.calls).not.toContain("\nbuild ");
   for (const state of ["wrong-operator", "missing", "missing-companion", "missing-bun", "old-git", "missing-git-https"] as const) {
     const result = await imageProbe(state);
-    expect(result.id).toBe(rebuiltImageId);
+    expect(result.image?.imageId).toBe(rebuiltImageId);
+    expect(result.calls).toContain(`run --rm --network none ${rebuiltImageId}`);
     expect(result.calls.split("\n").find(line => line.startsWith("build ")))
       .toBe("build -t fixture:latest .");
   }
@@ -187,6 +191,26 @@ test("image probe infrastructure failures stop without a build", async () => {
     expect(result.error).toContain("Cannot");
     expect(result.calls).not.toContain("\nbuild ");
   }
+});
+
+test("launch defaults to a lean image only for built-in non-Go tasks", async () => {
+  for (const task of ["nvm-download-no-eval", "flask-ipv6-server-name",
+    "express-transfer-encoding", "sqlite-utils-history"]) {
+    expect(launchConfiguration({ task, image: "" }).prepare.image).toBe("codex-ab:lean");
+  }
+  expect(launchConfiguration({ task: "session-retention", image: "" }).prepare.image)
+    .toBe("codex-ab:0.1.0");
+  expect(launchConfiguration({ task: "custom", "task-pack": "/own-pack", source: "/own-source",
+    image: "" }).prepare.image).toBe("codex-ab:0.1.0");
+  expect(launchConfiguration({ "task-pack": "/own-pack", image: "" }).prepare.image)
+    .toBe("codex-ab:0.1.0");
+  expect(launchConfiguration({ "current-launcher": "mekugi", "protect-mekugi": true,
+    image: "" }).prepare.image).toBe("codex-ab:0.1.0");
+  expect(launchConfiguration({ image: "custom-runtime:pinned" }).prepare.image)
+    .toBe("custom-runtime:pinned");
+  const missing = await imageProbe("missing", "codex-ab:lean");
+  expect(missing.image?.imageId).toBe(rebuiltImageId);
+  expect(missing.calls).toContain("build --target lean -t codex-ab:lean .");
 });
 
 test.each(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])("launch accepts %s reasoning", effort => {

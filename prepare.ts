@@ -47,7 +47,7 @@ export interface PrepareOptions {
   currentHome: string;
   runtimeHome?: string;
   image: string;
-  imageId?: string;
+  imageCodex?: ReturnType<typeof parseImageCodex>;
   dockerBin?: string;
   cpus: string;
   memory: string;
@@ -60,35 +60,58 @@ export interface PrepareOptions {
 function progress(message: string): void { process.stderr.write(`[prepare] ${message}\n`); }
 const TOOL_SETUP_PATHS = [".local/bin/mise", ".config/mise", ".local/share/mise/migrations"];
 
-async function readImageCodex(options: PrepareOptions) {
-  const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
-  const imageId = options.imageId ?? (await checked([
-    docker, "image", "inspect", "--format", "{{.Id}}", options.image,
-  ], { timeoutMs: 30_000 })).stdout.trim();
+const CODEX_PATH = "/usr/local/bin/codex";
+const CODE_MODE_HOST_PATH = "/usr/local/bin/codex-code-mode-host";
+
+export function probeImageCodex(docker: string, imageId: string,
+  options: { forLaunch?: boolean; signal?: AbortSignal } = {}) {
   if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) throw new Error("Invalid Docker image ID");
-  const codex = "/usr/local/bin/codex";
-  const host = "/usr/local/bin/codex-code-mode-host";
-  const probe = await checked([docker, "run", "--rm", "--network", "none", imageId, "sh", "-ec", `
-    test -x "$2" || { echo 'Image is missing the executable Code Mode companion' >&2; exit 1; }
-    "$1" --version
+  return exec([docker, "run", "--rm", "--network", "none", imageId, "sh", "-ec", `
+    ${options.forLaunch ? `
+    uid=$(id -u)
+    gid=$(id -g)
+    if [ "$uid:$gid" != 1000:1000 ]; then
+      printf '%s:%s\\n' "$uid" "$gid"
+      exit 9
+    fi
+    bun --version >/dev/null || exit 10
+    git --no-lazy-fetch version >/dev/null || exit 11
+    test -x "$(git --exec-path)/git-remote-https" || exit 12
+    ` : ""}
+    test -x "$2" || { echo 'Image is missing the executable Code Mode companion' >&2; exit 13; }
+    "$1" --version || exit 13
     sha256sum "$1" "$2"
     stat -Lc %s "$2"
-  `, "sh", codex, host], { timeoutMs: 30_000 });
-  const [version, codexHash, hostHash, hostSize, ...extra] = probe.stdout.trim().split("\n");
+  `, "sh", CODEX_PATH, CODE_MODE_HOST_PATH], { timeoutMs: 30_000, signal: options.signal });
+}
+
+export function parseImageCodex(imageId: string, stdout: string) {
+  const [version, codexHash, hostHash, hostSize, ...extra] = stdout.trim().split("\n");
   const shaLine = /^([0-9a-f]{64})  (.*)$/;
   const cli = codexHash?.match(shaLine);
   const companion = hostHash?.match(shaLine);
   const size = Number(hostSize);
   if (!/^codex-cli \d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version ?? "")
-    || cli?.[2] !== codex || companion?.[2] !== host
+    || cli?.[2] !== CODEX_PATH || companion?.[2] !== CODE_MODE_HOST_PATH
     || !Number.isSafeInteger(size) || size <= 0 || extra.length) {
     throw new Error(`Invalid Codex runtime metadata from image ${imageId}`);
   }
   return { imageId, tools: {
-    codex_source: codex, codex_version: version!, codex_sha256: cli[1]!,
-    codex_code_mode_host_source: host, codex_code_mode_host_sha256: companion[1]!,
+    codex_source: CODEX_PATH, codex_version: version!, codex_sha256: cli[1]!,
+    codex_code_mode_host_source: CODE_MODE_HOST_PATH, codex_code_mode_host_sha256: companion[1]!,
     codex_code_mode_host_size: size,
   } };
+}
+
+async function readImageCodex(options: PrepareOptions) {
+  const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
+  const imageId = (await checked([docker, "image", "inspect", "--format", "{{.Id}}",
+    options.image], { timeoutMs: 30_000 })).stdout.trim();
+  const probe = await probeImageCodex(docker, imageId);
+  if (probe.exitCode !== 0 || probe.timedOut) {
+    throw new Error(`Cannot read Codex identity from ${imageId}: ${probe.stderr.trim() || `probe exited ${probe.exitCode}`}`);
+  }
+  return parseImageCodex(imageId, probe.stdout);
 }
 
 async function exists(path: string): Promise<boolean> { try { await lstat(path); return true; } catch { return false; } }
@@ -604,7 +627,7 @@ export async function initializeSubmodules(repository: string, submodules: NonNu
       await checked(["git", "init", "--bare", seed]);
       await checked(["git", "-C", seed, "fetch", "--depth=1", pathToFileURL(sub.source).href, `${sub.sha}:refs/heads/work`]);
       const target = join(repository, sub.path);
-      await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "work", seed, target]);
+      await checked(["git", "clone", "--no-hardlinks", "--branch", "work", seed, target]);
       await checked(["git", "-C", target, "remote", "remove", "origin"]);
       await checked(["git", "-C", repository, "submodule", "init", "--", sub.path]);
     } finally {
@@ -706,7 +729,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const taskPath = await realpath(options.taskPath);
   const criteriaPath = options.criteriaPath ? await realpath(options.criteriaPath) : undefined;
   const criteriaContract = pack?.contract ?? (criteriaPath ? validateCriteria(JSON.parse(await readFile(criteriaPath, "utf8")), await sha256(taskPath)) : undefined);
-  const imageCodex = await readImageCodex(options);
+  const imageCodex = options.imageCodex ?? await readImageCodex(options);
   const pinnedBun = join(runtimeHome, ".local/share/mise/installs/bun/1.4.2/bin/bun");
   const selectedBun = options.bunBinary ?? (await exists(pinnedBun) ? pinnedBun : Bun.which("bun"));
   if (!selectedBun) throw new Error("Bun 1.4 or later is required; install Bun or pass --bun-bin");
@@ -805,7 +828,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   for (const arm of keys) {
     const repo = join(runDir, repositories[arm]);
     await mkdir(dirname(repo), { recursive: true });
-    await checked(["git", "clone", "--no-local", "--no-hardlinks", "--branch", "work", seed, repo]);
+    await checked(["git", "clone", "--no-hardlinks", "--branch", "work", seed, repo]);
     await checked(["git", "-C", repo, "remote", "remove", "origin"]);
     await checked(["git", "-C", repo, "config", "user.name", "Task Agent"]);
     await checked(["git", "-C", repo, "config", "user.email", "agent@example.invalid"]);

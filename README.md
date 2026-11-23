@@ -28,8 +28,10 @@ benchmark verifiers run in a separate fixed-verifier mode. See the
   in one directory. Preparation snapshots these host artifacts without compiling Mekugi
   or Rust, separately from the stock Codex pair.
 
-Pair preparation checks and builds the selected image automatically. For manual build
-commands and container details, see the [CLI build guide](doc/cli.md#prerequisites-and-build).
+Launch checks and builds the selected image automatically. Built-in tasks that do not
+need Go use a leaner image by default. See the
+[CLI build guide](doc/cli.md#prerequisites-and-build) for image selection and manual
+build commands.
 Build, preparation, and preflight make no model requests. Running candidates and judges
 uses your authentication and quota and requires explicit paid-inference consent.
 Reported API costs are list-price estimates, not subscription charges or invoices.
@@ -41,7 +43,6 @@ Reported API costs are list-price estimates, not subscription charges or invoice
 Start the dark-mode workbench from the repository root:
 
 ```sh
-bun install
 bun start
 ```
 
@@ -148,6 +149,7 @@ the host tool store unchanged while runs or trial sets use them.
 ## Development
 
 ```sh
+bun install
 bun run check
 bun run build
 ```

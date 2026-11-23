@@ -4,53 +4,23 @@ FROM golang:1.27.1-bookworm@sha256:648f440f42a0958804efb24df176f806f9d353b41f1c0
 FROM node:24.21.0-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553 AS node-toolchain
 FROM oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895 AS bun-toolchain
 
-FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517 AS git-toolchain
-# Pinned source from the official Git distribution. Distro Git lacks the
-# --no-lazy-fetch capability used by the pinned coordination task.
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS lean
+
+# Resolute's packaged Git supports the required --no-lazy-fetch option.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl gcc make perl xz-utils \
-        libcurl4-openssl-dev libexpat1-dev libssl-dev zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
-RUN curl --fail --location --silent --show-error \
-        https://www.kernel.org/pub/software/scm/git/git-2.56.1.tar.xz -o /tmp/git.tar.xz \
-    && echo 'f0b0bf89264b9bd2e1c640363e7529643989da76281600473c50745cd34a607f  /tmp/git.tar.xz' | sha256sum --check --strict \
-    && mkdir /tmp/git \
-    && tar -xJf /tmp/git.tar.xz -C /tmp/git --strip-components=1 \
-    && make -C /tmp/git -j2 prefix=/opt/git NO_TCLTK=YesPlease NO_GETTEXT=YesPlease NO_RUST=YesPlease install \
-    && /opt/git/bin/git --no-lazy-fetch version
-
-FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
-
-# Use public, digest-pinned official toolchains without inheriting Mekugi,
-# wrappers, source, home state, or credentials.
-COPY --from=go-toolchain /usr/local/go /usr/local/go
-COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
-COPY --from=bun-toolchain /usr/local/bin/bun /usr/local/bin/bun
-COPY --from=git-toolchain /opt/git /opt/git
-ENV PATH="/usr/local/go/bin:/usr/local/bin:${PATH}"
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        bash \
         ca-certificates \
         curl \
-        g++ \
-        gcc \
         git \
-        iptables \
-        util-linux \
-        make \
-        pkg-config \
-        python3 \
+        libstdc++6 \
         python3-venv \
         ripgrep \
     && rm -rf /var/lib/apt/lists/* \
-    && go version \
-    && node --version \
-    && bun --version \
-    && ln -s /opt/git/bin/* /usr/local/bin/ \
-    && git --no-lazy-fetch version
+    && git --no-lazy-fetch version \
+    && test -x "$(git --exec-path)/git-remote-https"
+
+COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
+COPY --from=bun-toolchain /usr/local/bin/bun /usr/local/bin/bun
 
 # Keep the official standalone package outside the benchmark's mounted homes.
 RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex-install.sh \
@@ -63,6 +33,7 @@ RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex-install.sh \
     && ! command -v hpatch \
     && ! command -v mekugi \
     && /usr/local/bin/codex --version \
+    && node --version && bun --version \
     && install -d /usr/local/libexec /root/.config /agent-issue-reports /go/pkg/mod \
     && ln "$(readlink -f /usr/local/bin/codex)" /usr/local/libexec/codex-real
 
@@ -83,3 +54,24 @@ WORKDIR /workspace
 USER ubuntu
 ENV HOME=/home/ubuntu CODEX_HOME=/home/ubuntu/.codex
 ENTRYPOINT []
+
+FROM lean AS model-free
+USER root
+COPY tasks/flask-ipv6-server-name/requirements.txt /tmp/flask-qualification-requirements.txt
+RUN python3 -m venv /opt/task-deps/python \
+    && /opt/task-deps/python/bin/pip install --no-cache-dir -r /tmp/flask-qualification-requirements.txt
+ARG FIXTURE_UID=1001
+ARG FIXTURE_GID=1001
+RUN mkdir -p /home/ubuntu/.codex \
+    && chown -R "${FIXTURE_UID}:${FIXTURE_GID}" /home/ubuntu /workspace
+USER ${FIXTURE_UID}:${FIXTURE_GID}
+
+FROM lean AS full
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++ iptables make pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=go-toolchain /usr/local/go /usr/local/go
+ENV PATH="/usr/local/go/bin:${PATH}"
+RUN go version
+USER ubuntu

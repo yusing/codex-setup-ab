@@ -40,9 +40,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: "1.4.2"
-      - run: bun install --frozen-lockfile
       - name: Build credential-free boundary fixture
-        run: docker build -f Dockerfile.model-free --build-arg FIXTURE_UID=$(id -u) --build-arg FIXTURE_GID=$(id -g) -t codex-ab:model-free .
+        run: docker build --target model-free --build-arg FIXTURE_UID=$(id -u) --build-arg FIXTURE_GID=$(id -g) -t codex-ab:model-free .
       - name: Fetch pinned Flask qualification source
         uses: actions/checkout@v7.0.1
         with:
