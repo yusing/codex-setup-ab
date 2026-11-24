@@ -12,7 +12,6 @@ let eventStream, latestSnapshot;
 let armsDraftReady = false;
 const ARMS_DRAFT_KEY = "codex-ab.arms.v1";
 const MEKUGI_TOGGLES = [
-  ["shell-guard", "Guard remote VCS writes and sudo commands"],
   ["deduplicate-output", "Deduplicate output and attachments"],
   ["child-reply-summary", "Show child-authored reply summaries"],
 ];

@@ -157,11 +157,13 @@ Both `launch` and `prepare` accept per-arm overrides via `--arm-settings` keyed 
 retained arm keys (`stock`, `current`, `arm-3`, …), for example:
 
 ```sh
---arm-settings '{"current":{"mekugi_flags":["--shell-guard=false"],"skills":{"example":false}}}'
+--arm-settings '{"current":{"mekugi_flags":["--child-reply-summary=false"],
+                           "skills":{"example":false}}}'
 ```
 
-Omitted fields keep command defaults. Skills are setup-level selections (repository-local
-selections keep `skills-mgr`'s normal precedence). See the
+Omitted fields keep command defaults. Only pass `--shell-guard` with a pinned
+Mekugi build that supports the switch. Skills are setup-level selections.
+Repository-local selections keep `skills-mgr`'s normal precedence. See the
 [preparation contract](contract.md#prepare-an-isolated-pair) for runtime supplements,
 models, reasoning, and resource controls.
 

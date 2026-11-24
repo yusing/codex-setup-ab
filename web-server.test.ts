@@ -972,13 +972,13 @@ test("invalid launch inputs fail before creating a job, and paid consent is fres
 
 test("arm tabs serialize independent execution, Mekugi and skill settings through launch configuration", async () => {
   const source = (await (await fetch(origin + "/app.js")).text()).replace(/\ninit\(\);\s*$/, "");
-  const makeRow = (launcher: string, model: string, guard: boolean) => {
+  const makeRow = (launcher: string, model: string, skillEnabled: boolean) => {
     const inputs: Record<string, { value?: string; checked?: boolean; disabled?: boolean }> = Object.fromEntries(Object.entries({
       launcher, model, setup: "revision", revision: "HEAD", source: "fresh", "reasoning-effort": "high", cpus: "2", memory: "4g", "run-timeout": "600", compact: "", timeout: "30s", "stream-idle-timeout": "",
     }).map(([name, value]) => [name, { value }]));
-    inputs["parallel-work"] = { checked: false }; inputs["shell-guard"] = { checked: guard };
+    inputs["parallel-work"] = { checked: false };
     inputs["deduplicate-output"] = { checked: true }; inputs["child-reply-summary"] = { checked: true };
-    return { inputs, originalSettings: {}, skillOverrides: { example: guard }, querySelector: (selector: string) => inputs[selector.match(/"(.*?)"/)![1]!] };
+    return { inputs, originalSettings: {}, skillOverrides: { example: skillEnabled }, querySelector: (selector: string) => inputs[selector.match(/"(.*?)"/)![1]!] };
   };
   const rows = [makeRow("mekugi", "gpt-6-astra", false), makeRow("mekugi", "gpt-6.1-terra", true)];
   const elements = { "custom-arms": { children: rows }, "launch-form": { querySelectorAll: () => [] }, "prepare-only": { checked: true }, "paid-consent": { checked: false } };
@@ -987,8 +987,8 @@ test("arm tabs serialize independent execution, Mekugi and skill settings throug
     FormData: class { *[Symbol.iterator]() { yield ["preset", "custom"]; yield ["task", "nvm-download-no-eval"]; } },
   });
   const configuration = launchConfiguration(body.options);
-  expect(configuration.prepare.armSettings?.stock).toMatchObject({ model: "gpt-6-astra", skills: { example: false }, mekugi_flags: ["--shell-guard=false", "--deduplicate-output=true", "--child-reply-summary=true", "--timeout=30s"] });
-  expect(configuration.prepare.armSettings?.current).toMatchObject({ model: "gpt-6.1-terra", skills: { example: true }, mekugi_flags: ["--shell-guard=true", "--deduplicate-output=true", "--child-reply-summary=true", "--timeout=30s"] });
+  expect(configuration.prepare.armSettings?.stock).toMatchObject({ model: "gpt-6-astra", skills: { example: false }, mekugi_flags: ["--deduplicate-output=true", "--child-reply-summary=true", "--timeout=30s"] });
+  expect(configuration.prepare.armSettings?.current).toMatchObject({ model: "gpt-6.1-terra", skills: { example: true }, mekugi_flags: ["--deduplicate-output=true", "--child-reply-summary=true", "--timeout=30s"] });
   expect(body.options["mekugi-flags"]).toBeUndefined();
   expect(configuration.prepareOnly).toBe(true);
   rows[1]!.inputs.setup!.value = "current";

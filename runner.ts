@@ -254,14 +254,20 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
         ...(nativeRuntime ? [] : ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics"]),
         pinnedPath ? "/usr/local/bin/mekugi" : "mekugi"];
       let flags = mekugiArmFlags(state, arm);
-      const dedup = flags.find(flag => /^--deduplicate-output(?:=|$)/.test(flag));
-      if (nativeRuntime && !state.protected_runtime && !grokComparison && dedup) {
+      const dedup = !state.protected_runtime && !grokComparison
+        ? flags.find(flag => /^--deduplicate-output(?:=|$)/.test(flag))
+        : undefined;
+      const shellGuard = flags.some(flag => /^--shell-guard(?:=|$)/.test(flag));
+      if (nativeRuntime && (dedup || shellGuard)) {
         // An unknown flag before --help sends the rest of argv to Codex, so ask for bare help.
         const help = await checkSetup(arm, { name: `${name}-options`, createArgs: [...launcher, "--help"] });
         if (help.exitCode !== 0 || !/^Usage: mekugi\b/m.test(help.stdout)) {
           throw new Error(`could not read the pinned Mekugi launch options before inference: ${help.stderr.trim() || "expected Mekugi usage"}`);
         }
-        if (!/^\s+-{1,2}deduplicate-output(?=\s|$)/m.test(help.stdout)) {
+        if (shellGuard && !/^\s+-{1,2}shell-guard(?=\s|$)/m.test(help.stdout)) {
+          throw new Error("pinned Mekugi does not support --shell-guard. Remove it from the arm settings or select a compatible Mekugi build");
+        }
+        if (dedup && !/^\s+-{1,2}deduplicate-output(?=\s|$)/m.test(help.stdout)) {
           if (!help.stdout.includes("codex headless --yolo")) throw new Error("pinned Mekugi does not support --deduplicate-output and did not advertise the native headless launcher");
           if (state.comparison === "duplicate-output" || dedup === "--deduplicate-output=false") {
             throw new Error("pinned Mekugi does not support --deduplicate-output; native output deduplication cannot be disabled. Select a Mekugi build with the switch for an opt-out or duplicate-output comparison");

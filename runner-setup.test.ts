@@ -286,6 +286,16 @@ test("Mekugi without a deduplication switch rejects opt-outs and duplicate-outpu
   }
 }, 30_000);
 
+test("Mekugi without a shell guard switch rejects an explicit request before inference", async () => {
+  const run = await prepare({
+    ...mekugiComparisonOptions(), armSettings: { current: { mekugi_flags: ["--shell-guard=true"] } },
+  });
+  const fake = await fakeOwnedDocker(0);
+  await file(fake.path, (await readFile(fake.path, "utf8")).replace(" '  -shell-guard'", ""), 0o755);
+  await expect(preflightRun(run, fake.path)).rejects.toThrow("pinned Mekugi does not support --shell-guard");
+  expect((await readState(run)).arm_attempts).toBeUndefined();
+});
+
 test("duplicate-output rejects an unsupported enabled treatment before launching either arm", async () => {
   const run = await prepare({ ...mekugiComparisonOptions(), comparison: "duplicate-output", autoCompactLimit: undefined });
   const state = await readState(run);
