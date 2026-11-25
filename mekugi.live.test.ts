@@ -26,7 +26,7 @@ liveTest("real Mekugi exports start without inference and empty capture stays un
         "--tmpfs", "/home/ubuntu/.local/state/mekugi/debug:size=64m,mode=0700,uid=1000,gid=1000",
         "-v", `${process.env.CODEX_AB_MEKUGI_BIN ?? "/home/ubuntu/go/bin/mekugi"}:/usr/local/bin/mekugi:ro`,
         process.env.CODEX_AB_LIVE_IMAGE ?? "codex-ab:delivery",
-        "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi", "--ansi-faint=off",
+        "sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics", "mekugi",
         "--capture-output=/mekugi-exports/capture.jsonl", "--debug", "codex", "--version"],
     });
     expect(result.exitCode).toBe(0);

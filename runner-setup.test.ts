@@ -272,6 +272,22 @@ test("stock-mekugi uses native deduplication when the enabled arm flag has no sw
   expect(launch).not.toContain("--deduplicate-output");
 });
 
+test("headless preflight ignores ANSI faint saved in older run settings", async () => {
+  const run = await prepare(mekugiComparisonOptions());
+  const state = await readState(run);
+  state.mekugi_flags = ["--ansi-faint=auto"];
+  state.arm_settings = {
+    current: { mekugi_flags: ["--ansi-faint=off", "--child-reply-summary=false"] },
+  };
+  await writeState(run, state);
+  const fake = await fakeOwnedDocker(0);
+  await preflightRun(run, fake.path);
+  const log = await readFile(fake.log, "utf8");
+  expect(log).toContain("mekugi --child-reply-summary=false --debug");
+  expect(log).not.toContain("--ansi-faint");
+  expect((await readState(run)).arm_settings).toEqual(state.arm_settings);
+});
+
 test("Mekugi without a deduplication switch rejects opt-outs and duplicate-output comparisons", async () => {
   for (const options of [
     { ...mekugiComparisonOptions(), mekugiFlags: ["--deduplicate-output=false"] },
@@ -623,7 +639,7 @@ test("Mekugi argument arrays cannot redirect benchmark-owned exports", () => {
   }
   expect(() => parseMekugiFlags('["--model-protocol=native"]')).toThrow();
   expect(() => parseMekugiFlags('["--debug=false"]')).toThrow();
-  expect(parseMekugiFlags('["--shell-guard=false","--ansi-faint=off"]')).toEqual(["--shell-guard=false", "--ansi-faint=off"]);
+  expect(() => parseMekugiFlags('["--ansi-faint=off"]')).toThrow("unsupported");
 });
 
 test("task-pack CLI freezes pinned controls without exposing checks to either arm", async () => {

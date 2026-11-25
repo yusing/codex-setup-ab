@@ -3,7 +3,9 @@ import { validateMekugiFlags, usesMekugi } from "./mekugi";
 
 const fields = new Set(["model", "reasoning_effort", "cpus", "memory", "timeout_seconds", "auto_compact_limit", "parallel_work", "mekugi_flags", "skills"]);
 
-export function parseArmSettings(value: unknown, keys: string[]): Record<string, ArmSettings> {
+export function parseArmSettings(
+  value: unknown, keys: string[], origin?: "retained",
+): Record<string, ArmSettings> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Arm settings must be an object keyed by arm");
   return Object.fromEntries(Object.entries(value).map(([arm, settings]) => {
     if (!keys.includes(arm) || !settings || typeof settings !== "object" || Array.isArray(settings)
@@ -15,15 +17,20 @@ export function parseArmSettings(value: unknown, keys: string[]): Record<string,
     if (s.memory !== undefined && (typeof s.memory !== "string" || !/^[1-9]\d*(?:[bkmg])?$/i.test(s.memory))) throw new Error(`Invalid memory limit for ${arm}`);
     for (const key of ["timeout_seconds", "auto_compact_limit"]) if (s[key] !== undefined && (typeof s[key] !== "number" || !Number.isSafeInteger(s[key]) || Number(s[key]) < 1)) throw new Error(`Invalid ${key} for ${arm}`);
     if (s.parallel_work !== undefined && typeof s.parallel_work !== "boolean") throw new Error(`Invalid parallel work setting for ${arm}`);
-    if (s.mekugi_flags !== undefined) validateMekugiFlags(s.mekugi_flags);
+    if (s.mekugi_flags !== undefined) validateMekugiFlags(s.mekugi_flags, origin);
     if (s.skills !== undefined && (!s.skills || typeof s.skills !== "object" || Array.isArray(s.skills)
       || Object.entries(s.skills).some(([name, enabled]) => !name.trim() || typeof enabled !== "boolean"))) throw new Error(`Invalid skills for ${arm}`);
     return [arm, s as ArmSettings];
   }));
 }
 
-export function validateArmSettings(state: Pick<RunState, "arms" | "comparison" | "execution" | "arm_settings">): void {
-  const settings = parseArmSettings(state.arm_settings ?? {}, Object.keys(state.arms));
+export function validateArmSettings(
+  state: Pick<RunState, "arms" | "comparison" | "execution" | "arm_settings">,
+  origin?: "retained",
+): void {
+  const settings = parseArmSettings(
+    state.arm_settings ?? {}, Object.keys(state.arms), origin,
+  );
   for (const [arm, value] of Object.entries(settings)) {
     if (value.mekugi_flags?.length && !usesMekugi(state, arm)) throw new Error(`Mekugi flags require the Mekugi launcher in ${arm}`);
     if (value.model && (state.comparison === "codex-mekugi-grok") !== (value.model === "grok:grok-4.7")) throw new Error(`Model does not match the launcher in ${arm}`);

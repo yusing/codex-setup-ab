@@ -202,7 +202,7 @@ function validatePairedMekugiComparison(comparison: RunState["comparison"], limi
 }
 
 export async function verifyPreparedInputs(runDir: string, state: RunState, purpose: "execution" | "judging" = "execution"): Promise<void> {
-  validateArmSettings(state);
+  validateArmSettings(state, "retained");
   if (state.runtime_tools.mekugi_in_image && (!state.runtime_tools.mekugi_exec_source || !state.runtime_tools.mekugi_exec_sha256)) {
     throw new Error("snapshotted Mekugi companion identity is missing; prepare a fresh run");
   }
@@ -300,7 +300,7 @@ export async function verifyPreparedInputs(runDir: string, state: RunState, purp
       }
     }
   }
-  validateMekugiFlags(state.mekugi_flags ?? []);
+  validateMekugiFlags(state.mekugi_flags ?? [], "retained");
   if (state.mekugi_exports && (await sha256(join(runDir, state.mekugi_exports.validator.path)) !== state.mekugi_exports.validator.sha256 || await sha256(join(runDir, state.mekugi_exports.reader.path)) !== state.mekugi_exports.reader.sha256)) {
     throw new Error("Mekugi capture validator changed");
   }

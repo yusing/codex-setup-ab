@@ -1,5 +1,5 @@
 import { setupSkills } from "./setup-skills";
-import { usesMekugi } from "./mekugi";
+import { activeMekugiFlags, usesMekugi } from "./mekugi";
 import { parseArmImports } from "./control";
 import { CODEX_MODELS, REASONING_EFFORTS } from "./types";
 import { constants, watch, type FSWatcher } from "node:fs";
@@ -220,7 +220,9 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
       cpus: state.resource_limits.cpus, memory: state.resource_limits.memory,
       timeout: String(state.timeout_seconds), image: state.image_id ?? state.image,
       "bun-bin": state.runtime_tools.bun,
-      count: "1", "mekugi-flags": JSON.stringify(state.mekugi_flags ?? []) };
+      count: "1",
+      "mekugi-flags": JSON.stringify(activeMekugiFlags(state.mekugi_flags ?? [])),
+    };
     if (state.auto_compact_limit) throw new Error("Automatic HEAD comparison cannot preserve this run's compaction limit. Use the matching comparison preset and manual imports.");
     if (state.task_pack) {
       const captured = await readJson(root, state.task_pack.path);
@@ -242,7 +244,18 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     // Imported slots do not execute; stock placeholders avoid rebuilding obsolete revisions.
     options.arms = JSON.stringify([...arms.map(() => ({ launcher: "codex", setup_commit: "stock" })), { launcher, setup_commit: "HEAD" }]);
     const targets = compositionKeys(arms.length + 1);
-    if (state.arm_settings) options["arm-settings"] = JSON.stringify(Object.fromEntries([...arms.map((arm, i) => [targets[i], Object.fromEntries(Object.entries(state.arm_settings?.[arm] ?? {}).filter(([key]) => !["skills", "mekugi_flags"].includes(key)))]), [targets.at(-1), state.arm_settings[arms.at(-1)!] ?? {}]]));
+    if (state.arm_settings) {
+      const fresh = { ...state.arm_settings[arms.at(-1)!] };
+      if (fresh.mekugi_flags) fresh.mekugi_flags = activeMekugiFlags(fresh.mekugi_flags);
+      const imported = arms.map((arm, i) => [
+        targets[i],
+        Object.fromEntries(Object.entries(state.arm_settings?.[arm] ?? {})
+          .filter(([key]) => !["skills", "mekugi_flags"].includes(key))),
+      ]);
+      options["arm-settings"] = JSON.stringify(
+        Object.fromEntries([...imported, [targets.at(-1), fresh]]),
+      );
+    }
     options["import-arms"] = JSON.stringify(arms.map((arm, i) => ({ target_arm: targets[i], run_dir: root, arm })));
     launchConfiguration(options);
     return { options, labels: armLabels(state) };

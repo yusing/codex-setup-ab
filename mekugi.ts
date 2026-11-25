@@ -5,7 +5,16 @@ import { sha256 } from "./state";
 import { MEKUGI_EXPORT_FAMILY, MEKUGI_EXPORT_SCRIPTS } from "./support/mekugi";
 import type { ArmName, RunState } from "./types";
 
-const FLAGS = new Set(["ansi-faint", "shell-guard", "child-reply-summary", "deduplicate-output", "timeout", "stream-idle-timeout", "debug"]);
+const FLAGS = new Set([
+  "shell-guard", "child-reply-summary", "deduplicate-output", "timeout",
+  "stream-idle-timeout", "debug",
+]);
+
+const RETIRED_ANSI_FAINT = /^--ansi-faint=(?:auto|on|off)$/;
+
+export function activeMekugiFlags(flags: readonly string[]): string[] {
+  return flags.filter(flag => !RETIRED_ANSI_FAINT.test(flag));
+}
 
 /**
  * Export sanitized metrics for this capture, leaving private debug bundles at their owner.
@@ -43,17 +52,29 @@ export async function mekugiRuntimeCaptures(runDir: string, capture: string): Pr
   return paths.sort();
 }
 
-export function validateMekugiFlags(value: unknown): string[] {
+export function validateMekugiFlags(
+  value: unknown, origin?: "retained",
+): string[] {
   if (!Array.isArray(value) || value.some(flag => typeof flag !== "string")) throw new Error("Mekugi flags must be a string array");
   const seen = new Set<string>();
   for (const flag of value) {
     if (/[\0\r\n]/.test(flag)) throw new Error(`unsupported Mekugi flag: ${flag}`);
-    const match = /^--([a-z-]+)(?:=([^\0\n]*))?$/.exec(flag);
-    if (!match || !FLAGS.has(match[1]!) || seen.has(match[1]!) || (match[2] === undefined && !["debug", "shell-guard", "child-reply-summary", "deduplicate-output"].includes(match[1]!))) throw new Error(`unsupported or repeated Mekugi flag: ${flag}`);
-    if (match[1] === "ansi-faint" && !["auto", "on", "off"].includes(match[2]!)) throw new Error("invalid ansi-faint mode");
-    if (["shell-guard", "child-reply-summary", "deduplicate-output"].includes(match[1]!) && match[2] !== undefined && !["true", "false"].includes(match[2]!)) throw new Error(`invalid Mekugi boolean flag: ${flag}`);
-    if (match[1] === "debug" && match[2] !== undefined && match[2] !== "true") throw new Error(`invalid Mekugi debug flag: ${flag}`);
-    seen.add(match[1]!);
+    const [, name, argument] = /^--([a-z-]+)(?:=([^\0\n]*))?$/.exec(flag) ?? [];
+    const supported = name && (FLAGS.has(name) ||
+      (origin === "retained" && RETIRED_ANSI_FAINT.test(flag)));
+    const isToggle = name === "shell-guard" || name === "child-reply-summary"
+      || name === "deduplicate-output";
+    if (!name || !supported || seen.has(name)
+      || (argument === undefined && !isToggle && name !== "debug")) {
+      throw new Error(`unsupported or repeated Mekugi flag: ${flag}`);
+    }
+    if (isToggle && argument !== undefined && !["true", "false"].includes(argument)) {
+      throw new Error(`invalid Mekugi boolean flag: ${flag}`);
+    }
+    if (name === "debug" && argument !== undefined && argument !== "true") {
+      throw new Error(`invalid Mekugi debug flag: ${flag}`);
+    }
+    seen.add(name);
   }
   return value;
 }
@@ -71,7 +92,8 @@ export function usesMekugi(state: Pick<RunState, "comparison" | "execution"> & P
 
 export function mekugiArmFlags(state: Pick<RunState, "comparison" | "mekugi_flags" | "arm_settings">, arm: ArmName): string[] {
   const treatment = state.comparison === "duplicate-output" ? [`--deduplicate-output=${arm === "current"}`] : [];
-  return [...(state.arm_settings?.[arm]?.mekugi_flags ?? state.mekugi_flags ?? []), ...treatment];
+  const flags = state.arm_settings?.[arm]?.mekugi_flags ?? state.mekugi_flags ?? [];
+  return [...activeMekugiFlags(flags), ...treatment];
 }
 
 function mekugiIdentity(flags: string[]): { mode: string } {

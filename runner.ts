@@ -114,7 +114,7 @@ async function setupArm(runDir: string, state: RunState, arm: ArmName, authFile:
 
 async function preflightChecks(docker: string, state: RunState, runDir: string, signal: AbortSignal): Promise<Map<ArmName, string[]>> {
   if (state.comparison === "journal-compaction") throw new Error("journal-compaction is retired; prepare a supported comparison");
-  validateMekugiFlags(state.mekugi_flags ?? []);
+  validateMekugiFlags(state.mekugi_flags ?? [], "retained");
   await verifyPreparedInputs(runDir, state);
   if (state.profile === "godoxy-icons") verifyGodoxyIdentity(state.source, state.submodules);
   // Resolve the mutable tag before any checks, so every check and launch uses

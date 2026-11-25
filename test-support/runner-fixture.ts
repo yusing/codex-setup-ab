@@ -299,7 +299,7 @@ case "$operation" in
       *-preflight-grok) printf '%s\\n' 'grok 1.0.30' ;;
       *-preflight-mekugi*-options) printf '%s\\n' 'Usage: mekugi [flags]' \\
         '       mekugi [flags] codex headless --yolo' '  -deduplicate-output' '  -shell-guard' \\
-        '  -ansi-faint string' '  -child-reply-summary' '  -debug' '  -timeout duration' \\
+        '  -child-reply-summary' '  -debug' '  -timeout duration' \\
         '  -stream-idle-timeout duration' '  -grok-auth-file string' ;;
       *-preflight-mekugi-runtime-*) printf '%s\\n' CODEX_AB_TOOL_HOST_OK ;;
       *-preflight-mekugi|*-preflight-mekugi-*) printf '%s\\n' 'Usage: mekugi [flags]' ;;

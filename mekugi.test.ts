@@ -13,7 +13,6 @@ import { explainMechanisms } from "./mechanisms";
 
 for (const flag of [
   "--timeout=30s", "--stream-idle-timeout=2m", "--debug", "--debug=true",
-  "--ansi-faint=auto", "--ansi-faint=on", "--ansi-faint=off",
   ...["shell-guard", "deduplicate-output", "child-reply-summary"].flatMap(name =>
     [`--${name}`, `--${name}=true`, `--${name}=false`]),
 ]) {
@@ -24,7 +23,7 @@ for (const flag of [
 
 test("Mekugi accepts distinct current flags together and an empty flag list", () => {
   const flags = ["--shell-guard=false", "--deduplicate-output=false", "--child-reply-summary=true",
-    "--timeout=30s", "--stream-idle-timeout=2m", "--debug", "--ansi-faint=off"];
+    "--timeout=30s", "--stream-idle-timeout=2m", "--debug"];
   expect(validateMekugiFlags(flags)).toEqual(flags);
   expect(validateMekugiFlags([])).toEqual([]);
 });
@@ -36,7 +35,8 @@ for (const flag of [
   "--duplicate-output=true", "--grok", "--grok=true", "--grok=false",
   "--capture-output=/tmp/capture.jsonl", "--grok-auth-file=/tmp/auth.json",
   "--shell-guard=auto", "--deduplicate-output=on", "--child-reply-summary=off",
-  "--debug=false", "--ansi-faint=true", "--ansi-faint", "--timeout", "--stream-idle-timeout",
+  "--debug=false", "--ansi-faint=auto", "--ansi-faint=on", "--ansi-faint=off",
+  "--ansi-faint", "--timeout", "--stream-idle-timeout",
   "--unknown=true", "--debug=true\n", "--debug=true\0",
 ]) {
   test(`Mekugi rejects unsupported or invalid ${JSON.stringify(flag)}`, () => {
@@ -50,7 +50,7 @@ for (const flags of [
   ["--child-reply-summary", "--child-reply-summary=true"],
   ["--timeout=30s", "--timeout=60s"],
   ["--stream-idle-timeout=2m", "--stream-idle-timeout=3m"],
-  ["--debug", "--debug=true"], ["--ansi-faint=on", "--ansi-faint=off"],
+  ["--debug", "--debug=true"],
 ]) {
   test(`Mekugi rejects conflicting flags ${flags.join(" ")}`, () => {
     expect(() => validateMekugiFlags(flags)).toThrow();

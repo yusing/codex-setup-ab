@@ -19,7 +19,11 @@ test("HEAD draft imports a custom composition and preserves shared controls with
     comparison: "custom", source: { path: root }, task: { sha256: pack.contract.task_sha256 },
     task_pack: { id: pack.manifest.id, path: "evaluator/task-pack.json" },
     execution: { model: "gpt-6.1-sol", reasoning_effort: "ultra" },
-    arm_settings: { "arm-3": { model: "gpt-6.1-terra", skills: { example: false }, mekugi_flags: ["--shell-guard=false"] } },
+    mekugi_flags: ["--ansi-faint=auto"],
+    arm_settings: { "arm-3": {
+      model: "gpt-6.1-terra", skills: { example: false },
+      mekugi_flags: ["--ansi-faint=off", "--shell-guard=false"],
+    } },
     resource_limits: { cpus: "4", memory: "4g" }, timeout_seconds: 7200, image: "test-image",
     runtime_tools: { codex_source: "/recorded/codex", bun: "/recorded/bun" },
     selected_arms: keys, arms: Object.fromEntries(keys.map(key => [key, { launcher: "mekugi" }])),
@@ -36,7 +40,10 @@ test("HEAD draft imports a custom composition and preserves shared controls with
   expect(config.prepare.arms?.at(-1)).toEqual({ launcher: "mekugi", setup_commit: "HEAD" });
   expect(config.importArms?.map(item => item.arm)).toEqual(keys);
   expect(config.prepare.armSettings?.["arm-3"]).toEqual({ model: "gpt-6.1-terra" });
-  expect(config.prepare.armSettings?.["arm-4"]).toEqual(state.arm_settings["arm-3"]);
+  expect(config.prepare.armSettings?.["arm-4"]).toEqual({
+    ...state.arm_settings["arm-3"], mekugi_flags: ["--shell-guard=false"],
+  });
+  expect(config.prepare.mekugiFlags).toEqual([]);
   expect(config.prepare).toMatchObject({ cpus: "4", timeoutSeconds: 7200, model: "gpt-6.1-sol", reasoningEffort: "ultra" });
   expect(options["confirm-paid-inference"]).toBeUndefined();
   expect(await readFile(join(directory, "run.json"), "utf8")).toBe(original);

@@ -163,11 +163,13 @@ that is frozen and hash-pinned into the image without compiling Mekugi or Rust.
 bundles and hashes the analyzer rather than reading validation scripts from the live
 checkout.
 
-- **Allowed `--mekugi-flags`**: child-reply summaries, `--ansi-faint=auto|on|off`,
-  and `--debug`. Shell guarding, router response and stream idle timeouts, and
+- **Allowed `--mekugi-flags`**: child-reply summaries and `--debug`.
+  Shell guarding, router response and stream idle timeouts, and
   deduplication overrides require a build offering the relevant switch.
   Unchecking a UI toggle requests an explicit opt-out, which preflight rejects
   if the pinned launcher cannot honor it.
+- **Retained ANSI styling**: Older runs may record `--ansi-faint`. Headless
+  launches ignore it, and new configurations do not accept it.
 - **Rejected flags**: mode, journal, recovery, mentor, explore-filter, and `--grok`
   flags (comparison selection owns routing; export destinations, credentials, and
   runtime configuration are benchmark-owned). Settings never rewrite the host.
