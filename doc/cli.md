@@ -207,6 +207,10 @@ Keep all six artifacts beside `--mekugi-bin`: `mekugi`, `mekugi-exec`,
 `mekugi-app-server`, `codex-code-mode-host`, Linux `bwrap`, and `mekugi-models.json`.
 All six are frozen, hashed, and kept separate from stock Codex's code-mode host; missing
 artifacts fail preparation.
+The dependency image installs the Linux runtime libraries for dynamically linked
+Bubblewrap and app-server builds. If an older run failed preflight because
+`libcap.so.2` was missing, start a fresh launch to build the fixed dependency
+image. Retained runs still point to their original images.
 
 Previously captured bundles remain readable through `--mekugi-build` without running a
 build: their Go executable/source provenance is retained, while native artifacts are

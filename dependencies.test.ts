@@ -141,6 +141,7 @@ esac
     await ensureDependencyImage(docker, root, state, new AbortController().signal);
     const recipe = await readFile(join(root, "recipe"), "utf8");
     expect(recipe).toContain("COPY --chmod=755 mekugi /usr/local/bin/mekugi");
+    expect(recipe).not.toContain("apt-get install");
     expect(recipe).toContain("COPY --chmod=755 mekugi-exec /usr/local/bin/mekugi-exec");
     expect(recipe).toContain(`${state.runtime_tools.mekugi_exec_sha256}  /usr/local/bin/mekugi-exec`);
     expect(recipe).toContain(`${state.runtime_tools.mekugi_sha256}  /usr/local/bin/mekugi`);
@@ -186,6 +187,12 @@ esac
 `, { mode: 0o755 });
     await ensureDependencyImage(docker, root, state, new AbortController().signal);
     const recipe = await readFile(join(root, "recipe"), "utf8");
+    const baseTag = `codex-ab-base:${state.image_id!.slice("sha256:".length)}`;
+    const [preparation, execution] = recipe.split(`\nFROM ${baseTag}\n`);
+    expect(preparation).not.toContain("apt-get install");
+    expect(execution).toContain(
+      "apt-get install -y --no-install-recommends libcap2 libbz2-1.0",
+    );
     for (const file of runtime) {
       expect(recipe).toContain(`COPY --chmod=${file.name === "mekugi-models.json" ? "644" : "755"} ${file.name} ${MEKUGI_RUNTIME_DIRECTORY}/${file.name}`);
       expect(recipe).toContain(`${file.sha256}  ${MEKUGI_RUNTIME_DIRECTORY}/${file.name}`);

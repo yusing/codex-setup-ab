@@ -15,14 +15,24 @@ export const DEPENDENCY_ENV = [
 ];
 
 export function dependencyKey(state: RunState, baseImage: string): string {
-  return sha256Json({
-    version: 6, baseImage, tree: state.source.base_tree, commit: state.source.base_commit,
+  return dependencyRecipeIdentity(state, baseImage).key;
+}
+
+function dependencyRecipeIdentity(state: RunState, baseImage: string) {
+  const inputs = {
+    baseImage, tree: state.source.base_tree, commit: state.source.base_commit,
     submodules: state.submodules?.map(({ path, sha }) => ({ path, sha })),
     preparation: state.criteria?.contract.preparation,
     ...(state.runtime_tools.mekugi_in_image ? { mekugi: state.runtime_tools.mekugi_sha256, mekugi_exec: state.runtime_tools.mekugi_exec_sha256 } : {}),
     mekugi_runtime: state.runtime_tools.mekugi_runtime?.map(({ name, sha256 }) => ({ name, sha256 })),
     uid: state.operator.uid, gid: state.operator.gid,
-  });
+  };
+  const previousKey = sha256Json({ version: 6, ...inputs });
+  // A retained image must keep its recorded recipe and image ID.
+  const installNativeLibraries = Boolean(state.runtime_tools.mekugi_runtime)
+    && state.dependency_image?.key !== previousKey;
+  const key = installNativeLibraries ? sha256Json({ version: 7, ...inputs }) : previousKey;
+  return { key, installNativeLibraries };
 }
 
 export async function ensureDependencyImage(docker: string, runDir: string, state: RunState, signal: AbortSignal): Promise<void> {
@@ -32,7 +42,7 @@ export async function ensureDependencyImage(docker: string, runDir: string, stat
   if (runtime) await verifyMekugiRuntime(runDir, runtime);
   const base = state.dependency_image?.base_image ?? state.image_id;
   if (base !== state.image_id) throw new Error("dependency base image changed");
-  const key = dependencyKey(state, base);
+  const { key, installNativeLibraries } = dependencyRecipeIdentity(state, base);
   if (state.dependency_image && state.dependency_image.key !== key) throw new Error("dependency image inputs changed");
   const tag = `codex-ab-deps:${key}`;
   const buildBase = `codex-ab-base:${base.replace("sha256:", "")}`;
@@ -45,6 +55,12 @@ export async function ensureDependencyImage(docker: string, runDir: string, stat
     `USER ${state.operator.uid}:${state.operator.gid}`, "WORKDIR /workspace",
     `ENV ${DEPENDENCY_ENV.join(" ")}`, "RUN sh /prepare.sh",
     `FROM ${buildBase}`, "USER root",
+    ...(installNativeLibraries ? [
+      // The pinned Bubblewrap and app-server can be dynamically linked.
+      "RUN apt-get update"
+        + " && apt-get install -y --no-install-recommends libcap2 libbz2-1.0"
+        + " && rm -rf /var/lib/apt/lists/*",
+    ] : []),
     ...(runtime ? [
       ...runtime.flatMap(file => [
         `COPY --chmod=${file.name === "mekugi-models.json" ? "644" : "755"} ${file.name} ${MEKUGI_RUNTIME_DIRECTORY}/${file.name}`,
