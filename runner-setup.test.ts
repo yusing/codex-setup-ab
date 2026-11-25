@@ -286,13 +286,21 @@ test("Mekugi without a deduplication switch rejects opt-outs and duplicate-outpu
   }
 }, 30_000);
 
-test("Mekugi without a shell guard switch rejects an explicit request before inference", async () => {
+test.each([
+  ["shell-guard", "true", ""],
+  ["timeout", "30s", " duration"],
+  ["stream-idle-timeout", "2m", " duration"],
+])("Mekugi without --%s rejects an explicit request before inference", async (name, value, operand) => {
   const run = await prepare({
-    ...mekugiComparisonOptions(), armSettings: { current: { mekugi_flags: ["--shell-guard=true"] } },
+    ...mekugiComparisonOptions(),
+    armSettings: { current: { mekugi_flags: [`--${name}=${value}`] } },
   });
   const fake = await fakeOwnedDocker(0);
-  await file(fake.path, (await readFile(fake.path, "utf8")).replace(" '  -shell-guard'", ""), 0o755);
-  await expect(preflightRun(run, fake.path)).rejects.toThrow("pinned Mekugi does not support --shell-guard");
+  const script = (await readFile(fake.path, "utf8")).replace(` '  -${name}${operand}'`, "");
+  await file(fake.path, script, 0o755);
+  await expect(preflightRun(run, fake.path)).rejects.toThrow(
+    `pinned Mekugi does not support --${name}`,
+  );
   expect((await readState(run)).arm_attempts).toBeUndefined();
 });
 
@@ -475,6 +483,15 @@ test("codex-mekugi-grok isolates Codex+Mekugi from the Grok CLI", async () => {
   await expect(stat(join(run, state.runtime_tools.current_setup_installs, "fixture-runner"))).rejects.toMatchObject({ code: "ENOENT" });
   await expect(stat(join(run, "snapshots/current/incremental.json"))).rejects.toMatchObject({ code: "ENOENT" });
   await verifyPreparedInputs(run, state);
+
+  const noGrokRoute = await fakeOwnedDocker(0);
+  const noGrokScript = (await readFile(noGrokRoute.path, "utf8"))
+    .replace(" '  -grok-auth-file string'", "");
+  await file(noGrokRoute.path, noGrokScript, 0o755);
+  await expect(preflightRun(run, noGrokRoute.path)).rejects.toThrow(
+    "codex-mekugi-grok requires a Mekugi build with built-in Grok OAuth routing",
+  );
+  expect((await readState(run)).arm_attempts).toBeUndefined();
 
   const auth = join(root, "codex-mekugi-grok-auth.json");
   await file(auth, "{}\n", 0o600);

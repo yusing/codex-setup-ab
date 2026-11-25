@@ -254,26 +254,31 @@ async function preflightChecks(docker: string, state: RunState, runDir: string, 
         ...(nativeRuntime ? [] : ["sh", "-c", MEKUGI_METRICS_WRAPPER, "mekugi-metrics"]),
         pinnedPath ? "/usr/local/bin/mekugi" : "mekugi"];
       let flags = mekugiArmFlags(state, arm);
-      const dedup = !state.protected_runtime && !grokComparison
-        ? flags.find(flag => /^--deduplicate-output(?:=|$)/.test(flag))
-        : undefined;
-      const shellGuard = flags.some(flag => /^--shell-guard(?:=|$)/.test(flag));
-      if (nativeRuntime && (dedup || shellGuard)) {
+      if (nativeRuntime && (flags.length || grokComparison)) {
         // An unknown flag before --help sends the rest of argv to Codex, so ask for bare help.
         const help = await checkSetup(arm, { name: `${name}-options`, createArgs: [...launcher, "--help"] });
         if (help.exitCode !== 0 || !/^Usage: mekugi\b/m.test(help.stdout)) {
           throw new Error(`could not read the pinned Mekugi launch options before inference: ${help.stderr.trim() || "expected Mekugi usage"}`);
         }
-        if (shellGuard && !/^\s+-{1,2}shell-guard(?=\s|$)/m.test(help.stdout)) {
-          throw new Error("pinned Mekugi does not support --shell-guard. Remove it from the arm settings or select a compatible Mekugi build");
+        const supported = new Set(Array.from(
+          help.stdout.matchAll(/^[ \t]+-{1,2}([a-z-]+)(?=\s|$)/gm),
+          match => match[1],
+        ));
+        if (grokComparison && !supported.has("grok-auth-file")) {
+          throw new Error("codex-mekugi-grok requires a Mekugi build with built-in Grok OAuth routing; the pinned launcher does not advertise --grok-auth-file");
         }
-        if (dedup && !/^\s+-{1,2}deduplicate-output(?=\s|$)/m.test(help.stdout)) {
+        flags = flags.filter(flag => {
+          const name = flag.slice(2).split("=", 1)[0]!;
+          if (supported.has(name)) return true;
+          if (name !== "deduplicate-output" || state.protected_runtime || grokComparison) {
+            throw new Error(`pinned Mekugi does not support --${name}. Remove it from the arm settings or select a compatible Mekugi build`);
+          }
           if (!help.stdout.includes("codex headless --yolo")) throw new Error("pinned Mekugi does not support --deduplicate-output and did not advertise the native headless launcher");
-          if (state.comparison === "duplicate-output" || dedup === "--deduplicate-output=false") {
+          if (state.comparison === "duplicate-output" || flag === "--deduplicate-output=false") {
             throw new Error("pinned Mekugi does not support --deduplicate-output; native output deduplication cannot be disabled. Select a Mekugi build with the switch for an opt-out or duplicate-output comparison");
           }
-          flags = flags.filter(flag => flag !== dedup);
-        }
+          return false;
+        });
       }
       const launch = await checkSetup(arm, { name, createArgs: [...launcher, ...flags,
           ...(flags.some(flag => flag === "--debug" || flag === "--debug=true") ? [] : ["--debug"]),

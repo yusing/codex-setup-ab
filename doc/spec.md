@@ -118,6 +118,9 @@ The [launch catalog](../launch.ts) owns task choices and defaults:
 on `grok-4.7`. Both arms use minimal generated configuration, default service tier, and
 `high` reasoning unless overridden, without current-home guidance or tools. Supply
 `--grok-bin` and a private `--grok-auth-file` for both homes.
+This comparison requires a Mekugi build with built-in Grok OAuth routing. Recent
+Mekugi versions require a custom Responses profile for third-party providers;
+that route is not equivalent to this comparison and preflight rejects it.
 
 Grok's session `usage.json` supplies Arm B accounting; Codex JSONL supplies Arm A
 accounting. Grok session estimates use base rates and exclude unknown request-level
@@ -160,10 +163,11 @@ that is frozen and hash-pinned into the image without compiling Mekugi or Rust.
 bundles and hashes the analyzer rather than reading validation scripts from the live
 checkout.
 
-- **Allowed `--mekugi-flags`**: shell guarding, child-reply summaries,
-  `--ansi-faint=auto|on|off`, timeouts, `--debug`, and deduplication on builds that
-  expose the switch. Unchecking a UI toggle requests an explicit opt-out, which
-  preflight rejects if the pinned launcher cannot honor it.
+- **Allowed `--mekugi-flags`**: child-reply summaries, `--ansi-faint=auto|on|off`,
+  and `--debug`. Shell guarding, router response and stream idle timeouts, and
+  deduplication overrides require a build offering the relevant switch.
+  Unchecking a UI toggle requests an explicit opt-out, which preflight rejects
+  if the pinned launcher cannot honor it.
 - **Rejected flags**: mode, journal, recovery, mentor, explore-filter, and `--grok`
   flags (comparison selection owns routing; export destinations, credentials, and
   runtime configuration are benchmark-owned). Settings never rewrite the host.
@@ -172,7 +176,9 @@ checkout.
   Each runtime is validated before family accounting; local sequence numbers are not a
   global order. Valid provider attempts supply Mekugi usage (including retries and tool
   re-sends, excluding prewarm); invalid capture falls back to Codex rollouts with
-  warnings. These are within-arm diagnostics, not measured savings, and validation alone
+  warnings. Recent native captures record completed responses, not provider
+  attempts; the raw export is retained and usage comes from Codex rollouts.
+  These are within-arm diagnostics, not measured savings, and validation alone
   does not protect exports from executor writes (see
   [protected runtime](contract.md#protected-mekugi-runtime)).
 
