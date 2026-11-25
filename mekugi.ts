@@ -104,7 +104,7 @@ function mekugiIdentity(flags: string[]): { mode: string } {
 
 /** Validate Mekugi exports with the runner-bundled analyzer snapshotted for this run. */
 export async function validateMekugiExports(runDir: string, state: RunState, arm?: ArmName): Promise<{
-  status: "valid" | "unavailable"; reason?: string; metrics?: unknown;
+  status: "valid" | "unavailable"; reason?: string; metrics?: unknown; nativeResponses?: unknown[][];
 }> {
   const paths = arm ? state.mekugi_exports_by_arm?.[arm] ?? state.mekugi_exports : state.mekugi_exports;
   if (!paths) return { status: "unavailable", reason: "This arm did not request exports." };
@@ -123,23 +123,26 @@ export async function validateMekugiExports(runDir: string, state: RunState, arm
     "identity = json.loads(sys.argv[4])",
     "arm = 'control' if identity['mode'] == 'passthrough' else 'mekugi'",
     "config = {'benchmark_mode': 'paired'}",
-    "if 'validate_family' in owner:",
+    // Historical runs retain their original validator and reader. Use the current
+    // analyzer for the new native format and for legacy family inventory policy.
+    "analyzer = {'__name__': 'capture_inventory'}",
+    `exec(${JSON.stringify(MEKUGI_EXPORT_SCRIPTS["analyze_capture.py"])}, analyzer)`,
+    "capture = Path(sys.argv[3])",
+    "native_responses = analyzer['native_response_family'](metrics, capture)",
+    "if native_responses is not None:",
+    "    if arm == 'control': raise ValueError('native responses do not establish passthrough mode')",
+    "elif 'validate_family' in owner:",
     "    owner['validate_family'](metrics, Path(sys.argv[3]), arm, config)",
     "else:",
-    // Historical analyzers still own their snapshot/raw schemas. Apply current
-    // inventory policy from the same analyzer source used by its standalone CLI.
-    "    inventory = {'__name__': 'capture_inventory'}",
-    `    exec(${JSON.stringify(MEKUGI_EXPORT_SCRIPTS["analyze_capture.py"])}, inventory)`,
-    "    inventory['family_runtimes'](metrics, Path(sys.argv[3]))",
     "    owner['validate_snapshot'](metrics, arm, config)",
     "    owner['validate_raw_capture'](Path(sys.argv[3]), metrics)",
-    "print(json.dumps(metrics))",
+    "print(json.dumps(dict(metrics=metrics, nativeResponses=native_responses)))",
   ].join("\n");
-  const checked = await exec(["python3", "-c", program, join(runDir, paths.validator.path),
+  const checked = await exec(["python3", "-B", "-c", program, join(runDir, paths.validator.path),
     join(runDir, paths.metrics), join(runDir, paths.capture), JSON.stringify(identity)]);
   if (checked.exitCode !== 0) return { status: "unavailable", reason: checked.stderr.trim() || "Mekugi export validation failed." };
-  const metrics = JSON.parse(checked.stdout);
-  return { status: "valid", metrics };
+  const { metrics, nativeResponses } = JSON.parse(checked.stdout) as { metrics: unknown; nativeResponses: unknown[][] | null };
+  return { status: "valid", metrics, ...(nativeResponses === null ? {} : { nativeResponses }) };
   } catch (error) {
     return { status: "unavailable", reason: `Mekugi diagnostics unavailable: ${String(error)}` };
   }

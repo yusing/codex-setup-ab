@@ -1,4 +1,11 @@
 import { isRecord as isObject } from "./util";
+import type { MeteredRollouts } from "./usage";
+
+export const NATIVE_RESPONSE_METHOD = "mekugi_capture.native_responses";
+
+export function usesNativeMekugiResponses(usage: MeteredRollouts): boolean {
+  return usage.agents.some(agent => agent.method === NATIVE_RESPONSE_METHOD);
+}
 
 const PROVIDER_USAGE_KEYS = ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens"] as const;
 export type ProviderAttemptUsage = Record<(typeof PROVIDER_USAGE_KEYS)[number], number>;

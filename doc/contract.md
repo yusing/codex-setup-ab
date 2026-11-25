@@ -420,7 +420,10 @@ installations to remain unchanged after candidate execution.
   complete cost or winner.
 - **Mekugi exports**: Validated exports report compaction answerer, provider cost, and
   post-compaction cost (excluding prewarm); byte-only v7 exports reconcile transport
-  bytes and provider usage without fabricating token or tool estimates. Removed Mekugi
+  bytes and provider usage without fabricating token or tool estimates.
+  Native response exports reconcile the raw JSONL and metrics snapshot.
+  Complete response usage supplies observed counts and tokens; request coverage
+  stays unverified because retries and other attempts are not recorded. Removed Mekugi
   flags normally require fresh preparation, except preflight can preserve an enabled
   deduplication request on bundled native Mekugi without passing the obsolete switch.
   Retired journal comparisons remain reportable but cannot launch.

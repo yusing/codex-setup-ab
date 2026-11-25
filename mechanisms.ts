@@ -1,4 +1,5 @@
 import type { MeteredRollouts } from "./usage";
+import { usesNativeMekugiResponses } from "./provider-usage";
 
 type ObjectValue = Record<string, unknown>;
 function object(value: unknown): ObjectValue {
@@ -383,7 +384,8 @@ export function explainMechanisms(arms: MechanismArm[], labels: Record<string, s
   const stock = arms.find(arm => arm.arm === "stock")?.usage;
   // Compare every additional arm with the stock baseline, matching the resource explanation.
   for (const { arm, usage: current } of arms.filter(item => item.arm !== "stock")) {
-    if (!stock?.complete || !current.complete) continue;
+    if (!stock?.complete || !current.complete
+      || usesNativeMekugiResponses(stock) || usesNativeMekugiResponses(current)) continue;
     const label = labels[arm] ?? arm;
     const roots = (usage: MeteredRollouts) => {
       const roles = logicalSessionRoles(usage);

@@ -199,6 +199,86 @@ test("report regeneration explains resource differences without another judge re
   expect((await readState(run)).judge).toBeUndefined();
 });
 
+test("native response reporting reconciles the full capture without claiming provider attempts", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.execution.current_launcher = "mekugi";
+  const directory = "artifacts/current/mekugi";
+  const validator = join(directory, "analyze_capture.py"), reader = join(directory, "benchmark_jsonl.py");
+  const capture = join(directory, "capture.jsonl"), metrics = join(directory, "metrics.json");
+  // A run prepared before native schema support keeps its original validator.
+  await file(join(run, validator), [
+    "import json",
+    "def load_json(path): return json.loads(path.read_text())",
+    "def validate_family(*_): raise ValueError('metrics have an unsupported schema')",
+  ].join("\n"));
+  await file(join(run, reader), MEKUGI_EXPORT_SCRIPTS["benchmark_jsonl.py"]);
+  const counts = { input_tokens: 10, cached_input_tokens: 2, output_tokens: 4, reasoning_tokens: 1 };
+  const thread_id = "current-agent", model = "gpt-6-astra", completed = 65;
+  const records = Array.from({ length: completed }, (_, index) => ({
+    schema_version: 7, capture_id: `response-${index}`, boundary: "native_response", thread_id, request_model: model,
+    response_complete: true, response_status: "completed", duration_ms: 1, capture_error: "",
+    usage: { ...counts, evidence_complete: true },
+  }));
+  const terminal = { schema_version: 7, capture_id: "terminal-failure", boundary: "native_turn", thread_id,
+    response_complete: false, response_status: "failed", capture_error: "" };
+  await file(join(run, capture), [...records, terminal].map(record => JSON.stringify(record)).join("\n") + "\n");
+  const usage = { ...counts, uncached_input_tokens: 8, provider_attempts: 0,
+    complete_attempts: 1, incomplete_attempts: 0, missing_attempts: 0 };
+  const snapshot = {
+    schema: "mekugi.native.responses.v1", mode: "native",
+    capture: { records: completed + 1, write_errors: 0, dropped_exchange_details: 2 },
+    requests: { retries: 0, logical: 0, provider_attempts: 0, completed, failed: 1 },
+    usage: Object.fromEntries(Object.entries(usage).map(([key, value]) => [key, value * completed])),
+    exchanges: [
+      ...records.slice(2).map((_, index) => ({ sequence: index + 3, thread_id, model, duration_ms: 1,
+        response_complete: true, status: "completed", provider_attempts: [], usage })),
+      { sequence: completed + 1, thread_id, duration_ms: 0, response_complete: false, status: "failed", provider_attempts: [] },
+    ],
+  };
+  await file(join(run, metrics), JSON.stringify(snapshot));
+  state.mekugi_exports = { capture, metrics,
+    validator: { path: validator, sha256: await sha256(join(run, validator)) },
+    reader: { path: reader, sha256: await sha256(join(run, reader)) },
+  };
+  await writeState(run, state);
+
+  const paths = await buildReport(run);
+  const report = await Bun.file(paths.jsonPath).json();
+  expect(report.mekugi_diagnostics).toEqual({ status: "valid", metrics: snapshot });
+  expect(report.arms.current.usage).toMatchObject({
+    request_coverage: "unverified",
+    agents: [{ method: "mekugi_capture.native_responses", request_count: completed }],
+    totals: { input_tokens: 650, output_tokens: 260, total_tokens: 910 },
+  });
+  expect(report.arms.current.usage.journal).toBeUndefined();
+  expect(report.evidence_dimensions.current.cost_ranking_eligible).toBe(false);
+  const markdown = await readFile(paths.markdownPath, "utf8");
+  expect(markdown).toContain("65 completed responses");
+  expect(markdown).not.toContain("include validated provider attempts");
+  expect(markdown).not.toContain("extra workflow turns");
+
+  // Losing an older response outside the metrics history still invalidates the capture.
+  await file(join(run, capture), [...records.slice(1), terminal].map(record => JSON.stringify(record)).join("\n") + "\n");
+  const fallback = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(fallback.mekugi_diagnostics.status).toBe("unavailable");
+  expect(fallback.arms.current.usage.agents[0].method).toBe("token_usage_record");
+  expect(fallback.arms.current.usage.totals.total_tokens).toBe(34);
+
+  const child = "capture.jsonl.runtimes/child/capture.jsonl";
+  await file(join(run, capture), [...records, terminal].map(record => JSON.stringify(record)).join("\n") + "\n");
+  await file(join(run, directory, child), JSON.stringify({ ...records[0], capture_id: "child-response" }) + "\n");
+  await file(join(run, metrics), JSON.stringify({ schema: "mekugi.capture.family.v1", runtimes: [
+    { capture: "capture.jsonl", metrics: snapshot },
+    { capture: child, metrics: { ...snapshot, capture: { records: 1, write_errors: 0 },
+      requests: { ...snapshot.requests, completed: 1, failed: 0 }, usage,
+      exchanges: [{ ...snapshot.exchanges[0], sequence: 1 }] } },
+  ] }));
+  const family = await Bun.file((await buildReport(run)).jsonPath).json();
+  expect(family.arms.current.usage.agents[0].request_count).toBe(66);
+  expect(family.arms.current.usage.totals.total_tokens).toBe(924);
+});
+
 test("validated journal evidence survives rollout accounting fallback for a capture thread mismatch", async () => {
   const { run } = await fixtureRun();
   const state = await readState(run);

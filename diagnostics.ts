@@ -1,5 +1,6 @@
 import type { CostComponents, MeteredRollouts } from "./usage";
 import { logicalSessionRoles, createWorkflowTrace, type WorkflowTrace } from "./mechanisms";
+import { usesNativeMekugiResponses } from "./provider-usage";
 
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue {
@@ -209,6 +210,7 @@ export function performanceMarkdown(arms: Array<{ arm: string; usage: MeteredRol
     return `| ${labels[arm] ?? arm} | ${number(sum("uncached_input_usd"), 6)} | ${number(sum("cached_input_usd"), 6)} | ${number(sum("cache_write_input_usd"), 6)} | ${number(sum("output_usd"), 6)} |`;
   });
   const providerArms = arms.filter(({ usage }) => usage.codex_visible_requests).map(({ arm }) => labels[arm] ?? arm).join(" and ");
+  const nativeArms = arms.filter(({ usage }) => usesNativeMekugiResponses(usage)).map(({ arm }) => labels[arm] ?? arm).join(" and ");
   const differences = Object.entries(comparison?.baseline_differences ?? {});
   const minus = (arm: string) => `${labels[arm] ?? arm} minus ${labels.stock ?? "stock"}`;
   const cacheRows = arms.flatMap(({ arm, usage }) => {
@@ -231,9 +233,9 @@ ${Object.entries(delta.cost_components).map(([component, value]) => `  - ${compo
 `).join("")}` : "";
   return `## Programmatic performance breakdown
 
-These figures come from deduplicated usage records and tool timestamps, without a model request. Input tokens include context replayed on every request, not just newly read text. Cached input is still counted and billed at its recorded rate. Cumulative-only records cannot establish request counts or context sizes.${providerArms ? ` Rows for ${providerArms} count validated Mekugi provider attempts, including router-side re-sends and retries and excluding prewarm; other rows use Codex rollout records or Grok session counters.` : ""}
+These figures come from deduplicated usage records and tool timestamps, without a model request. Input tokens include context replayed on every request, not just newly read text. Cached input is still counted and billed at its recorded rate. Cumulative-only records cannot establish request counts or context sizes.${providerArms ? ` Rows for ${providerArms} count validated Mekugi provider attempts, including router-side re-sends and retries and excluding prewarm.` : ""}${nativeArms ? ` Rows for ${nativeArms} count completed responses, not provider attempts. Request-order cache phases are unknown for native captures.` : ""}
 
-| Arm / role | model requests | mean input/request | peak input/request | uncached input | cached input | output | estimated USD |
+| Arm / role | ${nativeArms ? "requests or responses | mean input/count | peak input/count" : "model requests | mean input/request | peak input/request"} | uncached input | cached input | output | estimated USD |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 ${rows.join("\n") || "| unavailable | | | | | | | |"}
 

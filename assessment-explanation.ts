@@ -1,4 +1,5 @@
 import type { MeteredRollouts } from "./usage";
+import { usesNativeMekugiResponses } from "./provider-usage";
 
 export interface ResourceComparison {
   baseline: string;
@@ -35,7 +36,11 @@ export function explainResources(arms: MeasuredArm[]): ResourceComparison[] {
     const requests = (usage: MeteredRollouts): number | null => usage.agents.length && usage.agents.every(agent => agent.request_count !== null)
       ? usage.agents.reduce((sum, agent) => sum + agent.request_count!, 0) : null;
     const requestsA = requests(a), requestsB = requests(b);
-    if (requestsA === null || requestsB === null) comparison.drivers.push("Model-request counts and mean context sizes are unknown: cumulative token totals cannot establish how many requests occurred.");
+    if (usesNativeMekugiResponses(a) || usesNativeMekugiResponses(b)) {
+      const description = (usage: MeteredRollouts, observed: number | null) => observed === null ? "count unavailable"
+        : `${count(observed)} ${usesNativeMekugiResponses(usage) ? "completed responses" : "observed requests"}`;
+      comparison.drivers.push(`${arm.label}: ${description(b, requestsB)}; ${baseline.label}: ${description(a, requestsA)}. Native response counts do not establish how many provider attempts occurred.`);
+    } else if (requestsA === null || requestsB === null) comparison.drivers.push("Model-request counts and mean context sizes are unknown: cumulative token totals cannot establish how many requests occurred.");
     else {
       comparison.drivers.push(`${arm.label}: ${count(requestsB)} model request${requestsB === 1 ? "" : "s"}; ${baseline.label}: ${count(requestsA)}.${requestsA > 0 && requestsB > 0 ? ` Mean input per request was ${count(b.totals.input_tokens / requestsB)} vs ${count(a.totals.input_tokens / requestsA)} tokens. Request count and context size jointly determine input volume.` : ""}`);
     }

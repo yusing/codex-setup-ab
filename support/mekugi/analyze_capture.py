@@ -34,6 +34,8 @@ CONTROL_TRANSPORT_FIELDS = {
 }
 CONTROL_TRANSPORT_KEYS = tuple(field for field, _ in CONTROL_TRANSPORT_FIELDS.values())
 TRANSPORT_KEYS = INFERENCE_TRANSPORT_KEYS + CONTROL_TRANSPORT_KEYS
+NATIVE_RESPONSE_SCHEMA = "mekugi.native.responses.v1"
+NATIVE_EXCHANGE_LIMIT = 64
 
 
 
@@ -412,6 +414,94 @@ def validate_family(family: dict[str, Any], capture: Path, arm: str, config: dic
     for path, metrics in family_runtimes(family, capture):
         validate_snapshot(metrics, arm, config)
         validate_raw_capture(path, metrics)
+
+
+def native_response_family(family: dict[str, Any], capture: Path) -> list[list[dict]] | None:
+    """Reconcile native response observations without inferring provider attempts."""
+    runtimes = family_runtimes(family, capture)
+    if not any(metrics.get("schema") == NATIVE_RESPONSE_SCHEMA for _, metrics in runtimes):
+        return None
+    if any(metrics.get("schema") != NATIVE_RESPONSE_SCHEMA or metrics.get("mode") != "native"
+           for _, metrics in runtimes):
+        raise ValueError("native response family has incompatible runtime metrics")
+    seen: set[str] = set()
+    return [validate_native_responses(path, metrics, seen) for path, metrics in runtimes]
+
+
+def validate_native_responses(capture: Path, metrics: dict, seen: set[str]) -> list[dict]:
+    records = load_jsonl(capture)
+    health = metrics.get("capture")
+    if (not isinstance(health, dict) or health.get("records") != len(records)
+            or health.get("write_errors") != 0
+            or health.get("dropped_exchange_details", 0) != max(0, len(records) - NATIVE_EXCHANGE_LIMIT)):
+        raise ValueError("native capture inventory does not reconcile metrics")
+    tail = metrics.get("exchanges")
+    if not isinstance(tail, list) or len(tail) != min(len(records), NATIVE_EXCHANGE_LIMIT):
+        raise ValueError("native exchange history does not reconcile capture")
+    requests = dict.fromkeys(("retries", "logical", "provider_attempts", "completed", "failed"), 0)
+    totals = dict.fromkeys((*USAGE_KEYS, "uncached_input_tokens", "provider_attempts", "complete_attempts",
+                           "incomplete_attempts", "missing_attempts"), 0)
+    responses = []
+    tail_start = len(records) - len(tail)
+    for index, record in enumerate(records):
+        capture_id = record.get("capture_id")
+        thread = record.get("thread_id")
+        boundary = record.get("boundary")
+        completed = boundary == "native_response"
+        status = "completed" if completed else "failed"
+        model = record.get("request_model", "")
+        duration = record.get("duration_ms", 0)
+        if (record.get("schema_version") != 7 or boundary not in {"native_response", "native_turn"}
+                or not isinstance(capture_id, str) or not capture_id or capture_id in seen
+                or not isinstance(thread, str) or not thread or not isinstance(model, str)
+                or (completed and not model) or type(duration) is not int or duration < 0
+                or record.get("response_complete") is not completed or record.get("response_status") != status
+                or record.get("capture_error") != "" or record.get("provider_attempt", 0) != 0):
+            raise ValueError("invalid native response capture record")
+        seen.add(capture_id)
+        observed = record.get("usage")
+        counts = usage(observed) if observed is not None else None
+        if not completed and counts is not None:
+            raise ValueError("native terminal failure cannot carry response usage")
+        if counts is not None and (type(observed.get("evidence_complete")) is not bool
+                                   or counts["reasoning_tokens"] > counts["output_tokens"]):
+            raise ValueError("invalid native response usage")
+        complete_usage = counts is not None and observed["evidence_complete"]
+        requests[status] += 1
+        if completed:
+            coverage = "missing_attempts" if counts is None else "complete_attempts" if complete_usage else "incomplete_attempts"
+            totals[coverage] += 1
+            if counts is not None:
+                totals["input_tokens"] += counts["input_tokens"]
+                totals["output_tokens"] += counts["output_tokens"]
+                if complete_usage:
+                    for key in ("cached_input_tokens", "reasoning_tokens"):
+                        totals[key] += counts[key]
+                    totals["uncached_input_tokens"] += counts["input_tokens"] - counts["cached_input_tokens"]
+            responses.append(dict(sequence=index + 1, thread_id=thread, model=model,
+                                  usage=counts if complete_usage else None))
+        if index >= tail_start:
+            exchange = tail[index - tail_start]
+            detail = dict(sequence=index + 1, thread_id=thread, response_complete=completed,
+                          status=status, duration_ms=duration, provider_attempts=[])
+            if (not isinstance(exchange, dict) or any(exchange.get(key) != value for key, value in detail.items())
+                    or exchange.get("model", "") != model):
+                raise ValueError("native exchange metadata differs from capture")
+            published = exchange.get("usage")
+            if counts is None:
+                if published is not None:
+                    raise ValueError("native exchange claims unobserved usage")
+            elif (usage(published) != counts
+                  or published.get("complete_attempts") != int(complete_usage)
+                  or published.get("incomplete_attempts") != int(not complete_usage)):
+                raise ValueError("native exchange usage differs from capture")
+    if metrics.get("requests") != requests:
+        raise ValueError("native request totals do not reconcile capture")
+    published = metrics.get("usage")
+    if not isinstance(published, dict) or any(type(published.get(key)) is not int or published[key] != value
+                                              for key, value in totals.items()):
+        raise ValueError("native usage totals do not reconcile capture")
+    return responses
 
 
 def family_runtimes(family: dict[str, Any], capture: Path) -> list[tuple[Path, dict[str, Any]]]:

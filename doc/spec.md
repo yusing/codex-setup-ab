@@ -178,8 +178,9 @@ checkout.
   Each runtime is validated before family accounting; local sequence numbers are not a
   global order. Valid provider attempts supply Mekugi usage (including retries and tool
   re-sends, excluding prewarm); invalid capture falls back to Codex rollouts with
-  warnings. Recent native captures record completed responses, not provider
-  attempts; the raw export is retained and usage comes from Codex rollouts.
+  warnings. Valid native captures supply completed-response counts and their
+  token usage, not individual provider attempts or retries. Native response
+  measurements do not establish complete request coverage or a cost ranking.
   These are within-arm diagnostics, not measured savings, and validation alone
   does not protect exports from executor writes (see
   [protected runtime](contract.md#protected-mekugi-runtime)).

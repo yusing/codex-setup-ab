@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { createSessionDiagnostics, sessionDiagnostics, type SessionDiagnostics } from "./diagnostics";
 import { journalEvidence } from "./journal";
-import { mekugiMetricRuntimes, providerAttemptUsage, validCounter } from "./provider-usage";
+import { mekugiMetricRuntimes, NATIVE_RESPONSE_METHOD, providerAttemptUsage, validCounter } from "./provider-usage";
 import { evidenceLines, rolloutPaths } from "./rollout-evidence";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
@@ -63,7 +63,7 @@ export interface CostComponents {
 export interface AgentUsage {
   model: string;
   thread_id: string;
-  method: "token_usage_record" | "token_count.total_token_usage (request-cost approximation)" | "grok_usage.session (provider-recorded cost)" | "grok_usage.session (list-price estimate)" | "mekugi_capture.provider_attempts";
+  method: "token_usage_record" | "token_count.total_token_usage (request-cost approximation)" | "grok_usage.session (provider-recorded cost)" | "grok_usage.session (list-price estimate)" | "mekugi_capture.provider_attempts" | typeof NATIVE_RESPONSE_METHOD;
   usage: Usage;
   estimated_api_usd: number | null;
   recorded_api_usd?: number | null;
@@ -90,7 +90,7 @@ export interface MeteredRollouts {
   };
   warnings: string[];
   complete: boolean;
-  /** Present when validated Mekugi provider attempts replaced rollout usage: Codex-recorded requests per thread. */
+  /** Present when Mekugi provider attempts replaced rollout usage: Codex-recorded requests per thread. */
   recorded_api_usd?: number | null;
   codex_visible_requests?: Record<string, number | null>;
   /** Ordered within each thread; null means request-level evidence is unavailable. */
@@ -446,16 +446,18 @@ export async function readMekugiNativeCost(stdoutPath: string, tokenMetricsPath?
  * kept, or null after replacement.
  */
 export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unknown, pricing?: PricingSnapshot,
-  validatedCapture = false): string | null {
-  const runtimes = mekugiMetricRuntimes(metrics);
+  validatedCapture = false, nativeResponses?: unknown[][]): string | null {
+  const native = nativeResponses !== undefined;
+  const observation = native ? "native response" : "provider attempt";
+  const runtimes = nativeResponses?.map(exchanges => ({ exchanges })) ?? mekugiMetricRuntimes(metrics);
   if (!runtimes) return "validated metrics have no provider exchanges";
   const exchanges = runtimes.flatMap(runtime => runtime.exchanges);
   const groups = new Map<string, { threadId: string; model: string; requests: Usage[] }>();
   const cacheRequests: NonNullable<MeteredRollouts["cache_usage"]>["requests"] = [];
   const prewarm = { usage: emptyUsage(), request_count: 0, estimated_api_usd: pricing ? 0 as number | null : null };
-  let kindsKnown = true;
+  let kindsKnown = !native;
   // Snapshots retain completion order, which can differ from request order.
-  const orderKnown = runtimes.length === 1
+  const orderKnown = !native && runtimes.length === 1
     && exchanges.every(exchange => isObject(exchange) && Number.isSafeInteger(exchange.sequence) && Number(exchange.sequence) >= 0)
     && new Set(exchanges.map(exchange => isObject(exchange) ? exchange.sequence : undefined)).size === exchanges.length;
   const ordered = orderKnown ? [...exchanges].sort((a, b) =>
@@ -466,11 +468,12 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
     if (!["prewarm", "turn", "compaction"].includes(String(exchange.request_kind))) kindsKnown = false;
     const label = `exchange ${String(exchange.sequence)}`;
     if (!warming && (typeof exchange.thread_id !== "string" || !exchange.thread_id)) return `${label} has no thread id`;
-    if (!Array.isArray(exchange.provider_attempts)) return `${label} has no provider attempts`;
-    for (const attempt of exchange.provider_attempts) {
+    const observations = native ? [exchange] : exchange.provider_attempts;
+    if (!Array.isArray(observations)) return `${label} has no provider attempts`;
+    for (const attempt of observations) {
       if (!isObject(attempt)) return `${label} has an invalid provider attempt`;
       const counts = providerAttemptUsage(attempt);
-      if (!counts) return `${label} has a provider attempt without complete usage`;
+      if (!counts) return `${label} has a ${observation} without complete usage`;
       const { input_tokens: input, cached_input_tokens: cached, output_tokens: output, reasoning_tokens: reasoning } = counts;
       const model = typeof attempt.model === "string" && attempt.model ? attempt.model : null;
       if (!model) return `${label} has a provider attempt without a model`;
@@ -501,8 +504,11 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
   ]);
   const known = new Set(metered.sessions.map(session => session.thread_id));
   for (const threadId of captured) if (!known.has(threadId)) return `capture thread ${threadId} has no Codex rollout`;
-  for (const threadId of rolloutThreads) if (!captured.has(threadId)) return `rollout thread ${threadId} has no captured provider attempts`;
-  if (!groups.size) return "provider capture has no metered task attempts; zero usage is not established";
+  for (const threadId of rolloutThreads) if (!captured.has(threadId)) {
+    return `rollout thread ${threadId} has no captured ${observation}s`;
+  }
+  if (!groups.size) return native ? "native capture has no metered task responses; zero usage is not established"
+    : "provider capture has no metered task attempts; zero usage is not established";
 
   const visible: Record<string, number | null> = {};
   for (const agent of metered.agents) {
@@ -512,7 +518,7 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
   const rolloutRequests = Object.values(visible).reduce<number | null>((sum, count) => sum === null || count === null ? null : sum + count, 0);
   const rolloutInput = metered.totals.input_tokens;
   const nullCosts: CostComponents = { uncached_input_usd: null, cached_input_usd: null, cache_write_input_usd: null, output_usd: null };
-  metered.agents = [...groups.values()].map(group => {
+  metered.agents = [...groups.values()].map((group): AgentUsage => {
     const total = emptyUsage();
     for (const request of group.requests) addUsage(total, request);
     const rates = pricing ? ratesFor(pricing, group.model) : null;
@@ -521,7 +527,7 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
     return {
       model: group.model,
       thread_id: group.threadId,
-      method: "mekugi_capture.provider_attempts" as const,
+      method: native ? NATIVE_RESPONSE_METHOD : "mekugi_capture.provider_attempts",
       usage: total,
       estimated_api_usd: estimated,
       request_count: group.requests.length,
@@ -537,24 +543,30 @@ export function applyMekugiProviderUsage(metered: MeteredRollouts, metrics: unkn
       : metered.agents.reduce((sum, agent) => sum + agent.estimated_api_usd!, 0) };
   if (pricing && metered.totals.estimated_api_usd === null) {
     metered.complete = false;
-    metered.warnings.push("Mekugi provider attempts have missing list-price rates");
+    metered.warnings.push(`Mekugi ${observation}s have missing list-price rates`);
   }
-  metered.codex_visible_requests = visible;
-  metered.journal = journalEvidence(metrics) ?? undefined;
+  if (!native) {
+    metered.codex_visible_requests = visible;
+    metered.journal = journalEvidence(metrics) ?? undefined;
+  }
   metered.cache_usage = { requests: orderKnown ? cacheRequests : null, prewarm: kindsKnown ? prewarm : null };
   const hasRolloutErrors = metered.warnings.some(warning => /cannot enumerate rollout files|invalid JSONL|cannot read rollout|missing session_meta/.test(warning));
   if (!hasRolloutErrors) delete metered.unreconciled_cumulative;
-  const attempts = metered.agents.reduce((sum, agent) => sum + agent.request_count!, 0);
+  const observedCount = metered.agents.reduce((sum, agent) => sum + agent.request_count!, 0);
   metered.measurement_schema = "codex-ab.usage.v2";
   metered.observation_validity = hasRolloutErrors ? "partial" : "valid";
-  metered.request_coverage = validatedCapture && !hasRolloutErrors ? "verified" : "unverified";
+  metered.request_coverage = !native && validatedCapture && !hasRolloutErrors ? "verified" : "unverified";
   metered.pricing_precision = metered.totals.estimated_api_usd === null ? "unavailable" : "per-request";
   metered.coverage_basis = hasRolloutErrors
-    ? "Rollout discovery or parsing was incomplete; captured provider attempts cannot establish complete coverage."
-    : validatedCapture
-      ? "Every retained provider attempt has explicit complete usage in externally validated Mekugi captures; prewarm is separate."
-      : "Provider attempt counters are valid observations; full capture validation was not supplied.";
-  metered.warnings.push(`Mekugi tokens and requests use ${attempts} validated provider attempts, excluding prewarm; the Codex rollout recorded ${rolloutRequests ?? "unknown"} requests and ${rolloutInput} input tokens`);
+    ? `Rollout discovery or parsing was incomplete; captured ${observation}s cannot establish complete coverage.`
+    : native
+      ? "Native Mekugi captures record completed responses, not individual provider attempts or retries."
+      : validatedCapture
+        ? "Every retained provider attempt has explicit complete usage in externally validated Mekugi captures; prewarm is separate."
+        : "Provider attempt counters are valid observations; full capture validation was not supplied.";
+  metered.warnings.push(native
+    ? `Mekugi tokens and response counts use ${observedCount} validated native responses; individual provider attempts and retries are not recorded`
+    : `Mekugi tokens and requests use ${observedCount} validated provider attempts, excluding prewarm; the Codex rollout recorded ${rolloutRequests ?? "unknown"} requests and ${rolloutInput} input tokens`);
   return null;
 }
 
