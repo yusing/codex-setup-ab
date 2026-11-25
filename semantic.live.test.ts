@@ -112,13 +112,19 @@ liveTest("supervisor assertions resist early zero exit, spoofed output and candi
       expect(evidence.execution?.verifier?.completed).toBe(3);
     }
     const candidate = join(root, "correct");
-    const evaluatorDependency = await executeSemanticCheck({ runDir: root, state, candidate, output: join(root, "out/evaluator-dependency"),
-      name: `verifier-live-${process.pid}-evaluator-dependency`, docker: "docker", check: {
-        criterion: "sum", rationale: "Missing evaluator-only dependency is a wiring failure.", files: [], command: ["true"], verification,
-        evaluator_dependencies: ["missing_evaluator_only_fixture_dependency"],
-      } });
-    expect(evaluatorDependency.status).toBe("unassessed");
-    expect(evaluatorDependency.execution?.verifier?.status).toBe("evaluator_wiring");
+    for (const [label, dependencies, status, verifierStatus] of [
+      ["available", ["json", "xml.etree.ElementTree"], "pass", "passed"],
+      ["missing", ["missing_evaluator_only_fixture_dependency"], "unassessed", "evaluator_wiring"],
+      ["missing-submodule", ["xml.etree.missing_evaluator_only_fixture_dependency"], "unassessed", "evaluator_wiring"],
+    ] as const) {
+      const evidence = await executeSemanticCheck({ runDir: root, state, candidate, output: join(root, "out", label),
+        name: `verifier-live-${process.pid}-dependency-${label}`, docker: "docker", check: {
+          criterion: "sum", rationale: "Evaluator-only dependencies must resolve outside candidate imports.",
+          files: [], command: ["true"], verification, evaluator_dependencies: [...dependencies],
+        } });
+      expect(evidence.status).toBe(status);
+      expect(evidence.execution?.verifier?.status).toBe(verifierStatus);
+    }
     for (const [name, command, files] of [
       ["zero-tests", ["python3", "-c", "print('Ran 0 tests')"], []],
       ["fake-count", ["python3", "-c", "print('Ran 100 tests; ASSERTION_REACHED_AND_PASSED')"], []],

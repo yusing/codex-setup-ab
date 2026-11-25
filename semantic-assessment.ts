@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { writeState } from "./state";
 import { checked } from "./process";
-import { executeSemanticCheck, validateSemanticChecks, type CriteriaContract, type CriterionEvidence, type SemanticCheck } from "./semantic";
+import { EVALUATOR_DEPENDENCY_NAME, executeSemanticCheck, validateSemanticChecks, type CriteriaContract, type CriterionEvidence, type SemanticCheck } from "./semantic";
 import { armLabels, presentationLabel } from "./arm-labels";
 import type { ArmName, RunState } from "./types";
 
@@ -23,7 +23,7 @@ export function semanticHarnessSchema(contract: CriteriaContract, repairable?: R
       // An enum cannot be empty; maxItems 0 alone forbids every check.
       criterion: { enum: allowed.length ? allowed : criterionIds }, command: { type: "array", minItems: 1, items: { type: "string" } },
       rationale: { type: "string" },
-      evaluator_dependencies: { type: "array", items: { type: "string" } },
+      evaluator_dependencies: { type: "array", items: { type: "string", pattern: EVALUATOR_DEPENDENCY_NAME.source } },
       verification: { type: "object", additionalProperties: false, required: ["schema", "cases"], properties: {
         schema: { const: "codex-ab.verification.v1" }, cases: { type: "array", minItems: 1, maxItems: 256, items: { anyOf: [
           { type: "object", additionalProperties: false, required: ["id", "kind", "command", "args", "stdin", "expected_exit", "format", "expected"], properties: {
@@ -219,7 +219,7 @@ Author check source and argv arrays in the supplied plan schema. Each check's fi
 Do not execute candidate code in this credential-bearing model container. Do not overwrite or modify any existing candidate implementation or tests. The execution service runs checks offline without model authentication.
 Use only available dependencies and relevant checks. Include a verification object using codex-ab.verification.v1 with named cases. Its command cases execute command followed by args with optional stdin and compare exit status plus exact stdout (text or parsed JSON). Put only interpreter flags and entrypoint wiring in command; all behavioral case data, including option-style inputs, belongs in args and/or stdin. Supply args even when empty. Its python-call cases invoke a module callable with JSON input {args: [...], kwargs: {...}} and compare the observed JSON value. The supervisor owns expected values and performs every comparison outside the candidate process. Include representative edge cases and failure conditions. A bare shared-process test command is retained as diagnostic evidence and cannot establish a pass. Do not use a child-printed success marker or a no-op as an assertion.
 Before writing checks, inspect the actual entry point and relevant existing tests. Use the runtime or interpreter they require when loading code; test cross-runtime syntax separately.
-The supervisor reports setup and wiring failures in a protected structured record. Printed HARNESS_ERROR keywords, test counts and chosen exit codes cannot establish that provenance. Declare evaluator-only Python module dependencies in evaluator_dependencies; they are checked in a clean isolated interpreter before candidate imports. Never declare a candidate-owned dependency as evaluator wiring. Use only documented supported entry points; a candidate error through that setup is behavioral evidence, even during initialization.
+The supervisor reports setup and wiring failures in a protected structured record. Printed HARNESS_ERROR keywords, test counts and chosen exit codes cannot establish that provenance. Declare evaluator-only Python module dependencies in evaluator_dependencies using absolute module names (for example, json or xml.etree.ElementTree), not file paths or package requirements. The full names are checked in a clean isolated interpreter before candidate imports. Never declare a candidate-owned dependency as evaluator wiring. Use only documented supported entry points; a candidate error through that setup is behavioral evidence, even during initialization.
 Include exactly the fixed contract criteria in final assessments. Existing tests are separate evidence and must not be added as a criterion.
 The original existing_tests command also ran separately as existing_test_commands. Its output and exit status are non-gating diagnostics, not proof of test completion; do not transfer them to a criterion or substitute them for independent existing_tests observations.
 ${contract.retained_tests ? "Retained baseline tests ran the unchanged baseline test files against each candidate's production code, replacing the candidate's own matching files. A failure there is evidence that retained behavior regressed or that the candidate edited expectations the task did not change; a build failure is unassessed. They are separate evidence, not a criterion.\n" : ""}

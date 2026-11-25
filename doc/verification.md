@@ -53,11 +53,12 @@ attested native return against a reflective implementation forging the same RPC 
   executables, invalid evaluator Python syntax, timeouts, cancellations, and missing
   result records are distinct unassessed outcomes. Candidate syntax, import, or runtime
   errors reached through the declared interface remain behavioral failures.
-- **`evaluator_dependencies`**: optional list of top-level Python modules used only by
-  the evaluator, checked in a clean interpreter outside the candidate import path. A
-  missing declared evaluator dependency is a wiring failure; an undeclared missing import
-  in candidate code remains a candidate error. Declaring a candidate-owned dependency as
-  evaluator-only is invalid wiring.
+- **`evaluator_dependencies`**: optional list of absolute Python module names used
+  only by the evaluator, such as `json` or `xml.etree.ElementTree`. The verifier
+  checks the full name in a clean interpreter outside the candidate import path.
+  A missing declared dependency is a wiring failure; an undeclared missing
+  import in candidate code remains a candidate error. Declaring a candidate-owned
+  dependency as evaluator-only is invalid wiring.
 - **Qualification gate**: Raw independent results are stored as `probe_status`. An
   adaptive criterion becomes an authoritative pass or failure only after frozen controls
   qualify the check; missing or broken controls leave it unassessed.

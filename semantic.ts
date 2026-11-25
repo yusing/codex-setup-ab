@@ -44,6 +44,8 @@ export interface SemanticCheck {
   repair?: { defect: string; retained_inputs: string[]; retained_assertions: string[]; retained_edge_cases: string[]; retained_failure_conditions: string[] };
 }
 
+export const EVALUATOR_DEPENDENCY_NAME = /^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*$/;
+
 export interface CriterionEvidence {
   schema?: "codex-ab.criterion-evidence.v2";
   criterion: string;
@@ -123,7 +125,9 @@ export function validateSemanticChecks(value: unknown, contract: CriteriaContrac
     }
     if (check.verification !== undefined) validateVerification(check.verification);
     if (check.evaluator_dependencies !== undefined && (!Array.isArray(check.evaluator_dependencies) ||
-        !check.evaluator_dependencies.every(item => typeof item === "string" && /^[a-zA-Z_]\w*$/.test(item)))) throw new Error("invalid evaluator-only Python dependencies");
+        !check.evaluator_dependencies.every(item => typeof item === "string" && EVALUATOR_DEPENDENCY_NAME.test(item)))) {
+      throw new Error("invalid evaluator-only Python dependencies");
+    }
     if (check.repair !== undefined) {
       const repair = object(check.repair);
       if (!nonempty(repair.defect) || !["retained_inputs", "retained_assertions", "retained_edge_cases", "retained_failure_conditions"].every(key =>

@@ -80,6 +80,24 @@ test("harness schema restricts checks to the fixed criterion IDs", () => {
   expect(repair.properties["candidate-2"]?.maxItems).toBe(1);
   expect(repair.properties["candidate-2"]?.items.properties.criterion.enum).toEqual(["sum"]);
 });
+
+test("harness schema and validator accept absolute Python module names", () => {
+  const schema = semanticHarnessSchema(contract) as {
+    properties: {
+      "candidate-1": { items: { properties: { evaluator_dependencies: { items: { pattern: string } } } } };
+    };
+  };
+  const pattern = new RegExp(schema.properties["candidate-1"].items.properties.evaluator_dependencies.items.pattern);
+  const check = { criterion: "sum", files: [], command: ["true"], rationale: "Sum behavior.", verification };
+  const modules = ["json", "xml.etree.ElementTree"];
+  expect(modules.every(name => pattern.test(name))).toBe(true);
+  expect(validateSemanticChecks([{ ...check, evaluator_dependencies: modules }], contract)[0]?.evaluator_dependencies).toEqual(modules);
+  for (const name of ["", ".json", "xml..etree", "xml.etree.", "xml/etree", "json==1", "xml.3etree"]) {
+    expect(pattern.test(name)).toBe(false);
+    expect(() => validateSemanticChecks([{ ...check, evaluator_dependencies: [name] }], contract)).toThrow();
+  }
+});
+
 test("semantic prompts bound duplicated command output while retaining explicit evidence references", () => {
   const execution: CommandEvidence = {
     command: "test", started_at: "", elapsed_ms: 1, exit_code: 0,
