@@ -136,6 +136,15 @@ export async function runFixedVerifiersUnlocked(runDir: string, docker = "docker
   const failures: string[] = [];
   for (const arm of arms) {
     if (signal?.aborted) throw new Error("fixed verification canceled; prior attempt evidence is retained");
+    const result = state.results?.[arm];
+    if (!state.arms[arm] || !armExecutionSucceeded(result)) {
+      const reason = !state.arms[arm] ? "unknown arm"
+        : !result ? "no retained candidate result"
+        : result.lifecycle_error ?? result.collection_error
+        ?? (result.canceled ? "agent canceled" : result.timed_out ? "agent timed out" : `agent exited with code ${result.exit_code}`);
+      failures.push(`${arm}: skipped fixed verification (${reason})`);
+      continue;
+    }
     const output = await freshOutput(runDir, arm);
     const fixed = await executeArm(runDir, state, arm, inputs, output, docker, signal);
     appendResult(state, runDir, arm, output, fixed);
@@ -161,7 +170,7 @@ export async function verifyFixedArm(options: {
   const runDir = resolve(options.runDir);
   return withRunLock(runDir, async () => {
     const state = await readState(runDir);
-    if (state.status !== "complete") throw new Error("supplemental fixed verification requires completed candidate execution");
+    if (state.status !== "complete" && state.status !== "partial") throw new Error("supplemental fixed verification requires completed or partial candidate execution");
     if (state.fixed_verifier) throw new Error("use the configured fixed verifier without supplemental config arguments");
     if (!state.arms[options.arm] || !armExecutionSucceeded(state.results?.[options.arm])) throw new Error("supplemental fixed verification requires a successful retained arm");
     const output = await freshOutput(runDir, options.arm);

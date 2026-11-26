@@ -171,8 +171,9 @@ untracked guidance to Git before preparation to include it.
   startup independently of `--yolo`).
 - **Failure and lifecycle**: Milestones go to stderr. Timeout or cancellation stops
   owned containers and preserves available patches/results. Nonzero agent exit, timeout,
-  cancellation, lifecycle failure, or collection failure leaves execution partial, skips
-  grading/judging, writes the report bundle, and exits nonzero. Direct judging and
+  cancellation, lifecycle failure, or collection failure leaves execution partial, grades
+  and runs configured fixed verifiers for any arm whose execution succeeded while skipping
+  comparative judging, writes the report bundle, and exits nonzero. Direct judging and
   finishing require successful agent execution. Runs never restart or resume; semantic
   assessment requires every configured arm.
 - **Legacy Mekugi router task**: Use `--profile mekugi --current-launcher mekugi` with
