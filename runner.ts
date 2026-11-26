@@ -3,7 +3,7 @@ import { applySkillSelection } from "./setup-skills";
 import { armNames } from "./types";
 import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories, discardDownloadedCatalog, TASK_PATH } from "./dependencies";
 import { prepareRuntimeHome, runtimeHomeMounts } from "./runtime-home";
-import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { exec, checked, type ExecResult } from "./process";
@@ -45,10 +45,28 @@ function resolveRetryDelaysMs(override?: number[]): number[] {
 }
 
 async function isWorkspaceClean(repository: string, baseCommit: string): Promise<boolean> {
-  const status = await exec(["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-C", repository, "status", "--porcelain"]);
+  // Refuse to run host git if the candidate tampered with repo-local .git/config filters or hooks.
+  const gitConfig = await readFile(join(repository, ".git/config"), "utf8").catch(() => null);
+  if (gitConfig === null || /(?:^|\n)\s*(?:clean|smudge|process|textconv|external|fsmonitor|hooksPath|sshCommand)\s*=/i.test(gitConfig)) {
+    return false;
+  }
+  const status = await exec([
+    "git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+    "-c", "status.showUntrackedFiles=normal", "-C", repository, "status", "--porcelain", "--untracked-files=normal",
+  ]);
   if (status.exitCode !== 0 || status.stdout.trim() !== "") return false;
-  const head = await exec(["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-C", repository, "rev-parse", "HEAD"]);
+  const head = await exec(["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", repository, "rev-parse", "HEAD"]);
   return head.exitCode === 0 && head.stdout.trim() === baseCommit;
+}
+
+async function archiveExportDirectory(output: string, attempt: number, exportRoot: string): Promise<void> {
+  const entries = await readdir(exportRoot).catch(() => []);
+  if (!entries.length) return;
+  const destination = join(output, `mekugi-exports.attempt-${attempt}`);
+  await mkdir(destination, { recursive: true, mode: 0o700 });
+  for (const entry of entries) {
+    await rename(join(exportRoot, entry), join(destination, entry));
+  }
 }
 
 async function archiveAttemptLogs(output: string, attempt: number, stdoutPath: string, stderrPath: string): Promise<{ stdoutPath: string; stderrPath: string }> {
@@ -525,9 +543,12 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     lifecycleError = error instanceof Error ? error.message : String(error);
   }
   const maxAttempts = retryDelays.length + 1;
+  const deadlineMs = started.getTime() + state.timeout_seconds * 1000;
   try {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (lifecycleError || signal.aborted) break;
+      const remainingTimeoutMs = deadlineMs - Date.now();
+      if (attempt > 1 && remainingTimeoutMs <= 0) break;
       const attemptStartedAt = new Date().toISOString();
       homeImage = initialHomeImage;
       result = undefined;
@@ -535,7 +556,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
       failureClassification = undefined;
       try {
         const execution = await runOwnedContainer({ docker, name, signal: armController.signal, snapshotImage: homeImage ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
-          onSnapshot: image_id => { homeImage = image_id; }, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", internalNetwork ?? providerNetwork, ...(egressProxy ? egressProxy.envArgs : []), "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
+          onSnapshot: image_id => { homeImage = image_id; }, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: attempt === 1 ? state.timeout_seconds * 1000 : remainingTimeoutMs, createArgs: [...containerArgs(state), "--network", internalNetwork ?? providerNetwork, ...(egressProxy ? egressProxy.envArgs : []), "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
           "-v", `${repository}:/workspace`, ...(homeImage ? await runtimeHomeMounts(home) : ["-v", `${home}:/home/ubuntu`]), ...await currentSetupMounts(runDir, state, arm, home), ...exportMount, ...grokTask, ...debugStorage,
           ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
           homeImage ?? imageRef(state), ...launcher, ...executionArgs] });
@@ -577,7 +598,10 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
         || !failureClassification?.retryable
         || !(await isWorkspaceClean(repository, state.source.base_commit))
       ) break;
+      const backoffMs = retryDelays[attempt - 1] ?? 0;
+      if (Date.now() + backoffMs >= deadlineMs) break;
       const archived = await archiveAttemptLogs(output, attempt, stdoutPath, stderrPath);
+      if (exportRoot) await archiveExportDirectory(output, attempt, exportRoot);
       retryAttempts.push({
         attempt,
         started_at: attemptStartedAt,
@@ -588,7 +612,6 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
         stdout_path: relative(runDir, archived.stdoutPath),
         stderr_path: relative(runDir, archived.stderrPath),
       });
-      const backoffMs = retryDelays[attempt - 1] ?? 0;
       progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: attempt ${attempt} failed (${failureClassification.reason}); retrying in ${backoffMs}ms`);
       if (backoffMs > 0) {
         try { await delay(backoffMs, undefined, { signal }); }
@@ -619,14 +642,15 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const finishedAt = new Date().toISOString();
   const userCanceled = signal.aborted;
   const triggeredByGuard = Boolean(runawayGuard?.triggered) && !userCanceled;
-  progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent stopped after ${Math.round((result?.elapsedMs ?? 0) / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
+  const totalElapsedMs = retryAttempts.length ? Math.max(result?.elapsedMs ?? 0, Date.now() - started.getTime()) : (result?.elapsedMs ?? 0);
+  progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent stopped after ${Math.round(totalElapsedMs / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
   return {
     arm,
     anonymous_id: `candidate-${armNames(state).indexOf(arm) + 1}`,
     container: name,
     started_at: started.toISOString(),
     finished_at: finishedAt,
-    agent_elapsed_ms: result?.elapsedMs ?? 0,
+    agent_elapsed_ms: totalElapsedMs,
     exit_code: result?.exitCode ?? -1,
     timed_out: (result?.timedOut ?? false) || triggeredByGuard,
     canceled: userCanceled || (!triggeredByGuard && result?.canceled === true),

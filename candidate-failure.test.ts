@@ -23,6 +23,7 @@ describe("classifyCandidateFailure", () => {
     ["capacity in stderr", { exitCode: 1, stderr: "Selected model is at capacity. Please try a different model.", stdout: "" }],
     ["capacity in JSONL error event", { exitCode: 1, stderr: "", stdout: JSON.stringify({ type: "error", message: "Selected model is at capacity" }) + "\n" }],
     ["HTTP 502 Bad Gateway", { exitCode: 1, stderr: "Upstream returned 502 Bad Gateway", stdout: "" }],
+    ["HTTP 500 Internal Server Error in JSONL", { exitCode: 1, stderr: "", stdout: JSON.stringify({ type: "turn.failed", error: { message: "HTTP 500 Internal Server Error" } }) + "\n" }],
     ["HTTP 503 Service Unavailable", { exitCode: 1, stderr: "status 503 Service Unavailable", stdout: "" }],
     ["HTTP 504 Gateway Timeout", { exitCode: 1, stderr: "HTTP 504 Gateway Timeout", stdout: "" }],
     ["overloaded in JSONL turn.failed", { exitCode: 1, stderr: "", stdout: JSON.stringify({ type: "turn.failed", error: { type: "overloaded_error", message: "Server is overloaded" } }) + "\n" }],
@@ -112,6 +113,20 @@ describe("classifyCandidateFailure", () => {
       reason: "unknown_nonzero_exit",
       retryable: false,
       detail: "unexpected failure during processing",
+    });
+  });
+
+  test("leaves unrecognized structured JSONL errors as unknown rather than model_failure", () => {
+    const result = classifyCandidateFailure({
+      exitCode: 1,
+      stderr: "",
+      stdout: JSON.stringify({ type: "turn.failed", error: { message: "unrecognized upstream gateway fault" } }) + "\n",
+    });
+    expect(result).toEqual({
+      execution: "unknown",
+      reason: "unknown_nonzero_exit",
+      retryable: false,
+      detail: "unrecognized upstream gateway fault",
     });
   });
 

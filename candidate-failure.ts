@@ -180,6 +180,10 @@ const TRANSIENT_PROVIDER_PATTERNS: readonly RegExp[] = [
   /selected\s+model\s+is\s+at\s+capacity/i,
   /\bmodel\s+is\s+at\s+capacity\b/i,
   /\b(?:http|status(?:\s+code)?)\s*[:=]?\s*(?:502|503|504)\b/i,
+  /\b(?:http|status(?:\s+code)?)\s*[:=]?\s*500\b/i,
+  /\b500\s+internal\s+server\s+error\b/i,
+  /\binternal\s+server\s+error\b/i,
+  /\bserver_error\b/i,
   /\b502\s+bad\s+gateway\b/i,
   /\b503\s+service\s+unavailable\b/i,
   /\b504\s+gateway\s+timeout\b/i,
@@ -209,6 +213,7 @@ const MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
   /\b(?:refusal|model\s+refused|content_policy|content_filter|safety_violation)\b/i,
   /\bcontext_length_exceeded\b/i,
   /\bmaximum\s+context\s+length\b/i,
+  /\bmodel_error\b/i,
 ];
 
 function firstMatch(lines: readonly string[], patterns: readonly RegExp[]): string | undefined {
@@ -267,7 +272,7 @@ export function classifyCandidateFailure(input: CandidateFailureInput): Candidat
     };
   }
 
-  const modelMatch = firstMatch(allDiagnosticLines, MODEL_FAILURE_PATTERNS) ?? diagnostics.jsonlErrors[0];
+  const modelMatch = firstMatch(allDiagnosticLines, MODEL_FAILURE_PATTERNS);
   if (modelMatch) {
     return {
       execution: "model_failure",
@@ -277,7 +282,8 @@ export function classifyCandidateFailure(input: CandidateFailureInput): Candidat
     };
   }
 
-  const fallbackDetail = diagnostics.stderrLines[0]
+  const fallbackDetail = diagnostics.jsonlErrors[0]
+    ?? diagnostics.stderrLines[0]
     ?? diagnostics.plainStdoutLines[0]
     ?? `Candidate exited with nonzero code ${input.exitCode}`;
   return {
