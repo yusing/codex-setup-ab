@@ -19,11 +19,11 @@ type PairFixture = {
   currentUsd?: number | null;
 };
 
-test("the checked-in diverse suite maps each of its four task IDs to a matching pack", async () => {
+test("the checked-in diverse suite maps each of its five task IDs to a matching pack", async () => {
   const manifest = JSON.parse(await readFile(join(import.meta.dir, "tasks/diverse-suite.json"), "utf8"));
   expect(manifest.schema).toBe("codex-ab.suite.v1");
   expect(manifest.tasks.map((task: { id: string }) => task.id).sort()).toEqual([
-    "express-transfer-encoding", "flask-ipv6-server-name", "gin-context-copy", "nvm-download-no-eval",
+    "express-transfer-encoding", "flask-ipv6-server-name", "gin-context-copy", "nvm-download-no-eval", "sqlite-utils-history",
   ]);
   for (const task of manifest.tasks as Array<{ id: string; pack: string }>) {
     const pack = await loadTaskPack(join(import.meta.dir, "tasks", task.pack));
@@ -168,6 +168,7 @@ test("suite report filters to both-passing pairs, leaves missing costs unknown, 
     expect(report.schema).toBe("codex-ab.suite-report.v2");
     expect(report.reliability.arms.stock).toMatchObject({ scored: 4, passing: 4, pass_rate: 1, cost_covered: 2, cost_per_verified_success_usd: null });
     expect(report.reliability.arms.current).toMatchObject({ scored: 4, passing: 3, pass_rate: 0.75 });
+    expect(report.reliability.arms.current.pass_metrics.macro["2"]).toMatchObject({ k: 2, eligible_tasks: 2, pass_at_k: 1, pass_pow_k: 0.5 });
     expect(report.uncertainty.pass_rate[0]).toMatchObject({ matched_tasks: 2, matched_pairs: 4, mean_difference: -0.25,
       interval: { status: "unstable", lower: -0.5, upper: 0 } });
     expect(report.uncertainty.joint_success_agent_seconds[0]).toMatchObject({ matched_tasks: 2, matched_pairs: 3, mean_difference: 2 });
@@ -177,6 +178,7 @@ test("suite report filters to both-passing pairs, leaves missing costs unknown, 
     expect(markdown).toContain("unknown");
     expect(markdown).toStartWith("# Cross-task benchmark suite\n\n");
     expect(markdown).toContain("| alpha | standard | 2 | 2 | 1 | 1.0000 | unknown |");
+    expect(markdown).toContain("### Capability (pass@k) and unattended consistency (pass^k)");
 
     const renamedTaskState = { ...state, sets: suiteSets.map((set, index) => index === 0 ? { ...set, task: "renamed-alpha" } : set) };
     await writeFile(suitePath, JSON.stringify(renamedTaskState));

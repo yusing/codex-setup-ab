@@ -286,7 +286,7 @@ Notes on reference scope:
 
 ## Diverse task suite
 
-`tasks/diverse-suite.json` selects Gin, Flask, Express, and NVM. Map each task ID to a
+`tasks/diverse-suite.json` selects Gin, Flask, Express, NVM, and sqlite-utils. Map each task ID to a
 local checkout containing its baseline and reference ancestry:
 
 ```sh
@@ -295,7 +295,8 @@ cat > /tmp/codex-ab-sources.json <<'JSON'
   "gin-context-copy": "/path/to/gin",
   "flask-ipv6-server-name": "/path/to/flask",
   "express-transfer-encoding": "/path/to/express",
-  "nvm-download-no-eval": "/path/to/nvm"
+  "nvm-download-no-eval": "/path/to/nvm",
+  "sqlite-utils-history": "/path/to/sqlite-utils"
 }
 JSON
 suite_run="$(./dist/codex-ab prepare-suite \
