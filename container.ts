@@ -230,13 +230,17 @@ export async function runOwnedContainer(options: OwnedContainerOptions): Promise
   let started = false;
   const finish = (): Promise<void> => finishing ??= (async () => {
     if (containerId && started) {
-      try {
-        const oom = await inspect(docker, containerId, "{{.State.OOMKilled}}");
-        if (oom.present) {
-          if (oom.value === "true") oomKilled = true;
-          else if (oom.value === "false") oomKilled = false;
-        }
-      } catch { /* OOM inspection failure must never break snapshotting or cleanup. */ }
+      if (result?.exitCode === 0 && !result.timedOut && !result.canceled) {
+        oomKilled = false;
+      } else {
+        try {
+          const oom = await inspect(docker, containerId, "{{.State.OOMKilled}}");
+          if (oom.present) {
+            if (oom.value === "true") oomKilled = true;
+            else if (oom.value === "false") oomKilled = false;
+          }
+        } catch { /* OOM inspection failure must never break snapshotting or cleanup. */ }
+      }
     }
     if (options.snapshotImage && containerId && started) {
       const ownership = await inspect(docker, containerId, '{{ index .Config.Labels "codex-ab.owner" }}');

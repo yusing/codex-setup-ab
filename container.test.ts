@@ -179,8 +179,8 @@ test("inspects State.OOMKilled before container removal and exposes oomKilled", 
 });
 
 test("OOM inspect failure does not break container cleanup", async () => {
-  const result = await runOwnedContainer({ docker, name: "oom-inspect-fails", createArgs: ["fixture", "harmless"] });
-  expect(result.exitCode).toBe(0);
+  const result = await runOwnedContainer({ docker, name: "oom-inspect-fails", createArgs: ["fixture", "oom-command"] });
+  expect(result.exitCode).toBe(137);
   expect(result.oomKilled).toBeUndefined();
   expect(result.cleanupVerified).toBe(true);
 });
