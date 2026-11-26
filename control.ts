@@ -84,7 +84,8 @@ function comparisonIdentity(state: RunState) {
     image: state.image_id,
     codex: state.runtime_tools.codex_sha256, host: state.runtime_tools.codex_code_mode_host_sha256,
     resources: { cpus: state.resource_limits.cpus, memory: state.resource_limits.memory, pids_limit: state.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT },
-    timeout: state.timeout_seconds, compact: state.auto_compact_limit };
+    timeout: state.timeout_seconds, compact: state.auto_compact_limit,
+    ...(state.network_policy?.closed_book ? { closed_book: true, allowed_hosts: state.network_policy.allowed_hosts } : {}) };
 }
 
 function compatibleDependencyImages(source: RunState, target: RunState): boolean {
@@ -320,6 +321,7 @@ export function controlIdentity(state: RunState): unknown {
     stock_setup_sha256: state.arms.stock.home_template === "snapshots/current/home/ubuntu"
       ? state.current_snapshot.manifest_sha256 : null,
     mekugi_flags: state.mekugi_flags ?? [], protected_runtime: state.protected_runtime ?? null,
+    ...(state.network_policy?.closed_book ? { closed_book: true, allowed_hosts: state.network_policy.allowed_hosts } : {}),
   };
 }
 

@@ -224,8 +224,14 @@ export function evaluateEgressTarget(target: EgressTarget, config: EgressAllowli
   return { allowed: true, host, port };
 }
 
-function recordDenied(deniedLogPath: string | undefined, record: EgressDeniedRecord): void {
+const MAX_DENIED_LOG_RECORDS = 500;
+const deniedLogCounts = new WeakMap<http.Server, number>();
+
+function recordDenied(deniedLogPath: string | undefined, record: EgressDeniedRecord, server?: http.Server): void {
   if (!deniedLogPath) return;
+  const count = server ? (deniedLogCounts.get(server) ?? 0) : 0;
+  if (server && count >= MAX_DENIED_LOG_RECORDS) return;
+  if (server) deniedLogCounts.set(server, count + 1);
   mkdirSync(dirname(deniedLogPath), { recursive: true });
   appendFileSync(deniedLogPath, `${JSON.stringify(record)}\n`, "utf8");
 }
@@ -431,8 +437,12 @@ function parseConnectAuthority(authority) {
   return { host, port: targetPort };
 }
 
+const MAX_DENIED_LOG_RECORDS = 500;
+let deniedLogCount = 0;
 function logDenied(method, host, targetPort, reason) {
   if (!deniedLogPath) return;
+  if (deniedLogCount >= MAX_DENIED_LOG_RECORDS) return;
+  deniedLogCount += 1;
   try {
     fs.mkdirSync(path.dirname(deniedLogPath), { recursive: true });
     fs.appendFileSync(deniedLogPath, JSON.stringify({
