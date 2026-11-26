@@ -23,9 +23,12 @@ RUN apt-get update \
 COPY --from=node-toolchain /usr/local/bin/node /usr/local/bin/node
 COPY --from=bun-toolchain /usr/local/bin/bun /usr/local/bin/bun
 
-# Keep the official standalone package outside the benchmark's mounted homes.
-RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex-install.sh \
-    && CODEX_HOME=/opt/codex CODEX_INSTALL_DIR=/usr/local/bin CODEX_NON_INTERACTIVE=1 \
+# Keep the official standalone package pinned and outside the benchmark's mounted homes.
+ARG CODEX_RELEASE=0.172.0
+ARG CODEX_INSTALL_SCRIPT_SHA256=b698d8eb50c0fbe0214ea57b5bf2af439054108404c6d2b872989db02f4bd574
+RUN curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_RELEASE}/install.sh" -o /tmp/codex-install.sh \
+    && echo "${CODEX_INSTALL_SCRIPT_SHA256}  /tmp/codex-install.sh" | sha256sum --check --strict \
+    && CODEX_RELEASE="${CODEX_RELEASE}" CODEX_HOME=/opt/codex CODEX_INSTALL_DIR=/usr/local/bin CODEX_NON_INTERACTIVE=1 \
         sh /tmp/codex-install.sh \
     && rm /tmp/codex-install.sh \
     && ln -s /opt/codex/packages/standalone/current/bin/codex-code-mode-host \
@@ -33,7 +36,7 @@ RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex-install.sh \
     && test -x /usr/local/bin/codex-code-mode-host \
     && ! command -v hpatch \
     && ! command -v mekugi \
-    && /usr/local/bin/codex --version \
+    && /usr/local/bin/codex --version | grep -Fq "${CODEX_RELEASE}" \
     && node --version && bun --version \
     && install -d /usr/local/libexec /root/.config /agent-issue-reports /go/pkg/mod \
     && ln "$(readlink -f /usr/local/bin/codex)" /usr/local/libexec/codex-real

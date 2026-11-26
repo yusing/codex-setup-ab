@@ -25,8 +25,9 @@ You need Bun 1.4+, Git, Docker with BuildKit, access to the source commit, and P
 host.
 
 The Ubuntu 26.04 image installs standalone Codex and its matching Code Mode companion
-using the [official installer](https://learn.chatgpt.com/docs/codex/cli#get-started-with-codex-cli)
-at image build time. The base includes Node, Bun, Python, and Ubuntu Git (with
+from the pinned GitHub release installer (`CODEX_RELEASE=0.172.0` and verified
+`CODEX_INSTALL_SCRIPT_SHA256` build args in `Dockerfile`) at image build time. The base
+includes Node, Bun, Python, and Ubuntu Git (with
 `--no-lazy-fetch`, local clones, and HTTPS). The full target adds Go, compilers,
 and protected-runtime tools. The Rust target adds pinned Rust and a C compiler.
 Images do not include a host setup or credentials.
@@ -48,7 +49,9 @@ pack uses the Rust image. Go tasks, custom packs, and protected runtime use the
 full image. Set `--image` or `CODEX_AB_IMAGE` to override this choice.
 Direct `prepare` and `prepare-suite` expect a prebuilt image and default to the full
 image. The container operator is `1000:1000`. To
-refresh Codex deliberately, rebuild with `--no-cache` and prepare a new run (existing
+refresh Codex deliberately, override `--build-arg CODEX_RELEASE=...` and
+`--build-arg CODEX_INSTALL_SCRIPT_SHA256=...` (or update `Dockerfile`), rebuild with
+`--no-cache`, and prepare a new run (existing
 runs stay pinned to their recorded image ID, Codex version, and executable hashes, which
 `preflight` verifies).
 

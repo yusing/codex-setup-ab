@@ -1,7 +1,7 @@
-import { CODEX_MODELS, REASONING_EFFORTS, type ArmSettings, type RunState } from "./types";
+import { CODEX_MODELS, MIN_PIDS_LIMIT, REASONING_EFFORTS, type ArmSettings, type RunState } from "./types";
 import { validateMekugiFlags, usesMekugi } from "./mekugi";
 
-const fields = new Set(["model", "reasoning_effort", "cpus", "memory", "timeout_seconds", "auto_compact_limit", "parallel_work", "mekugi_flags", "skills"]);
+const fields = new Set(["model", "reasoning_effort", "cpus", "memory", "pids_limit", "timeout_seconds", "auto_compact_limit", "parallel_work", "mekugi_flags", "skills"]);
 
 export function parseArmSettings(
   value: unknown, keys: string[], origin?: "retained",
@@ -15,6 +15,7 @@ export function parseArmSettings(
     if (s.reasoning_effort !== undefined && !REASONING_EFFORTS.some(value => value === s.reasoning_effort)) throw new Error(`Invalid reasoning effort for ${arm}`);
     if (s.cpus !== undefined && (typeof s.cpus !== "string" || !Number.isFinite(Number(s.cpus)) || Number(s.cpus) <= 0)) throw new Error(`Invalid CPU limit for ${arm}`);
     if (s.memory !== undefined && (typeof s.memory !== "string" || !/^[1-9]\d*(?:[bkmg])?$/i.test(s.memory))) throw new Error(`Invalid memory limit for ${arm}`);
+    if (s.pids_limit !== undefined && (typeof s.pids_limit !== "number" || !Number.isSafeInteger(s.pids_limit) || s.pids_limit < MIN_PIDS_LIMIT)) throw new Error(`Invalid PID limit for ${arm}`);
     for (const key of ["timeout_seconds", "auto_compact_limit"]) if (s[key] !== undefined && (typeof s[key] !== "number" || !Number.isSafeInteger(s[key]) || Number(s[key]) < 1)) throw new Error(`Invalid ${key} for ${arm}`);
     if (s.parallel_work !== undefined && typeof s.parallel_work !== "boolean") throw new Error(`Invalid parallel work setting for ${arm}`);
     if (s.mekugi_flags !== undefined) validateMekugiFlags(s.mekugi_flags, origin);
@@ -44,7 +45,13 @@ export function armRuntime(state: RunState, arm: string): RunState {
   if (!s) return state;
   return { ...state,
     execution: { ...state.execution, model: s.model ?? state.execution.model, reasoning_effort: s.reasoning_effort ?? state.execution.reasoning_effort },
-    resource_limits: { cpus: s.cpus ?? state.resource_limits.cpus, memory: s.memory ?? state.resource_limits.memory },
+    resource_limits: {
+      cpus: s.cpus ?? state.resource_limits.cpus,
+      memory: s.memory ?? state.resource_limits.memory,
+      ...(s.pids_limit !== undefined || state.resource_limits.pids_limit !== undefined
+        ? { pids_limit: s.pids_limit ?? state.resource_limits.pids_limit }
+        : {}),
+    },
     timeout_seconds: s.timeout_seconds ?? state.timeout_seconds,
     auto_compact_limit: s.auto_compact_limit ?? state.auto_compact_limit,
   };

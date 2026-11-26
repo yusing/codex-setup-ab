@@ -20,7 +20,8 @@ import { isPairedMekugiComparison, usesMekugi, mekugiArmFlags, MEKUGI_METRICS_WR
 import { importArms, importControl } from "./control";
 import { evaluationPlan } from "./evaluation";
 import { armLabels, presentationLabel } from "./arm-labels";
-import type { ArmImport, ArmName, ArmResult, CommandEvidence, RunState } from "./types";
+import { startRunawayGuard } from "./runaway-guard";
+import { DEFAULT_PIDS_LIMIT, type ArmImport, type ArmName, type ArmResult, type CommandEvidence, type RunState } from "./types";
 
 export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; importArms?: ArmImport[]; evaluationMode?: string; evaluationBaselines?: unknown; signal?: AbortSignal }
 
@@ -35,8 +36,12 @@ function prepareAssets(state: RunState): string {
 // Mekugi resolves its Codex child through PATH after mise activates the setup.
 const PINNED_LAUNCHER_ENV = 'export PATH="/opt/task-deps/python/bin:/usr/local/bin:$PATH"; exec "$@"';
 
-function containerArgs(state: RunState): string[] {
-  return ["--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory];
+export function containerArgs(state: RunState): string[] {
+  return [
+    "--cpus", state.resource_limits.cpus,
+    "--memory", state.resource_limits.memory,
+    "--pids-limit", String(state.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT),
+  ];
 }
 
 function usesMise(state: RunState, arm: ArmName): boolean {
@@ -410,6 +415,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
   let homeImage = state.runtime_homes?.[arm]?.image_id;
+  let runawayGuard: ArmResult["runaway_guard"];
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
   const exports = state.mekugi_exports_by_arm?.[arm] ?? (arm === exportArm ? state.mekugi_exports : undefined);
   const exportArgs = exports
@@ -445,9 +451,21 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     ...(state.auto_compact_limit !== undefined ? ["-c", `model_auto_compact_token_limit=${state.auto_compact_limit}`] : []),
     ...(mekugiArm ? [] : ["-"]),
   ];
+  const armController = new AbortController();
+  if (signal.aborted) armController.abort();
+  const onParentAbort = () => armController.abort();
+  signal.addEventListener("abort", onParentAbort, { once: true });
+  const guard = startRunawayGuard({
+    stdoutPath,
+    config: state.runaway_guard,
+    controller: armController,
+    onTrigger: trigger => {
+      progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: runaway guard triggered (${trigger.reason}): ${trigger.detail}`);
+    },
+  });
   try {
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
-    const execution = await runOwnedContainer({ docker, name, signal, snapshotImage: homeImage ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
+    const execution = await runOwnedContainer({ docker, name, signal: armController.signal, snapshotImage: homeImage ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
       onSnapshot: image_id => { homeImage = image_id; }, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
       "-v", `${repository}:/workspace`, ...(homeImage ? await runtimeHomeMounts(home) : ["-v", `${home}:/home/ubuntu`]), ...await currentSetupMounts(runDir, state, arm, home), ...exportMount, ...grokTask, ...debugStorage,
       ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
@@ -458,6 +476,9 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     lifecycleError = error instanceof Error ? error.message : String(error);
     if (error instanceof OwnedContainerError && error.result) result = error.result;
     if (error instanceof OwnedContainerError && error.snapshotImageId) homeImage = error.snapshotImageId;
+  } finally {
+    runawayGuard = await guard.stop();
+    signal.removeEventListener("abort", onParentAbort);
   }
   if (protectedArm) {
     try { await executorOwnership(docker, state, `${name}-restore`, ownedPaths, true); }
@@ -465,6 +486,8 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   }
   if (!lifecycleError) await discardDownloadedCatalog(home, resolve(runDir, state.arms[arm].home_template));
   const finishedAt = new Date().toISOString();
+  const userCanceled = signal.aborted;
+  const triggeredByGuard = Boolean(runawayGuard?.triggered) && !userCanceled;
   progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent stopped after ${Math.round((result?.elapsedMs ?? 0) / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
   return {
     arm,
@@ -474,8 +497,9 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     finished_at: finishedAt,
     agent_elapsed_ms: result?.elapsedMs ?? 0,
     exit_code: result?.exitCode ?? -1,
-    timed_out: result?.timedOut ?? false,
-    canceled: result?.canceled === true || signal.aborted,
+    timed_out: (result?.timedOut ?? false) || triggeredByGuard,
+    canceled: userCanceled || (!triggeredByGuard && result?.canceled === true),
+    ...(runawayGuard ? { runaway_guard: runawayGuard } : {}),
     patch_path: patchPath.slice(runDir.length + 1),
     stdout_path: stdoutPath.slice(runDir.length + 1),
     stderr_path: stderrPath.slice(runDir.length + 1),
@@ -613,7 +637,12 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
           attempt.home_image_id = result.home_image_id;
           attempt.status = armExecutionSucceeded(result) ? "stopped" : "failed";
           if (attempt.status === "failed") {
-            attempt.error = result.lifecycle_error ?? (result.canceled ? "agent canceled" : result.timed_out ? "agent timed out" : `agent exited with code ${result.exit_code}`);
+            attempt.error = result.lifecycle_error ?? (
+              result.canceled ? "agent canceled"
+                : result.runaway_guard?.triggered ? `runaway guard triggered (${result.runaway_guard.reason}): ${result.runaway_guard.detail}`
+                : result.timed_out ? "agent timed out"
+                : `agent exited with code ${result.exit_code}`
+            );
             const message = `${displayArm(arm)}: ${attempt.error}; see ${result.stderr_path}`;
             state.error = state.error ? `${state.error}; ${message}` : message;
             progress(message);

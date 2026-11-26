@@ -18,7 +18,8 @@ import { isPairedMekugiComparison, validateMekugiFlags } from "./mekugi";
 import { snapshotMekugiRuntime, verifyMekugiRuntime } from "./mekugi-runtime";
 import { MEKUGI_EXPORT_SCRIPTS, MEKUGI_ISOLATION_SCRIPTS } from "./support/mekugi";
 import { sha256, writeState } from "./state";
-import type { RunState, BenchmarkProfile, CodexLauncher, ReasoningEffort, JudgeReport } from "./types";
+import { DEFAULT_PIDS_LIMIT, MIN_PIDS_LIMIT, type RunState, type BenchmarkProfile, type CodexLauncher, type ReasoningEffort, type JudgeReport, type RunawayGuardConfig } from "./types";
+import { normalizeRunawayGuardConfig } from "./runaway-guard";
 
 export interface PrepareOptions {
   armSettings?: Record<string, import("./types").ArmSettings>;
@@ -51,7 +52,9 @@ export interface PrepareOptions {
   dockerBin?: string;
   cpus: string;
   memory: string;
+  pidsLimit?: number;
   timeoutSeconds: number;
+  runawayGuard?: RunawayGuardConfig;
   currentLauncher?: CodexLauncher;
   mekugiBinary?: string;
   bunBinary?: string;
@@ -671,6 +674,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   if (pack) options = { ...options, profile: "task", baseCommit: pack.manifest.source.base_commit,
     forbiddenCommit: pack.manifest.source.forbidden_commit, taskPath: pack.taskPath };
   const profile = options.profile ?? (options.criteriaPath ? "task" : "mekugi");
+  const pidsLimit = options.pidsLimit ?? DEFAULT_PIDS_LIMIT;
+  if (!Number.isSafeInteger(pidsLimit) || pidsLimit < MIN_PIDS_LIMIT) {
+    throw new Error(`--pids-limit must be an integer >= ${MIN_PIDS_LIMIT}`);
+  }
+  const runawayGuard = normalizeRunawayGuardConfig(options.runawayGuard);
   const mekugiFlags = validateMekugiFlags(options.mekugiFlags ?? []);
   const comparison = options.comparison ?? "stock-current";
   if (!["custom", "stock-current", "setup-commits", "same-setup", "stock-mekugi", "codex-mekugi-grok", "journal-compaction", "duplicate-output"].includes(comparison)) throw new Error("unknown comparison");
@@ -990,8 +998,9 @@ export async function prepare(options: PrepareOptions): Promise<string> {
     image: options.image,
     image_id: imageCodex.imageId,
     execution: { model, reasoning_effort: reasoningEffort, service_tier: serviceTier, current_launcher: currentLauncher },
-    resource_limits: { cpus: options.cpus, memory: options.memory },
+    resource_limits: { cpus: options.cpus, memory: options.memory, pids_limit: pidsLimit },
     timeout_seconds: options.timeoutSeconds,
+    ...(runawayGuard ? { runaway_guard: runawayGuard } : {}),
     setup_revisions: setupRevisions,
     arm_settings: armSettings,
     arm_configurations: customArms?.map((arm, index) => ({ ...arm, setup_commit: revisions![index]! })),

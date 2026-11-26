@@ -4,7 +4,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { verifyBundleManifest } from "./bundle";
 import { armExecutionSucceeded, readState, sha256 } from "./state";
 import { applyMekugiProviderUsage, meterGrokHome, meterRollouts, type MeteredRollouts, type PricingSnapshot, USAGE_KEYS } from "./usage";
-import { armNames, type ArmImport, type ArmName, type ArmResult, type RunState } from "./types";
+import { armNames, DEFAULT_PIDS_LIMIT, type ArmImport, type ArmName, type ArmResult, type RunState } from "./types";
 import { isPairedMekugiComparison, mekugiRuntimeCaptures, usesMekugi } from "./mekugi";
 import { armLabels } from "./arm-labels";
 import { dependencyKey } from "./dependencies";
@@ -83,7 +83,8 @@ function comparisonIdentity(state: RunState) {
     model: state.execution.model, effort: state.execution.reasoning_effort, tier: state.execution.service_tier,
     image: state.image_id,
     codex: state.runtime_tools.codex_sha256, host: state.runtime_tools.codex_code_mode_host_sha256,
-    resources: state.resource_limits, timeout: state.timeout_seconds, compact: state.auto_compact_limit };
+    resources: { cpus: state.resource_limits.cpus, memory: state.resource_limits.memory, pids_limit: state.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT },
+    timeout: state.timeout_seconds, compact: state.auto_compact_limit };
 }
 
 function compatibleDependencyImages(source: RunState, target: RunState): boolean {

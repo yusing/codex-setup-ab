@@ -1,4 +1,4 @@
-import { armNames, candidateIds, qualityAspectKeys, SCORE_KEYS, SCORE_LABELS, SCORE_WEIGHTS } from "./types";
+import { armNames, candidateIds, DEFAULT_PIDS_LIMIT, qualityAspectKeys, SCORE_KEYS, SCORE_LABELS, SCORE_WEIGHTS } from "./types";
 import { chmod, copyFile, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { join } from "node:path";
@@ -199,7 +199,7 @@ ${prompt}`;
                 snapshotImage: cow ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
                 onSnapshot: async image_id => { attempt.home_image_id = image_id; await persistState(); },
                 timeoutMs: state.timeout_seconds * 1000, stdin: prompt, stdoutFile: outputPath, stderrFile: errorPath,
-                createArgs: ["--network", providerNetwork, "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "-i",
+                createArgs: ["--network", providerNetwork, "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "--pids-limit", String(state.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT), "-i",
                   ...homeMounts, "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-v", `${schemaPath}:/schema.json:ro`, "-v", `${readerPath}:/reader/reader.mjs:ro`,
                   "-v", `${join(runDir, "evaluator/semantic", `pass-${pass}`)}:/evidence:ro`,
                   ...(harness ? ["-v", `${scratchDirectory(number)}:/harness`] : []),

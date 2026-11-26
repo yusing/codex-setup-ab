@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { TOOLHOST_SMOKE_SCRIPT } from "./toolhost";
 import { MEKUGI_METRICS_WRAPPER, mekugiArmFlags, usesMekugi } from "./mekugi";
 import { runOwnedContainer } from "./container";
-import type { ArmName, RunState } from "./types";
+import { DEFAULT_PIDS_LIMIT, type ArmName, type RunState } from "./types";
 import { readToolStoreMountRoots } from "./snapshot";
 
 export const ISOLATION_SCRIPTS = ["isolated-codex.sh", "agent-mounts.sh", "agent-check.py"] as const;
@@ -85,7 +85,7 @@ print('CODEX_AB_PROTECTED_RUNTIME_OK')
     await executorOwnership(docker, state, `${state.id}-isolation-own`, paths, false);
     const runtimeState = armRuntime(state, "current");
     const flags = mekugiArmFlags(state, "current");
-    const common = [...protectedArgs(runDir, state, runtime), "--cpus", runtimeState.resource_limits.cpus, "--memory", runtimeState.resource_limits.memory,
+    const common = [...protectedArgs(runDir, state, runtime), "--cpus", runtimeState.resource_limits.cpus, "--memory", runtimeState.resource_limits.memory, "--pids-limit", String(runtimeState.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT),
         "-v", `${workspace}:/workspace`, "-v", `${home}:/home/ubuntu`,
         "-v", `${exports}:/mekugi-exports`,
         ...await miseToolMounts(runDir, state), ...launcherMounts(runDir, state, "current")];
