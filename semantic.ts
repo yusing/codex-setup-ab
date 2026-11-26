@@ -8,7 +8,7 @@ import { runOwnedContainer } from "./container";
 import supervisorSource from "./semantic-supervisor.txt" with { type: "text" };
 import { semanticCheckHash, validateVerification, validateVerifierRecord, type SemanticVerification } from "./semantic-protocol";
 import { validateEvaluatorControls, type EvaluatorControls, type EvaluatorQualification } from "./semantic-qualification";
-import type { ArmName, CommandEvidence, RunState } from "./types";
+import { DEFAULT_PIDS_LIMIT, type ArmName, type CommandEvidence, type RunState } from "./types";
 
 export interface BehavioralCriterion {
   id: string;
@@ -185,7 +185,7 @@ export async function prepareEvaluatorCache(runDir: string, state: RunState, doc
     timeoutMs: timeout * 1000, snapshotImage: `codex-ab-evaluator-warm:${crypto.randomUUID()}`,
     onSnapshot: async image_id => { await writeFile(join(root, "warm-image.json"), JSON.stringify({ image_id })); },
     createArgs: ["--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-      "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
+      "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "--pids-limit", String(state.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT),
       "--tmpfs", "/tmp:exec,size=4g,mode=1777", "-v", `${join(runDir, "seed.git")}:/seed.git:ro`,
       "-e", "GOCACHE=/opt/task-deps/go-build", "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
       "-e", `BASE_COMMIT=${state.source.base_commit}`, base, "sh", "-c",
@@ -202,7 +202,7 @@ export async function prepareEvaluatorCache(runDir: string, state: RunState, doc
     snapshotImage: `codex-ab-evaluator-sealed:${crypto.randomUUID()}`, snapshotUser: `${state.operator.uid}:${state.operator.gid}`,
     onSnapshot: async image_id => { await writeFile(join(root, "sealed-image.json"), JSON.stringify({ image_id })); },
     createArgs: ["--network", "none", "--user", "0:0", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER",
-      "--security-opt", "no-new-privileges", "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
+      "--security-opt", "no-new-privileges", "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "--pids-limit", String(state.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT),
       result.snapshotImageId, "python3", "-c", `import os,pathlib,stat
 for path in pathlib.Path('/opt/task-deps/go-build').rglob('*'):
     mode=path.lstat().st_mode
@@ -248,7 +248,7 @@ export async function executeSemanticCheck(options: {
     createArgs: ["--network", "none", "--user", "0:0", "--cap-drop", "ALL",
       "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--cap-add", "KILL",
       "--security-opt", "no-new-privileges", "--cpus", state.resource_limits.cpus,
-      "--memory", state.resource_limits.memory, "--tmpfs", "/tmp:exec,size=4g,mode=1777",
+      "--memory", state.resource_limits.memory, "--pids-limit", String(state.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT), "--tmpfs", "/tmp:exec,size=4g,mode=1777",
       "-e", "GOPROXY=off", "-e", "GOSUMDB=off",
       "-e", "XDG_STATE_HOME=/tmp/state", "-e", "XDG_CONFIG_HOME=/tmp/config",
       "-e", "MEKUGI_RUNTIME_DIR=/tmp/runtime",

@@ -18,12 +18,33 @@ export type ArmOrder = "concurrent" | "stock-first" | "current-first";
 
 export type ArmName = string;
 export type CandidateId = `candidate-${number}`;
+export const DEFAULT_PIDS_LIMIT = 512;
+export const MIN_PIDS_LIMIT = 16;
+export interface ResourceLimits {
+  cpus: string;
+  memory: string;
+  pids_limit?: number;
+}
+export interface RunawayGuardConfig {
+  max_turns?: number;
+  max_total_tokens?: number;
+  repeated_error_limit?: number;
+}
+export type RunawayGuardReason = "max_turns" | "max_total_tokens" | "repeated_error_loop";
+export interface RunawayGuardTrigger {
+  triggered: true;
+  reason: RunawayGuardReason;
+  detail: string;
+  observed: number;
+  limit: number;
+}
 export interface ArmConfiguration { launcher: "codex" | "mekugi"; setup_commit: string }
 export interface ArmSettings {
   model?: BenchmarkModel;
   reasoning_effort?: ReasoningEffort;
   cpus?: string;
   memory?: string;
+  pids_limit?: number;
   timeout_seconds?: number;
   auto_compact_limit?: number;
   parallel_work?: boolean;
@@ -69,6 +90,7 @@ export interface ArmResult {
   exit_code: number;
   timed_out: boolean;
   canceled: boolean;
+  runaway_guard?: RunawayGuardTrigger;
   patch_path: string;
   stdout_path: string;
   stderr_path: string;
@@ -132,8 +154,9 @@ export interface RunState {
     directory: string; evidence_arm: ArmName; files: Array<{ path: string; sha256: string }>;
   }>;
   execution: { model: BenchmarkModel | "gpt-6-sol"; reasoning_effort: ReasoningEffort; service_tier: string; current_launcher?: CodexLauncher };
-  resource_limits: { cpus: string; memory: string };
+  resource_limits: ResourceLimits;
   timeout_seconds: number;
+  runaway_guard?: RunawayGuardConfig;
   arm_configurations?: ArmConfiguration[];
   arm_settings?: Record<ArmName, ArmSettings>;
   setup_revisions?: Record<ArmName, { commit: string; tree: string; manifest: string; manifest_sha256: string; worktree?: boolean }>;

@@ -6,7 +6,7 @@ import { dependencyImage } from "./dependencies";
 import { checked, exec } from "./process";
 import { runOwnedContainer, withOwnedNetwork } from "./container";
 import { sha256 } from "./state";
-import type { RunState } from "./types";
+import { DEFAULT_PIDS_LIMIT, type RunState } from "./types";
 
 type Image = { key: string; image_id: string };
 const digest = (input: unknown) => createHash("sha256").update(JSON.stringify(input)).digest("hex");
@@ -83,7 +83,7 @@ async function pluginSeed(runDir: string, state: RunState, auth: string, docker:
       snapshotImage: `codex-ab-home-changes:${crypto.randomUUID()}`,
       onSnapshot: image_id => { state.runtime_plugin_image = { key, image_id }; },
       stdoutFile: join(output, "stdout"), stderrFile: join(output, "stderr"),
-      createArgs: ["--network", network, "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory,
+      createArgs: ["--network", network, "--cpus", state.resource_limits.cpus, "--memory", state.resource_limits.memory, "--pids-limit", String(state.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT),
         "-e", "CODEX_SQLITE_HOME=/runtime-state/codex", "-v", `${evidence}:/runtime-state/codex`,
         "-v", `${auth}:/run/task-auth.json:ro`, base, "sh", "-c",
         'mkdir -p "$CODEX_HOME"; ln -s /run/task-auth.json "$CODEX_HOME/auth.json"; trap \'rm -f "$CODEX_HOME/auth.json"\' EXIT; python3 -c "$1"', "runtime-home", PLUGIN_INITIALIZATION],

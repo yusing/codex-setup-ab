@@ -59,6 +59,7 @@ export function trialControls(state: RunState) {
     auto_compact_limit: state.auto_compact_limit,
     comparison: state.comparison ?? "stock-current", execution: state.execution,
     image_id: state.image_id, dependency_image: state.dependency_image, resource_limits: state.resource_limits, timeout_seconds: state.timeout_seconds,
+    ...(state.runaway_guard ? { runaway_guard: state.runaway_guard } : {}),
     setup_revisions: state.setup_revisions,
     ...(state.arm_settings ? { arm_settings: state.arm_settings } : {}),
     ...(state.arm_configurations ? { arm_configurations: state.arm_configurations } : {}),

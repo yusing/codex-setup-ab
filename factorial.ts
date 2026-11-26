@@ -1,7 +1,7 @@
 import { armRuntime, parseArmSettings } from "./arm-settings";
 import { validateMekugiFlags } from "./mekugi";
 import { pairedUncertaintyByCohort, type BootstrapOptions, type PairedObservation } from "./uncertainty";
-import type { ArmConfiguration, ArmSettings, RunState } from "./types";
+import { DEFAULT_PIDS_LIMIT, type ArmConfiguration, type ArmSettings, type RunState } from "./types";
 
 export const GUIDANCE_LAUNCHER_CELLS = {
   A: { arm: "stock", guidance: "minimal", launcher: "codex" },
@@ -70,7 +70,7 @@ function describeGuidanceLauncherExperiment(state: RunState, plan: GuidanceLaunc
   const controls = keys.map(arm => {
     const runtime = armRuntime(state, arm);
     return { model: runtime.execution.model, reasoning_effort: runtime.execution.reasoning_effort, service_tier: runtime.execution.service_tier,
-      cpus: runtime.resource_limits.cpus, memory: runtime.resource_limits.memory, timeout_seconds: runtime.timeout_seconds,
+      cpus: runtime.resource_limits.cpus, memory: runtime.resource_limits.memory, pids_limit: runtime.resource_limits.pids_limit ?? DEFAULT_PIDS_LIMIT, timeout_seconds: runtime.timeout_seconds,
       auto_compact_limit: runtime.auto_compact_limit ?? null, parallel_work: state.arm_settings?.[arm]?.parallel_work ?? false };
   });
   if (controls.some(item => JSON.stringify(item) !== JSON.stringify(controls[0]))) throw new Error("four-cell model, reasoning, resource or budget controls differ");

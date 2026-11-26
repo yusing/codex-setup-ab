@@ -96,6 +96,10 @@ Prepare options:
   --timeout SECONDS     per agent and judge launch (default 1800)
   --cpus COUNT          identical per-container CPU limit (default 2)
   --memory LIMIT        identical per-container memory limit (default 4g)
+  --pids-limit N        identical per-container PID limit (default 512, min 16)
+  --max-turns N         optional runaway guard turn ceiling per candidate
+  --max-total-tokens N  optional runaway guard cumulative token ceiling per candidate
+  --stuck-loop-limit N  optional consecutive identical error cutoff (0 disables)
 
 Run/judge options (run includes automatic source assessment and reporting):
   --grok-auth-file FILE Grok OAuth store copied privately into isolated homes
@@ -143,6 +147,26 @@ function string(o: Record<string, string | boolean>, key: string, fallback?: str
   return value;
 }
 
+function parseOptionalInteger(o: Record<string, string | boolean>, key: string, min: number): number | undefined {
+  if (o[key] === undefined) return undefined;
+  const value = Number(string(o, key));
+  if (!Number.isSafeInteger(value) || value < min) {
+    throw new Error(`--${key} must be an integer >= ${min}`);
+  }
+  return value;
+}
+
+function parseRunawayGuardOptions(o: Record<string, string | boolean>): import("./types").RunawayGuardConfig | undefined {
+  const maxTurns = parseOptionalInteger(o, "max-turns", 1);
+  const maxTotalTokens = parseOptionalInteger(o, "max-total-tokens", 1);
+  const repeatedErrorLimit = parseOptionalInteger(o, "stuck-loop-limit", 0);
+  const config: import("./types").RunawayGuardConfig = {};
+  if (maxTurns !== undefined) config.max_turns = maxTurns;
+  if (maxTotalTokens !== undefined) config.max_total_tokens = maxTotalTokens;
+  if (repeatedErrorLimit !== undefined && repeatedErrorLimit > 0) config.repeated_error_limit = repeatedErrorLimit;
+  return Object.keys(config).length > 0 ? config : undefined;
+}
+
 export function parseMekugiFlags(value: string): string[] {
   return validateMekugiFlags(JSON.parse(value));
 }
@@ -177,6 +201,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     }
     const timeout = Number(string(o, "timeout", "1800"));
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("--timeout must be a positive integer");
+    const pidsLimit = parseOptionalInteger(o, "pids-limit", 16);
+    const runawayGuard = parseRunawayGuardOptions(o);
     const runDir = await prepare({
       profile: string(o, "profile", o.criteria ? "task" : "mekugi") as import("./types").BenchmarkProfile,
       model: o.model as import("./types").BenchmarkModel | undefined,
@@ -201,7 +227,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       mekugiBinary: o["mekugi-bin"] as string | undefined,
       grokBinary: o["grok-bin"] as string | undefined,
       currentHome: string(o, "current-home", homedir()), runtimeHome: o["runtime-home"] as string | undefined, image: string(o, "image", "codex-ab:0.1.0"),
-      cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
+      cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), pidsLimit, timeoutSeconds: timeout, runawayGuard,
       dockerBin: o["docker-bin"] as string | undefined,
       bunBinary: o["bun-bin"] as string | undefined,
     });
@@ -238,11 +264,13 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
     const count = Number(string(o, "count"));
     const timeout = Number(string(o, "timeout", "1800"));
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error("suite timeout must be a positive integer");
+    const pidsLimit = parseOptionalInteger(o, "pids-limit", 16);
+    const runawayGuard = parseRunawayGuardOptions(o);
     process.stdout.write(`${await prepareSuite({ manifestPath: string(o, "suite"), sourcesPath: string(o, "sources-file"),
       comparison, count, schedule: order, outputParent: o["output-parent"] as string | undefined,
       dockerBin: o["docker-bin"] as string | undefined,
       common: { currentHome: string(o, "current-home", homedir()), image: string(o, "image", "codex-ab:0.1.0"),
-        cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), timeoutSeconds: timeout,
+        cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), pidsLimit, timeoutSeconds: timeout, runawayGuard,
         reasoningEffort: "medium",
         reviewTreatment: o["review-treatment"] as string | undefined,
         mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,

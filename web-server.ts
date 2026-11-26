@@ -218,6 +218,7 @@ export function serveWorkbench(port = 4849, hostname = "127.0.0.1") {
     const options: CliOptions = { preset: "custom", task: "custom", source: state.source.path,
       model: state.execution.model, "reasoning-effort": state.execution.reasoning_effort,
       cpus: state.resource_limits.cpus, memory: state.resource_limits.memory,
+      ...(state.resource_limits.pids_limit !== undefined ? { "pids-limit": String(state.resource_limits.pids_limit) } : {}),
       timeout: String(state.timeout_seconds), image: state.image_id ?? state.image,
       "bun-bin": state.runtime_tools.bun,
       count: "1",

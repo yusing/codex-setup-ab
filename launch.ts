@@ -127,6 +127,15 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
   if (!Number.isFinite(Number(cpus)) || Number(cpus) <= 0) throw new Error("CPU limit must be positive");
   const memory = stringOption(o, "memory", "4g");
   if (!/^[1-9]\d*(?:[bkmg])?$/i.test(memory)) throw new Error("Memory limit must be positive, for example 4g");
+  const pidsLimit = o["pids-limit"] === undefined ? undefined : Number(stringOption(o, "pids-limit"));
+  if (pidsLimit !== undefined && (!Number.isSafeInteger(pidsLimit) || pidsLimit < 16)) throw new Error("--pids-limit must be an integer >= 16");
+  const maxTurns = o["max-turns"] === undefined ? undefined : positive(stringOption(o, "max-turns"), "--max-turns");
+  const maxTotalTokens = o["max-total-tokens"] === undefined ? undefined : positive(stringOption(o, "max-total-tokens"), "--max-total-tokens");
+  const stuckLoopLimit = o["stuck-loop-limit"] === undefined ? undefined : Number(stringOption(o, "stuck-loop-limit"));
+  if (stuckLoopLimit !== undefined && (!Number.isSafeInteger(stuckLoopLimit) || stuckLoopLimit < 0)) throw new Error("--stuck-loop-limit must be a non-negative integer");
+  const runawayGuard: import("./types").RunawayGuardConfig | undefined = (maxTurns !== undefined || maxTotalTokens !== undefined || (stuckLoopLimit !== undefined && stuckLoopLimit > 0))
+    ? { ...(maxTurns !== undefined ? { max_turns: maxTurns } : {}), ...(maxTotalTokens !== undefined ? { max_total_tokens: maxTotalTokens } : {}), ...(stuckLoopLimit !== undefined && stuckLoopLimit > 0 ? { repeated_error_limit: stuckLoopLimit } : {}) }
+    : undefined;
   const profile = stringOption(o, "profile", "task");
   if (!["mekugi", "task", "skills-mgr-bundle", "godoxy-icons"].includes(profile)) throw new Error("Unknown task profile");
   const armSettings = o["arm-settings"] ? parseArmSettings(JSON.parse(stringOption(o, "arm-settings")), compositionKeys(customArms?.length ?? 2)) : undefined;
@@ -146,7 +155,7 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
       criteriaPath: pack ? undefined : resolve(stringOption(o, "criteria")),
       taskPackPath: pack ? resolve(pack) : undefined,
       currentHome: resolve(stringOption(o, "current-home")), runtimeHome: o["runtime-home"] ? resolve(stringOption(o, "runtime-home")) : undefined, image, cpus, memory,
-      timeoutSeconds: positive(stringOption(o, "timeout", String(task.timeout)), "Timeout"), autoCompactLimit: limit,
+      pidsLimit, timeoutSeconds: positive(stringOption(o, "timeout", String(task.timeout)), "Timeout"), runawayGuard, autoCompactLimit: limit,
       dockerBin: stringOption(o, "docker-bin"), bunBinary: stringOption(o, "bun-bin") || undefined,
       currentLauncher: mekugi ? comparison === "codex-mekugi-grok" ? "grok" : "mekugi" : "codex",
       mekugiSource: mekugi && !o["mekugi-build"] ? stringOption(o, "mekugi-source") : undefined,

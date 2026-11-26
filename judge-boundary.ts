@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
 import { runOwnedContainer } from "./container";
 import reader from "./judge-reader.mjs" with { type: "text" };
+import { DEFAULT_PIDS_LIMIT } from "./types";
 
 /**
  * rust-v0.154.0 tools/spec_plan.rs add_shell_tools returns before registering
@@ -29,7 +30,7 @@ export function assertJudgeFeatures(output: string): void {
 /** No credentials, candidate code, or model calls in capability qualification. */
 export async function qualifyJudgeRuntime(docker: string, home: string, image: string, name: string, signal?: AbortSignal): Promise<void> {
   const result = await runOwnedContainer({ docker, name, signal, timeoutMs: 30_000,
-    createArgs: ["--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "-v", `${join(home, ".codex/config.toml")}:/home/ubuntu/.codex/config.toml:ro`, image, "codex", "features", "list"] });
+    createArgs: ["--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", String(DEFAULT_PIDS_LIMIT), "-v", `${join(home, ".codex/config.toml")}:/home/ubuntu/.codex/config.toml:ro`, image, "codex", "features", "list"] });
   if (result.exitCode !== 0 || result.timedOut || result.canceled) throw new Error(`source judge capability qualification failed: ${result.stderr}`);
   assertJudgeFeatures(result.stdout);
 }
