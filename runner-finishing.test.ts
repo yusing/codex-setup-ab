@@ -13,6 +13,9 @@ import * as usage from "./usage";
 import { buildReport } from "./report";
 import { type PricingSnapshot } from "./usage";
 import { runnerFixture } from "./test-support/runner-fixture";
+import { configureFixedVerifierRun } from "./fixed-workflow";
+import { fixedTreeIdentity } from "./fixed-verifier";
+import { classifyAttempt } from "./reliability";
 
 const { root, source, home, task, fixtureCriteria, base, future, file, prepare, prepared, fakeOwnedDocker } = await runnerFixture();
 
@@ -67,7 +70,7 @@ test("benchmark preserves a partial report and bundle after non-inference prepar
   expect(await readFile(fake.log, "utf8")).not.toContain("-judge-1");
 }, 30_000);
 
-test("failed agent execution preserves evidence and skips graders, judges and finishing retries", async () => {
+test("failed agent execution grades succeeded arm, skips failed arm and comparative judge, and blocks finishing retries", async () => {
   const run = await prepared();
   const auth = join(root, "failed-agent-auth.json"); await file(auth, "{}", 0o600);
   const fake = await fakeOwnedDocker(0);
@@ -81,13 +84,17 @@ test("failed agent execution preserves evidence and skips graders, judges and fi
   expect(failed.arm_attempts?.stock?.status).toBe("failed");
   expect(failed.results?.stock?.exit_code).toBe(9);
   expect(failed.results?.stock?.grade).toBeUndefined();
-  expect(failed.results?.current?.grade).toBeUndefined();
+  expect(failed.results?.current?.grade?.preparation.exit_code).toBe(0);
   expect(failed.finishing?.status).toBe("complete");
   expect(await readFile(join(run, failed.results!.stock!.stderr_path), "utf8")).toContain("launcher-failed");
   expect(await Bun.file(join(run, failed.results!.stock!.patch_path)).exists()).toBe(true);
   expect(await Bun.file(join(run, "reports/bundle/report.json")).exists()).toBe(true);
+  const report = JSON.parse(await readFile(join(run, "reports/bundle/report.json"), "utf8"));
+  expect(report.measurement_complete).toBe(false);
+  expect(report.winner).toBe("none");
   const log = await readFile(fake.log, "utf8");
-  expect(log).not.toContain("-grade-verify");
+  expect(log).not.toContain("-stock-grade-verify");
+  expect(log).toContain("-current-grade-verify");
   expect(log).not.toContain("-judge-");
   // Older runners incorrectly marked nonzero exits complete.
   failed.status = "complete";
@@ -96,6 +103,79 @@ test("failed agent execution preserves evidence and skips graders, judges and fi
   await expect(finishBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("complete execution");
   expect(await readFile(fake.log, "utf8")).toBe(log);
 });
+
+test.each(["1", "0"])("partial fixed-verifier pair verifies succeeded arm (reward %s) and scores it while other arm times out", async reward => {
+  const run = await prepared(1);
+  const fixedTaskDir = join(root, `fixed-partial-task-${reward}`);
+  const fixedConfigPath = join(root, `fixed-partial-config-${reward}.json`);
+  await mkdir(join(fixedTaskDir, "tests"), { recursive: true });
+  await file(join(fixedTaskDir, "instruction.md"), await readFile(task, "utf8"));
+  await file(join(fixedTaskDir, "tests/test.sh"), "#!/bin/sh\nexit 0\n", 0o755);
+  const taskId = await fixedTreeIdentity(fixedTaskDir);
+  const verifierId = await fixedTreeIdentity(join(fixedTaskDir, "tests"));
+  await writeFile(fixedConfigPath, JSON.stringify({
+    schema: "codex-ab.fixed-verifier.v1",
+    dataset: { name: "fixture-fixed", version: "1.0", revision: `sha256:${"c".repeat(64)}` },
+    task: { id: "fixture-partial", tree_sha256: taskId.sha256 },
+    verifier: { path: "tests", tree_sha256: verifierId.sha256, command: ["/bin/sh", "/tests/test.sh"] },
+    image: `sha256:${"b".repeat(64)}`,
+    candidate_mount: "/app",
+    workdir: "/app",
+    user: "0:0",
+    timeout_seconds: 10,
+    resources: { cpus: "1", memory: "512m", pids_limit: 128 },
+    network: "none",
+    reward_key: "reward",
+  }, null, 2));
+  await configureFixedVerifierRun({ runDir: run, configPath: fixedConfigPath, taskDir: fixedTaskDir });
+
+  const auth = join(root, `fixed-partial-auth-${reward}.json`);
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const script = await readFile(fake.path, "utf8");
+  const updated = script
+    .replace(
+      "        *:/candidate:ro) printf '%s' \"${argument%:/candidate:ro}\" >'",
+      "        type=bind,src=*,dst=/logs/verifier) out=\"${argument#type=bind,src=}\"; printf '%s' \"${out%,dst=/logs/verifier}\" >'" + fake.path + ".state/'$name.fixed-out ;;\n        *:/candidate:ro) printf '%s' \"${argument%:/candidate:ro}\" >'"
+    )
+    .replace(
+      "      *-stock|*-current|*-arm-[0-9]*)",
+      `      codex-ab-fixed-*) printf '%s' '${reward}' >"$(cat '${fake.path}.state/'$name.fixed-out)/reward.txt" ;;\n      *-current) sleep 2 ;;\n      *-stock|*-arm-[0-9]*)`
+    );
+  expect(updated).not.toBe(script);
+  await file(fake.path, updated);
+
+  await expect(runBenchmark({ runDir: run, authFile: auth, dockerBin: fake.path })).rejects.toThrow("agent timed out");
+
+  const state = await readState(run);
+  expect(state.status).toBe("partial");
+  expect(state.finishing?.status).toBe("failed");
+  expect(state.results?.stock?.grade?.fixed?.behavioral_result).toBe(reward === "1" ? "pass" : "fail");
+  expect(state.results?.stock?.grade?.fixed?.evaluation_validity).toBe("valid");
+  expect(state.fixed_verifiers?.stock).toHaveLength(1);
+  expect(state.fixed_verifiers?.current).toBeUndefined();
+  expect(state.results?.current?.timed_out).toBe(true);
+  expect(state.results?.current?.grade).toBeUndefined();
+
+  const report = JSON.parse(await readFile(join(run, "reports/bundle/report.json"), "utf8"));
+  expect(report.measurement_complete).toBe(false);
+  expect(report.winner).toBe("none");
+  expect(report.evidence_dimensions.stock).toMatchObject({
+    behavior: reward === "1" ? "pass" : "fail",
+    evaluation_validity: "valid",
+  });
+  const stockAttempt = report.reliability.attempts.find((item: { arm: string }) => item.arm === "stock");
+  const currentAttempt = report.reliability.attempts.find((item: { arm: string }) => item.arm === "current");
+  expect(classifyAttempt(stockAttempt)).toBe(reward === "1" ? "pass" : "task_failure");
+  expect(classifyAttempt(currentAttempt)).toBe("budget_timeout");
+  expect(report.reliability.arms.stock.scored).toBe(1);
+  expect(report.reliability.arms.stock.outcomes.unassessed).toBe(0);
+  expect(report.reliability.arms.current.outcomes.budget_timeout).toBe(1);
+  const log = await readFile(fake.log, "utf8");
+  expect(log).toContain("-stock-grade-verify");
+  expect(log).not.toContain("-current-grade-verify");
+  expect(log).not.toContain("-judge-");
+}, 30_000);
 
 for (const fault of ["integrity", "cancel", "collection", "finalization"] as const) {
   test(`finishing ${fault} cannot leave a successful bundled outcome`, async () => {

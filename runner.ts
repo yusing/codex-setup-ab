@@ -546,6 +546,11 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   const providerNetworks: Record<string, OwnedNetwork> = {};
+  const appendError = (message: string) => {
+    if (!message) return;
+    if (!state.error) state.error = message;
+    else if (!state.error.includes(message)) state.error = `${state.error}; ${message}`;
+  };
   try {
     for (const arm of activeArms) providerNetworks[arm] = await createOwnedNetwork(docker, `codex-ab-${state.id}-provider-${arm}`, controller.signal);
     state.network_policy = { schema: "codex-ab.network-policy.v1", candidate: "online-unrestricted", closed_book: false,
@@ -629,22 +634,37 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         await collectArm(docker, runDir, state, arm, result, generatedDependencies[arm]);
       }
     }));
-    const collectionFailure = collected.find(result => result.status === "rejected");
-    if (collectionFailure?.status === "rejected") state.error = String(collectionFailure.reason);
+    collected.forEach((item, index) => {
+      if (item.status === "rejected") {
+        const arm = activeArms[index]!;
+        const reason = item.reason instanceof Error ? item.reason.message : String(item.reason);
+        const result = state.results?.[arm];
+        if (result && !result.collection_error) result.collection_error = reason;
+        appendError(`${displayArm(arm)}: collection failed: ${reason}`);
+      }
+    });
+    for (const result of Object.values(state.results)) {
+      if (result?.collection_error) appendError(result.collection_error);
+    }
     await writeState(runDir, state);
-    if (!controller.signal.aborted && selectedArms.every(arm => armExecutionSucceeded(state.results?.[arm]))) {
-      progress("all selected candidates captured; starting evaluator-only grading");
-      const graded = await Promise.allSettled(selectedArms.map(async arm => {
+    const succeededArms = selectedArms.filter(arm => armExecutionSucceeded(state.results?.[arm]));
+    if (!controller.signal.aborted && succeededArms.length > 0) {
+      progress(succeededArms.length === selectedArms.length
+        ? "all selected candidates captured; starting evaluator-only grading"
+        : `${succeededArms.map(displayArm).join(", ")} captured; starting evaluator-only grading for succeeded arm(s)`);
+      const graded = await Promise.allSettled(succeededArms.map(async arm => {
         if (state.evaluation?.mode === "reuse" && state.imported_arms?.[arm]) return;
         const result = state.results![arm]!;
         result.grade = await gradeArm(docker, runDir, state, arm, join(runDir, result.patch_path), controller.signal);
         progress(`${displayArm(arm)}: prepared for independent semantic assessment`);
       }));
-      const gradeFailure = graded.find(result => result.status === "rejected");
-      if (gradeFailure?.status === "rejected") throw gradeFailure.reason;
-    }
-    for (const result of Object.values(state.results)) {
-      if (result?.collection_error) state.error = state.error ? `${state.error}; ${result.collection_error}` : result.collection_error;
+      await writeState(runDir, state);
+      const gradeFailures = graded.flatMap((result, index) => result.status === "rejected"
+        ? [{ arm: succeededArms[index]!, reason: result.reason }] : []);
+      if (gradeFailures.length === 1) throw gradeFailures[0]!.reason;
+      if (gradeFailures.length > 1) {
+        throw new Error(gradeFailures.map(item => `${displayArm(item.arm)}: ${item.reason instanceof Error ? item.reason.message : String(item.reason)}`).join("; "));
+      }
     }
     const cleanup = await Promise.allSettled(Object.values(providerNetworks).map(network => network.remove()));
     const cleanupFailure = cleanup.find(item => item.status === "rejected");
@@ -654,7 +674,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     return state;
   } catch (error) {
     state.status = "partial";
-    state.error = error instanceof Error ? error.message : String(error);
+    appendError(error instanceof Error ? error.message : String(error));
     await writeState(runDir, state);
     throw error;
   } finally {

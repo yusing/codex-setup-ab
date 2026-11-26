@@ -212,3 +212,62 @@ test("supplemental fixed verification preserves adaptive grades and retains stan
     await expect(collectBundle(f.runDir)).rejects.toThrow("supplemental fixed verifier task differs");
   } finally { mock.mockRestore(); }
 });
+
+test("runFixedVerifiersUnlocked verifies succeeded arm on a partial pair, skips failed arm, and throws with retained evidence", async () => {
+  const f = await preparedFixture();
+  const initial = await readState(f.runDir);
+  initial.arms.current = { repository: "arms/current/repo", home_template: "unused" };
+  await writeState(f.runDir, initial);
+  await configureFixedVerifierRun(f);
+  const state = await retainedCandidate(f);
+  state.selected_arms = ["stock", "current"];
+  state.status = "partial";
+  state.results!.current = {
+    arm: "current", anonymous_id: "candidate-2", container: "fixture-current",
+    started_at: state.created_at, finished_at: state.created_at, agent_elapsed_ms: 20_000,
+    exit_code: 124, timed_out: true, canceled: false,
+    patch_path: "artifacts/current/changes.patch", stdout_path: "artifacts/current/stdout",
+    stderr_path: "artifacts/current/stderr", changed_files: [], head_after_agent: state.source.base_commit,
+  };
+  await writeState(f.runDir, state);
+  const mock = verifier("1");
+  try {
+    await expect(runFixedVerifiersUnlocked(f.runDir, "docker")).rejects.toThrow("current: skipped fixed verification (agent timed out)");
+    expect(mock).toHaveBeenCalledTimes(1);
+    const after = await readState(f.runDir);
+    expect(after.results?.stock?.grade).toMatchObject({
+      passed: true,
+      preparation: { exit_code: 0 },
+      router_suite: { exit_code: 0 },
+      fixed: { behavioral_result: "pass", evaluation_validity: "valid" },
+    });
+    expect(after.fixed_verifiers?.stock).toHaveLength(1);
+    expect(after.results?.current?.grade).toBeUndefined();
+    expect(after.fixed_verifiers?.current).toBeUndefined();
+  } finally { mock.mockRestore(); }
+});
+
+test("supplemental verifyFixedArm succeeds for a succeeded arm on a partial run", async () => {
+  const f = await preparedFixture();
+  const initial = await readState(f.runDir);
+  initial.arms.current = { repository: "arms/current/repo", home_template: "unused" };
+  await writeState(f.runDir, initial);
+  const state = await retainedCandidate(f);
+  state.selected_arms = ["stock", "current"];
+  state.status = "partial";
+  state.results!.current = {
+    arm: "current", anonymous_id: "candidate-2", container: "fixture-current",
+    started_at: state.created_at, finished_at: state.created_at, agent_elapsed_ms: 20_000,
+    exit_code: 124, timed_out: true, canceled: false,
+    patch_path: "artifacts/current/changes.patch", stdout_path: "artifacts/current/stdout",
+    stderr_path: "artifacts/current/stderr", changed_files: [], head_after_agent: state.source.base_commit,
+  };
+  await writeState(f.runDir, state);
+  const mock = verifier("1");
+  try {
+    const result = await verifyFixedArm({ ...f, arm: "stock" });
+    expect(result.behavioral_result).toBe("pass");
+    expect(result.evaluation_validity).toBe("valid");
+    await expect(verifyFixedArm({ ...f, arm: "current" })).rejects.toThrow("successful retained arm");
+  } finally { mock.mockRestore(); }
+});

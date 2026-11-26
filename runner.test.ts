@@ -533,3 +533,59 @@ test("godoxy preflight rejects changes to the copied controls before container l
   await file(join(run, state.task.path), "changed control\n");
   await expect(preflightRun(run, "/must-not-be-launched")).rejects.toThrow("copied benchmark control changed");
 });
+
+test("partial pair grades succeeded arm, preserves execution and collection errors, and persists grades on grade failure", async () => {
+  const auth = join(root, "partial-grading-auth.json");
+  await file(auth, "{}\n", 0o600);
+  await chmod(auth, 0o600);
+
+  // 1. Arm A (stock) succeeds, Arm B (current) times out -> Arm A is graded, status is partial.
+  const timeoutRun = await prepared(1);
+  const timeoutDocker = await fakeOwnedDocker(0);
+  const baseScript = await readFile(timeoutDocker.path, "utf8");
+  const timeoutScript = baseScript.replace(
+    "      *-stock|*-current|*-arm-[0-9]*)",
+    "      *-current) sleep 2 ;;\n      *-stock|*-arm-[0-9]*)"
+  );
+  expect(timeoutScript).not.toBe(baseScript);
+  await file(timeoutDocker.path, timeoutScript);
+  const partialState = await runPair({ runDir: timeoutRun, authFile: auth, dockerBin: timeoutDocker.path });
+  expect(partialState.status).toBe("partial");
+  expect(partialState.results?.stock?.grade?.preparation.exit_code).toBe(0);
+  expect(partialState.results?.current?.timed_out).toBe(true);
+  expect(partialState.results?.current?.grade).toBeUndefined();
+  expect(partialState.error).toContain("agent timed out");
+
+  // 2. Arm A exits nonzero AND Arm B fails collection -> state.error preserves BOTH errors without clobbering.
+  const errorRun = await prepared();
+  const errorDocker = await fakeOwnedDocker(0);
+  const errorBase = await readFile(errorDocker.path, "utf8");
+  const errorScript = errorBase
+    .replace("      *-stock|", "      *-stock) echo stock-crashed >&2; status=9 ;;\n      ")
+    .replace("      *-capture)", "      *-current-capture) echo capture-failed >&2; status=1 ;;\n      *-capture)");
+  expect(errorScript).not.toBe(errorBase);
+  await file(errorDocker.path, errorScript);
+  const errorState = await runPair({ runDir: errorRun, authFile: auth, dockerBin: errorDocker.path });
+  expect(errorState.status).toBe("partial");
+  expect(errorState.results?.stock?.grade).toBeUndefined();
+  expect(errorState.results?.current?.grade).toBeUndefined();
+  expect(errorState.results?.current?.collection_error).toBeTruthy();
+  expect(errorState.error).toContain("agent exited with code 9");
+  expect(errorState.error).toContain(errorState.results!.current!.collection_error!);
+
+  // 3. Both arms succeed execution, current fails gradeArm -> stock's grade is still persisted before throwing.
+  const gradeFailRun = await prepared();
+  const gradeFailDocker = await fakeOwnedDocker(0);
+  const gradeBase = await readFile(gradeFailDocker.path, "utf8");
+  const gradeFailScript = gradeBase.replace(
+    "      *-capture)",
+    "      *-current-grade-verify) echo grade-verify-failed >&2; status=1 ;;\n      *-capture)"
+  );
+  expect(gradeFailScript).not.toBe(gradeBase);
+  await file(gradeFailDocker.path, gradeFailScript);
+  await expect(runPair({ runDir: gradeFailRun, authFile: auth, dockerBin: gradeFailDocker.path })).rejects.toThrow();
+  const persisted = await readState(gradeFailRun);
+  expect(persisted.status).toBe("partial");
+  expect(persisted.results?.stock?.grade?.preparation.exit_code).toBe(0);
+  expect(persisted.results?.current?.grade).toBeUndefined();
+}, 30_000);

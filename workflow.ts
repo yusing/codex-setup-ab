@@ -72,17 +72,21 @@ async function executeBenchmarkUnlocked(options: RunOptions & { recoverJudge?: b
       failure = error;
     }
     const state = await readState(runDir);
-    if (state.status !== "complete" || !(state.selected_arms ?? armNames(state)).every(arm => armExecutionSucceeded(state.results?.[arm]))) {
+    const selectedArms = state.selected_arms ?? armNames(state);
+    const allArmsSucceeded = selectedArms.every(arm => armExecutionSucceeded(state.results?.[arm]));
+    const anyArmSucceeded = selectedArms.some(arm => armExecutionSucceeded(state.results?.[arm]));
+    if (state.status !== "complete" || !allArmsSucceeded) {
       failure ??= new Error(state.error ?? "benchmark execution incomplete");
     }
     state.finishing = { status: "running", started_at: new Date().toISOString(), bundle_path: "reports/bundle" };
     await writeState(runDir, state);
     let finishingFailure: unknown;
     try {
-      if (!failure && !controller.signal.aborted && state.status === "complete" && state.fixed_verifier) {
+      if (!controller.signal.aborted && state.fixed_verifier && anyArmSucceeded
+        && (state.status === "complete" || state.status === "partial")) {
         process.stderr.write("[finish] running pinned original verifiers offline; adaptive source judges are separate\n");
         await runFixedVerifiersUnlocked(runDir, options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker", controller.signal);
-      } else if (!failure && !controller.signal.aborted && state.status === "complete" && (state.selected_arms?.length ?? 0) >= 2 && (!state.judge || options.recoverJudge)) {
+      } else if (!failure && !controller.signal.aborted && state.status === "complete" && allArmsSucceeded && selectedArms.length >= 2 && (!state.judge || options.recoverJudge)) {
         process.stderr.write(options.recoverJudge
           ? "[finish] revalidating completed judge stages and continuing incomplete ones\n"
           : state.evaluation?.mode === "reuse" ? "[finish] retaining imported evaluations; adapting historical tests and assessing fresh candidates\n"
