@@ -59,6 +59,10 @@ Build, preparation, and preflight make no model requests. Candidate execution an
 adaptive judging require `--confirm-paid-inference` and use your authentication and
 quota. Reported costs are list-price estimates, not subscription charges or invoices.
 See the [judge contract](contract.md#blind-judge) for stages, retries, and limits.
+Candidate runs default to `--network-policy closed-book` (an `--internal` per-arm
+Docker network with a provider-only allowlisting egress proxy; add extra hostnames with
+`--egress-allowlist host1,host2`, or pass `--network-policy online-unrestricted` to
+allow direct external candidate networking).
 
 ## Find and inspect retained evidence
 

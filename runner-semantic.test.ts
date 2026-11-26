@@ -38,7 +38,7 @@ test("predetermined semantic criteria flow through both frozen candidates and re
   expect(log.indexOf("-current-capture")).toBeLessThan(log.indexOf("-judge-1-harness"));
   expect(log.indexOf("-stock-capture")).toBeLessThan(log.indexOf("-judge-1-harness"));
   const modelLaunches = log.split("\n").filter(line => (line.includes(" exec --json ") || line.includes(" headless --yolo ")) && !line.includes("-judge-"));
-  expect(modelLaunches.every(line => line.includes(`--network codex-ab-${state.id}-provider`))).toBe(true);
+  expect(modelLaunches.every(line => line.includes(`--network codex-ab-${state.id}-candidate-`) && line.includes("HTTPS_PROXY=http://egress-proxy:3128"))).toBe(true);
   const judgeLaunches = log.split("\n").filter(line => / create (?:--rm )?--name codex-ab-.*-judge-[12]-(?:harness-1|assessment)-1 /.test(line));
   expect(judgeLaunches).toHaveLength(4);
   const firstHarnessFinish = Math.min(

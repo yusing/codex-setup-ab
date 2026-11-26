@@ -18,7 +18,7 @@ import. Import verification never rewrites source runs.
 | Qualification | Frozen `codex-ab.evaluator-controls.v1` controls and identity-bound `codex-ab.evaluator-qualification.v1` results. [Controls](verification.md#frozen-controls-and-a-complete-example). |
 | Reports | Versioned v2 pair/trial/suite reports, with explicit eligibility, selection policy, reliability, and uncertainty. [Reporting](contract.md#report). |
 | Fixed verification | `codex-ab.fixed-verifier.v1` inputs and `codex-ab.fixed-result.v1` rewards, separate from adaptive checks. [Fixed verifier](fixed-verifier.md). |
-| Networks | `codex-ab.network-policy.v1`: separate arm networks, online-unrestricted candidates, offline verifiers. [Isolation](contract.md#prepare-an-isolated-pair). |
+| Networks | `codex-ab.network-policy.v1`: separate arm networks, closed-book provider-allowlist proxy by default (opt-in `online-unrestricted`), offline verifiers. [Isolation](contract.md#prepare-an-isolated-pair). |
 
 ## Interpretation
 

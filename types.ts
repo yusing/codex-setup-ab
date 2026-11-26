@@ -15,6 +15,26 @@ export const CODEX_MODELS = [
 export type BenchmarkModel = typeof CODEX_MODELS[number]["id"] | "grok:grok-4.7";
 
 export type ArmOrder = "concurrent" | "stock-first" | "current-first";
+export type NetworkPolicyMode = "closed-book" | "online-unrestricted";
+
+export type NetworkPolicy =
+  | {
+      schema: "codex-ab.network-policy.v1";
+      candidate: "provider-allowlist-proxy";
+      closed_book: true;
+      allowed_hosts: string[];
+      arm_connectivity: "separate-docker-networks";
+      evaluator: "offline";
+      judge: "provider-network-source-reader";
+    }
+  | {
+      schema: "codex-ab.network-policy.v1";
+      candidate: "online-unrestricted";
+      closed_book: false;
+      arm_connectivity: "separate-docker-networks";
+      evaluator: "offline";
+      judge: "provider-network-source-reader";
+    };
 
 export type ArmName = string;
 export type CandidateId = `candidate-${number}`;
@@ -135,7 +155,7 @@ export interface RunState {
   runtime_homes?: Record<string, { key: string; image_id: string }>;
   comparison?: Comparison;
   experiment?: import("./factorial").GuidanceLauncherExperiment;
-  network_policy?: { schema: "codex-ab.network-policy.v1"; candidate: "online-unrestricted"; closed_book: false; arm_connectivity: "separate-docker-networks"; evaluator: "offline"; judge: "provider-network-source-reader" };
+  network_policy?: NetworkPolicy;
   fixed_verifier?: { mode: "fixed-verifier"; config_path: string; config_sha256: string; task_directory: string; prompt_path: string };
   fixed_verifiers?: Record<ArmName, Array<{ result_path: string; result: import("./fixed-verifier").FixedVerifierResult }>>;
   auto_compact_limit?: number;

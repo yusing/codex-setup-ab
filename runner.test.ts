@@ -284,7 +284,19 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   expect(candidateChecks.every(line => line.includes("--network none"))).toBe(true);
   const agentContainers = log.split("\n").filter(line => ["stock", "current"].some(arm => line.includes(`--name codex-ab-${state.id}-${arm} --label `)));
   expect(agentContainers).toHaveLength(2);
-  expect(agentContainers.every(line => line.includes(`--network codex-ab-${state.id}-provider`))).toBe(true);
+  expect(state.network_policy).toMatchObject({
+    schema: "codex-ab.network-policy.v1",
+    candidate: "provider-allowlist-proxy",
+    closed_book: true,
+    allowed_hosts: ["chatgpt.com", "api.openai.com", "auth.openai.com"],
+    arm_connectivity: "separate-docker-networks",
+    evaluator: "offline",
+    judge: "provider-network-source-reader",
+  });
+  expect(agentContainers.every(line => line.includes(`--network codex-ab-${state.id}-candidate-`) && line.includes("HTTPS_PROXY=http://egress-proxy:3128"))).toBe(true);
+  const proxyContainers = log.split("\n").filter(line => ["stock", "current"].some(arm => line.includes(`--name codex-ab-${state.id}-${arm}-egress-proxy --label `)));
+  expect(proxyContainers).toHaveLength(2);
+  expect(proxyContainers.every(line => line.includes(`--network codex-ab-${state.id}-provider-`) && line.includes("--cap-drop ALL") && line.includes("--memory 128m"))).toBe(true);
   expect(log.match(/ codex exec /g)?.length).toBe(2);
   const calls = log.split("\n");
   const agentStarted = calls.filter(line => / start --attach --interactive codex-ab-.*-(stock|current)$/.test(line)).map(line => BigInt(line.split(" ")[0]!));
@@ -300,6 +312,32 @@ test("runner starts both arms concurrently, grades both, and refuses a rerun", a
   const paths = await buildReport(run);
   expect(await Bun.file(paths.jsonPath).exists()).toBe(true);
   expect(await readFile(paths.markdownPath, "utf8")).toContain("does not establish a causal");
+});
+
+test("online-unrestricted network policy attaches candidates directly to separate provider networks without an egress proxy", async () => {
+  const run = await prepare({
+    source, baseCommit: base, forbiddenCommit: future, taskPath: task, criteriaPath: fixtureCriteria,
+    outputParent: root, currentHome: home, image: "fixture-image", cpus: "2", memory: "4g", timeoutSeconds: 30,
+    networkPolicy: "online-unrestricted",
+  });
+  const auth = join(root, "unrestricted-auth.json"); await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const state = await runPair({ runDir: run, authFile: auth, dockerBin: fake.path });
+  expect(state.status).toBe("complete");
+  expect(state.network_policy).toEqual({
+    schema: "codex-ab.network-policy.v1",
+    candidate: "online-unrestricted",
+    closed_book: false,
+    arm_connectivity: "separate-docker-networks",
+    evaluator: "offline",
+    judge: "provider-network-source-reader",
+  });
+  const log = await readFile(fake.log, "utf8");
+  const agentContainers = log.split("\n").filter(line => ["stock", "current"].some(arm => line.includes(`--name codex-ab-${state.id}-${arm} --label `)));
+  expect(agentContainers).toHaveLength(2);
+  expect(agentContainers.every(line => line.includes(`--network codex-ab-${state.id}-provider-`) && !line.includes("HTTPS_PROXY="))).toBe(true);
+  expect(log).not.toContain("-egress-proxy");
+  expect(log).not.toContain("--internal");
 });
 
 test("current-only execution launches Mekugi and finishes without a stock agent or judge", async () => {

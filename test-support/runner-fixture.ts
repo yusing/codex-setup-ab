@@ -240,6 +240,9 @@ case "$operation" in
         rm -f '${stateDir}/network-'$name
         echo "$name"
         ;;
+      connect)
+        echo connected
+        ;;
     esac
     ;;
   create)
@@ -256,11 +259,13 @@ case "$operation" in
         *:/harness.json:ro) printf '%s' "\${argument%:/harness.json:ro}" >'${stateDir}/'$name.semantic-harness ;;
         *:/verifier-results:rw) printf '%s' "\${argument%:/verifier-results:rw}" >'${stateDir}/'$name.verifier-results ;;
         *:/candidate:ro) printf '%s' "\${argument%:/candidate:ro}" >'${stateDir}/'$name.semantic-candidate ;;
+        *:/proxy-ready) printf '%s' "\${argument%:/proxy-ready}" >'${stateDir}/'$name.proxy-ready ;;
       esac
       previous="$argument"
     done
     test -n "$name" || exit 2
     case "$name" in
+      *-egress-proxy) ;;
       *-judge-*|*-stock|*-current|*-arm-[0-9]*)
         mkdir -p "$setup/.codex/cache/remote_plugin_catalog" "$setup/.codex/plugins/cache"
         printf '%s\\n' '{}' > "$setup/.codex/cache/remote_plugin_catalog/download.json"
@@ -341,6 +346,12 @@ PY
         cat >/dev/null
         printf '%s\\n' '${JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ scores: { "candidate-1": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 }, "candidate-2": { correctness: 5, completeness: 5, maintainability: 5, test_quality: 5 } }, evidence: ["fixture source assessment"], issues: [], winner: "tie", rationale: "Both fixtures satisfy the task." }) } })}'
         ;;
+      *-egress-proxy)
+        if [ -f '${stateDir}/'$name.proxy-ready ]; then
+          printf 'ready\\n' > "$(cat '${stateDir}/'$name.proxy-ready)/ready"
+        fi
+        exit 0
+        ;;
       *-stock|*-current|*-arm-[0-9]*)
         trap 'exit 143' TERM INT
         sleep ${sleepSeconds}
@@ -359,6 +370,7 @@ PY
     if [ ! -f '${stateDir}/'$target ]; then echo "Error: No such object: $target" >&2; exit 1; fi
     case " $* " in
       *'codex-ab.owner'*) sed -n 's/.*codex-ab.owner=\\([^ ]*\\).*/\\1/p' '${stateDir}/'$target ;;
+      *'State.Running'*) echo true ;;
       *) echo "$target" ;;
     esac
     ;;
