@@ -64,6 +64,86 @@ const total = (values: number[]): number | null => {
 };
 const rate = (numerator: number, denominator: number): number | null => denominator ? numerator / denominator : null;
 
+export interface TaskPassMetrics {
+  task_id: string;
+  scored: number;
+  passing: number;
+  pass_at_k: Record<string, number>;
+  pass_pow_k: Record<string, number>;
+}
+
+export interface MacroPassMetric {
+  k: number;
+  eligible_tasks: number;
+  pass_at_k: number;
+  pass_pow_k: number;
+}
+
+export interface ReliabilityPassMetrics {
+  max_task_scored: number;
+  by_task: Record<string, TaskPassMetrics>;
+  macro: Record<string, MacroPassMetric>;
+}
+
+/** Unbiased estimator 1 - C(n - c, k) / C(n, k), computed without factorials. */
+export function passAtK(n: number, c: number, k: number): number | null {
+  if (!Number.isSafeInteger(n) || !Number.isSafeInteger(c) || !Number.isSafeInteger(k)
+    || n < 1 || c < 0 || c > n || k < 1 || k > n) return null;
+  if (c === 0) return 0;
+  if (n - c < k) return 1;
+  let failProb = 1;
+  for (let i = 0; i < k; i++) failProb *= (n - c - i) / (n - i);
+  return Math.max(0, Math.min(1, 1 - failProb));
+}
+
+/** Unbiased estimator C(c, k) / C(n, k), computed without factorials. */
+export function passPowK(n: number, c: number, k: number): number | null {
+  if (!Number.isSafeInteger(n) || !Number.isSafeInteger(c) || !Number.isSafeInteger(k)
+    || n < 1 || c < 0 || c > n || k < 1 || k > n) return null;
+  if (c < k) return 0;
+  if (c === n) return 1;
+  let allPassProb = 1;
+  for (let i = 0; i < k; i++) allPassProb *= (c - i) / (n - i);
+  return Math.max(0, Math.min(1, allPassProb));
+}
+
+export function summarizePassMetrics(scoredAttempts: ReliabilityAttempt[]): ReliabilityPassMetrics {
+  const grouped = new Map<string, { scored: number; passing: number }>();
+  for (const attempt of scoredAttempts) {
+    const entry = grouped.get(attempt.task_id) ?? { scored: 0, passing: 0 };
+    entry.scored++;
+    if (classifyAttempt(attempt) === "pass") entry.passing++;
+    grouped.set(attempt.task_id, entry);
+  }
+  const by_task: Record<string, TaskPassMetrics> = {};
+  let maxTaskScored = 0;
+  const taskIds = [...grouped.keys()].sort();
+  for (const taskId of taskIds) {
+    const { scored: n, passing: c } = grouped.get(taskId)!;
+    if (n > maxTaskScored) maxTaskScored = n;
+    const maxK = Math.min(n, 10);
+    const pass_at_k: Record<string, number> = {};
+    const pass_pow_k: Record<string, number> = {};
+    for (let k = 1; k <= maxK; k++) {
+      pass_at_k[String(k)] = passAtK(n, c, k)!;
+      pass_pow_k[String(k)] = passPowK(n, c, k)!;
+    }
+    by_task[taskId] = { task_id: taskId, scored: n, passing: c, pass_at_k, pass_pow_k };
+  }
+  const macro: Record<string, MacroPassMetric> = {};
+  const macroMaxK = Math.min(maxTaskScored, 10);
+  const taskList = Object.values(by_task);
+  for (let k = 1; k <= macroMaxK; k++) {
+    const key = String(k);
+    const eligible = taskList.filter(task => task.scored >= k);
+    if (!eligible.length) continue;
+    const passAt = eligible.reduce((sum, task) => sum + task.pass_at_k[key]!, 0) / eligible.length;
+    const passPow = eligible.reduce((sum, task) => sum + task.pass_pow_k[key]!, 0) / eligible.length;
+    macro[key] = { k, eligible_tasks: eligible.length, pass_at_k: passAt, pass_pow_k: passPow };
+  }
+  return { max_task_scored: maxTaskScored, by_task, macro };
+}
+
 export function summarizeReliability(attempts: ReliabilityAttempt[]) {
   validate(attempts);
   const kinds = [...RELIABILITY_POLICY.scored, ...RELIABILITY_POLICY.excluded];
@@ -95,6 +175,7 @@ export function summarizeReliability(attempts: ReliabilityAttempt[]) {
     attempted_cost_observed: attempted.filter(item => item.candidate_cost_usd !== null).length,
     cost_per_verified_success_usd: costStatus === "available" ? scoredCost! / outcomes.pass : null,
     cost_per_verified_success_status: costStatus,
+    pass_metrics: summarizePassMetrics(scored),
     sources: [...new Set(attempts.map(item => item.source))].sort(),
     schedules: [...new Set(attempts.map(item => item.schedule))].sort(),
   };
@@ -127,5 +208,9 @@ export function unavailableAttempt(input: Pick<ReliabilityAttempt, "attempt_id" 
 
 export function reliabilityMarkdown(report: ReturnType<typeof reliabilityReport>, labels: Record<string, string> = {}): string {
   const pct = (value: number | null): string => value === null ? "unavailable" : `${(value * 100).toFixed(1)}%`;
-  return `## Scored-attempt reliability\n\nPass and timeout rates use scored attempts. Model/task failures and candidate budget timeouts are scored; infrastructure failures, invalid evaluations, unassessed results, and administrative cancellations are excluded and counted separately. Unstarted slots are planned but not attempted. Candidate costs include scored failures; evaluator spend remains separate.\n\n| Arm | Source / schedule | Attempted | Scored | Passed | Excluded | Cost covered | Pass rate | Timeout rate | Candidate USD / verified success |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${report.cohorts.map(({ arm, source, schedule, summary: s }) => `| ${labels[arm] ?? arm} | ${source} / ${schedule} | ${s.attempted} | ${s.scored} | ${s.passing} | ${s.excluded} | ${s.cost_covered}/${s.scored} | ${pct(s.pass_rate)} | ${pct(s.timeout_rate)} | ${s.cost_per_verified_success_usd === null ? s.cost_per_verified_success_status.replaceAll("_", " ") : s.cost_per_verified_success_usd.toFixed(6)} |`).join("\n")}\n\n| Arm | Source / schedule | Infrastructure failures | Evaluator failures | Unassessed | Administrative cancellations | Not started | Valid evaluation coverage |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n${report.cohorts.map(({ arm, source, schedule, summary: s }) => `| ${labels[arm] ?? arm} | ${source} / ${schedule} | ${s.outcomes.infrastructure_failure} | ${s.outcomes.evaluator_failure} | ${s.outcomes.unassessed} | ${s.outcomes.administrative_cancellation} | ${s.not_started} | ${pct(s.evaluation_coverage)} |`).join("\n")}\n\nA missing or noncomparable cost cannot support a cost ranking. No verified successes makes cost per success undefined. Legacy records without trusted outcome dimensions remain unassessed here.\n`;
+  const showPassMetrics = report.cohorts.some(({ summary }) => summary.pass_metrics.max_task_scored >= 2);
+  const passMetricsSection = showPassMetrics
+    ? `\n\n### Capability (pass@k) and unattended consistency (pass^k)\n\nEqual-task macro averages across tasks with at least k scored attempts. pass@k estimates the probability of at least one pass in k attempts; pass^k estimates the probability that all k attempts pass.\n\n| Arm | Source / schedule | k | Eligible tasks | pass@k | pass^k |\n| --- | --- | ---: | ---: | ---: | ---: |\n${report.cohorts.flatMap(({ arm, source, schedule, summary: s }) => Object.values(s.pass_metrics.macro).filter(m => m.k <= 5).map(m => `| ${labels[arm] ?? arm} | ${source} / ${schedule} | ${m.k} | ${m.eligible_tasks} | ${pct(m.pass_at_k)} | ${pct(m.pass_pow_k)} |`)).join("\n")}`
+    : "";
+  return `## Scored-attempt reliability\n\nPass and timeout rates use scored attempts. Model/task failures and candidate budget timeouts are scored; infrastructure failures, invalid evaluations, unassessed results, and administrative cancellations are excluded and counted separately. Unstarted slots are planned but not attempted. Candidate costs include scored failures; evaluator spend remains separate.\n\n| Arm | Source / schedule | Attempted | Scored | Passed | Excluded | Cost covered | Pass rate | Timeout rate | Candidate USD / verified success |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n${report.cohorts.map(({ arm, source, schedule, summary: s }) => `| ${labels[arm] ?? arm} | ${source} / ${schedule} | ${s.attempted} | ${s.scored} | ${s.passing} | ${s.excluded} | ${s.cost_covered}/${s.scored} | ${pct(s.pass_rate)} | ${pct(s.timeout_rate)} | ${s.cost_per_verified_success_usd === null ? s.cost_per_verified_success_status.replaceAll("_", " ") : s.cost_per_verified_success_usd.toFixed(6)} |`).join("\n")}\n\n| Arm | Source / schedule | Infrastructure failures | Evaluator failures | Unassessed | Administrative cancellations | Not started | Valid evaluation coverage |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n${report.cohorts.map(({ arm, source, schedule, summary: s }) => `| ${labels[arm] ?? arm} | ${source} / ${schedule} | ${s.outcomes.infrastructure_failure} | ${s.outcomes.evaluator_failure} | ${s.outcomes.unassessed} | ${s.outcomes.administrative_cancellation} | ${s.not_started} | ${pct(s.evaluation_coverage)} |`).join("\n")}${passMetricsSection}\n\nA missing or noncomparable cost cannot support a cost ranking. No verified successes makes cost per success undefined. Legacy records without trusted outcome dimensions remain unassessed here.\n`;
 }

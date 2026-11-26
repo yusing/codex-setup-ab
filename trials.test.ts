@@ -116,10 +116,13 @@ test("complete metered pair reports enter the retained aggregate while partial p
     expect(result.schema).toBe("codex-ab.trial-report.v2");
     expect(result.reliability.arms.stock).toMatchObject({ attempted: 4, scored: 3, passing: 3, cost_covered: 2, cost_per_verified_success_usd: null });
     expect(result.reliability.arms.current).toMatchObject({ scored: 3, passing: 2, outcomes: { model_failure: 1, infrastructure_failure: 1 } });
+    expect(result.reliability.arms.current.pass_metrics.macro["2"]).toMatchObject({ k: 2, eligible_tasks: 1, pass_at_k: 1 });
+    expect(result.reliability.arms.current.pass_metrics.macro["2"].pass_pow_k).toBeCloseTo(1 / 3, 12);
     expect(result.joint_success_comparisons.current.agent_seconds.difference.n).toBe(1);
     expect(result.uncertainty["current_minus_stock.pass_rate"][0]).toMatchObject({ matched_tasks: 1, matched_pairs: 3,
       interval: { status: "unavailable" } });
     const markdown = await readFile(path, "utf8");
+    expect(markdown).toContain("### Capability (pass@k) and unattended consistency (pass^k)");
     expect(markdown).toContain("Pair 1 complete setup, source judgments and pricing fixture.");
     expect(result.pairs[3].reason).toBe("no compaction observed");
     expect(markdown).toContain("Excluded from paired aggregates: no compaction observed");

@@ -693,9 +693,24 @@ describe("report completion and winner eligibility", () => {
     expect(report.gates_complete).toBe(true);
     expect(report.measurement_complete).toBe(true);
     expect(report.winner).toBe("stock");
+    expect(report.failure_taxonomy.stock.passed).toBe(true);
+    expect(report.failure_taxonomy.current.passed).toBe(false);
+    expect(report.failure_taxonomy.current.buckets.length).toBeGreaterThan(0);
+    expect(report.trajectory_diff).toHaveLength(1);
+    expect(report.trajectory_diff[0]).toMatchObject({ failed_arm: "current", passing_arm: "stock" });
     const markdown = await readFile(paths.markdownPath, "utf8");
     expect(markdown).toContain("priority service tier");
+    expect(markdown).toContain("## Automated failure taxonomy");
+    expect(markdown).toContain("### Trajectory diff against passing sibling");
     for (const heading of ["input | cached input | cache write input | output | reasoning output | total | command seconds | estimated list-price API USD", "## Codex (current-home setup) minus Codex (minimal setup)", "## Pricing provenance", "### Judge usage by attempted pass", "not subscription charges or invoices", "service-tier premiums are not modeled"]) expect(markdown).toContain(heading);
+
+    // Passing pair reports omit the failure taxonomy Markdown section
+    const passingFixture = await fixtureRun(true, true);
+    await fixtureJudge(passingFixture.run, "tie", "tie");
+    const passingPaths = await buildReport(passingFixture.run);
+    const passingReport = await Bun.file(passingPaths.jsonPath).json();
+    expect(passingReport.trajectory_diff).toEqual([]);
+    expect(await readFile(passingPaths.markdownPath, "utf8")).not.toContain("## Automated failure taxonomy");
 
     const state = await readState(run);
     delete state.results?.current?.grade;

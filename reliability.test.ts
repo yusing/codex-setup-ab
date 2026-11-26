@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { classifyAttempt, reliabilityReport, summarizeReliability, unavailableAttempt, type ReliabilityAttempt } from "./reliability";
+import { classifyAttempt, passAtK, passPowK, reliabilityMarkdown, reliabilityReport, summarizeReliability, unavailableAttempt, type ReliabilityAttempt } from "./reliability";
 
 const attempt = (id: string, fields: Partial<ReliabilityAttempt> = {}): ReliabilityAttempt => ({
   attempt_id: id, task_id: "task@sha", arm: "stock", source: "fresh", schedule: "concurrent",
@@ -62,4 +62,71 @@ test("invalid cost and duplicate attempt identities are rejected", () => {
   for (const value of [-1, Infinity, NaN]) expect(() => summarizeReliability([attempt("bad", { candidate_cost_usd: value })])).toThrow("invalid reliability");
   expect(() => summarizeReliability([attempt("bad", { candidate_cost_usd: null })])).toThrow("invalid reliability");
   expect(() => summarizeReliability([attempt("same"), attempt("same")])).toThrow("duplicate reliability");
+});
+
+test("pass@k and pass^k compute exact unbiased estimators without factorial overflow", () => {
+  // Edge cases: c=0, c=n, n<k, invalid inputs
+  expect(passAtK(5, 0, 1)).toBe(0);
+  expect(passAtK(5, 0, 5)).toBe(0);
+  expect(passPowK(5, 0, 1)).toBe(0);
+  expect(passAtK(5, 5, 1)).toBe(1);
+  expect(passAtK(5, 5, 5)).toBe(1);
+  expect(passPowK(5, 5, 1)).toBe(1);
+  expect(passPowK(5, 5, 5)).toBe(1);
+  expect(passAtK(3, 2, 4)).toBeNull();
+  expect(passPowK(3, 2, 4)).toBeNull();
+  expect(passAtK(0, 0, 1)).toBeNull();
+  expect(passPowK(5, 6, 1)).toBeNull();
+
+  // Exact combinatorics for n=5, c=2:
+  // pass@1 = 2/5 = 0.4; pass@2 = 1 - C(3,2)/C(5,2) = 1 - 3/10 = 0.7;
+  // pass@3 = 1 - C(3,3)/C(5,3) = 1 - 1/10 = 0.9; pass@4 = 1 (n-c=3 < 4)
+  expect(passAtK(5, 2, 1)).toBeCloseTo(0.4, 12);
+  expect(passAtK(5, 2, 2)).toBeCloseTo(0.7, 12);
+  expect(passAtK(5, 2, 3)).toBeCloseTo(0.9, 12);
+  expect(passAtK(5, 2, 4)).toBe(1);
+  expect(passAtK(5, 2, 5)).toBe(1);
+
+  // pass^1 = 2/5 = 0.4; pass^2 = C(2,2)/C(5,2) = 1/10 = 0.1; pass^3 = 0 (c=2 < 3)
+  expect(passPowK(5, 2, 1)).toBeCloseTo(0.4, 12);
+  expect(passPowK(5, 2, 2)).toBeCloseTo(0.1, 12);
+  expect(passPowK(5, 2, 3)).toBe(0);
+
+  // Large n stability (would overflow 170! if using factorials)
+  expect(passAtK(1000, 500, 5)).toBeCloseTo(1 - (500 / 1000) * (499 / 999) * (498 / 998) * (497 / 997) * (496 / 996), 12);
+  expect(passPowK(1000, 500, 5)).toBeCloseTo((500 / 1000) * (499 / 999) * (498 / 998) * (497 / 997) * (496 / 996), 12);
+});
+
+test("summarizeReliability computes per-task and equal-task macro pass@k / pass^k across unequal n", () => {
+  const inputs = [
+    // task-a: n=3, c=2 -> k=1: 2/3, k=2: pass@2=1, pass^2=1/3, k=3: pass@3=1, pass^3=0
+    attempt("a1", { task_id: "task-a", behavior: "pass" }),
+    attempt("a2", { task_id: "task-a", behavior: "pass" }),
+    attempt("a3", { task_id: "task-a", behavior: "fail" }),
+    // task-b: n=2, c=1 -> k=1: 1/2, k=2: pass@2=1, pass^2=0
+    attempt("b1", { task_id: "task-b", behavior: "pass" }),
+    attempt("b2", { task_id: "task-b", behavior: "fail" }),
+    // excluded infra failure must not affect scored n
+    attempt("b3", { task_id: "task-b", execution: "infrastructure_failure" }),
+  ];
+  const summary = summarizeReliability(inputs);
+  expect(summary.pass_metrics.max_task_scored).toBe(3);
+  expect(summary.pass_metrics.by_task["task-a"]!.scored).toBe(3);
+  expect(summary.pass_metrics.by_task["task-b"]!.scored).toBe(2);
+  expect(summary.pass_metrics.macro["1"]!.eligible_tasks).toBe(2);
+  expect(summary.pass_metrics.macro["1"]!.pass_at_k).toBeCloseTo((2 / 3 + 0.5) / 2, 12);
+  expect(summary.pass_metrics.macro["1"]!.pass_pow_k).toBeCloseTo((2 / 3 + 0.5) / 2, 12);
+  expect(summary.pass_metrics.macro["2"]!.eligible_tasks).toBe(2);
+  expect(summary.pass_metrics.macro["2"]!.pass_at_k).toBeCloseTo(1, 12);
+  expect(summary.pass_metrics.macro["2"]!.pass_pow_k).toBeCloseTo((1 / 3 + 0) / 2, 12);
+  expect(summary.pass_metrics.macro["3"]!.eligible_tasks).toBe(1);
+  expect(summary.pass_metrics.macro["3"]!.pass_at_k).toBe(1);
+  expect(summary.pass_metrics.macro["3"]!.pass_pow_k).toBe(0);
+
+  // Single-trial markdown omits pass@k table; multi-trial markdown includes it
+  const singleMd = reliabilityMarkdown(reliabilityReport([attempt("s1", { task_id: "t1" })]));
+  expect(singleMd).not.toContain("pass@k");
+  const multiMd = reliabilityMarkdown(reliabilityReport(inputs));
+  expect(multiMd).toContain("### Capability (pass@k) and unattended consistency (pass^k)");
+  expect(multiMd).toContain("| stock | fresh / concurrent | 2 | 2 | 100.0% | 16.7% |");
 });
