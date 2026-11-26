@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { finishBenchmark, runBenchmark } from "./workflow";
+import { runPair } from "./runner";
 import { readState, writeState } from "./state";
 import { assertRecoverableJudge } from "./judge";
 import { embeddedFallbackPricing, type PricingSnapshot } from "./usage";
@@ -148,3 +149,157 @@ test("judge recovery replays a saved repair that resubmitted a successful check"
   expect(addedLog).not.toContain("-stock ");
   expect(addedLog).not.toContain("-current ");
 }, 30_000);
+
+async function candidateModeDocker(fakePath: string, stateDir: string, name: string, mode: "transient-then-ok" | "dirty-transient" | "exhaust" | "oom", dirtyRepo?: string): Promise<string> {
+  const wrapper = join(root, name);
+  const counterDir = join(root, `${name}.counts`);
+  await file(wrapper, `#!/bin/sh
+set -u
+mkdir -p '${counterDir}'
+op="$1"
+last=; for argument in "$@"; do last="$argument"; done
+if [ "$op" = "container" ]; then
+  case " $* " in
+    *'.State.OOMKilled'*)
+      case "$last" in
+        *-preflight-*|*-warm|*-capture|*-verify) ;;
+        *-stock)
+          if [ "${mode}" = "oom" ]; then echo true; exit 0; fi
+          ;;
+      esac
+      if [ -f '${stateDir}/'$last ]; then echo false; exit 0; fi
+      echo "Error: No such object: $last" >&2; exit 1
+      ;;
+  esac
+fi
+if [ "$op" = "start" ]; then
+  case "$last" in
+    *-preflight-*|*-warm|*-capture|*-verify) ;;
+    *-stock)
+      count_file='${counterDir}/'$last
+      count=0
+      if [ -f "$count_file" ]; then count=$(cat "$count_file"); fi
+      count=$((count + 1))
+      echo "$count" > "$count_file"
+      case "${mode}" in
+        transient-then-ok)
+          if [ "$count" -eq 1 ]; then
+            printf '%s\n' '{"type":"error","message":"Selected model is at capacity"}'
+            echo "Selected model is at capacity" >&2
+            exit 1
+          fi
+          ;;
+        dirty-transient)
+          printf 'partial work\n' > '${dirtyRepo ?? ""}/dirty-file.txt'
+          echo "HTTP 429 Too Many Requests" >&2
+          exit 1
+          ;;
+        exhaust)
+          printf '{"type":"error","message":"HTTP 503 Service Unavailable (attempt %s)"}\n' "$count"
+          echo "HTTP 503 Service Unavailable (attempt $count)" >&2
+          exit 1
+          ;;
+        oom)
+          echo "Killed" >&2
+          exit 137
+          ;;
+      esac
+      ;;
+  esac
+fi
+exec '${fakePath}' "$@"
+`, 0o755);
+  return wrapper;
+}
+
+test("candidate transient provider error retries on clean workspace and succeeds on attempt 2", async () => {
+  const run = await prepared();
+  const auth = join(root, "retry-ok-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const docker = await candidateModeDocker(fake.path, fake.stateDir, "docker-retry-ok.sh", "transient-then-ok");
+  const previousEnv = process.env.CODEX_AB_RETRY_DELAYS_MS;
+  process.env.CODEX_AB_RETRY_DELAYS_MS = "0,0";
+  try {
+    const state = await runPair({ runDir: run, authFile: auth, dockerBin: docker, arm: "stock" });
+    expect(state.status).toBe("complete");
+    const stock = state.results!.stock!;
+    expect(stock.exit_code).toBe(0);
+    expect(stock.failure_classification).toBeUndefined();
+    expect(stock.retry_attempts).toHaveLength(1);
+    expect(stock.retry_attempts![0]).toMatchObject({
+      attempt: 1,
+      exit_code: 1,
+      reason: "provider_transient_error",
+      stdout_path: "artifacts/stock/codex.attempt-1.jsonl",
+      stderr_path: "artifacts/stock/codex.attempt-1.stderr",
+    });
+    expect(await readFile(join(run, "artifacts/stock/codex.attempt-1.stderr"), "utf8")).toContain("Selected model is at capacity");
+    expect(await readFile(join(run, "artifacts/stock/codex.attempt-1.jsonl"), "utf8")).toContain("Selected model is at capacity");
+    expect(await readFile(join(run, "artifacts/stock/codex.jsonl"), "utf8")).toContain('"text":"done"');
+  } finally {
+    if (previousEnv === undefined) delete process.env.CODEX_AB_RETRY_DELAYS_MS;
+    else process.env.CODEX_AB_RETRY_DELAYS_MS = previousEnv;
+  }
+}, 20_000);
+
+test("candidate retry is blocked when workspace is dirty", async () => {
+  const run = await prepared();
+  const auth = join(root, "retry-dirty-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const preparedState = await readState(run);
+  const docker = await candidateModeDocker(fake.path, fake.stateDir, "docker-retry-dirty.sh", "dirty-transient", join(run, preparedState.arms.stock.repository));
+  const state = await runPair({ runDir: run, authFile: auth, dockerBin: docker, arm: "stock", retryDelaysMs: [0, 0] });
+  expect(state.status).toBe("partial");
+  const stock = state.results!.stock!;
+  expect(stock.exit_code).toBe(1);
+  expect(stock.retry_attempts).toBeUndefined();
+  expect(stock.failure_classification).toMatchObject({
+    execution: "infrastructure_failure",
+    reason: "provider_transient_error",
+    retryable: true,
+  });
+  expect(await Bun.file(join(run, state.arms.stock.repository, "dirty-file.txt")).exists()).toBe(true);
+}, 20_000);
+
+test("candidate retry exhaustion stops after 3 attempts and archives prior attempt logs", async () => {
+  const run = await prepared();
+  const auth = join(root, "retry-exhaust-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const docker = await candidateModeDocker(fake.path, fake.stateDir, "docker-retry-exhaust.sh", "exhaust");
+  const state = await runPair({ runDir: run, authFile: auth, dockerBin: docker, arm: "stock", retryDelaysMs: [0, 0] });
+  expect(state.status).toBe("partial");
+  const stock = state.results!.stock!;
+  expect(stock.exit_code).toBe(1);
+  expect(stock.retry_attempts).toHaveLength(2);
+  expect(stock.retry_attempts!.map(item => item.attempt)).toEqual([1, 2]);
+  expect(stock.failure_classification).toMatchObject({
+    execution: "infrastructure_failure",
+    reason: "provider_transient_error",
+    retryable: true,
+  });
+  expect(await readFile(join(run, "artifacts/stock/codex.attempt-1.stderr"), "utf8")).toContain("attempt 1");
+  expect(await readFile(join(run, "artifacts/stock/codex.attempt-2.stderr"), "utf8")).toContain("attempt 2");
+  expect(await readFile(join(run, "artifacts/stock/codex.stderr"), "utf8")).toContain("attempt 3");
+}, 20_000);
+
+test("candidate OOM kill is classified as container_oom_killed without retrying", async () => {
+  const run = await prepared();
+  const auth = join(root, "retry-oom-auth.json");
+  await file(auth, "{}\n", 0o600);
+  const fake = await fakeOwnedDocker(0);
+  const docker = await candidateModeDocker(fake.path, fake.stateDir, "docker-retry-oom.sh", "oom");
+  const state = await runPair({ runDir: run, authFile: auth, dockerBin: docker, arm: "stock", retryDelaysMs: [0, 0] });
+  expect(state.status).toBe("partial");
+  const stock = state.results!.stock!;
+  expect(stock.exit_code).toBe(137);
+  expect(stock.oom_killed).toBe(true);
+  expect(stock.retry_attempts).toBeUndefined();
+  expect(stock.failure_classification).toMatchObject({
+    execution: "infrastructure_failure",
+    reason: "container_oom_killed",
+    retryable: false,
+  });
+}, 20_000);

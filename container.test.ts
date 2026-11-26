@@ -26,7 +26,7 @@ case "$operation" in
  start)
   name=; for argument in "$@"; do name="$argument"; done
   spec="$(cat "$state/$name")"
-  case "$spec" in *'sleep-command'*) exec sleep 2;; *'fail-command'*) case "$spec" in *--rm*) rm -f "$state/$name";; esac; exit 7;; *'auto-remove-race'*) exit 0;; *) echo harmless;; esac
+  case "$spec" in *'sleep-command'*) exec sleep 2;; *'oom-command'*) exit 137;; *'fail-command'*) case "$spec" in *--rm*) rm -f "$state/$name";; esac; exit 7;; *'auto-remove-race'*) exit 0;; *) echo harmless;; esac
   case "$spec" in *--rm*) rm -f "$state/$name";; esac;;
  stop) echo stopped;;
  commit)
@@ -36,6 +36,14 @@ case "$operation" in
  container)
   target=; for argument in "$@"; do target="$argument"; done
   case "$target" in *daemon-inspect*) echo 'daemon permission denied' >&2; exit 2;; esac
+  case " $* " in *'.State.OOMKilled'*)
+    if [ ! -f "$state/$target" ]; then echo "Error: No such container: $target" >&2; exit 1; fi
+    case "$target" in
+      *oom-inspect-fails*) echo 'inspect oom failed' >&2; exit 2;;
+      *oom-killed*) echo true; exit 0;;
+      *) echo false; exit 0;;
+    esac;;
+  esac
   if [ ! -f "$state/$target" ]; then echo "Error: No such container: $target" >&2; exit 1; fi
   case " $* " in *'codex-ab.owner'*) sed -n 's/.*codex-ab.owner=\\([^ ]*\\).*/\\1/p' "$state/$target";; *) echo "$target";; esac;;
  rm)
@@ -156,4 +164,29 @@ test("metadata preparation snapshots restore the non-root runtime image identity
   await runOwnedContainer({ docker, name: "snapshot-user", snapshotImage: "retained:user", snapshotUser: "1000:1000",
     createArgs: ["--user", "0:0", "fixture", "harmless"] });
   expect(await readFile(log, "utf8")).toContain("commit --change USER 1000:1000 snapshot-user retained:user");
+});
+
+test("inspects State.OOMKilled before container removal and exposes oomKilled", async () => {
+  const oom = await runOwnedContainer({ docker, name: "oom-killed", createArgs: ["fixture", "oom-command"] });
+  expect(oom.exitCode).toBe(137);
+  expect(oom.oomKilled).toBe(true);
+  expect(oom.cleanupVerified).toBe(true);
+  const calls = await readFile(log, "utf8");
+  expect(calls.indexOf("container inspect --format {{.State.OOMKilled}} oom-killed")).toBeLessThan(calls.indexOf("rm --force oom-killed"));
+
+  const normal = await runOwnedContainer({ docker, name: "not-oom", createArgs: ["fixture", "harmless"] });
+  expect(normal.oomKilled).toBe(false);
+});
+
+test("OOM inspect failure does not break container cleanup", async () => {
+  const result = await runOwnedContainer({ docker, name: "oom-inspect-fails", createArgs: ["fixture", "harmless"] });
+  expect(result.exitCode).toBe(0);
+  expect(result.oomKilled).toBeUndefined();
+  expect(result.cleanupVerified).toBe(true);
+});
+
+test("OwnedContainerError preserves oomKilled when cleanup fails after OOM", async () => {
+  const failure = await runOwnedContainer({ docker, name: "oom-killed-cleanup-fails", createArgs: ["fixture", "oom-command"] }).catch(error => error);
+  expect(failure).toBeInstanceOf(OwnedContainerError);
+  expect(failure.oomKilled).toBe(true);
 });

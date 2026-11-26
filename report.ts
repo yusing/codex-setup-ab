@@ -376,8 +376,8 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       return { attempt_id: state.id, task_id: `${state.task_pack?.id ?? "task"}:${state.task.sha256}:${state.source.base_commit}`,
         arm, source: state.imported_arms?.[arm] || state.imported_control && arm === "stock" ? "historical" : "fresh", schedule: state.arm_order ?? "concurrent",
         execution: !result ? attempt ? attempt.status === "started" && !attempt.finished_at ? "unknown" : "infrastructure_failure" : "not_started" : result.canceled ? "administrative_cancellation"
-          : result.lifecycle_error || result.collection_error || !valid ? "infrastructure_failure" : result.timed_out || result.runaway_guard?.triggered ? "budget_timeout"
-          : result.exit_code !== 0 ? "unknown" : "completed",
+          : result.lifecycle_error || result.collection_error || result.oom_killed || !valid ? "infrastructure_failure" : result.timed_out || result.runaway_guard?.triggered ? "budget_timeout"
+          : result.exit_code !== 0 ? (result.failure_classification?.execution ?? "unknown") : "completed",
         behavior: verified.behavior, evaluation_validity: verified.evaluation_validity,
         candidate_cost_usd: usage[arm]?.totals.estimated_api_usd ?? null, cost_eligible: costRankingEligible(usage[arm]),
         evidence: verified.evidence };
@@ -520,6 +520,21 @@ export async function prepareReportUnlocked(runDirectory: string, options: Repor
       ...(!state.fixed_verifier && !state.criteria ? ["No task-derived criteria were recorded. Historical measurements are descriptive only; grading completion and winner eligibility are unavailable."] : []),
       ...(state.finishing?.status === "failed" ? [`finishing: ${state.finishing.error ?? "failed"}`] : []),
       ...pricing.warnings.map(warning => `pricing: ${warning}`),
+      ...selectedArms.flatMap(arm => {
+        const result = state.results?.[arm];
+        if (!result) return [];
+        const notes: string[] = [];
+        if (result.oom_killed || result.failure_classification) {
+          const execution = result.oom_killed ? "infrastructure_failure" : (result.failure_classification?.execution ?? "unknown");
+          const reason = result.failure_classification?.reason ?? "container_oom_killed";
+          const detail = result.failure_classification?.detail ?? `Container was OOM-killed (exit ${result.exit_code})`;
+          notes.push(`${labels[arm as ArmName]}: candidate exit ${result.exit_code} classified as ${execution} (${reason}): ${detail}`);
+        }
+        if (result.retry_attempts?.length) {
+          notes.push(`${labels[arm as ArmName]}: retried ${result.retry_attempts.length} time(s) after transient failure (${result.retry_attempts.map(item => `attempt ${item.attempt}: ${item.reason}, exit ${item.exit_code}`).join("; ")})`);
+        }
+        return notes;
+      }),
       ...selectedArms.flatMap(arm => (usage[arm]?.warnings ?? [state.results?.[arm] ? "usage was not measured" : "result and usage are missing"]).map(warning => `${labels[arm as ArmName]}: ${warning}`)),
       ...selectedArms.flatMap(arm => { const rg = state.results?.[arm]?.runaway_guard; return rg?.triggered ? [`${labels[arm as ArmName]}: runaway guard triggered (${rg.reason}: ${rg.detail})`] : []; }),
       ...(state.fixed_verifier ? [] : state.judge ? (judgeUsage?.warnings ?? ["judge usage was not measured"]).map(warning => `judge: ${warning}`) : ["judge: not run"]),

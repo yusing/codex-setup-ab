@@ -1233,3 +1233,59 @@ for (const comparison of ["journal-compaction", "duplicate-output"] as const) {
     });
   }
 }
+
+test("report maps candidate OOM, model_failure, infrastructure_failure, unknown exits, and retry provenance into reliability and Markdown", async () => {
+  const { run } = await fixtureRun();
+  const state = await readState(run);
+  state.results!.stock!.exit_code = 137;
+  state.results!.stock!.oom_killed = true;
+  state.results!.stock!.failure_classification = {
+    execution: "infrastructure_failure",
+    reason: "container_oom_killed",
+    retryable: false,
+    detail: "Container was OOM-killed (exit 137)",
+  };
+  state.results!.current!.exit_code = 1;
+  state.results!.current!.failure_classification = {
+    execution: "model_failure",
+    reason: "model_error",
+    retryable: false,
+    detail: "Maximum number of turns reached",
+  };
+  await writeState(run, state);
+  const paths = await buildReport(run);
+  const report = await Bun.file(paths.jsonPath).json();
+  const markdown = await readFile(paths.markdownPath, "utf8");
+  expect(report.evidence_dimensions.stock.execution).toBe("infrastructure_failure");
+  expect(report.reliability.arms.stock).toMatchObject({ scored: 0, excluded: 1, outcomes: { infrastructure_failure: 1 } });
+  expect(report.evidence_dimensions.current.execution).toBe("model_failure");
+  expect(report.reliability.arms.current).toMatchObject({ scored: 1, excluded: 0, outcomes: { model_failure: 1 } });
+  expect(markdown).toContain("container_oom_killed");
+  expect(markdown).toContain("model_error");
+
+  // Legacy nonzero exit without failure_classification stays unknown -> unassessed;
+  // oom_killed alone still forces infrastructure_failure; retry_attempts surface in warnings.
+  state.results!.stock!.exit_code = 0;
+  state.results!.stock!.oom_killed = false;
+  delete state.results!.stock!.failure_classification;
+  state.results!.stock!.retry_attempts = [{
+    attempt: 1,
+    started_at: "2026-11-27T00:00:00.000Z",
+    finished_at: "2026-11-27T00:00:01.000Z",
+    exit_code: 1,
+    reason: "provider_transient_error",
+    detail: "Selected model is at capacity",
+    stdout_path: "artifacts/stock/codex.attempt-1.jsonl",
+    stderr_path: "artifacts/stock/codex.attempt-1.stderr",
+  }];
+  state.results!.current!.exit_code = 2;
+  delete state.results!.current!.failure_classification;
+  await writeState(run, state);
+  const secondPaths = await buildReport(run);
+  const secondReport = await Bun.file(secondPaths.jsonPath).json();
+  const secondMarkdown = await readFile(secondPaths.markdownPath, "utf8");
+  expect(secondReport.evidence_dimensions.stock.execution).toBe("completed");
+  expect(secondReport.evidence_dimensions.current.execution).toBe("unknown");
+  expect(secondReport.reliability.arms.current.outcomes.unassessed).toBe(1);
+  expect(secondMarkdown).toContain("retried 1 time(s) after transient failure");
+});

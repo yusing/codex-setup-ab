@@ -5,7 +5,7 @@ import type { ArmResult, RunState } from "./types";
 
 export function armExecutionSucceeded(result: ArmResult | undefined): result is ArmResult {
   return result !== undefined && result.exit_code === 0 && !result.timed_out && !result.canceled
-    && !result.lifecycle_error && !result.collection_error;
+    && !result.lifecycle_error && !result.collection_error && !result.oom_killed;
 }
 
 /** Serialize whole lifecycle operations, not just their final state writes. */
