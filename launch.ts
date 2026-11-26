@@ -12,6 +12,7 @@ import { parseImageCodex, prepare, probeImageCodex, type PrepareOptions } from "
 import { runBenchmark } from "./workflow";
 import { prepareTrials, runTrials } from "./trials";
 import { validateMekugiFlags } from "./mekugi";
+import { parseEgressAllowlist, parseNetworkPolicyMode } from "./egress-proxy";
 import type { CliOptions } from "./cli-options";
 
 const FULL_IMAGE = "codex-ab:0.1.0";
@@ -163,6 +164,8 @@ export function launchConfiguration(input: CliOptions): { prepare: PrepareOption
       mekugiBuild: stringOption(o, "mekugi-build") || undefined, mekugiFlags: mekugi ? flags : [],
       grokBinary: comparison === "codex-mekugi-grok" ? stringOption(o, "grok-bin") : undefined,
       protectMekugi: o["protect-mekugi"] === true, reviewTreatment: stringOption(o, "review-treatment") || undefined,
+      networkPolicy: o["network-policy"] ? parseNetworkPolicyMode(stringOption(o, "network-policy")) : undefined,
+      egressAllowlist: o["egress-allowlist"] ? parseEgressAllowlist(stringOption(o, "egress-allowlist")) : undefined,
       outputParent: stringOption(o, "output-parent") || undefined,
     },
     count, order, importArms, evaluation, docker: stringOption(o, "docker-bin"), auth: stringOption(o, "auth-file"), grokAuth: stringOption(o, "grok-auth-file"), prepareOnly: o["prepare-only"] === true,

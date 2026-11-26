@@ -18,8 +18,9 @@ import { isPairedMekugiComparison, validateMekugiFlags } from "./mekugi";
 import { snapshotMekugiRuntime, verifyMekugiRuntime } from "./mekugi-runtime";
 import { MEKUGI_EXPORT_SCRIPTS, MEKUGI_ISOLATION_SCRIPTS } from "./support/mekugi";
 import { sha256, writeState } from "./state";
-import { DEFAULT_PIDS_LIMIT, MIN_PIDS_LIMIT, type RunState, type BenchmarkProfile, type CodexLauncher, type ReasoningEffort, type JudgeReport, type RunawayGuardConfig } from "./types";
+import { DEFAULT_PIDS_LIMIT, MIN_PIDS_LIMIT, type RunState, type BenchmarkProfile, type CodexLauncher, type ReasoningEffort, type JudgeReport, type RunawayGuardConfig, type NetworkPolicyMode } from "./types";
 import { normalizeRunawayGuardConfig } from "./runaway-guard";
+import { buildNetworkPolicy } from "./egress-proxy";
 
 export interface PrepareOptions {
   armSettings?: Record<string, import("./types").ArmSettings>;
@@ -58,6 +59,8 @@ export interface PrepareOptions {
   currentLauncher?: CodexLauncher;
   mekugiBinary?: string;
   bunBinary?: string;
+  networkPolicy?: NetworkPolicyMode;
+  egressAllowlist?: string[];
 }
 
 function progress(message: string): void { process.stderr.write(`[prepare] ${message}\n`); }
@@ -713,6 +716,11 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const reasoningEffort = options.reasoningEffort ?? (grokComparison ? "high" : "medium");
   if (!["mekugi", "godoxy-icons", "skills-mgr-bundle", "task"].includes(profile)) throw new Error("unknown benchmark profile");
   if (!["codex", "mekugi", "grok"].includes(currentLauncher)) throw new Error("current launcher must be codex, mekugi, or grok");
+  const networkPolicy = buildNetworkPolicy({
+    mode: options.networkPolicy,
+    comparison,
+    extraAllowedHosts: options.egressAllowlist,
+  });
   const needsMekugi = currentLauncher === "mekugi" || grokComparison;
   if (options.mekugiBinary && !needsMekugi) throw new Error("--mekugi-bin requires a Mekugi launcher treatment");
   if (!REASONING_EFFORTS.includes(reasoningEffort)) throw new Error(`reasoning effort must be one of: ${REASONING_EFFORTS.join(", ")}`);
@@ -978,6 +986,7 @@ export async function prepare(options: PrepareOptions): Promise<string> {
   const state: RunState = {
     profile,
     comparison,
+    network_policy: networkPolicy,
     auto_compact_limit: options.autoCompactLimit,
     mekugi_flags: mekugiFlags,
     protected_runtime: protectedRuntime,

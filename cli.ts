@@ -18,6 +18,7 @@ import { runLaunch } from "./launch";
 import { serveWorkbench } from "./web-server";
 import { configureFixedVerifierRun, runFixedVerifiersUnlocked, verifyFixedArm } from "./fixed-workflow";
 import { withRunLock } from "./state";
+import { parseEgressAllowlist, parseNetworkPolicyMode } from "./egress-proxy";
 
 export const VERSION = "0.1.1";
 
@@ -100,6 +101,8 @@ Prepare options:
   --max-turns N         optional runaway guard turn ceiling per candidate
   --max-total-tokens N  optional runaway guard cumulative token ceiling per candidate
   --stuck-loop-limit N  optional consecutive identical error cutoff (0 disables)
+  --network-policy MODE closed-book (default; provider-allowlist proxy) or online-unrestricted
+  --egress-allowlist H  comma-separated hostnames added to the closed-book provider allowlist
 
 Run/judge options (run includes automatic source assessment and reporting):
   --grok-auth-file FILE Grok OAuth store copied privately into isolated homes
@@ -230,6 +233,8 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       cpus: string(o, "cpus", "2"), memory: string(o, "memory", "4g"), pidsLimit, timeoutSeconds: timeout, runawayGuard,
       dockerBin: o["docker-bin"] as string | undefined,
       bunBinary: o["bun-bin"] as string | undefined,
+      networkPolicy: o["network-policy"] ? parseNetworkPolicyMode(string(o, "network-policy")) : undefined,
+      egressAllowlist: o["egress-allowlist"] ? parseEgressAllowlist(string(o, "egress-allowlist")) : undefined,
     });
     process.stdout.write(`${runDir}\n`);
     return 0;
@@ -276,7 +281,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
         mekugiFlags: o["mekugi-flags"] ? parseMekugiFlags(string(o, "mekugi-flags")) : undefined,
         mekugiSource: o["mekugi-source"] as string | undefined, mekugiBuild: o["mekugi-build"] as string | undefined,
         mekugiBinary: o["mekugi-bin"] as string | undefined,
-        bunBinary: o["bun-bin"] as string | undefined } })}\n`);
+        bunBinary: o["bun-bin"] as string | undefined,
+        networkPolicy: o["network-policy"] ? parseNetworkPolicyMode(string(o, "network-policy")) : undefined,
+        egressAllowlist: o["egress-allowlist"] ? parseEgressAllowlist(string(o, "egress-allowlist")) : undefined } })}\n`);
     return 0;
   }
   if (command === "run-suite") {

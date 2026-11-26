@@ -61,6 +61,30 @@ export interface OwnedNetwork {
   remove(): Promise<void>;
 }
 
+export interface OwnedNetworkOptions {
+  /** Pass --internal to docker network create so containers on this network have no direct external routing. */
+  internal?: boolean;
+}
+
+export interface OwnedSidecarOptions {
+  docker: string;
+  name: string;
+  /** Docker create arguments beginning with flags and ending with image + command. */
+  createArgs: string[];
+  /** Additional networks to connect before starting the sidecar container. */
+  extraNetworks?: Array<{ network: string; aliases?: string[] }>;
+  /** Optional host path created by the sidecar once ready to accept traffic. */
+  readyFile?: string;
+  readyTimeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface OwnedSidecar {
+  name: string;
+  containerId: string;
+  stop(): Promise<void>;
+}
+
 async function inspectNetwork(docker: string, name: string): Promise<{ present: boolean; owner?: string }> {
   const result = await exec([docker, "network", "inspect", "--format", '{{ index .Labels "codex-ab.owner" }}', name]);
   if (result.exitCode === 0) return { present: true, owner: result.stdout.trim() };
@@ -81,11 +105,15 @@ async function removeNetwork(docker: string, name: string, owner: string): Promi
 }
 
 /** Create an IPv6-capable, run-owned provider network and return an idempotent cleanup handle. */
-export async function createOwnedNetwork(docker: string, name: string, signal?: AbortSignal): Promise<OwnedNetwork> {
+export async function createOwnedNetwork(docker: string, name: string, signal?: AbortSignal, options?: OwnedNetworkOptions): Promise<OwnedNetwork> {
   const owner = crypto.randomUUID();
   if (signal?.aborted) throw new OwnedContainerError(`Docker network ${name} canceled before creation`);
   if ((await inspectNetwork(docker, name)).present) throw new OwnedContainerError(`Docker network name already exists and is not owned by this attempt: ${name}`);
-  const created = await exec([docker, "network", "create", "--ipv6", "--label", `codex-ab.owner=${owner}`, name], { signal });
+  const created = await exec([
+    docker, "network", "create", "--ipv6",
+    ...(options?.internal ? ["--internal"] : []),
+    "--label", `codex-ab.owner=${owner}`, name,
+  ], { signal });
   if (created.exitCode !== 0 || created.canceled || signal?.aborted) {
     const raced = await inspectNetwork(docker, name);
     if (raced.present && raced.owner === owner) await removeNetwork(docker, name, owner);
@@ -103,12 +131,87 @@ export async function createOwnedNetwork(docker: string, name: string, signal?: 
   };
 }
 
-export async function withOwnedNetwork<T>(docker: string, name: string, signal: AbortSignal | undefined, action: (network: string) => Promise<T>): Promise<T> {
-  const network = await createOwnedNetwork(docker, name, signal);
+export async function withOwnedNetwork<T>(docker: string, name: string, signal: AbortSignal | undefined, action: (network: string) => Promise<T>, options?: OwnedNetworkOptions): Promise<T> {
+  const network = await createOwnedNetwork(docker, name, signal, options);
   try {
     return await action(network.name);
   } finally {
     await network.remove();
+  }
+}
+
+/** Start a detached run-owned sidecar container, connect any extra networks before start, and return an idempotent stop handle. */
+export async function startOwnedSidecar(options: OwnedSidecarOptions): Promise<OwnedSidecar> {
+  const { docker, name, signal } = options;
+  const owner = crypto.randomUUID();
+  let containerId: string | undefined;
+  let created = false;
+  let stopped = false;
+  const stop = async (): Promise<void> => {
+    if (stopped) return;
+    stopped = true;
+    if (containerId) {
+      await exec([docker, "stop", "--time", "2", containerId], { timeoutMs: 10_000 });
+    }
+    await removeAndVerify(docker, name, owner, containerId);
+  };
+  if (signal?.aborted) {
+    if (!(await absent(docker, name))) throw new OwnedContainerError(`container name collision before canceled creation: ${name}`);
+    throw new OwnedContainerError(`container ${name} canceled before creation`);
+  }
+  if (!(await absent(docker, name))) throw new OwnedContainerError(`container name already exists and is not owned by this attempt: ${name}`);
+  try {
+    const create = await exec([docker, "create", "--rm", "--name", name, "--label", `codex-ab.owner=${owner}`, ...options.createArgs], { signal });
+    if (create.exitCode !== 0 || create.canceled || signal?.aborted) {
+      await removeAndVerify(docker, name, owner);
+      throw new OwnedContainerError(`sidecar container ${name} was not safely created: ${create.stderr.trim()}`, create);
+    }
+    created = true;
+    containerId = create.stdout.trim();
+    if (!containerId) throw new OwnedContainerError(`docker create returned no container ID for ${name}`, create);
+    for (const attachment of options.extraNetworks ?? []) {
+      const connect = await exec([
+        docker, "network", "connect",
+        ...(attachment.aliases?.flatMap(alias => ["--alias", alias]) ?? []),
+        attachment.network, containerId,
+      ], { signal });
+      if (connect.exitCode !== 0 || connect.canceled || signal?.aborted) {
+        throw new OwnedContainerError(`cannot connect sidecar ${name} to network ${attachment.network}: ${connect.stderr.trim()}`, connect);
+      }
+    }
+    const started = await exec([docker, "start", containerId], { signal });
+    if (started.exitCode !== 0 || started.canceled || signal?.aborted) {
+      throw new OwnedContainerError(`sidecar container ${name} failed to start: ${started.stderr.trim()}`, started);
+    }
+    if (options.readyFile) {
+      const deadline = Date.now() + (options.readyTimeoutMs ?? 15_000);
+      while (!(await Bun.file(options.readyFile).exists())) {
+        if (signal?.aborted) throw new OwnedContainerError(`sidecar container ${name} canceled before ready`);
+        const running = await inspect(docker, containerId, "{{.State.Running}}");
+        if (!running.present || running.value === "false") {
+          const logs = await exec([docker, "logs", containerId], { timeoutMs: 5_000 });
+          throw new OwnedContainerError(`sidecar container ${name} exited before ready: ${[logs.stdout.trim(), logs.stderr.trim()].filter(Boolean).join("; ") || "no output"}`);
+        }
+        if (Date.now() >= deadline) {
+          throw new OwnedContainerError(`sidecar container ${name} did not become ready within ${options.readyTimeoutMs ?? 15_000}ms`);
+        }
+        await Bun.sleep(50);
+      }
+    }
+    return { name, containerId, stop };
+  } catch (error) {
+    try {
+      if (created) await stop();
+      else {
+        const raced = await inspect(docker, name, '{{ index .Config.Labels "codex-ab.owner" }}');
+        if (raced.present && raced.value === owner) await removeAndVerify(docker, name, owner);
+        else if (raced.present) throw new OwnedContainerError(`refusing to remove unowned container after create failure: ${name}`);
+      }
+    } catch (cleanupError) {
+      throw new OwnedContainerError(`${errorMessage(error)}; ${errorMessage(cleanupError)}`);
+    }
+    if (error instanceof OwnedContainerError) throw error;
+    throw new OwnedContainerError(`sidecar container ${name} failed: ${errorMessage(error)}`);
   }
 }
 

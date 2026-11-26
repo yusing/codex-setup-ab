@@ -7,6 +7,7 @@ import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } fr
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedContainerOptions, type OwnedNetwork } from "./container";
+import { buildNetworkPolicy, startEgressProxySidecar, type EgressProxySidecar } from "./egress-proxy";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
 import checkEmptySkills from "./minimal-skills.txt" with { type: "text" };
@@ -402,7 +403,7 @@ export async function gradeArm(docker: string, runDir: string, state: RunState, 
   return { preparation: ready, router_suite: pending, elapsed_ms: 0, passed: false };
 }
 
-async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, providerNetwork: string, task: string, signal: AbortSignal, mekugiFlags: readonly string[]): Promise<ArmResult> {
+async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, providerNetwork: string, internalNetwork: string | undefined, task: string, signal: AbortSignal, mekugiFlags: readonly string[]): Promise<ArmResult> {
   state = armRuntime(state, arm);
   if (state.arm_settings?.[arm]?.parallel_work) task = parallelWorkTask(task);
   const name = `codex-ab-${state.id}-${arm}`;
@@ -416,6 +417,7 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   let lifecycleError: string | undefined;
   let homeImage = state.runtime_homes?.[arm]?.image_id;
   let runawayGuard: ArmResult["runaway_guard"];
+  let egressProxy: EgressProxySidecar | undefined;
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
   const exports = state.mekugi_exports_by_arm?.[arm] ?? (arm === exportArm ? state.mekugi_exports : undefined);
   const exportArgs = exports
@@ -464,9 +466,23 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
     },
   });
   try {
+    const closedBookPolicy = state.network_policy?.closed_book ? state.network_policy : undefined;
+    if (closedBookPolicy) {
+      if (!internalNetwork) throw new Error(`closed-book arm ${arm} is missing its internal Docker network`);
+      egressProxy = await startEgressProxySidecar({
+        docker,
+        name: `${name}-egress-proxy`,
+        image: imageRef(state),
+        providerNetwork,
+        candidateInternalNetwork: internalNetwork,
+        allowedHosts: closedBookPolicy.allowed_hosts,
+        auditDir: output,
+        signal,
+      });
+    }
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
     const execution = await runOwnedContainer({ docker, name, signal: armController.signal, snapshotImage: homeImage ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
-      onSnapshot: image_id => { homeImage = image_id; }, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", providerNetwork, "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
+      onSnapshot: image_id => { homeImage = image_id; }, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", internalNetwork ?? providerNetwork, ...(egressProxy ? egressProxy.envArgs : []), "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
       "-v", `${repository}:/workspace`, ...(homeImage ? await runtimeHomeMounts(home) : ["-v", `${home}:/home/ubuntu`]), ...await currentSetupMounts(runDir, state, arm, home), ...exportMount, ...grokTask, ...debugStorage,
       ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
       homeImage ?? imageRef(state), ...launcher, ...executionArgs] });
@@ -479,6 +495,10 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   } finally {
     runawayGuard = await guard.stop();
     signal.removeEventListener("abort", onParentAbort);
+    if (egressProxy) {
+      try { await egressProxy.stop(); }
+      catch (error) { lifecycleError = `${lifecycleError ?? ""} ${String(error)}`.trim(); }
+    }
   }
   if (protectedArm) {
     try { await executorOwnership(docker, state, `${name}-restore`, ownedPaths, true); }
@@ -570,15 +590,20 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   const providerNetworks: Record<string, OwnedNetwork> = {};
+  const internalNetworks: Record<string, OwnedNetwork> = {};
   const appendError = (message: string) => {
     if (!message) return;
     if (!state.error) state.error = message;
     else if (!state.error.includes(message)) state.error = `${state.error}; ${message}`;
   };
   try {
-    for (const arm of activeArms) providerNetworks[arm] = await createOwnedNetwork(docker, `codex-ab-${state.id}-provider-${arm}`, controller.signal);
-    state.network_policy = { schema: "codex-ab.network-policy.v1", candidate: "online-unrestricted", closed_book: false,
-      arm_connectivity: "separate-docker-networks", evaluator: "offline", judge: "provider-network-source-reader" };
+    state.network_policy ??= buildNetworkPolicy({ mode: "closed-book", comparison: state.comparison });
+    for (const arm of activeArms) {
+      providerNetworks[arm] = await createOwnedNetwork(docker, `codex-ab-${state.id}-provider-${arm}`, controller.signal);
+      if (state.network_policy.closed_book) {
+        internalNetworks[arm] = await createOwnedNetwork(docker, `codex-ab-${state.id}-candidate-${arm}`, controller.signal, { internal: true });
+      }
+    }
     const auth = resolve(options.authFile);
     const authMode = (await import("node:fs/promises")).stat(auth).then(s => s.mode & 0o777);
     if ((await authMode) & 0o077) throw new Error("auth file must not be accessible by group or others (expected mode 0600)");
@@ -626,7 +651,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         status: "started",
       };
       await writeState(runDir, state);
-      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, providerNetworks[arm]!.name, task, controller.signal, mekugiFlags.get(arm) ?? [])));
+      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, providerNetworks[arm]!.name, internalNetworks[arm]?.name, task, controller.signal, mekugiFlags.get(arm) ?? [])));
       settled.forEach((item, index) => {
         const arm = batch[index]!;
         const attempt = state.arm_attempts![arm]!;
@@ -695,7 +720,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         throw new Error(gradeFailures.map(item => `${displayArm(item.arm)}: ${item.reason instanceof Error ? item.reason.message : String(item.reason)}`).join("; "));
       }
     }
-    const cleanup = await Promise.allSettled(Object.values(providerNetworks).map(network => network.remove()));
+    const cleanup = await Promise.allSettled([...Object.values(internalNetworks), ...Object.values(providerNetworks)].map(network => network.remove()));
     const cleanupFailure = cleanup.find(item => item.status === "rejected");
     if (cleanupFailure?.status === "rejected") throw cleanupFailure.reason;
     state.status = !controller.signal.aborted && selectedArms.every(arm => armExecutionSucceeded(state.results?.[arm]) && state.results![arm]!.grade) ? "complete" : "partial";
@@ -707,7 +732,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
     await writeState(runDir, state);
     throw error;
   } finally {
-    await Promise.allSettled(Object.values(providerNetworks).map(network => network.remove()));
+    await Promise.allSettled([...Object.values(internalNetworks), ...Object.values(providerNetworks)].map(network => network.remove()));
     options.signal?.removeEventListener("abort", externalCancel);
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);

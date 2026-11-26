@@ -126,10 +126,17 @@ untracked guidance to Git before preparation to include it.
   runtime, and older runs keep host-mounted homes.
 - **Network policy (`codex-ab.network-policy.v1`)**: Each candidate arm and each judge
   attempt runs on its own temporary IPv6-capable Docker network (removed after container
-  stop). Offline preparation and evaluation use `--network none`. Candidate policy is
-  explicitly `online-unrestricted` with `closed_book: false` (no runner-enforced
-  destination allowlist; removing reference commits does not prove solutions are
-  unavailable online).
+  stop). Offline preparation and evaluation use `--network none`. By default, candidate
+  arms run in `closed-book` mode (`candidate: "provider-allowlist-proxy"`,
+  `closed_book: true`): each arm attaches only to an `--internal` Docker network with no
+  direct external routing, and a locked-down sidecar proxy bridges that internal network
+  to the arm's provider network with strict host/port allowlisting (default OpenAI
+  provider hosts, plus Grok provider hosts for `codex-mekugi-grok`, plus any hosts added
+  via `--egress-allowlist`). Non-allowlisted destinations and unallowlisted raw IP
+  literals receive `403 Forbidden` and are recorded in
+  `artifacts/<arm>/egress-denied.jsonl`. Pass `--network-policy online-unrestricted` at
+  preparation time to retain legacy direct provider networking
+  (`candidate: "online-unrestricted"`, `closed_book: false`).
 - **Preflight**: Run `./dist/codex-ab preflight --run-dir "$run_dir"` to validate
   immutable inputs, image ID and Codex/Code Mode hashes, absence of image-bundled
   Mekugi, real model-free Code Mode execution, offline configured tools (including
