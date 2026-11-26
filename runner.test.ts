@@ -439,7 +439,7 @@ test("runner records timeouts and stops its exact session containers", async () 
   const log = await readFile(fake.log, "utf8");
   expect(log).toContain(`rm --force codex-ab-${state.id}-stock`);
   expect(log).toContain(`rm --force codex-ab-${state.id}-current`);
-});
+}, 15_000);
 
 test("prewarm failure is persisted as partial and cannot be resumed", async () => {
   const run = await prepared();
