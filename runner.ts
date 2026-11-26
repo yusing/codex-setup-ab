@@ -3,11 +3,13 @@ import { applySkillSelection } from "./setup-skills";
 import { armNames } from "./types";
 import { dependencyImage, ensureDependencyImage, generatedDependencyDirectories, discardDownloadedCatalog, TASK_PATH } from "./dependencies";
 import { prepareRuntimeHome, runtimeHomeMounts } from "./runtime-home";
-import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { exec, checked, type ExecResult } from "./process";
 import { createOwnedNetwork, OwnedContainerError, runOwnedContainer, withOwnedNetwork, type OwnedContainerOptions, type OwnedNetwork } from "./container";
 import { buildNetworkPolicy, startEgressProxySidecar, type EgressProxySidecar } from "./egress-proxy";
+import { classifyCandidateFailure, type CandidateFailureClassification, type CandidateRetryAttempt } from "./candidate-failure";
 import { initializeSubmodules, verifyGodoxyIdentity, verifyPreparedInputs } from "./prepare";
 import candidateSource from "./candidate-script.txt" with { type: "text" };
 import checkEmptySkills from "./minimal-skills.txt" with { type: "text" };
@@ -24,7 +26,58 @@ import { armLabels, presentationLabel } from "./arm-labels";
 import { startRunawayGuard } from "./runaway-guard";
 import { DEFAULT_PIDS_LIMIT, type ArmImport, type ArmName, type ArmResult, type CommandEvidence, type RunState } from "./types";
 
-export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; importArms?: ArmImport[]; evaluationMode?: string; evaluationBaselines?: unknown; signal?: AbortSignal }
+export interface RunOptions { runDir: string; authFile: string; grokAuthFile?: string; dockerBin?: string; arm?: ArmName; controlRun?: string; controlBundleSha256?: string; importArms?: ArmImport[]; evaluationMode?: string; evaluationBaselines?: unknown; retryDelaysMs?: number[]; signal?: AbortSignal }
+
+const DEFAULT_RETRY_DELAYS_MS = [5_000, 15_000] as const;
+
+function resolveRetryDelaysMs(override?: number[]): number[] {
+  if (override !== undefined) {
+    if (override.some(value => !Number.isFinite(value) || value < 0)) throw new Error("invalid retryDelaysMs");
+    return [...override];
+  }
+  const raw = process.env.CODEX_AB_RETRY_DELAYS_MS;
+  if (raw === undefined) return [...DEFAULT_RETRY_DELAYS_MS];
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  const parsed = trimmed.split(",").map(part => Number(part.trim()));
+  if (parsed.some(value => !Number.isFinite(value) || value < 0)) throw new Error(`invalid CODEX_AB_RETRY_DELAYS_MS: ${raw}`);
+  return parsed;
+}
+
+async function isWorkspaceClean(repository: string, baseCommit: string): Promise<boolean> {
+  // Refuse to run host git if the candidate tampered with repo-local .git/config filters or hooks.
+  const gitConfig = await readFile(join(repository, ".git/config"), "utf8").catch(() => null);
+  if (gitConfig === null || /(?:^|\n)\s*(?:clean|smudge|process|textconv|external|fsmonitor|hooksPath|sshCommand)\s*=/i.test(gitConfig)) {
+    return false;
+  }
+  const status = await exec([
+    "git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+    "-c", "status.showUntrackedFiles=normal", "-C", repository, "status", "--porcelain", "--untracked-files=normal",
+  ]);
+  if (status.exitCode !== 0 || status.stdout.trim() !== "") return false;
+  const head = await exec(["git", "-c", "safe.directory=*", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", repository, "rev-parse", "HEAD"]);
+  return head.exitCode === 0 && head.stdout.trim() === baseCommit;
+}
+
+async function archiveExportDirectory(output: string, attempt: number, exportRoot: string): Promise<void> {
+  const entries = await readdir(exportRoot).catch(() => []);
+  if (!entries.length) return;
+  const destination = join(output, `mekugi-exports.attempt-${attempt}`);
+  await mkdir(destination, { recursive: true, mode: 0o700 });
+  for (const entry of entries) {
+    await rename(join(exportRoot, entry), join(destination, entry));
+  }
+}
+
+async function archiveAttemptLogs(output: string, attempt: number, stdoutPath: string, stderrPath: string): Promise<{ stdoutPath: string; stderrPath: string }> {
+  const archivedStdout = join(output, `codex.attempt-${attempt}.jsonl`);
+  const archivedStderr = join(output, `codex.attempt-${attempt}.stderr`);
+  for (const [source, destination] of [[stdoutPath, archivedStdout], [stderrPath, archivedStderr]] as const) {
+    try { await rename(source, destination); }
+    catch { await writeFile(destination, ""); }
+  }
+  return { stdoutPath: archivedStdout, stderrPath: archivedStderr };
+}
 
 
 function progress(message: string): void { process.stderr.write(`[run] ${message}\n`); }
@@ -403,7 +456,7 @@ export async function gradeArm(docker: string, runDir: string, state: RunState, 
   return { preparation: ready, router_suite: pending, elapsed_ms: 0, passed: false };
 }
 
-async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, providerNetwork: string, internalNetwork: string | undefined, task: string, signal: AbortSignal, mekugiFlags: readonly string[]): Promise<ArmResult> {
+async function runArm(docker: string, runDir: string, state: RunState, arm: ArmName, home: string, output: string, providerNetwork: string, internalNetwork: string | undefined, task: string, signal: AbortSignal, mekugiFlags: readonly string[], retryDelays: readonly number[]): Promise<ArmResult> {
   state = armRuntime(state, arm);
   if (state.arm_settings?.[arm]?.parallel_work) task = parallelWorkTask(task);
   const name = `codex-ab-${state.id}-${arm}`;
@@ -415,9 +468,13 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent started`);
   let result: ExecResult | undefined;
   let lifecycleError: string | undefined;
-  let homeImage = state.runtime_homes?.[arm]?.image_id;
   let runawayGuard: ArmResult["runaway_guard"];
   let egressProxy: EgressProxySidecar | undefined;
+  let oomKilled: boolean | undefined;
+  let failureClassification: CandidateFailureClassification | undefined;
+  const retryAttempts: CandidateRetryAttempt[] = [];
+  const initialHomeImage = state.runtime_homes?.[arm]?.image_id;
+  let homeImage = initialHomeImage;
   const exportArm = state.comparison === "codex-mekugi-grok" ? "stock" : "current";
   const exports = state.mekugi_exports_by_arm?.[arm] ?? (arm === exportArm ? state.mekugi_exports : undefined);
   const exportArgs = exports
@@ -481,20 +538,97 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
       });
     }
     if (protectedArm) await executorOwnership(docker, state, `${name}-own`, ownedPaths, false);
-    const execution = await runOwnedContainer({ docker, name, signal: armController.signal, snapshotImage: homeImage ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
-      onSnapshot: image_id => { homeImage = image_id; }, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: state.timeout_seconds * 1000, createArgs: [...containerArgs(state), "--network", internalNetwork ?? providerNetwork, ...(egressProxy ? egressProxy.envArgs : []), "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
-      "-v", `${repository}:/workspace`, ...(homeImage ? await runtimeHomeMounts(home) : ["-v", `${home}:/home/ubuntu`]), ...await currentSetupMounts(runDir, state, arm, home), ...exportMount, ...grokTask, ...debugStorage,
-      ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
-      homeImage ?? imageRef(state), ...launcher, ...executionArgs] });
-    result = execution;
-    if (execution.snapshotImageId) homeImage = execution.snapshotImageId;
+
   } catch (error) {
     lifecycleError = error instanceof Error ? error.message : String(error);
-    if (error instanceof OwnedContainerError && error.result) result = error.result;
-    if (error instanceof OwnedContainerError && error.snapshotImageId) homeImage = error.snapshotImageId;
+  }
+  const maxAttempts = retryDelays.length + 1;
+  const deadlineMs = started.getTime() + state.timeout_seconds * 1000;
+  try {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (lifecycleError || signal.aborted) break;
+      const remainingTimeoutMs = deadlineMs - Date.now();
+      if (attempt > 1 && remainingTimeoutMs <= 0) break;
+      const attemptStartedAt = new Date().toISOString();
+      homeImage = initialHomeImage;
+      result = undefined;
+      oomKilled = undefined;
+      failureClassification = undefined;
+      try {
+        const execution = await runOwnedContainer({ docker, name, signal: armController.signal, snapshotImage: homeImage ? `codex-ab-home-changes:${crypto.randomUUID()}` : undefined,
+          onSnapshot: image_id => { homeImage = image_id; }, stdin: grokArm ? undefined : task, stdoutFile: stdoutPath, stderrFile: stderrPath, timeoutMs: attempt === 1 ? state.timeout_seconds * 1000 : remainingTimeoutMs, createArgs: [...containerArgs(state), "--network", internalNetwork ?? providerNetwork, ...(egressProxy ? egressProxy.envArgs : []), "--workdir", "/workspace", ...(grokArm ? [] : ["-i"]), ...grokPath,
+          "-v", `${repository}:/workspace`, ...(homeImage ? await runtimeHomeMounts(home) : ["-v", `${home}:/home/ubuntu`]), ...await currentSetupMounts(runDir, state, arm, home), ...exportMount, ...grokTask, ...debugStorage,
+          ...(protectedArm ? protectedArgs(runDir, state, runtime) : []),
+          homeImage ?? imageRef(state), ...launcher, ...executionArgs] });
+        result = execution;
+        oomKilled = execution.oomKilled;
+        if (execution.snapshotImageId) homeImage = execution.snapshotImageId;
+      } catch (error) {
+        lifecycleError = error instanceof Error ? error.message : String(error);
+        if (error instanceof OwnedContainerError) {
+          if (error.result) result = error.result;
+          if (error.snapshotImageId) homeImage = error.snapshotImageId;
+          if (error.oomKilled !== undefined) oomKilled = error.oomKilled;
+        }
+      }
+      const attemptFinishedAt = new Date().toISOString();
+      const shouldClassify = oomKilled === true
+        || (result !== undefined && result.exitCode !== 0 && !result.timedOut && !result.canceled && !lifecycleError && !signal.aborted && !armController.signal.aborted);
+      if (shouldClassify) {
+        const [stderr, stdout] = await Promise.all([
+          readFile(stderrPath, "utf8").catch(() => ""),
+          readFile(stdoutPath, "utf8").catch(() => ""),
+        ]);
+        failureClassification = classifyCandidateFailure({
+          exitCode: result?.exitCode ?? -1,
+          oomKilled,
+          stderr,
+          stdout,
+        });
+      }
+      if (
+        attempt >= maxAttempts
+        || signal.aborted
+        || armController.signal.aborted
+        || lifecycleError
+        || !result
+        || result.timedOut
+        || result.canceled
+        || oomKilled === true
+        || !failureClassification?.retryable
+        || !(await isWorkspaceClean(repository, state.source.base_commit))
+      ) break;
+      const backoffMs = retryDelays[attempt - 1] ?? 0;
+      if (Date.now() + backoffMs >= deadlineMs) break;
+      const archived = await archiveAttemptLogs(output, attempt, stdoutPath, stderrPath);
+      if (exportRoot) await archiveExportDirectory(output, attempt, exportRoot);
+      retryAttempts.push({
+        attempt,
+        started_at: attemptStartedAt,
+        finished_at: attemptFinishedAt,
+        exit_code: result.exitCode,
+        reason: failureClassification.reason,
+        detail: failureClassification.detail,
+        stdout_path: relative(runDir, archived.stdoutPath),
+        stderr_path: relative(runDir, archived.stderrPath),
+      });
+      progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: attempt ${attempt} failed (${failureClassification.reason}); retrying in ${backoffMs}ms`);
+      if (backoffMs > 0) {
+        try { await delay(backoffMs, undefined, { signal }); }
+        catch {
+          await writeFile(stdoutPath, "");
+          await writeFile(stderrPath, "");
+          break;
+        }
+      }
+    }
   } finally {
     runawayGuard = await guard.stop();
     signal.removeEventListener("abort", onParentAbort);
+    if (egressProxy) {
+      try { await egressProxy.stop(); }
+      catch (error) { lifecycleError = `${lifecycleError ?? ""} ${String(error)}`.trim(); }
+    }
     if (egressProxy) {
       try { await egressProxy.stop(); }
       catch (error) { lifecycleError = `${lifecycleError ?? ""} ${String(error)}`.trim(); }
@@ -508,18 +642,22 @@ async function runArm(docker: string, runDir: string, state: RunState, arm: ArmN
   const finishedAt = new Date().toISOString();
   const userCanceled = signal.aborted;
   const triggeredByGuard = Boolean(runawayGuard?.triggered) && !userCanceled;
-  progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent stopped after ${Math.round((result?.elapsedMs ?? 0) / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
+  const totalElapsedMs = retryAttempts.length ? Math.max(result?.elapsedMs ?? 0, Date.now() - started.getTime()) : (result?.elapsedMs ?? 0);
+  progress(`${presentationLabel(armNames(state).indexOf(arm))} / ${armLabels(state)[arm]}: agent stopped after ${Math.round(totalElapsedMs / 1000)}s${lifecycleError ? ` (${lifecycleError})` : ""}`);
   return {
     arm,
     anonymous_id: `candidate-${armNames(state).indexOf(arm) + 1}`,
     container: name,
     started_at: started.toISOString(),
     finished_at: finishedAt,
-    agent_elapsed_ms: result?.elapsedMs ?? 0,
+    agent_elapsed_ms: totalElapsedMs,
     exit_code: result?.exitCode ?? -1,
     timed_out: (result?.timedOut ?? false) || triggeredByGuard,
     canceled: userCanceled || (!triggeredByGuard && result?.canceled === true),
     ...(runawayGuard ? { runaway_guard: runawayGuard } : {}),
+    ...(oomKilled !== undefined ? { oom_killed: oomKilled } : {}),
+    ...(failureClassification ? { failure_classification: failureClassification } : {}),
+    ...(retryAttempts.length ? { retry_attempts: retryAttempts } : {}),
     patch_path: patchPath.slice(runDir.length + 1),
     stdout_path: stdoutPath.slice(runDir.length + 1),
     stderr_path: stderrPath.slice(runDir.length + 1),
@@ -571,6 +709,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
   if (options.importArms && (options.arm || options.controlRun || options.controlBundleSha256)) throw new Error("--import-arms cannot be combined with --arm or --control-run");
   if (options.controlRun && options.arm) throw new Error("--control-run selects the current treatment arm; do not pass --arm");
   if (Boolean(options.controlRun) !== Boolean(options.controlBundleSha256)) throw new Error("--control-run requires --control-bundle-sha256 and vice versa");
+  const retryDelays = resolveRetryDelaysMs(options.retryDelaysMs);
   const docker = options.dockerBin ?? process.env.CODEX_AB_DOCKER_BIN ?? "docker";
   const mekugiFlags = await preflight(docker, state, runDir, options.signal);
   const imported = options.controlRun ? await importControl(runDir, state, options.controlRun, options.controlBundleSha256!) : undefined;
@@ -651,7 +790,7 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
         status: "started",
       };
       await writeState(runDir, state);
-      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, providerNetworks[arm]!.name, internalNetworks[arm]?.name, task, controller.signal, mekugiFlags.get(arm) ?? [])));
+      const settled = await Promise.allSettled(batch.map(arm => runArm(docker, runDir, state, arm, setups[arm]!.home, setups[arm]!.output, providerNetworks[arm]!.name, internalNetworks[arm]?.name, task, controller.signal, mekugiFlags.get(arm) ?? [], retryDelays)));
       settled.forEach((item, index) => {
         const arm = batch[index]!;
         const attempt = state.arm_attempts![arm]!;
@@ -662,12 +801,14 @@ export async function runPairUnlocked(options: RunOptions): Promise<RunState> {
           attempt.home_image_id = result.home_image_id;
           attempt.status = armExecutionSucceeded(result) ? "stopped" : "failed";
           if (attempt.status === "failed") {
-            attempt.error = result.lifecycle_error ?? (
-              result.canceled ? "agent canceled"
+            attempt.error = result.lifecycle_error
+              ?? (result.canceled ? "agent canceled"
                 : result.runaway_guard?.triggered ? `runaway guard triggered (${result.runaway_guard.reason}): ${result.runaway_guard.detail}`
                 : result.timed_out ? "agent timed out"
-                : `agent exited with code ${result.exit_code}`
-            );
+                : result.oom_killed ? "agent container OOM-killed"
+                : result.failure_classification
+                  ? `agent exited with code ${result.exit_code} (${result.failure_classification.reason}: ${result.failure_classification.detail})`
+                  : `agent exited with code ${result.exit_code}`);
             const message = `${displayArm(arm)}: ${attempt.error}; see ${result.stderr_path}`;
             state.error = state.error ? `${state.error}; ${message}` : message;
             progress(message);

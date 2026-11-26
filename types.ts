@@ -1,4 +1,5 @@
 import type { CriterionEvidence } from "./semantic";
+import type { CandidateFailureClassification, CandidateRetryAttempt } from "./candidate-failure";
 
 export type BenchmarkProfile = "mekugi" | "godoxy-icons" | "skills-mgr-bundle" | "task";
 export type CodexLauncher = "codex" | "mekugi" | "grok";
@@ -111,6 +112,9 @@ export interface ArmResult {
   timed_out: boolean;
   canceled: boolean;
   runaway_guard?: RunawayGuardTrigger;
+  oom_killed?: boolean;
+  failure_classification?: CandidateFailureClassification;
+  retry_attempts?: CandidateRetryAttempt[];
   patch_path: string;
   stdout_path: string;
   stderr_path: string;
