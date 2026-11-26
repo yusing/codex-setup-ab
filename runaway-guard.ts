@@ -110,6 +110,29 @@ function extractFailureSignature(event: JsonObject): { kind: "error"; signature:
       }
     }
   }
+  if (event.method === "item/completed" && isObject(event.params) && isObject(event.params.item)) {
+    const item = event.params.item;
+    if (item.type === "commandExecution" || item.type === "command_execution") {
+      const exitCode = typeof item.exitCode === "number" ? item.exitCode : typeof item.exit_code === "number" ? item.exit_code : undefined;
+      const failed = item.status === "failed" || (exitCode !== undefined && exitCode !== 0);
+      if (!failed && (item.status === "completed" || exitCode === 0)) return { kind: "success" };
+      if (failed) {
+        const cmd = normalizeErrorSignature(typeof item.command === "string" ? item.command : "");
+        const err = normalizeErrorSignature(extractMessage(item.error ?? item.aggregatedOutput ?? item.aggregated_output ?? item.stderr));
+        return { kind: "error", signature: `cmd:${cmd}|exit:${exitCode ?? "failed"}|${err}` };
+      }
+    }
+    if (item.type === "mcpToolCall" || item.type === "toolCall" || item.type === "functionCall") {
+      const failed = item.status === "failed" || Boolean(item.error);
+      if (!failed && item.status === "completed") return { kind: "success" };
+      if (failed) {
+        const name = normalizeErrorSignature(String(item.tool ?? item.name ?? ""));
+        const args = normalizeErrorSignature(typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? ""));
+        const err = normalizeErrorSignature(extractMessage(item.error));
+        return { kind: "error", signature: `tool:${name}|args:${args}|${err}` };
+      }
+    }
+  }
   if (event.type === "item.completed" && isObject(event.item)) {
     const item = event.item;
     if (item.type === "command_execution") {
